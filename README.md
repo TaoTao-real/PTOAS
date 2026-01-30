@@ -215,11 +215,11 @@ with Context() as ctx, Location.unknown():
 
 ```bash
 # 运行python binding 测试
-python3 ./test/samples/MatMul/tmatmulk.py > ./test/samples/MatMul/tmatmulk.pto
+cd ./test/samples/MatMul/
+python3 ./tmatmulk.py > ./tmatmulk.pto
 
 # 运行ptoas 测试
-./build/tools/ptoas/ptoas ./test/samples/Matmul/tmatmulk.pto -o ./test/samples/Matmul/tmatmulk.cpp
-
+./build/tools/ptoas/ptoas ./tmatmulk.pto -o ./tmatmulk.cpp
 ```
 
 ---
