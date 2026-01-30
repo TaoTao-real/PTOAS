@@ -97,7 +97,7 @@ cmake -G Ninja -S llvm -B $LLVM_BUILD_DIR \
     -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
     -DPython3_EXECUTABLE=$(which python3) \
     -DCMAKE_BUILD_TYPE=Release \
-    -DLLVM_TARGETS_TO_BUILD="Host"
+    -DLLVM_TARGETS_TO_BUILD="host"
 
 # 4. 编译 LLVM (这一步耗时较长)
 ninja -C $LLVM_BUILD_DIR
@@ -124,6 +124,8 @@ cmake -G Ninja \
     -B build \
     -DLLVM_DIR=$LLVM_BUILD_DIR/lib/cmake/llvm \
     -DMLIR_DIR=$LLVM_BUILD_DIR/lib/cmake/mlir \
+    -DPython3_EXECUTABLE=$(which python3) \
+    -DPython3_FIND_STRATEGY=LOCATION \
     -Dpybind11_DIR="${PYBIND11_CMAKE_DIR}" \
     -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
     -DMLIR_PYTHON_PACKAGE_DIR=$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core \
@@ -174,7 +176,7 @@ export PYTHONPATH=$MLIR_PYTHON_ROOT:$PTO_PYTHON_ROOT:$PYTHONPATH
 export LD_LIBRARY_PATH=$LLVM_BUILD_DIR/lib:$PTO_INSTALL_DIR/lib:$LD_LIBRARY_PATH
 
 # 3. PATH: 将 ptoas 添加到命令行路径
-export PATH=$PTO_INSTALL_DIR/bin:$PATH
+export PATH=$PTO_SOURCE_DIR/build/tools/ptoas:$PATH
 
 ```
 
@@ -213,11 +215,11 @@ with Context() as ctx, Location.unknown():
 
 ```bash
 # 运行python binding 测试
-python3 ./test/samples/MatMul/tmatmulk.py > ./test/samples/MatMul/tmatmulk.pto
+cd ./test/samples/MatMul/
+python3 ./tmatmulk.py > ./tmatmulk.pto
 
 # 运行ptoas 测试
-./build/tools/ptoas/ptoas ./test/samples/Matmul/tmatmulk.pto -o ./test/samples/Matmul/tmatmulk.cpp
-
+./build/tools/ptoas/ptoas ./tmatmulk.pto -o ./tmatmulk.cpp
 ```
 
 ---

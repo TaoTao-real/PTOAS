@@ -56,7 +56,7 @@ add_subdirectory(tools)
 option(PTO_ENABLE_PYTHON_BINDING "Enable Python bindings" ON)
 
 if(PTO_ENABLE_PYTHON_BINDING)
-  find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
+  find_package(Python3 COMPONENTS Interpreter Development.Module REQUIRED)
   find_package(pybind11 CONFIG REQUIRED)
 
   # 设置 Python 扩展的输出目录，方便调试
