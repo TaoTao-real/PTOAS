@@ -2122,8 +2122,7 @@ def PTO_DivOp_DPS : PTO_DpsOp<"div_dps", []> {
   let arguments = (ins
     PTODpsType:$src0,
     PTODpsType:$src1,
-    PTODpsType:$dst,
-    OptionalAttr<BoolAttr>:$init_out_buffer
+    PTODpsType:$dst
   );
 
   let results = (outs);
@@ -2133,14 +2132,9 @@ def PTO_DivOp_DPS : PTO_DpsOp<"div_dps", []> {
   let assemblyFormat = [{
     `ins` `(` $src0 `,` $src1 `:` qualified(type($src0)) `,` qualified(type($src1)) `)`
     `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    (`init_out_buffer` `=` $init_out_buffer^)?
     attr-dict
   }];
 
-  let builders = [
-    OpBuilder<(ins "TypeRange":$res, "Value":$src0, "Value":$src1, "Value":$dst), [{
-      build($_builder, $_state, res, src0, src1, dst, /*init_out_buffer=*/nullptr); 
-    }]>];
 }
 //===----------------------------------------------------------------------===//
 // TDIVS (tilebuf, DPS)
@@ -3762,8 +3756,7 @@ def PTO_TDivOp : PTO_TOp<"tdiv", []> {
   let arguments = (ins
     PTODpsType:$src0,
     PTODpsType:$src1,
-    PTODpsType:$dst,
-    OptionalAttr<BoolAttr>:$init_out_buffer
+    PTODpsType:$dst
   );
 
   let results = (outs);
@@ -3773,14 +3766,9 @@ def PTO_TDivOp : PTO_TOp<"tdiv", []> {
   let assemblyFormat = [{
     `ins` `(` $src0 `,` $src1 `:` qualified(type($src0)) `,` qualified(type($src1)) `)`
     `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    (`init_out_buffer` `=` $init_out_buffer^)?
     attr-dict
   }];
 
-  let builders = [
-    OpBuilder<(ins "TypeRange":$res, "Value":$src0, "Value":$src1, "Value":$dst), [{
-      build($_builder, $_state, res, src0, src1, dst, /*init_out_buffer=*/nullptr); 
-    }]>];
 }
 
 def PTO_TDivSOp : PTO_TOp<"tdivs", []> {

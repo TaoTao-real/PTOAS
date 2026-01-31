@@ -1162,7 +1162,6 @@ struct PTOViewToMemrefPass
         Value src0 = op.getSrc0();
         Value src1 = op.getSrc1();
         Value dst = op.getDst();
-        BoolAttr init_out_buffer = op.getInitOutBufferAttr();
 
         auto src0Ty = dyn_cast<MemRefType>(src0.getType());
         auto src1Ty = dyn_cast<MemRefType>(src1.getType());
@@ -1178,8 +1177,7 @@ struct PTOViewToMemrefPass
             TypeRange{},
             src0,
             src1,
-            dst,
-            init_out_buffer);
+            dst);
       }
 
       SmallVector<mlir::pto::TDivSOp, 8> divsops;
