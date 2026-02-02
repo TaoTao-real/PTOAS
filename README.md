@@ -2,7 +2,7 @@
 
 ## 1. 项目简介 (Introduction)
 
-**PTOAS** (`ptoas`) 是一个基于 **LLVM/MLIR (release/19.x)***(Commit e21dc4bd)* 框架构建的专用编译器工具链，专为 **PTO Bytecode** (Programming Tiling Operator Bytecode) 设计。
+**PTOAS** (`ptoas`) 是一个基于 **LLVM/MLIR (release/19.x)***(Commit e21dc4bd5474d04b8e62d7331362edcc5648d7e5)* 框架构建的专用编译器工具链，专为 **PTO Bytecode** (Programming Tiling Operator Bytecode) 设计。
 
 项目仓库：[https://github.com/zhangstevenunity/PTOAS](https://github.com/zhangstevenunity/PTOAS)
 
@@ -169,7 +169,7 @@ ptoas在build目录下
 # 1. Python Path: 拼接 MLIR Core 和 PTO Core
 #    这样在 python 中 import mlir.dialects.pto 时能正确找到
 export MLIR_PYTHON_ROOT=$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core
-export PTO_PYTHON_ROOT=$PTO_INSTALL_DIR/python_packages/pto_core
+export PTO_PYTHON_ROOT=$PTO_INSTALL_DIR/
 export PYTHONPATH=$MLIR_PYTHON_ROOT:$PTO_PYTHON_ROOT:$PYTHONPATH
 
 # 2. Library Path: 确保能加载 LLVM 和 PTO 的动态库 (.so)
