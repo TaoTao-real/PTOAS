@@ -39,12 +39,14 @@ def main():
             ]
             for i, ty in enumerate(all_types):
                 ev = events[i % len(events)]
-                attr = pto.SyncOpTypeAttr.get(ty)
-                ev_attr = pto.EventAttr.get(ev)
-                # record type -> type
-                pto.RecordEventOp(attr, attr, ev_attr)
+                # record type -> type (python helper accepts enums directly)
+                pto.record_event(ty, ty, ev)
                 # wait type -> type
-                pto.WaitEventOp(attr, attr, ev_attr)
+                pto.wait_event(ty, ty, ev)
+
+            # Add barrier coverage for TMATMUL and TVEC
+            pto.barrier(pto.SyncOpType.TMATMUL)
+            pto.barrier(pto.SyncOpType.TVEC)
             func.ReturnOp([])
         print(module)
 

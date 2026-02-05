@@ -1225,6 +1225,22 @@ def PTO_WaitEventOp : PTO_Op<"wait_event"> {
   }];
 }
 
+// High-Level Barrier (single pipe) with op type mapping
+def PTO_BarrierSyncOp : PTO_Op<"barrier_sync"> {
+  let summary = "High-level barrier mapped from SyncOpType to PIPE";
+  let description = [{
+    A convenience barrier that specifies a SyncOpType instead of PIPE. The lowering
+    pass maps the op type to the corresponding hardware pipe and emits `pto.barrier`.
+  }];
+  let arguments = (ins
+    PTO_SyncOpTypeAttr:$op_type
+  );
+  let results = (outs);
+  let assemblyFormat = [{
+    `[` $op_type `]` attr-dict
+  }];
+}
+
 //===----------------------------------------------------------------------===//
 // Synchronization Ops
 //===----------------------------------------------------------------------===//

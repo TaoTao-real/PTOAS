@@ -89,13 +89,35 @@ struct WaitEventLowering : public OpRewritePattern<WaitEventOp> {
   }
 };
 
+// High-level barrier -> barrier with mapped pipe
+struct BarrierSyncLowering : public OpRewritePattern<BarrierSyncOp> {
+  using OpRewritePattern<BarrierSyncOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(BarrierSyncOp op,
+                                PatternRewriter &rewriter) const override {
+    SyncOpType ty = op.getOpType().getOpType();
+    // Only support TMATMUL / TVEC for now
+    if (ty != SyncOpType::TMATMUL && ty != SyncOpType::TVEC)
+      return op.emitError("barrier_sync supports only TMATMUL or TVEC");
+
+    PIPE pipe = getPipeFromOpType(ty);
+    if (pipe == PIPE::PIPE_UNASSIGNED)
+      return op.emitError("Failed to map SyncOpType to hardware pipe during barrier lowering.");
+
+    rewriter.replaceOpWithNewOp<BarrierOp>(
+        op, PipeAttr::get(op.getContext(), pipe));
+    return success();
+  }
+};
+
 struct LoweringSyncToPipe
     : public mlir::pto::impl::PTOLoweringSyncToPipeBase<LoweringSyncToPipe> {
   void runOnOperation() override {
     func::FuncOp func = getOperation();
     MLIRContext *context = &getContext();
     RewritePatternSet patterns(context);
-    patterns.add<RecordEventLowering, WaitEventLowering>(context);
+    patterns.add<RecordEventLowering, WaitEventLowering, BarrierSyncLowering>(
+        context);
     if (failed(applyPatternsAndFoldGreedily(func, std::move(patterns))))
       signalPassFailure();
   }
@@ -106,4 +128,3 @@ struct LoweringSyncToPipe
 std::unique_ptr<Pass> mlir::pto::createLoweringSyncToPipePass() {
   return std::make_unique<LoweringSyncToPipe>();
 }
-
