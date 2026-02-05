@@ -3,9 +3,7 @@ from mlir.ir import (
     IndexType, IntegerType, F16Type, F32Type, StringAttr
 )
 from mlir.dialects import func, arith, scf, pto, builtin
-# High-level sync helpers (no pipe enums needed)
 from mlir.dialects.pto import (
-    record_event, wait_event,
     TLOAD, TMOV_M2L, TMATMUL, TSTORE_ACC,
     EVENT_ID0
 )
@@ -200,8 +198,8 @@ def build(
                     scf.YieldOp([])
 
                 # ---- sync: MTE2 -> MTE1 ----
-                record_event(TLOAD, TMOV_M2L, EVENT_ID0)
-                wait_event  (TLOAD, TMOV_M2L, EVENT_ID0)
+                pto.record_event(TLOAD, TMOV_M2L, EVENT_ID0)
+                pto.wait_event  (TLOAD, TMOV_M2L, EVENT_ID0)
 
                 # ---- TMOV ----
                 # TMOV 也传对应 tile 的 valid dims（a/b/bias）
@@ -216,8 +214,8 @@ def build(
                     scf.YieldOp([])
 
                 # ---- sync: MTE1 -> M ----
-                record_event(TMOV_M2L, TMATMUL, EVENT_ID0)
-                wait_event  (TMOV_M2L, TMATMUL, EVENT_ID0)
+                pto.record_event(TMOV_M2L, TMATMUL, EVENT_ID0)
+                pto.wait_event  (TMOV_M2L, TMATMUL, EVENT_ID0)
 
                 # ---- i == 0 ? (bias? TMATMUL_BIAS : TMATMUL) : TMATMUL_ACC ----
                 is_i0 = arith.CmpIOp(CmpIPredicate.eq, i, c0).result
@@ -244,14 +242,14 @@ def build(
                     scf.YieldOp([])
 
                 # ---- sync: M -> MTE2 ----
-                record_event(TMATMUL, TLOAD, EVENT_ID0)
-                wait_event  (TMATMUL, TLOAD, EVENT_ID0)
+                pto.record_event(TMATMUL, TLOAD, EVENT_ID0)
+                pto.wait_event  (TMATMUL, TLOAD, EVENT_ID0)
 
                 scf.YieldOp([])
 
             # ---- after loop ----
-            record_event(TMATMUL, TSTORE_ACC, EVENT_ID0)
-            wait_event  (TMATMUL, TSTORE_ACC, EVENT_ID0)
+            pto.record_event(TMATMUL, TSTORE_ACC, EVENT_ID0)
+            pto.wait_event  (TMATMUL, TSTORE_ACC, EVENT_ID0)
 
             # ---- TSTORE ----
             # 写回 OUT，传 C 的 valid dims
