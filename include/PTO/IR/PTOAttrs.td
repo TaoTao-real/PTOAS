@@ -116,6 +116,45 @@ def PTO_PipeAttr : PTO_Attr<"Pipe", "pipe"> {
 }
 
 //===----------------------------------------------------------------------===//
+// Sync Op Type (High Level Abstraction)
+//===----------------------------------------------------------------------===//
+
+def PTO_SYNC_TLOAD        : I32EnumAttrCase<"TLOAD", 0>;
+def PTO_SYNC_TSTORE_ACC   : I32EnumAttrCase<"TSTORE_ACC", 1>;
+def PTO_SYNC_TSTORE_VEC   : I32EnumAttrCase<"TSTORE_VEC", 2>;
+def PTO_SYNC_TMOV_M2L     : I32EnumAttrCase<"TMOV_M2L", 3>;
+def PTO_SYNC_TMOV_M2S     : I32EnumAttrCase<"TMOV_M2S", 4>;
+def PTO_SYNC_TMOV_M2B     : I32EnumAttrCase<"TMOV_M2B", 5>;
+def PTO_SYNC_TMOV_M2V     : I32EnumAttrCase<"TMOV_M2V", 6>;
+def PTO_SYNC_TMOV_V2M     : I32EnumAttrCase<"TMOV_V2M", 7>;
+def PTO_SYNC_TMATMUL      : I32EnumAttrCase<"TMATMUL", 8>;
+def PTO_SYNC_TVEC         : I32EnumAttrCase<"TVEC", 9>;
+def PTO_SYNC_TVECWAIT     : I32EnumAttrCase<"TVECWAIT_EVENT", 10>;
+
+def PTO_SyncOpTypeEnum : PTO_I32Enum<
+  "SyncOpType", "PTO High Level Sync Op Type", [
+    PTO_SYNC_TLOAD,
+    PTO_SYNC_TSTORE_ACC,
+    PTO_SYNC_TSTORE_VEC,
+    PTO_SYNC_TMOV_M2L,
+    PTO_SYNC_TMOV_M2S,
+    PTO_SYNC_TMOV_M2B,
+    PTO_SYNC_TMOV_M2V,
+    PTO_SYNC_TMOV_V2M,
+    PTO_SYNC_TMATMUL,
+    PTO_SYNC_TVEC,
+    PTO_SYNC_TVECWAIT
+  ]>;
+
+def PTO_SyncOpTypeAttr : PTO_Attr<"SyncOpType", "sync_op_type"> {
+  let parameters = (ins EnumParameter<PTO_SyncOpTypeEnum>:$op_type);
+  let assemblyFormat = "`<` params `>`";
+  let description = [{
+    High-level synchronization endpoint type. Lowering pass maps it to hardware pipes.
+  }];
+}
+
+//===----------------------------------------------------------------------===//
 // Layout (GlobalTensor layout inference)
 //===----------------------------------------------------------------------===//
 

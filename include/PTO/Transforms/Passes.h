@@ -32,6 +32,7 @@ namespace pto {
 
 std::unique_ptr<Pass> createPTOHighDimLoweringPass();
 std::unique_ptr<Pass> createPTOVFloopGatherPass();
+std::unique_ptr<Pass> createLoweringSyncToPipePass();
 
 // Creates a pass for ...
 std::unique_ptr<Pass> createPTOInsertSyncPass();

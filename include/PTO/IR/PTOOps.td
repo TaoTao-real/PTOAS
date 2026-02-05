@@ -1188,6 +1188,44 @@ def GetSubBlockNumOp : PTO_Op<"get_subblock_num", [Pure]> {
 }
 
 //===----------------------------------------------------------------------===//
+// High-Level Synchronization Ops
+//===----------------------------------------------------------------------===//
+
+def PTO_RecordEventOp : PTO_Op<"record_event"> {
+  let summary = "Record an event for synchronization (High Level)";
+  let description = [{
+    Records an event from a source operation type to a destination operation type.
+    Will be lowered to `pto.set_flag` based on op-to-pipe mapping.
+  }];
+  let arguments = (ins
+    PTO_SyncOpTypeAttr:$src_op,
+    PTO_SyncOpTypeAttr:$dst_op,
+    PTO_EventAttr:$event_id
+  );
+  let results = (outs);
+  let assemblyFormat = [{
+    `[` $src_op `,` $dst_op `,` $event_id `]` attr-dict
+  }];
+}
+
+def PTO_WaitEventOp : PTO_Op<"wait_event"> {
+  let summary = "Wait for an event (High Level)";
+  let description = [{
+    Waits for an event from a source operation type to a destination operation type.
+    Will be lowered to `pto.wait_flag` based on op-to-pipe mapping.
+  }];
+  let arguments = (ins
+    PTO_SyncOpTypeAttr:$src_op,
+    PTO_SyncOpTypeAttr:$dst_op,
+    PTO_EventAttr:$event_id
+  );
+  let results = (outs);
+  let assemblyFormat = [{
+    `[` $src_op `,` $dst_op `,` $event_id `]` attr-dict
+  }];
+}
+
+//===----------------------------------------------------------------------===//
 // Synchronization Ops
 //===----------------------------------------------------------------------===//
 

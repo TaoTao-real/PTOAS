@@ -102,5 +102,18 @@ def PlanMemory : Pass<"pto-plan-memory", "ModuleOp"> {
            "restrict memory inplace as isa, default : false">,
   ];
 }
+def PTOLoweringSyncToPipe : Pass<"pto-lowering-sync-to-pipe", "func::FuncOp"> {
+  let summary = "Lower high-level sync ops to low-level pipe ops";
+  let description = [{
+    Converts high-level `pto.record_event` and `pto.wait_event` operations
+    into low-level `pto.set_flag` and `pto.wait_flag` operations based on
+    hardware pipe mapping logic.
+  }];
+
+  let constructor = "mlir::pto::createLoweringSyncToPipePass()";
+  let dependentDialects = [
+    "mlir::pto::PTODialect"
+  ];
+}
 
 #endif // MLIR_DIALECT_PTO_PASSES
