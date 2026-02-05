@@ -60,13 +60,24 @@ __all__ = [
 # -----------------------------------------------------------------------------
 
 def _ensure_sync_attr(val, ctx):
+    # Accept SyncOpType enum, SyncOpTypeAttr, or string name ("TMATMUL"/"tmatmul").
     if isinstance(val, SyncOpType):
         return SyncOpTypeAttr.get(val, ctx)
+    if isinstance(val, str):
+        name = val.upper()
+        if name not in SyncOpType.__members__:
+            raise ValueError(f"Unknown SyncOpType name: {val}")
+        return SyncOpTypeAttr.get(SyncOpType[name], ctx)
     return val
 
 def _ensure_event_attr(val, ctx):
     if isinstance(val, EVENT):
         return EventAttr.get(val, ctx)
+    if isinstance(val, str):
+        name = val.upper()
+        if name not in EVENT.__members__:
+            raise ValueError(f"Unknown EVENT name: {val}")
+        return EventAttr.get(EVENT[name], ctx)
     return val
 
 def record_event(src_op, dst_op, event_id, *, loc=None, ip=None):
@@ -88,7 +99,7 @@ def wait_event(src_op, dst_op, event_id, *, loc=None, ip=None):
 def barrier(op, *, loc=None, ip=None):
     ctx = loc.context if loc else _ods_ir.Context.current
     # If user passes SyncOpType/Attr, route to barrier_sync (maps to PIPE)
-    if isinstance(op, (SyncOpType, SyncOpTypeAttr)):
+    if isinstance(op, (SyncOpType, SyncOpTypeAttr, str)):
         op_attr = _ensure_sync_attr(op, ctx)
         return _pto_ops_gen.barrier_sync(op_attr, loc=loc, ip=ip)
     # Otherwise fall back to low-level barrier expecting PipeAttr
