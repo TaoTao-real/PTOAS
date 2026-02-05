@@ -2142,27 +2142,16 @@ def PTO_DivSOp_DPS : PTO_DpsOp<"divs_dps", []> {
   let summary = "Elementwise division with a scalar (tilebuf, DPS)";
 
   let arguments = (ins
-    PTODpsType:$src,
+    AnyType:$src,
     AnyType:$scalar,
-    PTODpsType:$dst,
-    OptionalAttr<BoolAttr>:$scalar_lhs
+    PTODpsType:$dst
   );
 
   let results = (outs);
 
   let hasVerifier = 1;
 
-  let assemblyFormat = [{
-    `ins` `(` $src `,` $scalar `:` qualified(type($src)) `,` type($scalar) `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    (`scalar_lhs` `=` $scalar_lhs^)?
-    attr-dict
-  }];
-
-  let builders = [
-    OpBuilder<(ins "TypeRange":$res, "Value":$src, "Value":$scalar, "Value":$dst), [{
-      build($_builder, $_state, res, src, scalar, dst, /*scalar_lhs=*/nullptr); 
-    }]>];
+  let hasCustomAssemblyFormat = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -3834,7 +3823,7 @@ def PTO_TDivSOp : PTO_TOp<"tdivs", []> {
   let summary = "Elementwise division with a scalar (tilebuf, DPS)";
 
   let arguments = (ins
-    PTODpsType:$src,
+    AnyType:$src,
     AnyType:$scalar,
     PTODpsType:$dst
   );

@@ -1278,44 +1278,53 @@ struct PTOViewToMemrefPass
         auto dstTy = dyn_cast<MemRefType>(dst.getType());
         auto dstTileTy = dyn_cast<mlir::pto::TileBufType>(dst.getType());
         
-        // Determine scalar_lhs based on operand types
-        // Check which operand is actually the tile/memref and which is the scalar
-        bool srcIsTile = (srcTy != nullptr) || (srcTileTy != nullptr);
-        bool scalarIsTile = (isa<MemRefType>(scale.getType())) || (scaleTileTy != nullptr);
-        
-        BoolAttr scalar_lhs;
-        if (!srcIsTile && scalarIsTile) {
-          // src is scalar, scalar is tile -> scalar_lhs = true
-          scalar_lhs = rewriter.getBoolAttr(true);
-        } else {
-          // src is tile, scalar is scalar -> scalar_lhs = false (normal case)
-          scalar_lhs = rewriter.getBoolAttr(false);
-        }
+        // Determine which operand is the tile/memref and which is the scalar
+        // DivSOp_DPS expects (memref, scalar, dst) internally, so we need to ensure correct order
+        // Check if src is memref/tensor/tile (not scalar)
+        bool srcIsMemref = (srcTy != nullptr || srcTileTy != nullptr || 
+                            isa<RankedTensorType>(src.getType()) ||
+                            isa<mlir::pto::PartitionTensorViewType>(src.getType()));
+        // Check if scale is memref/tensor/tile (not scalar)
+        bool scaleIsMemref = (isa<MemRefType>(scale.getType()) || 
+                              scaleTileTy != nullptr ||
+                              isa<RankedTensorType>(scale.getType()) ||
+                              isa<mlir::pto::PartitionTensorViewType>(scale.getType()));
 
         // Type validation - ensure we have the right types
-        if (!srcTy && !srcTileTy) {
-          op.emitError("src operand must be tile_buf or memref");
+        if (!srcIsMemref && !scaleIsMemref) {
+          op.emitError("at least one operand (src or scale) must be tile_buf or memref");
           signalPassFailure();
           return;
         }
+        if (srcIsMemref && scaleIsMemref) {
+          op.emitError("exactly one operand (src or scale) must be tile_buf or memref, the other must be scalar");
+          signalPassFailure();
+          return;
+        }
+
         if (!dstTy && !dstTileTy) {
           op.emitError("dst operand must be tile_buf or memref");
           signalPassFailure();
           return;
         }
-        if (!scaleTy && !scaleTileTy) {
-          op.emitError("scale operand must be scalar or tile_buf");
-          signalPassFailure();
-          return;
+        Value memrefOperand, scalarOperand;
+        if (srcIsMemref) {
+          // Normal order: (src=tile/memref, scale=scalar, dst)
+          memrefOperand = src;
+          scalarOperand = scale;
+        } else {
+          // Swapped order: (src=scalar, scale=tile/memref, dst)
+          // Need to swap to (memref, scalar, dst) for DivSOp_DPS
+          memrefOperand = scale;
+          scalarOperand = src;
         }
 
         rewriter.replaceOpWithNewOp<pto::DivSOp_DPS>(
             op,
             TypeRange{},
-            src,
-            scale,
-            dst,
-            scalar_lhs);
+            memrefOperand,
+            scalarOperand,
+            dst);
       }
 
       SmallVector<mlir::pto::TExpandsOp, 8> expandsops;
