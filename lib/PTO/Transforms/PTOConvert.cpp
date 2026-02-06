@@ -133,6 +133,7 @@ public:
            case pto::AddressSpace::LEFT:  qualifier = "__left__"; break; 
            case pto::AddressSpace::RIGHT: qualifier = "__right__"; break; 
            case pto::AddressSpace::BIAS:  qualifier = "__bias__"; break;
+           case pto::AddressSpace::SCALING: qualifier = "__scaling__"; break;
            default: 
              llvm::errs() << "  [Error] Unknown AddressSpace Enum\n";
              return std::nullopt;
@@ -438,6 +439,7 @@ struct FuncToEmitC : public OpConversionPattern<func::FuncOp> {
             std::string addrSpaceStr = "__gm__ "; 
             if (auto attr = dyn_cast_or_null<pto::AddressSpaceAttr>(memRefTy.getMemorySpace())) {
                 if (attr.getAddressSpace() == pto::AddressSpace::VEC) addrSpaceStr = "__ub__ ";
+                else if (attr.getAddressSpace() == pto::AddressSpace::SCALING) addrSpaceStr = "__scaling__ ";
             }
 
             newType = emitc::PointerType::get(
@@ -904,7 +906,7 @@ struct PointerCastConversion : public OpConversionPattern<pto::PointerCastOp> {
 
   using OpConversionPattern<pto::PointerCastOp>::OpConversionPattern;
 
-  enum class TileRole { Vec, Mat, Left, Right, Acc, Bias };
+  enum class TileRole { Vec, Mat, Left, Right, Acc, Bias, Scaling };
 
   static void collectUserOpsThroughCasts(Value v, SmallVectorImpl<Operation *> &out) {
     for (Operation *u : v.getUsers()) {
@@ -935,6 +937,7 @@ struct PointerCastConversion : public OpConversionPattern<pto::PointerCastOp> {
           case pto::AddressSpace::ACC:   return TileRole::Acc;
           case pto::AddressSpace::BIAS:  return TileRole::Bias; 
           case pto::AddressSpace::MAT:   return TileRole::Mat;
+          case pto::AddressSpace::SCALING: return TileRole::Scaling;
           default: break; 
         }
       }
@@ -1010,6 +1013,7 @@ struct PointerCastConversion : public OpConversionPattern<pto::PointerCastOp> {
       case TileRole::Bias:  roleTok = "TileType::Bias"; break;
       case TileRole::Mat:   roleTok = "TileType::Mat"; break;
       case TileRole::Vec:   roleTok = "TileType::Vec"; break;
+      case TileRole::Scaling: roleTok = "TileType::Scaling"; break;
     }
 
     // 4. Config & Layout

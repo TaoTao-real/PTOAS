@@ -2655,7 +2655,7 @@ def PTO_MinsOp_DPS : PTO_DpsOp<"mins_dps", []> {
 // PTOOps.td  (add TMOV_FP DPS/tilebuf op)
 //===----------------------------------------------------------------------===//
 
-def PTO_MovFPOp_DPS : PTO_DpsOp<"mov_fp_dps", []> {
+def PTO_MovFPOp_DPS : PTO_DpsOp<"mov.fp_dps", []> {
   let summary = "TMOV_FP: move/convert using fp (scaling) tile (tilebuf, DPS)";
 
   let arguments = (ins
@@ -4271,7 +4271,7 @@ def PTO_TMinsOp : PTO_TOp<"tmins", []> {
   }];
 }
 
-def PTO_TMovFPOp : PTO_TOp<"tmov_fp", []> {
+def PTO_TMovFPOp : PTO_TOp<"tmov.fp", []> {
   let summary = "TMOV_FP: move/convert using fp (scaling) tile (tilebuf, DPS)";
 
   let arguments = (ins

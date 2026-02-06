@@ -2214,6 +2214,11 @@ mlir::LogicalResult mlir::pto::MovFPOp_DPS::verify() {
   if (!srcTy || !fpTy || !dstTy)
     return emitOpError() << "expects memref types for src/fp/dst";
 
+  // fp must have SCALING address space
+  auto fpAddrSpaceAttr = mlir::dyn_cast_or_null<mlir::pto::AddressSpaceAttr>(fpTy.getMemorySpace());
+  if (!fpAddrSpaceAttr || fpAddrSpaceAttr.getAddressSpace() != mlir::pto::AddressSpace::SCALING)
+    return emitOpError() << "expects fp to have SCALING address space";
+
   // fp is a scaling tile; keep checks minimal but sanity-check it's 64-bit integer when statically known.
   if (auto it = mlir::dyn_cast<mlir::IntegerType>(fpTy.getElementType())) {
     if (it.getWidth() != 64)
@@ -4357,6 +4362,11 @@ mlir::LogicalResult mlir::pto::TMovFPOp::verify() {
   auto dstTy = mlir::dyn_cast<mlir::pto::TileBufType>(getDst().getType());
   if (!srcTy || !fpTy || !dstTy)
     return emitOpError() << "expects tilebuf types for src/fp/dst";
+
+  // fp must have SCALING address space
+  auto fpAddrSpaceAttr = mlir::dyn_cast_or_null<mlir::pto::AddressSpaceAttr>(fpTy.getMemorySpace());
+  if (!fpAddrSpaceAttr || fpAddrSpaceAttr.getAddressSpace() != mlir::pto::AddressSpace::SCALING)
+    return emitOpError() << "expects fp to have SCALING address space";
 
   // fp is a scaling tile; keep checks minimal but sanity-check it's 64-bit integer when statically known.
   if (auto it = mlir::dyn_cast<mlir::IntegerType>(fpTy.getElementType())) {
