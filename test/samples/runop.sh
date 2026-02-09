@@ -9,6 +9,7 @@ PTOAS_BIN="${PTOAS_BIN:-}"
 PYTHON_BIN="${PYTHON_BIN:-}"
 PTOAS_OUT_DIR="${PTOAS_OUT_DIR:-}"
 PTOAS_FLAGS="${PTOAS_FLAGS:-}"
+PTO_PTO_DIRS="${PTO_PTO_DIRS:-InjectSync}"
 
 usage() {
   cat <<EOF
@@ -21,6 +22,7 @@ Env:
   PYTHON_BIN  # python executable to run samples (optional)
   PTOAS_OUT_DIR  # where generated *.mlir/*.cpp go (optional; defaults to a temp dir)
   PTOAS_FLAGS  # extra flags passed to ptoas (e.g. --enable-insert-sync)
+  PTO_PTO_DIRS  # space-separated dirs to run .pto directly (default: InjectSync)
 EOF
   exit 1
 }
@@ -127,23 +129,33 @@ process_one_dir() {
     echo -e "${A}(${base}.py)\tOK\tgenerated: $(basename "$cpp")"
   done
 
-  # Run every .pto file directly in this directory.
-  for f in "$dir"/*.pto; do
-    [[ -f "$f" ]] || continue
-    case "$f" in
-      *-pto-ir.pto) continue ;;
-    esac
-    base="$(basename "$f" .pto)"
-    cpp="${out_subdir}/${base}.cpp"
-
-    if ! "$ptoas" "${ptoas_flags[@]}" "$f" -o "$cpp" >/dev/null 2>&1; then
-      echo -e "${A}(${base}.pto)\tFAIL\tptoas failed: $(basename "$f")"
-      overall=1
-      continue
+  # Run .pto files only for allowed dirs (default: InjectSync) to avoid legacy IR.
+  local allow_pto=0
+  for d in ${PTO_PTO_DIRS}; do
+    if [[ "$A" == "$d" ]]; then
+      allow_pto=1
+      break
     fi
-
-    echo -e "${A}(${base}.pto)\tOK\tgenerated: $(basename "$cpp")"
   done
+
+  if [[ $allow_pto -eq 1 ]]; then
+    for f in "$dir"/*.pto; do
+      [[ -f "$f" ]] || continue
+      case "$f" in
+        *-pto-ir.pto) continue ;;
+      esac
+      base="$(basename "$f" .pto)"
+      cpp="${out_subdir}/${base}.cpp"
+
+      if ! "$ptoas" "${ptoas_flags[@]}" "$f" -o "$cpp" >/dev/null 2>&1; then
+        echo -e "${A}(${base}.pto)\tFAIL\tptoas failed: $(basename "$f")"
+        overall=1
+        continue
+      fi
+
+      echo -e "${A}(${base}.pto)\tOK\tgenerated: $(basename "$cpp")"
+    done
+  fi
 
   return $overall
 }
