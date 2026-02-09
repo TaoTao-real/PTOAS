@@ -2099,26 +2099,7 @@ def PTO_AndSOp_DPS : PTO_DpsOp<"ands_dps", []> {
   let hasVerifier = 1;
 }
 
-def PTO_AssignOp_DPS : PTO_DpsOp<"assign_dps", []> {
-  let summary = "Bind a tile/global object to an address (manual placement).";
 
-  let arguments = (ins PTODpsType:$dst, Index:$addr);
-  let results = (outs);
-
-  let extraClassDeclaration = [{
-    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
-    ::mlir::Value getObj() { return getDst(); }
-    ::mlir::MutableOperandRange getObjMutable() { return getDstMutable(); }
-  }];
-
-  let assemblyFormat = [{
-    `ins` `(` $addr `:` type($addr) `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    attr-dict
-  }];
-
-  let hasVerifier = 1;
-}
 
 def PTO_CIOp_DPS : PTO_DpsOp<"ci_dps", []> {
   let summary = "Generate contiguous integer sequence into dst tile.";
@@ -3814,26 +3795,6 @@ def PTO_TAndSOp : PTO_TOp<"tands", []> {
   let hasVerifier = 1;
 }
 
-def PTO_TAssignOp : PTO_TOp<"tassign", []> {
-  let summary = "Bind a tile/global object to an address (manual placement).";
-
-  let arguments = (ins PTODpsType:$dst, Index:$addr);
-  let results = (outs);
-
-  let extraClassDeclaration = [{
-    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
-    ::mlir::Value getObj() { return getDst(); }
-    ::mlir::MutableOperandRange getObjMutable() { return getDstMutable(); }
-  }];
-
-  let assemblyFormat = [{
-    `ins` `(` $addr `:` type($addr) `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    attr-dict
-  }];
-
-  let hasVerifier = 1;
-}
 
 def PTO_TCIOp : PTO_TOp<"tci", []> {
   let summary = "Generate contiguous integer sequence into dst tile.";

@@ -1373,17 +1373,7 @@ LogicalResult pto::AndSOp_DPS::verify() {
 
   return success();
 }
-LogicalResult pto::AssignOp_DPS::verify() {
-  auto m = dyn_cast<mlir::pto::TileType>(getObj().getType());
-  if (!m)
-    return emitOpError("expects obj to be a memref");
 
-  Type addrTy = getAddr().getType();
-  if (!addrTy.isa<IndexType>() && !addrTy.isa<IntegerType>())
-    return emitOpError("expects addr to be index or integer type");
-
-  return success();
-}
 
 LogicalResult pto::CIOp_DPS::verify() {
   auto dstTy = dyn_cast<mlir::MemRefType>(getDst().getType());
@@ -3669,17 +3659,7 @@ LogicalResult pto::TAndSOp::verify() {
 
   return success();
 }
-LogicalResult pto::TAssignOp::verify() {
-  auto m = dyn_cast<mlir::pto::TileBufType>(getObj().getType());
-  if (!m)
-    return emitOpError("expects obj to be a tilebuf");
 
-  Type addrTy = getAddr().getType();
-  if (!addrTy.isa<IndexType>() && !addrTy.isa<IntegerType>())
-    return emitOpError("expects addr to be index or integer type");
-
-  return success();
-}
 LogicalResult pto::TCIOp::verify() {
   auto dstTy = dyn_cast<mlir::pto::TileBufType>(getDst().getType());
   if (!dstTy)

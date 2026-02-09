@@ -2050,23 +2050,7 @@ struct PTOAndSToEmitC : public OpConversionPattern<pto::AndSOp_DPS> {
     return success();
   }
 };
-struct PTOAssignToEmitC : public OpConversionPattern<pto::AssignOp_DPS> {
-  using OpConversionPattern<pto::AssignOp_DPS>::OpConversionPattern;
 
-  LogicalResult matchAndRewrite(pto::AssignOp_DPS op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-
-    Value dst  = peelUnrealized(adaptor.getDst());
-    Value addr = peelUnrealized(adaptor.getAddr());
-
-    rewriter.create<emitc::CallOpaqueOp>(
-        op.getLoc(), TypeRange{}, "TASSIGN",
-        ArrayAttr{}, ArrayAttr{}, ValueRange{dst, addr});
-
-    rewriter.eraseOp(op); 
-    return success();
-  }
-};
 
 struct PTOCIToEmitC : public OpConversionPattern<pto::CIOp_DPS> {
   using OpConversionPattern<pto::CIOp_DPS>::OpConversionPattern;
@@ -4326,7 +4310,6 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOSubSSToEmitC>(typeConverter, ctx);
   patterns.add<PTOSqrtSToEmitC>(typeConverter, ctx);
   patterns.add<PTOTransToEmitC>(typeConverter, ctx);
-  patterns.add<PTOAssignToEmitC>(typeConverter, ctx);
   patterns.add<PTOSelSToEmitC>(typeConverter, ctx);
   patterns.add<PTOColMinToEmitC>(typeConverter, ctx);
   patterns.add<PTORowExpandSubToEmitC>(typeConverter, ctx);
