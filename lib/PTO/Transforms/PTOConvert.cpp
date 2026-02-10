@@ -152,14 +152,14 @@ public:
          qualifier = "__gm__";
       } else if (auto ptoAttr = dyn_cast<pto::AddressSpaceAttr>(memorySpace)) {
          switch (ptoAttr.getAddressSpace()) {
-           case pto::AddressSpace::VEC: qualifier = "__ub__"; break;
+           case pto::AddressSpace::VEC: qualifier = "__ubuf__"; break;
            case pto::AddressSpace::GM: qualifier = "__gm__"; break;
-           case pto::AddressSpace::MAT:   qualifier = "__mat__"; break; 
-           case pto::AddressSpace::ACC:   qualifier = "__acc__"; break; 
-           case pto::AddressSpace::LEFT:  qualifier = "__left__"; break; 
-           case pto::AddressSpace::RIGHT: qualifier = "__right__"; break; 
-           case pto::AddressSpace::BIAS:  qualifier = "__bias__"; break;
-           case pto::AddressSpace::SCALING: qualifier = "__scaling__"; break;
+           case pto::AddressSpace::MAT:   qualifier = "__cbuf__"; break; 
+           case pto::AddressSpace::ACC:   qualifier = "__cc__"; break; 
+           case pto::AddressSpace::LEFT:  qualifier = "__ca__"; break; 
+           case pto::AddressSpace::RIGHT: qualifier = "__cb__"; break; 
+           case pto::AddressSpace::BIAS:  qualifier = ""; break;
+           case pto::AddressSpace::SCALING: qualifier = "__cbuf__"; break;
            default: 
              llvm::errs() << "  [Error] Unknown AddressSpace Enum\n";
              return std::nullopt;
@@ -1918,8 +1918,13 @@ struct FuncToEmitC : public OpConversionPattern<func::FuncOp> {
 
             std::string addrSpaceStr = "__gm__ "; 
             if (auto attr = dyn_cast_or_null<pto::AddressSpaceAttr>(memRefTy.getMemorySpace())) {
-                if (attr.getAddressSpace() == pto::AddressSpace::VEC) addrSpaceStr = "__ub__ ";
-                else if (attr.getAddressSpace() == pto::AddressSpace::SCALING) addrSpaceStr = "__scaling__ ";
+                if (attr.getAddressSpace() == pto::AddressSpace::VEC) addrSpaceStr = "__ubuf__ ";
+                else if (attr.getAddressSpace() == pto::AddressSpace::MAT) addrSpaceStr = "__cbuf__ ";
+                else if (attr.getAddressSpace() == pto::AddressSpace::SCALING) addrSpaceStr = "__fbuf__ ";
+                else if (attr.getAddressSpace() == pto::AddressSpace::BIAS) addrSpaceStr = "";
+                else if (attr.getAddressSpace() == pto::AddressSpace::LEFT) addrSpaceStr = "__ca__ ";
+                else if (attr.getAddressSpace() == pto::AddressSpace::RIGHT) addrSpaceStr = "__cb__ ";
+                else if (attr.getAddressSpace() == pto::AddressSpace::ACC) addrSpaceStr = "__cc__ ";
             }
 
             newType = emitc::PointerType::get(
