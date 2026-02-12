@@ -1,12 +1,22 @@
 //===- PTOTypeDefs.td --------------------------------------------------*- tablegen -*-===//
 include "mlir/IR/AttrTypeBase.td"
 include "PTO/IR/PTODialect.td"
+include "PTO/IR/PTOAttrs.td"
 
 // ---- !pto.ptr<elem> ----
 def PtrType : TypeDef<PTO_Dialect, "Ptr"> {
   let mnemonic = "ptr";
-  let parameters = (ins "mlir::Type":$elementType);
-  let assemblyFormat = "`<` $elementType `>`";
+  let parameters = (ins
+    "mlir::Type":$elementType,
+    OptionalParameter<"mlir::Attribute">:$memorySpace
+  );
+  let assemblyFormat = "`<` $elementType (`,` $memorySpace^)? `>`";
+
+  let builders = [
+    TypeBuilder<(ins "Type":$elementType), [{
+      return Base::get($_ctxt, elementType, Attribute());
+    }]>
+  ];
 }
 
 // ---- !pto.tensor_view<d0xd1x...xelem> ----

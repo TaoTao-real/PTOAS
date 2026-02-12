@@ -152,6 +152,40 @@ public:
     addConversion([Ctx](emitc::PointerType type) { return type; });
 
     // ---------------------------------------------------------
+    // 2.5 PtrType 转换 (指针类型)
+    // ---------------------------------------------------------
+    addConversion([this, Ctx](pto::PtrType type) -> std::optional<Type> {
+      Type elemType = type.getElementType();
+      Type newElemType = convertType(elemType);
+      if (!newElemType)
+        return std::nullopt;
+
+      std::string elemTypeStr;
+      if (auto opq = dyn_cast<emitc::OpaqueType>(newElemType)) {
+        elemTypeStr = opq.getValue().str();
+      } else {
+        llvm::errs() << "  [Error] PtrType elem type is not OpaqueType: "
+                     << newElemType << "\n";
+        return std::nullopt;
+      }
+
+      std::string qualifier = "__gm__";
+      if (auto ms = type.getMemorySpace()) {
+        if (auto ptoAttr = dyn_cast<pto::AddressSpaceAttr>(ms)) {
+          qualifier = addrSpaceQualifier(ptoAttr.getAddressSpace());
+        } else {
+          llvm::errs() << "  [Warning] Unknown PtrType memorySpace: " << ms
+                       << "\n";
+          qualifier = "__gm__";
+        }
+      }
+
+      std::string finalTypeStr = qualifier + " " + elemTypeStr;
+      return emitc::PointerType::get(
+          emitc::OpaqueType::get(Ctx, finalTypeStr));
+    });
+
+    // ---------------------------------------------------------
     // 3. MemRef 转换 (Debug 重点)
     // ---------------------------------------------------------
     addConversion([this, Ctx](MemRefType type) -> std::optional<Type> {
@@ -3705,6 +3739,49 @@ struct PTOGetValToGETVAL : public OpConversionPattern<pto::GetValDpsOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// pto.load_scalar / pto.store_scalar lowering -> ptr[offset]
+//===----------------------------------------------------------------------===//
+
+struct PTOLoadScalarToEmitC : public OpConversionPattern<pto::LoadScalarOp> {
+  using OpConversionPattern<pto::LoadScalarOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(pto::LoadScalarOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    Value ptr = peelUnrealized(adaptor.getPtr());
+    Value offset = peelUnrealized(adaptor.getOffset());
+
+    Type dstTy = getTypeConverter()->convertType(op.getValue().getType());
+    if (!dstTy)
+      return failure();
+
+    auto call = rewriter.create<emitc::CallOpaqueOp>(
+        op.getLoc(), TypeRange{dstTy}, "PTOAS__PTR_LOAD",
+        ArrayAttr{}, ArrayAttr{}, ValueRange{ptr, offset});
+
+    rewriter.replaceOp(op, call.getResults());
+    return success();
+  }
+};
+
+struct PTOStoreScalarToEmitC : public OpConversionPattern<pto::StoreScalarOp> {
+  using OpConversionPattern<pto::StoreScalarOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(pto::StoreScalarOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    Value ptr = peelUnrealized(adaptor.getPtr());
+    Value offset = peelUnrealized(adaptor.getOffset());
+    Value val = peelUnrealized(adaptor.getValue());
+
+    rewriter.create<emitc::CallOpaqueOp>(
+        op.getLoc(), TypeRange{}, "PTOAS__PTR_STORE",
+        ArrayAttr{}, ArrayAttr{}, ValueRange{ptr, offset, val});
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // pto.tabs lowering -> TABS(dst, src)
 //===----------------------------------------------------------------------===//
 
@@ -6861,7 +6938,8 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOMrgSortToEmitC>(typeConverter, ctx);
   patterns.add<SubviewToEmitCPattern>(typeConverter, ctx);
   patterns.add<PointerCastConversion>(typeConverter, ctx);
-  patterns.add<PTOSetValToSETVAL, PTOGetValToGETVAL>(typeConverter, ctx);
+  patterns.add<PTOSetValToSETVAL, PTOGetValToGETVAL,
+               PTOLoadScalarToEmitC, PTOStoreScalarToEmitC>(typeConverter, ctx);
   patterns.add<PTOAndToEmitC>(typeConverter, ctx);
   patterns.add<PTOMulToEmitC>(typeConverter, ctx);
   patterns.add<PTOAndSToEmitC>(typeConverter, ctx);

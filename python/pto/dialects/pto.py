@@ -158,3 +158,26 @@ class TileConfig:
     fractalABSize = 512
     fractalCSize = 1024
     fractalMxSize = 32
+
+# -----------------------------------------------------------------------------
+# Op aliases without "Op" suffix (user-facing)
+# -----------------------------------------------------------------------------
+def _install_op_aliases():
+    added = []
+    for name, obj in _pto_ops_gen.__dict__.items():
+        if not isinstance(obj, type):
+            continue
+        if not issubclass(obj, _ods_ir.OpView):
+            continue
+        alias = None
+        if name.endswith("Op_DPS"):
+            alias = f"{name[:-6]}_DPS"
+        elif name.endswith("Op"):
+            alias = name[:-2]
+        if not alias or alias in globals():
+            continue
+        globals()[alias] = obj
+        added.append(alias)
+    return added
+
+__all__.extend(_install_op_aliases())
