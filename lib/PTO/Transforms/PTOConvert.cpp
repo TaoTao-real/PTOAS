@@ -2425,6 +2425,191 @@ struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// Helper: build GlobalTensor from a static MemRef (for TLOAD/TSTORE)
+//===----------------------------------------------------------------------===//
+
+static std::string getElemTypeStringForGT(Type elemTy) {
+  if (elemTy.isF16()) return "half";
+  if (elemTy.isF32()) return "float";
+  if (elemTy.isF64()) return "double";
+  if (elemTy.isInteger(8)) {
+    if (elemTy.isSignlessInteger(8) || elemTy.isSignedInteger(8))
+      return "int8_t";
+    return "uint8_t";
+  }
+  if (elemTy.isInteger(16)) {
+    if (elemTy.isSignlessInteger(16) || elemTy.isSignedInteger(16))
+      return "int16_t";
+    return "uint16_t";
+  }
+  if (elemTy.isInteger(32)) {
+    if (elemTy.isSignlessInteger(32) || elemTy.isSignedInteger(32))
+      return "int32_t";
+    return "uint32_t";
+  }
+  if (elemTy.isInteger(64)) {
+    return cast<IntegerType>(elemTy).isUnsigned() ? "uint64_t" : "int64_t";
+  }
+  return "float";
+}
+
+static Value buildGlobalTensorFromMemref(ConversionPatternRewriter &rewriter,
+                                         Location loc, Value basePtr,
+                                         MemRefType mrTy,
+                                         Operation *anchor) {
+  auto *ctx = rewriter.getContext();
+
+  // Only handle fully static shapes/strides for now.
+  auto shape = mrTy.getShape();
+  for (int64_t dim : shape) {
+    if (dim == ShapedType::kDynamic)
+      return Value();
+  }
+
+  SmallVector<int64_t> strides;
+  int64_t offset = 0;
+  if (failed(getStridesAndOffset(mrTy, strides, offset))) {
+    // Fallback: compact row-major
+    strides.resize(shape.size());
+    int64_t s = 1;
+    for (int i = (int)shape.size() - 1; i >= 0; --i) {
+      strides[i] = s;
+      s *= shape[i];
+    }
+    offset = 0;
+  }
+  if (offset == ShapedType::kDynamic)
+    return Value();
+  for (int64_t s : strides) {
+    if (s == ShapedType::kDynamic)
+      return Value();
+  }
+
+  // Apply static base offset if needed.
+  Value ptr = basePtr;
+  if (offset != 0) {
+    Type u32Ty = emitc::OpaqueType::get(ctx, "unsigned");
+    auto offVal = rewriter.create<emitc::ConstantOp>(
+        loc, u32Ty, emitc::OpaqueAttr::get(ctx, std::to_string(offset)));
+    ptr = rewriter.create<emitc::AddOp>(loc, basePtr.getType(), basePtr,
+                                        offVal);
+  }
+
+  std::string suffix = "_" + std::to_string(reinterpret_cast<uintptr_t>(anchor));
+  std::string shapeTypeName  = "GTShape"  + suffix;
+  std::string strideTypeName = "GTStride" + suffix;
+  std::string gtTypeName     = "GT"       + suffix;
+
+  std::string elemTypeStr = getElemTypeStringForGT(mrTy.getElementType());
+
+  SmallVector<std::string> shapeParamsVec;
+  SmallVector<std::string> strideParamsVec;
+  for (int i = 0, e = (int)shape.size(); i < e; ++i) {
+    shapeParamsVec.push_back(std::to_string(shape[i]));
+    strideParamsVec.push_back(std::to_string(strides[i]));
+  }
+
+  // Right-align to 5D (pad leading dims with 1).
+  SmallVector<std::string, 5> finalShape(5, "1");
+  SmallVector<std::string, 5> finalStride(5, "1");
+  int rank = (int)shape.size();
+  int shift = 5 - rank;
+  for (int i = 0; i < rank && i < 5; ++i) {
+    finalShape[shift + i] = shapeParamsVec[i];
+    finalStride[shift + i] = strideParamsVec[i];
+  }
+  auto mulOrDyn = [](const std::string &a, const std::string &b) -> std::string {
+    if (a == "-1" || b == "-1")
+      return "-1";
+    int64_t va = 1, vb = 1;
+    (void)llvm::to_integer(a, va);
+    (void)llvm::to_integer(b, vb);
+    return std::to_string(va * vb);
+  };
+  for (int i = 3; i >= 0; --i) {
+    if (i >= shift)
+      continue;
+    finalStride[i] = mulOrDyn(finalShape[i + 1], finalStride[i + 1]);
+  }
+
+  auto joinParams = [](llvm::ArrayRef<std::string> vec) {
+    std::string out;
+    for (size_t i = 0; i < vec.size(); ++i) {
+      if (i > 0) out += ", ";
+      out += vec[i];
+    }
+    return out;
+  };
+
+  std::string shapeParams = joinParams(finalShape);
+  std::string strideParams = joinParams(finalStride);
+
+  rewriter.create<emitc::VerbatimOp>(
+      loc, "using " + shapeTypeName + " = pto::Shape<" + shapeParams + ">;");
+  rewriter.create<emitc::VerbatimOp>(
+      loc, "using " + strideTypeName + " = pto::Stride<" + strideParams + ">;");
+
+  // Infer layout (same rules as Subview lowering)
+  SmallVector<int64_t, 5> shapeInt(5, -1), strideInt(5, -1);
+  for (int i = 0; i < 5; ++i) {
+    (void)llvm::to_integer(finalShape[i], shapeInt[i]);
+    (void)llvm::to_integer(finalStride[i], strideInt[i]);
+  }
+  int layoutTag = 0; // ND
+  int elemBytes = 4;
+  if (elemTypeStr.find("half") != std::string::npos)
+    elemBytes = 2;
+  else if (elemTypeStr.find("double") != std::string::npos)
+    elemBytes = 8;
+  if (shapeInt[2] == 16 && shapeInt[2] * shapeInt[3] * elemBytes == 512 &&
+      strideInt[4] == 1 && strideInt[3] == shapeInt[4]) {
+    layoutTag = 2; // NZ
+  } else {
+    bool isRow = strideInt[4] == 1;
+    for (int i = 3; i >= 0; --i)
+      isRow &= (strideInt[i] == strideInt[i + 1] * shapeInt[i + 1]);
+    bool isCol = strideInt[0] == 1;
+    for (int i = 0; i < 4; ++i)
+      isCol &= (strideInt[i + 1] == strideInt[i] * shapeInt[i]);
+    if (isCol) layoutTag = 1; // DN
+    else layoutTag = isRow ? 0 : 0; // fallback ND
+  }
+  std::string layoutEnum = "pto::Layout::ND";
+  if (layoutTag == 1)
+    layoutEnum = "pto::Layout::DN";
+  else if (layoutTag == 2)
+    layoutEnum = "pto::Layout::NZ";
+  std::string layoutConstName = gtTypeName + "_layout";
+  rewriter.create<emitc::VerbatimOp>(
+      loc, "constexpr pto::Layout " + layoutConstName + " = " + layoutEnum + ";");
+
+  auto shapeTypeOpaque = emitc::OpaqueType::get(ctx, shapeTypeName);
+  auto strideTypeOpaque = emitc::OpaqueType::get(ctx, strideTypeName);
+  auto shapeInstOp = rewriter.create<emitc::CallOpaqueOp>(
+      loc, shapeTypeOpaque, shapeTypeName, ArrayAttr{}, ArrayAttr{},
+      ValueRange{});
+  auto strideInstOp = rewriter.create<emitc::CallOpaqueOp>(
+      loc, strideTypeOpaque, strideTypeName, ArrayAttr{}, ArrayAttr{},
+      ValueRange{});
+
+  rewriter.create<emitc::VerbatimOp>(
+      loc, "using " + gtTypeName + " = GlobalTensor<" + elemTypeStr + ", " +
+               shapeTypeName + ", " + strideTypeName + ", " +
+               layoutConstName + ">;");
+  auto gtType = emitc::OpaqueType::get(ctx, gtTypeName);
+
+  SmallVector<Value> gtArgs;
+  gtArgs.push_back(ptr);
+  gtArgs.push_back(shapeInstOp.getResult(0));
+  gtArgs.push_back(strideInstOp.getResult(0));
+
+  auto gtInst = rewriter.create<emitc::CallOpaqueOp>(
+      loc, gtType, gtTypeName, ArrayAttr{}, ArrayAttr{}, ValueRange(gtArgs));
+
+  return gtInst.getResult(0);
+}
+
+//===----------------------------------------------------------------------===//
 // pto.pointer_cast lowering
 //===----------------------------------------------------------------------===
 struct PointerCastConversion : public OpConversionPattern<pto::PointerCastOp> {
@@ -2688,11 +2873,24 @@ struct PTOLoadDpsToTLOAD : public OpConversionPattern<pto::LoadDpsOp> {
 
     Value src = peelUnrealized(adaptor.getSrc());
     Value dst = peelUnrealized(adaptor.getDst());
+    Value srcArg = src;
+    if (auto srcMrTy = dyn_cast<MemRefType>(op.getSrc().getType())) {
+      bool isGlobal = true;
+      if (auto asAttr = dyn_cast_or_null<pto::AddressSpaceAttr>(srcMrTy.getMemorySpace())) {
+        auto as = asAttr.getAddressSpace();
+        isGlobal = (as == pto::AddressSpace::GM || as == pto::AddressSpace::Zero);
+      }
+      if (isGlobal) {
+        if (Value gt = buildGlobalTensorFromMemref(rewriter, op.getLoc(), src, srcMrTy,
+                                                  op.getOperation()))
+          srcArg = gt;
+      }
+    }
 
     rewriter.create<emitc::CallOpaqueOp>(
         op.getLoc(), TypeRange{}, "TLOAD",
         ArrayAttr{}, ArrayAttr{},
-        ValueRange{dst, src});
+        ValueRange{dst, srcArg});
 
     if (op->getNumResults() == 1) {
       rewriter.replaceOp(op, dst);
@@ -2713,11 +2911,24 @@ struct PTOStoreDpsToTSTORE : public OpConversionPattern<pto::StoreDpsOp> {
 
     Value src = peelUnrealized(adaptor.getSrc());
     Value dst = peelUnrealized(adaptor.getDst());
+    Value dstArg = dst;
+    if (auto dstMrTy = dyn_cast<MemRefType>(op.getDst().getType())) {
+      bool isGlobal = true;
+      if (auto asAttr = dyn_cast_or_null<pto::AddressSpaceAttr>(dstMrTy.getMemorySpace())) {
+        auto as = asAttr.getAddressSpace();
+        isGlobal = (as == pto::AddressSpace::GM || as == pto::AddressSpace::Zero);
+      }
+      if (isGlobal) {
+        if (Value gt = buildGlobalTensorFromMemref(rewriter, op.getLoc(), dst, dstMrTy,
+                                                  op.getOperation()))
+          dstArg = gt;
+      }
+    }
 
     rewriter.create<emitc::CallOpaqueOp>(
         op.getLoc(), TypeRange{}, "TSTORE",
         ArrayAttr{}, ArrayAttr{},
-        ValueRange{dst, src});
+        ValueRange{dstArg, src});
 
     if (op->getNumResults() == 1) {
       rewriter.replaceOp(op, dst);

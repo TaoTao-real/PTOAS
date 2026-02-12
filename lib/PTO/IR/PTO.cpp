@@ -6637,36 +6637,27 @@ LogicalResult SubsetOp::inferReturnTypes(
     const auto *prop = properties.as<SubsetOp::Properties *>();
     if (prop) sizeAttr = prop->sizes;
   }
+  if (!sizeAttr && attributes) {
+    sizeAttr = attributes.getAs<ArrayAttr>("sizes");
+  }
   if (!sizeAttr) return failure();
 
   SmallVector<int64_t> resultShape;
+  SmallVector<int64_t> validShape;
   for (auto attr : sizeAttr) {
-    resultShape.push_back(llvm::cast<IntegerAttr>(attr).getInt());
+    int64_t dim = llvm::cast<IntegerAttr>(attr).getInt();
+    resultShape.push_back(dim);
+    validShape.push_back(dim);
   }
 
-  // 3. [核心修改] 不再继承 sourceStrides，而是计算 resultShape 的连续 Strides
-  // 假设 Row-Major: [Dim1*Dim2*..., Dim2*..., ..., 1]
-  // 对于 2D [M, N] -> Strides [N, 1]
-  SmallVector<int64_t> contiguousStrides;
-  contiguousStrides.resize(resultShape.size());
-  
-  int64_t runningStride = 1;
-  for (int i = resultShape.size() - 1; i >= 0; --i) {
-    contiguousStrides[i] = runningStride;
-    runningStride *= resultShape[i];
-  }
-  
-  // 4. 构建 Layout Map
-  // 虽然是连续的，但因为 subset 会产生 offset，所以我们依然需要一个 Map 来表示 offset
-  // Map = (d0, d1)[s0, s1] -> (d0 * 32 + d1 * 1 + offset)
-  // 注意：这里的 stride 变成了 32 (Child Width)，而不是 64 (Parent Width)
-  AffineMap newLayout = buildStrictBitwiseAffineMap(context, contiguousStrides, /*isMultiDim=*/true);
+  // 3. 继承 Config (若为空使用默认)
+  auto cfg = sourceType.getConfigAttr();
+  if (!cfg) cfg = TileBufConfigAttr::getDefault(context);
 
-  auto cfg = sourceType.getConfigAttr(); // 或 sourceType.getConfig() 视你现在实现
-  // 5. 构建 Result Type
+  // 4. 构建 Result Type
   auto resultType = TileBufType::get(
       context, resultShape, sourceType.getElementType(),
-      sourceType.getMemorySpace(), sourceType.getValidShape(), cfg);
+      sourceType.getMemorySpace(), validShape, cfg);
 
   inferredReturnTypes.push_back(resultType);
   return success();

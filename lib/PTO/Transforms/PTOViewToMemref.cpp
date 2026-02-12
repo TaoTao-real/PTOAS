@@ -514,7 +514,7 @@ struct PTOViewToMemrefPass
       }
 
       // ------------------------------------------------------------------
-      // Stage 2.5: lower pto.subset -> memref.reinterpret_cast
+      // Stage 2.5: lower pto.subset -> memref.subview + bind_tile
       // ------------------------------------------------------------------
       SmallVector<mlir::pto::SubsetOp, 8> subsets;
       func.walk([&](mlir::pto::SubsetOp op) { subsets.push_back(op); });
@@ -524,113 +524,90 @@ struct PTOViewToMemrefPass
         rewriter.setInsertionPoint(op);
         Location loc = op.getLoc();
 
-        // 1. 获取 Base Pointer (作为通用 MemRef)
-        Value src = op->getOperand(0); 
+        // 1. Source must be memref already
+        Value src = op->getOperand(0);
         auto srcMrTy = dyn_cast<MemRefType>(src.getType());
         if (!srcMrTy) {
           op.emitError("pto.subset source must be lowered to memref first");
-          signalPassFailure(); return;
+          signalPassFailure();
+          return;
         }
 
-        // 2. 计算线性偏移 (Linear Offset)
-        // 假设: subset %src[%i, %j] 中的 %i, %j 是用来计算 Block 偏移的
-        // Offset = i * Stride0 + j * Stride1
-        // 注意：这里的 Stride 是父块为了定位 Tile 而定义的 "Tile Stride"，
-        // 而不是 MemRef 的 Element Stride。
-        // 如果我们没有额外信息，我们暂时假设输入的 %i, %j 已经构成了我们需要的偏移，
-        // 或者我们需要从父块的 Layout 中反解出 Tile Stride。
-        
-        // 【重要】为了实现 "Pointer Cast + Offset"，我们需要一个单一的动态 Offset。
-        // 这里我们做一个简化的假设：PTO模型中，Subset 的 offset 计算已经由上层保证
-        // 或者我们简单地将多维 offset 线性化。
-        
-        // 既然你提到 "Pointer Cast + Offset"，最直接的映射是：
-        // BaseOffset = i * dim1_size + j  (如果是 2D 坐标)
-        // 但由于 Tile 是连续的，通常 Offset = TileIndex * TileSize。
-        
-        // 让我们先实现通用的线性化逻辑 (Row-Major Linearization of Indices):
-        Value totalOffset = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-        auto offsets = op.getOffsets(); // [%i, %j]
-        
-        // 我们需要父块的 Shape 来计算线性偏移吗？
-        // 如果 Tile 也是连续存放的 (Tile Array)，那么 Shape 可能是 [NumTiles, TileSize...]
-        // 这里我们采用最通用的做法：
-        // 如果 layout 是 strided，我们利用 layout map 计算 offset。
-        // 如果没有 layout，我们假设这是紧凑的，按 Shape 计算 strides。
-        
-        // 获取父块的 Strides (用于计算 Offset)
-        // 注意：这里的 Strides 是用来计算 "怎么跳到目标位置"，
-        // 而不是结果 MemRef 的 Strides。
-        SmallVector<int64_t> srcStrides;
-        int64_t dummyOffset; // 1. 声明一个哑变量
-        
-        // 2. 传进去占位
-        if (failed(getStridesAndOffset(srcMrTy, srcStrides, dummyOffset))) {
-             // 如果获取失败，假设 Row-Major 紧凑布局
-             auto shape = srcMrTy.getShape();
-             srcStrides.resize(shape.size());
-             int64_t s = 1;
-             for(int k=shape.size()-1; k>=0; --k) {
-                 srcStrides[k] = s;
-                 if(shape[k] != ShapedType::kDynamic) s *= shape[k];
-             }
-        }
-        
-        // 计算运行时 Offset: sum( index[k] * stride[k] )
-        for (unsigned k = 0; k < offsets.size(); ++k) {
-            Value idx = ensureIndex(rewriter, loc, offsets[k], op);
-            Value strideVal = rewriter.create<arith::ConstantIndexOp>(loc, srcStrides[k]);
-            Value dimOff = rewriter.create<arith::MulIOp>(loc, idx, strideVal);
-            totalOffset = rewriter.create<arith::AddIOp>(loc, totalOffset, dimOff);
-        }
-
-        // 3. 准备 reinterpret_cast 的参数
-        
-        // A. Sizes (静态: [32, 32])
-        SmallVector<OpFoldResult> newSizes;
+        // 2. Sizes (static)
         ArrayAttr sizeAttr = op.getSizes();
+        SmallVector<int64_t> staticSizes;
+        SmallVector<OpFoldResult> mixedSizes;
+        staticSizes.reserve(sizeAttr.size());
+        mixedSizes.reserve(sizeAttr.size());
         for (Attribute attr : sizeAttr) {
-            int64_t s = cast<IntegerAttr>(attr).getInt();
-            newSizes.push_back(rewriter.getIndexAttr(s));
+          int64_t s = cast<IntegerAttr>(attr).getInt();
+          staticSizes.push_back(s);
+          mixedSizes.push_back(rewriter.getIndexAttr(s));
         }
 
-        // B. Strides (强制连续: [32, 1])
-        // 这就是 "Address Space Continuous" 的核心体现
-        SmallVector<OpFoldResult> newStrides;
-        // 计算 Row-Major Strides: [Dim1, 1]
-        // 假设 Rank=2
-        int64_t dim1Size = cast<IntegerAttr>(sizeAttr[1]).getInt();
-        newStrides.push_back(rewriter.getIndexAttr(dim1Size)); // Stride 0 = Width
-        newStrides.push_back(rewriter.getIndexAttr(1));        // Stride 1 = 1
+        // 3. Offsets (mixed)
+        SmallVector<OpFoldResult> mixedOffsets;
+        for (Value o : op.getOffsets()) {
+          IntegerAttr constAttr;
+          bool isStatic = false;
+          if (auto cOp = o.getDefiningOp<arith::ConstantIndexOp>()) {
+            constAttr = rewriter.getIndexAttr(cOp.value());
+            isStatic = true;
+          } else if (auto cInt = o.getDefiningOp<arith::ConstantIntOp>()) {
+            constAttr = rewriter.getIndexAttr(cInt.value());
+            isStatic = true;
+          }
+          if (isStatic)
+            mixedOffsets.push_back(constAttr);
+          else
+            mixedOffsets.push_back(ensureIndex(rewriter, loc, o, op));
+        }
 
-        // 4. 构建结果类型
-        // memref<32x32xf32, strided<[32, 1], offset: ?>>
-        // 注意：这里的 Stride 是 [32, 1] 而不是 [64, 1] 了！
-        // 因为我们把它当做独立的连续块来看待。
-        auto resultLayout = StridedLayoutAttr::get(ctx, 
-                                                   ShapedType::kDynamic, // Offset is dynamic
-                                                   {dim1Size, 1});       // Strides are fixed contiguous
-        
-        auto resultMemRefType = MemRefType::get(
-            {cast<IntegerAttr>(sizeAttr[0]).getInt(), dim1Size},
-            srcMrTy.getElementType(),
-            resultLayout,
-            srcMrTy.getMemorySpace()
-        );
+        // 4. Result layout inherits source strides (offset is dynamic)
+        SmallVector<int64_t> srcStrides;
+        int64_t srcOffset = ShapedType::kDynamic;
+        if (failed(getStridesAndOffset(srcMrTy, srcStrides, srcOffset))) {
+          // Fallback: compact row-major
+          auto shape = srcMrTy.getShape();
+          srcStrides.resize(shape.size());
+          int64_t s = 1;
+          for (int i = shape.size() - 1; i >= 0; --i) {
+            srcStrides[i] = s;
+            if (shape[i] != ShapedType::kDynamic) s *= shape[i];
+          }
+        }
+        (void)srcOffset;
 
-        // 5. 创建 memref.reinterpret_cast
-        // 语义：给我一个指针(src)，加上偏移(totalOffset)，
-        // 然后把它强制看作是 32x32 的连续内存。
-        auto castOp = rewriter.create<memref::ReinterpretCastOp>(
-            loc,
-            resultMemRefType,
-            src,
-            totalOffset,  // Dynamic Offset
-            newSizes,     // Target Sizes
-            newStrides    // Target Strides (Contiguous)
-        );
+        auto resultLayout = StridedLayoutAttr::get(ctx, ShapedType::kDynamic, srcStrides);
+        auto resultMemRefType =
+            MemRefType::get(staticSizes, srcMrTy.getElementType(), resultLayout,
+                            srcMrTy.getMemorySpace());
 
-        rewriter.replaceOp(op, castOp.getResult());
+        // 5. Strides for subview: keep same stride (use 1)
+        SmallVector<OpFoldResult> mixedStrides;
+        mixedStrides.reserve(staticSizes.size());
+        for (size_t i = 0; i < staticSizes.size(); ++i)
+          mixedStrides.push_back(rewriter.getIndexAttr(1));
+
+        auto sv = rewriter.create<memref::SubViewOp>(
+            loc, resultMemRefType, src, mixedOffsets, mixedSizes, mixedStrides);
+
+        // 6. Re-bind tile metadata (config + valid dims)
+        auto configAttr = lookupConfig(src);
+        if (!configAttr) configAttr = pto::TileBufConfigAttr::getDefault(ctx);
+
+        Value vRow;
+        Value vCol;
+        if (!staticSizes.empty())
+          vRow = rewriter.create<arith::ConstantIndexOp>(loc, staticSizes[0]);
+        if (staticSizes.size() > 1)
+          vCol = rewriter.create<arith::ConstantIndexOp>(loc, staticSizes[1]);
+
+        auto bindOp = rewriter.create<pto::BindTileOp>(
+            loc, resultMemRefType, sv.getResult(),
+            vRow ? vRow : Value(), vCol ? vCol : Value(), configAttr);
+
+        rewriter.replaceOp(op, bindOp.getResult());
       }
 
       // ------------------------------------------------------------------
