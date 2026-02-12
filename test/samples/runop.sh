@@ -78,6 +78,37 @@ resolve_python_bin() {
   return 1
 }
 
+check_tsubs_tile() {
+  local cpp="$1"
+  local python="$2"
+  if ! grep -q "TSUBS(" "$cpp"; then
+    return 0
+  fi
+  "$python" - "$cpp" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text()
+
+tile_decl = re.compile(r'\b(?:const\s+)?Tile<[^;{]*>\s+([A-Za-z_]\w*)\s*(?:;|=)')
+tile_vars = set(tile_decl.findall(text))
+
+bad = []
+for m in re.finditer(r'\bTSUBS\s*\(\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*,', text):
+  dst, src = m.group(1), m.group(2)
+  if dst not in tile_vars or src not in tile_vars:
+    bad.append((dst, src))
+
+if bad:
+  for dst, src in bad:
+    print(f"TSUBS operands are not Tile vars: dst={dst} src={src}", file=sys.stderr)
+  sys.exit(1)
+sys.exit(0)
+PY
+}
+
 process_one_dir() {
   local A="$1" # folder name (e.g. Abs)
   local out_dir="$2"
@@ -141,6 +172,12 @@ process_one_dir() {
     local -a ptoas_cmd=("${ptoas_cmd_base[@]}" "$mlir" -o "$cpp")
     if ! "${ptoas_cmd[@]}" >/dev/null 2>&1; then
       echo -e "${A}(${base}.py)\tFAIL\tptoas failed: $(basename "$mlir")"
+      overall=1
+      continue
+    fi
+
+    if ! check_tsubs_tile "$cpp" "$python"; then
+      echo -e "${A}(${base}.py)\tFAIL\tTSUBS uses non-Tile operands: $(basename "$cpp")"
       overall=1
       continue
     fi
