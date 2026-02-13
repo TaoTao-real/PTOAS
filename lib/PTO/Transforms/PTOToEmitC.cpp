@@ -2088,6 +2088,34 @@ struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
     auto srcType = mlir::cast<MemRefType>(op.getSource().getType());
     int64_t rank = srcType.getRank();
 
+    auto elemTypeToString = [&](Type elemTy) -> std::string {
+      if (elemTy.isF16())
+        return "half";
+      if (elemTy.isF32())
+        return "float";
+      if (elemTy.isF64())
+        return "double";
+      if (elemTy.isInteger(8)) {
+        if (elemTy.isSignlessInteger(8) || elemTy.isSignedInteger(8))
+          return "int8_t";
+        return "uint8_t";
+      }
+      if (elemTy.isInteger(16)) {
+        if (elemTy.isSignlessInteger(16) || elemTy.isSignedInteger(16))
+          return "int16_t";
+        return "uint16_t";
+      }
+      if (elemTy.isInteger(32)) {
+        if (elemTy.isSignlessInteger(32) || elemTy.isSignedInteger(32))
+          return "int32_t";
+        return "uint32_t";
+      }
+      if (elemTy.isInteger(64)) {
+        return cast<IntegerType>(elemTy).isUnsigned() ? "uint64_t" : "int64_t";
+      }
+      return "float";
+    };
+
     // -------------------------------------------------------------------------
     // Part 1: 指针偏移计算 (Runtime Pointer Arithmetic)
     // -------------------------------------------------------------------------
@@ -2185,6 +2213,32 @@ struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
     // when the underlying element type is i16. Pointer arithmetic on `void*`
     // is ill-formed in C++, so we explicitly cast to a typed pointer for i16.
     Value sourcePtr = adaptor.getSource();
+    Value tileCandidate = sourcePtr;
+    if (auto castOp = sourcePtr.getDefiningOp<emitc::CastOp>()) {
+      tileCandidate = castOp.getOperand();
+    } else if (auto uc =
+                   sourcePtr.getDefiningOp<UnrealizedConversionCastOp>()) {
+      tileCandidate = uc.getOperand(0);
+    }
+    if (auto ot = dyn_cast<emitc::OpaqueType>(tileCandidate.getType())) {
+      auto tyStr = ot.getValue();
+      if (tyStr.find("Tile<") != std::string::npos ||
+          tyStr.find("ConvTile<") != std::string::npos) {
+        std::string elemTok = elemTypeToString(srcType.getElementType());
+        std::string qualifier = "__gm__";
+        if (auto asAttr =
+                dyn_cast_or_null<pto::AddressSpaceAttr>(srcType.getMemorySpace()))
+          qualifier = addrSpaceQualifier(asAttr.getAddressSpace());
+        auto rawPtrTy =
+            emitc::OpaqueType::get(ctx, qualifier + " " + elemTok + "*");
+        sourcePtr =
+            rewriter
+                .create<emitc::CallOpaqueOp>(loc, rawPtrTy,
+                                             "PTOAS__TILE_DATA", ArrayAttr{},
+                                             ArrayAttr{}, ValueRange{tileCandidate})
+                .getResult(0);
+      }
+    }
     Value newPtr;
     {
       auto resTy = mlir::cast<MemRefType>(op.getResult().getType());
