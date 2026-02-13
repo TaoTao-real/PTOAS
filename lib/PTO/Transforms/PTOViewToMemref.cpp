@@ -329,7 +329,8 @@ static void dumpPretty(Operation *op, llvm::raw_ostream &os) {
 static Type convertPTOTypeToMemRef(Type t) {
   // 1. 处理 !pto.ptr<T>
   if (auto pty = dyn_cast<mlir::pto::PtrType>(t)) {
-    return MemRefType::get({ShapedType::kDynamic}, pty.getElementType());
+    return MemRefType::get({ShapedType::kDynamic}, pty.getElementType(),
+                           MemRefLayoutAttrInterface(), Attribute());
   }
   
   // 2. 处理 !pto.tile_buf<...>
@@ -592,6 +593,67 @@ struct PTOViewToMemrefPass
         rewriter.replaceOp(op, rc.getResult());
       }
 
+      // ------------------------------------------------------------------
+      // Stage 1.5: Fold pto.addptr chains into load/store_scalar.
+      // ------------------------------------------------------------------
+      SmallVector<mlir::pto::LoadScalarOp, 8> loadScalars;
+      func.walk([&](mlir::pto::LoadScalarOp op) { loadScalars.push_back(op); });
+
+      for (auto op : loadScalars) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+        Location loc = op.getLoc();
+
+        Value base = op.getPtr();
+        Value totalOffset = ensureIndex(rewriter, loc, op.getOffset(), op);
+
+        bool foldedAddPtr = false;
+        while (auto add = base.getDefiningOp<mlir::pto::AddPtrOp>()) {
+          foldedAddPtr = true;
+          Value off = ensureIndex(rewriter, loc, add.getOperand(1), add);
+          if (totalOffset)
+            totalOffset = rewriter.create<arith::AddIOp>(loc, totalOffset, off);
+          else
+            totalOffset = off;
+          base = add.getOperand(0);
+        }
+
+        if (foldedAddPtr) {
+          auto newOp = rewriter.create<pto::LoadScalarOp>(
+              loc, op.getValue().getType(), base, totalOffset);
+          rewriter.replaceOp(op, newOp.getValue());
+        }
+      }
+
+      SmallVector<mlir::pto::StoreScalarOp, 8> storeScalars;
+      func.walk([&](mlir::pto::StoreScalarOp op) { storeScalars.push_back(op); });
+
+      for (auto op : storeScalars) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+        Location loc = op.getLoc();
+
+        Value base = op.getPtr();
+        Value totalOffset = ensureIndex(rewriter, loc, op.getOffset(), op);
+
+        bool foldedAddPtr = false;
+        while (auto add = base.getDefiningOp<mlir::pto::AddPtrOp>()) {
+          foldedAddPtr = true;
+          Value off = ensureIndex(rewriter, loc, add.getOperand(1), add);
+          if (totalOffset)
+            totalOffset = rewriter.create<arith::AddIOp>(loc, totalOffset, off);
+          else
+            totalOffset = off;
+          base = add.getOperand(0);
+        }
+
+        if (foldedAddPtr) {
+          rewriter.create<pto::StoreScalarOp>(
+              loc, base, totalOffset, op.getValue());
+          rewriter.eraseOp(op);
+        }
+      }
+
       // Clean up: addptr should be folded into make_tensor_view.
       SmallVector<Operation *, 8> addPtrs;
       func.walk([&](mlir::pto::AddPtrOp op) { addPtrs.push_back(op.getOperation()); });
@@ -611,7 +673,7 @@ struct PTOViewToMemrefPass
       for (auto *op : addPtrs) {
         if (!op)
           continue;
-        op->emitError("addptr must feed make_tensor_view for lowering");
+        op->emitError("addptr must feed make_tensor_view or load/store_scalar for lowering");
         signalPassFailure();
         return;
       }

@@ -131,6 +131,16 @@ static int64_t getPTOTypeRank(Type type) {
   return -1;
 }
 
+static bool isGmAddressSpaceAttr(Attribute memorySpace) {
+  if (!memorySpace)
+    return true;
+  if (auto addr = mlir::dyn_cast<pto::AddressSpaceAttr>(memorySpace))
+    return addr.getAddressSpace() == pto::AddressSpace::GM;
+  if (auto intAttr = mlir::dyn_cast<IntegerAttr>(memorySpace))
+    return intAttr.getInt() == 0;
+  return false;
+}
+
 static mlir::Type parsePTOTypeAllowNoBang(mlir::OpAsmParser &parser) {
   mlir::Type ty;
 
@@ -182,7 +192,17 @@ static mlir::Type parsePTOTypeAllowNoBang(mlir::OpAsmParser &parser) {
     if (failed(parser.parseLess()))
       return mlir::Type();
     mlir::Type elem;
-    if (failed(parser.parseType(elem)) || failed(parser.parseGreater()))
+    if (failed(parser.parseType(elem)))
+      return mlir::Type();
+    if (succeeded(parser.parseOptionalComma())) {
+      // ptr no longer accepts an address space; consume the attr for recovery.
+      mlir::Attribute memorySpace;
+      (void)parser.parseAttribute(memorySpace);
+      parser.emitError(parser.getCurrentLocation(),
+                       "!pto.ptr no longer accepts address space; use !pto.ptr<elem>");
+      return mlir::Type();
+    }
+    if (failed(parser.parseGreater()))
       return mlir::Type();
     return mlir::pto::PtrType::get(ctx, elem);
   }
@@ -837,6 +857,14 @@ AddressSpaceAttr mlir::pto::getPTOAddressSpaceAttr(Type type) {
   auto scopeAttr = dyn_cast<AddressSpaceAttr>(memRefType.getMemorySpace());
   assert(scopeAttr && "memory scope should be a pto address scope");
   return scopeAttr;
+}
+
+bool mlir::pto::isScalarPtrOrMemRef(Type type) {
+  if (auto pty = dyn_cast<mlir::pto::PtrType>(type))
+    return true;
+  if (auto memTy = dyn_cast<MemRefType>(type))
+    return isGmAddressSpaceAttr(memTy.getMemorySpace());
+  return false;
 }
 
 //===----------------------------------------------------------------------===//
@@ -4578,6 +4606,44 @@ LogicalResult SetValDpsOp::verify() {
 
   return success();
 }
+// ---- LoadScalarOp ----
+LogicalResult LoadScalarOp::verify() {
+  Type ptrTy = getPtr().getType();
+  Type elemTy;
+  if (auto pty = dyn_cast<mlir::pto::PtrType>(ptrTy)) {
+    elemTy = pty.getElementType();
+  } else if (auto memTy = dyn_cast<MemRefType>(ptrTy)) {
+    elemTy = memTy.getElementType();
+    if (!isGmAddressSpaceAttr(memTy.getMemorySpace()))
+      return emitOpError() << "scalar load only supports GM address space pointers";
+  } else {
+    return emitOpError("expects ptr to be !pto.ptr or memref type");
+  }
+
+  if (getValue().getType() != elemTy)
+    return emitOpError("expects result type to match ptr element type");
+
+  return success();
+}
+// ---- StoreScalarOp ----
+LogicalResult StoreScalarOp::verify() {
+  Type ptrTy = getPtr().getType();
+  Type elemTy;
+  if (auto pty = dyn_cast<mlir::pto::PtrType>(ptrTy)) {
+    elemTy = pty.getElementType();
+  } else if (auto memTy = dyn_cast<MemRefType>(ptrTy)) {
+    elemTy = memTy.getElementType();
+    if (!isGmAddressSpaceAttr(memTy.getMemorySpace()))
+      return emitOpError() << "scalar store only supports GM address space pointers";
+  } else {
+    return emitOpError("expects ptr to be !pto.ptr or memref type");
+  }
+
+  if (getValue().getType() != elemTy)
+    return emitOpError("expects value type to match ptr element type");
+
+  return success();
+}
 // ---- DPS ----
 LogicalResult MatmulBiasDpsOp::verify() {
   return verifyMatmulLike(*this, getA().getType(), getB().getType(), getDst().getType());
@@ -7232,6 +7298,16 @@ void MScatterDpsOp::getEffects(
 void SetValDpsOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   PTO_ADD_WRITE(getDstMutable());
+}
+
+void LoadScalarOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_READ(getPtrMutable());
+}
+
+void StoreScalarOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_WRITE(getPtrMutable());
 }
 
 PTO_DEFINE_BINARY_EFFECTS(AddOp_DPS, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
