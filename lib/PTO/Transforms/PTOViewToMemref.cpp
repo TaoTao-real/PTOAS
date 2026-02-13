@@ -1044,7 +1044,7 @@ struct PTOViewToMemrefPass
       for (auto op : mul) {
         IRRewriter rewriter(ctx);
         rewriter.setInsertionPoint(op);
-        rewriter.replaceOpWithNewOp<pto::MulOp_DPS>(
+        rewriter.replaceOpWithNewOp<pto::TMulOp>(
             op, op->getOperand(0), op.getOperand(1), op->getOperand(2));
       }
 
@@ -1054,7 +1054,7 @@ struct PTOViewToMemrefPass
       for (auto op : muls) {
         IRRewriter rewriter(ctx);
         rewriter.setInsertionPoint(op);
-        rewriter.replaceOpWithNewOp<pto::MulsOp_DPS>(
+        rewriter.replaceOpWithNewOp<pto::TMulsOp>(
             op, op->getOperand(0), op.getScalar(), op->getOperand(2));
       }
 
@@ -2190,7 +2190,7 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::MinsOp_DPS>(
+        rewriter.replaceOpWithNewOp<pto::TMinsOp>(
             op,
             TypeRange{},
             src,
@@ -2218,7 +2218,7 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::MovFPOp_DPS>(
+        rewriter.replaceOpWithNewOp<pto::TMovFPOp>(
             op,
             TypeRange{},
             src,
@@ -2246,7 +2246,7 @@ struct PTOViewToMemrefPass
             return;
           }
 
-          rewriter.replaceOpWithNewOp<pto::MrgSortOp_DPS>(
+          rewriter.replaceOpWithNewOp<pto::TMrgSortOp>(
               op,
               TypeRange{},
               ValueRange{src},
@@ -2283,7 +2283,7 @@ struct PTOViewToMemrefPass
             return;
           }
 
-          rewriter.replaceOpWithNewOp<pto::MrgSortOp_DPS>(
+          rewriter.replaceOpWithNewOp<pto::TMrgSortOp>(
               op,
               TypeRange{},
               op.getSrcs(),
