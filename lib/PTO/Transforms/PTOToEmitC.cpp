@@ -2124,13 +2124,31 @@ struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
     if (auto rc = op.getSource().getDefiningOp<memref::ReinterpretCastOp>()) {
         sourceStrides = rc.getMixedStrides();
     } else {
-        // Fallback: Compact Layout
-        auto shape = srcType.getShape();
-        int64_t current = 1;
-        sourceStrides.resize(rank);
-        for (int i = rank - 1; i >= 0; --i) {
-            sourceStrides[i] = rewriter.getIndexAttr(current);
-            if (shape[i] != ShapedType::kDynamic) current *= shape[i];
+        SmallVector<int64_t> strideInts;
+        int64_t offset = ShapedType::kDynamic;
+        bool useTypeStrides = succeeded(getStridesAndOffset(srcType, strideInts, offset));
+        (void)offset;
+        if (useTypeStrides) {
+            for (int64_t s : strideInts) {
+                if (s == ShapedType::kDynamic) {
+                    useTypeStrides = false;
+                    break;
+                }
+            }
+        }
+        if (useTypeStrides) {
+            for (int64_t s : strideInts) {
+                sourceStrides.push_back(rewriter.getIndexAttr(s));
+            }
+        } else {
+            // Fallback: Compact Layout
+            auto shape = srcType.getShape();
+            int64_t current = 1;
+            sourceStrides.resize(rank);
+            for (int i = rank - 1; i >= 0; --i) {
+                sourceStrides[i] = rewriter.getIndexAttr(current);
+                if (shape[i] != ShapedType::kDynamic) current *= shape[i];
+            }
         }
     }
 

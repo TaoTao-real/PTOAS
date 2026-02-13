@@ -64,6 +64,123 @@ static mlir::pto::TileBufConfigAttr lookupConfig(Value v) {
 // Helper Functions for Layout Normalization
 // =============================================================================
 
+struct TileLayoutInfo {
+  int64_t rowStride = 1;
+  int64_t colStride = 1;
+  int64_t innerRows = 1;
+  int64_t innerCols = 1;
+  bool boxed = false; // slayout != NoneBox
+};
+
+static int64_t getElemBytes(Type elemTy) {
+  if (auto ft = elemTy.dyn_cast<FloatType>()) {
+    if (ft.isF16() || ft.isBF16()) return 2;
+    if (ft.isF32()) return 4;
+    if (ft.isF64()) return 8;
+  }
+  if (auto it = elemTy.dyn_cast<IntegerType>()) {
+    int64_t bytes = it.getWidth() / 8;
+    return bytes > 0 ? bytes : 1;
+  }
+  return -1;
+}
+
+static bool readBLayoutI32(Attribute attr, int32_t &out) {
+  if (auto a = dyn_cast<BLayoutAttr>(attr)) {
+    out = (int32_t)a.getValue();
+    return true;
+  }
+  if (auto a = dyn_cast<IntegerAttr>(attr)) {
+    out = (int32_t)a.getInt();
+    return true;
+  }
+  return false;
+}
+
+static bool readSLayoutI32(Attribute attr, int32_t &out) {
+  if (auto a = dyn_cast<SLayoutAttr>(attr)) {
+    out = (int32_t)a.getValue();
+    return true;
+  }
+  if (auto a = dyn_cast<IntegerAttr>(attr)) {
+    out = (int32_t)a.getInt();
+    return true;
+  }
+  return false;
+}
+
+static bool computeTileLayoutInfo(mlir::pto::TileBufConfigAttr cfg, Type elemTy,
+                                  ArrayRef<int64_t> shape,
+                                  TileLayoutInfo &info) {
+  if (shape.size() != 2) return false;
+  if (shape[0] == ShapedType::kDynamic || shape[1] == ShapedType::kDynamic)
+    return false;
+
+  int64_t rows = shape[0];
+  int64_t cols = shape[1];
+
+  int32_t bl = 0; // RowMajor
+  int32_t sl = 0; // NoneBox
+  int32_t fr = 512;
+  (void)readBLayoutI32(cfg.getBLayout(), bl);
+  (void)readSLayoutI32(cfg.getSLayout(), sl);
+  if (auto attr = dyn_cast<IntegerAttr>(cfg.getSFractalSize())) fr = (int32_t)attr.getInt();
+
+  // Inner shape
+  if (sl == 0) {
+    info.innerRows = 1;
+    info.innerCols = 1;
+    info.boxed = false;
+  } else {
+    info.boxed = true;
+    int64_t elemBytes = getElemBytes(elemTy);
+    if (elemBytes <= 0) return false;
+    if (fr == 1024) {
+      info.innerRows = 16;
+      info.innerCols = 16;
+    } else if (fr == 32) {
+      info.innerRows = 16;
+      info.innerCols = 2;
+    } else if (fr == 512) {
+      if (sl == 1) {
+        info.innerRows = 16;
+        info.innerCols = 32 / elemBytes;
+      } else if (sl == 2) {
+        info.innerRows = 32 / elemBytes;
+        info.innerCols = 16;
+      } else {
+        return false;
+      }
+    } else {
+      return false;
+    }
+  }
+
+  // Strides for pointer offset (block-aligned for boxed layouts).
+  if (sl == 0) {
+    if (bl == 1) {
+      info.rowStride = 1;
+      info.colStride = rows;
+    } else {
+      info.rowStride = cols;
+      info.colStride = 1;
+    }
+  } else {
+    if (bl == 1) {
+      // ColMajor + InnerRowMajor (NZ) is supported. InnerColMajor is unsupported.
+      if (sl != 1) return false;
+      info.rowStride = info.innerCols;
+      info.colStride = rows;
+    } else {
+      // RowMajor (ZZ/ZN)
+      info.rowStride = cols;
+      info.colStride = info.innerRows;
+    }
+  }
+
+  return true;
+}
+
 // Helper: 递归拆解 AffineExpr
 static void flattenAddExpr(AffineExpr expr, SmallVectorImpl<AffineExpr> &terms) {
   if (auto add = expr.dyn_cast<AffineBinaryOpExpr>()) {
@@ -138,22 +255,27 @@ static Type convertPTOTypeToMemRef(Type t) {
   if (auto tbTy = dyn_cast<mlir::pto::TileBufType>(t)) {
     SmallVector<int64_t> strides;
     
-    // 默认计算 Contiguous Strides (因为 Tile 通常是 Dense 的)
-    // 例如 32x64 -> [64, 1]
-    bool isAllZero = true; // 简化逻辑，这里强制重算 strides 以保证一致性
-    
-    if (isAllZero) {
-        auto shape = tbTy.getShape();
-        strides.resize(shape.size());
-        int64_t s = 1;
-        // Row-Major 倒序计算
-        for (int i = shape.size() - 1; i >= 0; --i) {
-            strides[i] = s;
-            if (shape[i] != ShapedType::kDynamic)
-                s *= shape[i];
-            else
-                s = ShapedType::kDynamic; 
-        }
+    // Try layout-aware strides first (BLayout/SLayout-aware).
+    auto shape = tbTy.getShape();
+    TileLayoutInfo info;
+    bool gotLayout = false;
+    if (computeTileLayoutInfo(tbTy.getConfigAttr(), tbTy.getElementType(), shape,
+                              info)) {
+      strides = {info.rowStride, info.colStride};
+      gotLayout = true;
+    }
+
+    // Fallback: Row-Major contiguous strides.
+    if (!gotLayout) {
+      strides.resize(shape.size());
+      int64_t s = 1;
+      for (int i = (int)shape.size() - 1; i >= 0; --i) {
+        strides[i] = s;
+        if (shape[i] != ShapedType::kDynamic)
+          s *= shape[i];
+        else
+          s = ShapedType::kDynamic;
+      }
     }
 
     // 构造归一化的 Strided Layout
@@ -245,14 +367,18 @@ struct PTOViewToMemrefPass
         SmallVector<int64_t, 4> shape(tbTy.getShape().begin(), tbTy.getShape().end());
         Type elemTy = tbTy.getElementType();
 
-        // 2. 计算 Strides (假设 Row-Major 连续)
-        // 例如 32x32 -> strides [32, 1]
+        // 2. 计算 Strides (layout-aware when possible)
         SmallVector<int64_t> strides;
-        strides.resize(shape.size());
-        int64_t s = 1;
-        for (int i = shape.size() - 1; i >= 0; --i) {
+        TileLayoutInfo info;
+        if (computeTileLayoutInfo(tbTy.getConfigAttr(), elemTy, shape, info)) {
+          strides = {info.rowStride, info.colStride};
+        } else {
+          strides.resize(shape.size());
+          int64_t s = 1;
+          for (int i = (int)shape.size() - 1; i >= 0; --i) {
             strides[i] = s;
             if (shape[i] != ShapedType::kDynamic) s *= shape[i];
+          }
         }
 
         // 3. 构造 [Alloc 专用] 的静态类型 (Offset: 0)
@@ -563,6 +689,99 @@ struct PTOViewToMemrefPass
             mixedOffsets.push_back(ensureIndex(rewriter, loc, o, op));
         }
 
+        // 3.1 Layout-aware checks for boxed tiles (SLayout != NoneBox)
+        auto configAttr = lookupConfig(src);
+        if (!configAttr) configAttr = pto::TileBufConfigAttr::getDefault(ctx);
+
+        TileLayoutInfo layoutInfo;
+        bool hasLayout =
+            computeTileLayoutInfo(configAttr, srcMrTy.getElementType(),
+                                  srcMrTy.getShape(), layoutInfo);
+        if (!hasLayout) {
+          op.emitError("unsupported tile layout for pto.subset");
+          signalPassFailure();
+          return;
+        }
+
+        if (layoutInfo.boxed) {
+          if (staticSizes.size() != 2 || op.getOffsets().size() != 2) {
+            op.emitError("boxed layout subset expects 2D sizes/offsets");
+            signalPassFailure();
+            return;
+          }
+
+          auto checkMul = [&](int64_t v, int64_t m, StringRef name) -> bool {
+            if (m <= 0) return false;
+            if (v % m != 0) {
+              op.emitError("boxed layout requires ") << name << " multiple of "
+                                                   << m << ", got " << v;
+              return false;
+            }
+            return true;
+          };
+
+          if (!checkMul(staticSizes[0], layoutInfo.innerRows, "row size") ||
+              !checkMul(staticSizes[1], layoutInfo.innerCols, "col size")) {
+            signalPassFailure();
+            return;
+          }
+
+          auto getConstOffset = [](Value v, int64_t &out) -> bool {
+            if (auto cOp = v.getDefiningOp<arith::ConstantIndexOp>()) {
+              out = cOp.value();
+              return true;
+            }
+            if (auto cInt = v.getDefiningOp<arith::ConstantIntOp>()) {
+              out = cInt.value();
+              return true;
+            }
+            return false;
+          };
+
+          int64_t off0 = 0, off1 = 0;
+          if (!getConstOffset(op.getOffsets()[0], off0) ||
+              !getConstOffset(op.getOffsets()[1], off1)) {
+            op.emitError("boxed layout subset requires static aligned offsets");
+            signalPassFailure();
+            return;
+          }
+          if (!checkMul(off0, layoutInfo.innerRows, "row offset") ||
+              !checkMul(off1, layoutInfo.innerCols, "col offset")) {
+            signalPassFailure();
+            return;
+          }
+
+          int32_t bl = 0;
+          (void)readBLayoutI32(configAttr.getBLayout(), bl);
+
+          auto srcShape = srcMrTy.getShape();
+          if (srcShape.size() == 2) {
+            if (bl == 0) {
+              if (staticSizes[1] != srcShape[1]) {
+                op.emitError("boxed RowMajor subset must keep full cols");
+                signalPassFailure();
+                return;
+              }
+              if (off1 != 0) {
+                op.emitError("boxed RowMajor subset requires col offset = 0");
+                signalPassFailure();
+                return;
+              }
+            } else {
+              if (staticSizes[0] != srcShape[0]) {
+                op.emitError("boxed ColMajor subset must keep full rows");
+                signalPassFailure();
+                return;
+              }
+              if (off0 != 0) {
+                op.emitError("boxed ColMajor subset requires row offset = 0");
+                signalPassFailure();
+                return;
+              }
+            }
+          }
+        }
+
         // 4. Result layout inherits source strides (offset is dynamic)
         SmallVector<int64_t> srcStrides;
         int64_t srcOffset = ShapedType::kDynamic;
@@ -593,9 +812,6 @@ struct PTOViewToMemrefPass
             loc, resultMemRefType, src, mixedOffsets, mixedSizes, mixedStrides);
 
         // 6. Re-bind tile metadata (config + valid dims)
-        auto configAttr = lookupConfig(src);
-        if (!configAttr) configAttr = pto::TileBufConfigAttr::getDefault(ctx);
-
         Value vRow;
         Value vCol;
         if (!staticSizes.empty())

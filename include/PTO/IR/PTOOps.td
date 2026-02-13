@@ -201,6 +201,7 @@ def PTO_SubsetOp : PTO_Op<"subset", [
   );
 
   let results = (outs TileBufType:$result);
+  let hasVerifier = 1;
 
   // 语法示例: %sub = pto.subset %src[%i, %j] sizes [32, 32] : !type
   // 注意：没有 -> qualified(type($result))

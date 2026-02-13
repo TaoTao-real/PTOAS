@@ -6663,6 +6663,162 @@ LogicalResult SubsetOp::inferReturnTypes(
   return success();
 }
 
+// =============================================================================
+// SubsetOp verifier
+// =============================================================================
+static bool getConstIndex(Value v, int64_t &out) {
+  if (auto cOp = v.getDefiningOp<arith::ConstantIndexOp>()) {
+    out = cOp.value();
+    return true;
+  }
+  if (auto cInt = v.getDefiningOp<arith::ConstantIntOp>()) {
+    out = cInt.value();
+    return true;
+  }
+  return false;
+}
+
+static LogicalResult computeInnerShape(TileBufConfigAttr cfg, Type elemTy,
+                                       int64_t &innerRows, int64_t &innerCols,
+                                       bool &boxed, int32_t &bl, int32_t &sl) {
+  auto readBLayoutI32 = [](Attribute attr, int32_t &out) -> bool {
+    if (auto a = dyn_cast<BLayoutAttr>(attr)) {
+      out = (int32_t)a.getValue();
+      return true;
+    }
+    if (auto a = dyn_cast<IntegerAttr>(attr)) {
+      out = (int32_t)a.getInt();
+      return true;
+    }
+    return false;
+  };
+  auto readSLayoutI32 = [](Attribute attr, int32_t &out) -> bool {
+    if (auto a = dyn_cast<SLayoutAttr>(attr)) {
+      out = (int32_t)a.getValue();
+      return true;
+    }
+    if (auto a = dyn_cast<IntegerAttr>(attr)) {
+      out = (int32_t)a.getInt();
+      return true;
+    }
+    return false;
+  };
+  bl = 0;
+  sl = 0;
+  int32_t fr = 512;
+  (void)readBLayoutI32(cfg.getBLayout(), bl);
+  (void)readSLayoutI32(cfg.getSLayout(), sl);
+  if (auto attr = dyn_cast<IntegerAttr>(cfg.getSFractalSize())) fr = (int32_t)attr.getInt();
+
+  boxed = (sl != 0);
+  if (!boxed) {
+    innerRows = 1;
+    innerCols = 1;
+    return success();
+  }
+
+  int64_t elemBytes = -1;
+  if (auto ft = elemTy.dyn_cast<FloatType>()) {
+    if (ft.isF16() || ft.isBF16()) elemBytes = 2;
+    else if (ft.isF32()) elemBytes = 4;
+    else if (ft.isF64()) elemBytes = 8;
+  } else if (auto it = elemTy.dyn_cast<IntegerType>()) {
+    int64_t bytes = it.getWidth() / 8;
+    elemBytes = bytes > 0 ? bytes : 1;
+  }
+  if (elemBytes <= 0) return failure();
+
+  if (fr == 1024) {
+    innerRows = 16;
+    innerCols = 16;
+    return success();
+  }
+  if (fr == 32) {
+    innerRows = 16;
+    innerCols = 2;
+    return success();
+  }
+  if (fr == 512) {
+    if (sl == 1) {
+      innerRows = 16;
+      innerCols = 32 / elemBytes;
+      return success();
+    }
+    if (sl == 2) {
+      innerRows = 32 / elemBytes;
+      innerCols = 16;
+      return success();
+    }
+  }
+  return failure();
+}
+
+mlir::LogicalResult mlir::pto::SubsetOp::verify() {
+  auto srcTy = llvm::dyn_cast<TileBufType>(getSource().getType());
+  auto dstTy = llvm::dyn_cast<TileBufType>(getResult().getType());
+  if (!srcTy || !dstTy)
+    return emitOpError("expects tile_buf src and tile_buf result");
+  if (srcTy.getRank() != 2 || dstTy.getRank() != 2)
+    return emitOpError("expects rank-2 tilebuf for src/dst");
+
+  auto cfg = srcTy.getConfigAttr();
+  if (!cfg) cfg = TileBufConfigAttr::getDefault(getContext());
+
+  int64_t innerRows = 1, innerCols = 1;
+  bool boxed = false;
+  int32_t bl = 0, sl = 0;
+  if (failed(computeInnerShape(cfg, srcTy.getElementType(), innerRows, innerCols,
+                               boxed, bl, sl)))
+    return emitOpError("unsupported tile layout for subset");
+
+  if (!boxed)
+    return success();
+
+  // Boxed layout: require static 2D sizes/offsets with inner alignment.
+  auto sizesAttr = getSizes();
+  if (!sizesAttr || sizesAttr.size() != 2)
+    return emitOpError("boxed layout subset expects 2D sizes");
+
+  int64_t sizeR = cast<IntegerAttr>(sizesAttr[0]).getInt();
+  int64_t sizeC = cast<IntegerAttr>(sizesAttr[1]).getInt();
+  if (sizeR <= 0 || sizeC <= 0)
+    return emitOpError("subset sizes must be positive");
+
+  if (sizeR % innerRows != 0 || sizeC % innerCols != 0)
+    return emitOpError("boxed layout subset sizes must be multiples of inner shape");
+
+  if (getOffsets().size() != 2)
+    return emitOpError("boxed layout subset expects 2D offsets");
+
+  int64_t offR = 0, offC = 0;
+  if (!getConstIndex(getOffsets()[0], offR) ||
+      !getConstIndex(getOffsets()[1], offC))
+    return emitOpError("boxed layout subset requires static aligned offsets");
+
+  if (offR < 0 || offC < 0)
+    return emitOpError("subset offsets must be non-negative");
+
+  if (offR % innerRows != 0 || offC % innerCols != 0)
+    return emitOpError("boxed layout subset offsets must be multiples of inner shape");
+
+  auto srcShape = srcTy.getShape();
+  if (srcShape.size() == 2 &&
+      srcShape[0] != ShapedType::kDynamic &&
+      srcShape[1] != ShapedType::kDynamic) {
+    if (bl == 0) {
+      if (sizeC != srcShape[1] || offC != 0)
+        return emitOpError("boxed RowMajor subset must keep full cols (col offset = 0)");
+    } else if (bl == 1) {
+      if (sizeR != srcShape[0] || offR != 0)
+        return emitOpError("boxed ColMajor subset must keep full rows (row offset = 0)");
+    }
+  } else {
+    return emitOpError("boxed layout subset requires static source shape");
+  }
+
+  return success();
+}
+
 } // namespace pto
 } // namespace mlir
 
