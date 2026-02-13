@@ -6883,33 +6883,46 @@ struct EmitPTOManualPass
                     mlir::cf::ControlFlowDialect, mlir::pto::PTODialect>();
   }
 
-  void runOnOperation() override {
-    llvm::errs() << "DEBUG: Start PTOToEmitC Pass\n";
-    MLIRContext *ctx = &getContext();
-    ModuleOp mop = getOperation();
+	  void runOnOperation() override {
+	    llvm::errs() << "DEBUG: Start PTOToEmitC Pass\n";
+	    MLIRContext *ctx = &getContext();
+	    ModuleOp mop = getOperation();
 
-    // 1. 插入头文件
-    auto loc = mop->getLoc();
-    OpBuilder builder(ctx);
-    builder.setInsertionPointToStart(mop.getBody());
-    builder.create<emitc::IncludeOp>(
-        loc, builder.getStringAttr("pto/pto-inst.hpp"), /*isAngled=*/nullptr);
-    builder.create<emitc::VerbatimOp>(
-        loc, builder.getStringAttr("using namespace pto;"));
-    builder.create<emitc::VerbatimOp>(
-        loc, builder.getStringAttr(R"cpp(
-	template <typename To, typename From>
-	static inline To ptoas_bitcast(From from) {
-	  static_assert(sizeof(To) == sizeof(From), "ptoas_bitcast: size mismatch");
-	  To to;
-	  __builtin_memcpy(&to, &from, sizeof(To));
-	  return to;
-	}
-	)cpp"));
+	    // 1. 插入头文件
+	    auto loc = mop->getLoc();
+	    OpBuilder builder(ctx);
+	    builder.setInsertionPointToStart(mop.getBody());
+	    builder.create<emitc::IncludeOp>(
+	        loc, builder.getStringAttr("pto/pto-inst.hpp"), /*isAngled=*/nullptr);
+	    builder.create<emitc::VerbatimOp>(
+	        loc, builder.getStringAttr("using namespace pto;"));
+	
+	    // Only inject the bitcast helper when we actually lower ops that need it
+	    // (e.g. arith.bitcast or arith.maximumf/minimumf tie-breaking on zeros).
+	    bool needsBitcastHelper = false;
+	    mop.walk([&](Operation *op) {
+	      if (isa<arith::BitcastOp, arith::MaximumFOp, arith::MinimumFOp>(op)) {
+	        needsBitcastHelper = true;
+	        return WalkResult::interrupt();
+	      }
+	      return WalkResult::advance();
+	    });
+	    if (needsBitcastHelper) {
+	      builder.create<emitc::VerbatimOp>(
+	          loc, builder.getStringAttr(R"cpp(
+		template <typename To, typename From>
+		static inline To ptoas_bitcast(From from) {
+		  static_assert(sizeof(To) == sizeof(From), "ptoas_bitcast: size mismatch");
+		  To to;
+		  __builtin_memcpy(&to, &from, sizeof(To));
+		  return to;
+		}
+		)cpp"));
+	    }
 
-    // 1.5 Pre-lower SCF constructs not handled by SCFToEmitC.
-    {
-      // scf.while / scf.index_switch are lowered via CFG blocks. This is not
+	    // 1.5 Pre-lower SCF constructs not handled by SCFToEmitC.
+	    {
+	      // scf.while / scf.index_switch are lowered via CFG blocks. This is not
       // possible inside ops that require single-block regions (e.g. scf.for /
       // scf.if). If we see such nesting, lower the entire function to the
       // ControlFlow dialect first.
