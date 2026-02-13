@@ -1530,172 +1530,24 @@ def TMScatterOp : PTO_TOp<"mscatter", [
 // pto.texpands ins(%scalar) outs(%dst)
 //===----------------------------------------------------------------------===//
 
-def PTO_ExpandsOp_DPS : PTO_DpsOp<"expands_dps", [
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "Broadcast scalar into dst (tilebuf, DPS)";
-
-  let arguments = (ins
-    AnyTypeOf<[F16, F32, I16, I32, I8, UI8, UI16, UI32]>:$scalar,
-    PTODpsType:$dst
-  );
-
-  let results = (outs);
-
-  let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `ins` `(` $scalar `:` type($scalar) `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    attr-dict
-  }];
-
-  let extraClassDeclaration = [{
-    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
-    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
-  }];
-}
 
 //===----------------------------------------------------------------------===//
 // TEXTRACT (tilebuf, DPS)
 // Copy a sub-window from src into dst, starting at (indexRow, indexCol).
 //===----------------------------------------------------------------------===//
 
-def PTO_ExtractOp_DPS : PTO_DpsOp<"extract_dps", [
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "Extract sub-tile window from src into dst (tilebuf, DPS)";
-
-  let arguments = (ins
-    PTODpsType:$src,
-    Index:$indexRow,
-    Index:$indexCol,
-    PTODpsType:$dst
-  );
-
-  let results = (outs);
-
-  let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `ins` `(` $src `,` $indexRow `,` $indexCol `:` qualified(type($src)) `,` type($indexRow) `,` type($indexCol) `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    attr-dict
-  }];
-
-  let extraClassDeclaration = [{
-    // TEXTRACT is an L1->L0 move (MTE1), not a vector compute op.
-    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_MTE1; }
-    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
-  }];
-}
 //===----------------------------------------------------------------------===//
 // TFILLPAD (tilebuf, DPS)
 // Copy src into dst and fill padded region with dst's compile-time PadVal.
 //===----------------------------------------------------------------------===//
 
-def PTO_FillPadOp_DPS : PTO_DpsOp<"fillpad_dps", [
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "Copy src into dst and fill padded elements using dst PadVal (tilebuf, DPS)";
-
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$dst
-  );
-
-  let results = (outs);
-
-  let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `ins`  `(` $src `:` qualified(type($src)) `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    attr-dict
-  }];
-
-  let extraClassDeclaration = [{
-    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
-    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
-  }];
-}
 //===----------------------------------------------------------------------===//
 // TGATHER (tilebuf, DPS)
 // - Index gather:   TGATHER(dst, src0, indices)
 // - Mask gather:    TGATHER<DstTile, SrcTile, MaskPattern::Pxxxx>(dst, src)
 //===----------------------------------------------------------------------===//
 
-def PTO_GatherOp_DPS : PTO_DpsOp<"gather_dps", [
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "Gather/select elements using an index tile or a mask pattern (tilebuf, DPS)";
 
-  // --- operands (DPS): src0 + optional indices + outs(dst) ---
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$dst,
-    Optional<PTODpsType>:$indices,
-    OptionalAttr<PTO_MaskPatternAttr>:$maskPattern
-  );
-
-  // --- DPS op: no SSA results ---
-  let results = (outs);
-
-  let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `ins` `(` $src `:` qualified(type($src)) ( `,` $indices^ `:` qualified(type($indices)) )? `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    (`maskPattern` `=` $maskPattern^)?
-    attr-dict
-  }];
-
-  let builders = [
-    OpBuilder<(ins "TypeRange":$res, "Value":$src, "Value":$dst), [{
-      build($_builder, $_state, res, src, dst,  /*indices=*/nullptr, /*maskPattern=*/nullptr); 
-    }]>,
-    OpBuilder<(ins "TypeRange":$res, "Value":$src, "Value":$dst, "Value":$indices), [{
-      build($_builder, $_state, res, src, dst,  indices, /*maskPattern=*/nullptr); 
-    }]>];
-
-  let extraClassDeclaration = [{
-    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
-    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
-  }];
-    
-}
-
-def PTO_GatherbOp_DPS : PTO_DpsOp<"gatherb_dps", [
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]> {
-  let summary = "Gather elements using byte offsets (tilebuf, DPS)";
-
-  let arguments = (ins
-    PTODpsType:$src,
-    PTODpsType:$offsets,
-    PTODpsType:$dst
-  );
-
-  let results = (outs);
-
-  let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `ins` `(` $src `,` $offsets `:` qualified(type($src)) `,` type($offsets) `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    attr-dict
-  }];
-
-  let extraClassDeclaration = [{
-    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
-    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
-  }];
-}
 
 
 //===----------------------------------------------------------------------===//

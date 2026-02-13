@@ -4578,10 +4578,10 @@ struct PTOExpToEmitC : public OpConversionPattern<pto::TExpOp> {
 // pto.texpands lowering -> TEXPANDS(dst, scalar)
 //===----------------------------------------------------------------------===//
 
-struct PTOExpandsToEmitC : public OpConversionPattern<pto::ExpandsOp_DPS> {
-  using OpConversionPattern<pto::ExpandsOp_DPS>::OpConversionPattern;
+struct PTOExpandsToEmitC : public OpConversionPattern<pto::TExpandsOp> {
+  using OpConversionPattern<pto::TExpandsOp>::OpConversionPattern;
 
-  LogicalResult matchAndRewrite(pto::ExpandsOp_DPS op, OpAdaptor adaptor,
+  LogicalResult matchAndRewrite(pto::TExpandsOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
 
@@ -4601,10 +4601,10 @@ struct PTOExpandsToEmitC : public OpConversionPattern<pto::ExpandsOp_DPS> {
 // pto.textract lowering -> TEXTRACT(dst, src, indexRow, indexCol)
 //===----------------------------------------------------------------------===//
 
-struct PTOExtractToEmitC : public OpConversionPattern<pto::ExtractOp_DPS> {
-  using OpConversionPattern<pto::ExtractOp_DPS>::OpConversionPattern;
+struct PTOExtractToEmitC : public OpConversionPattern<pto::TExtractOp> {
+  using OpConversionPattern<pto::TExtractOp>::OpConversionPattern;
 
-  LogicalResult matchAndRewrite(pto::ExtractOp_DPS op, OpAdaptor adaptor,
+  LogicalResult matchAndRewrite(pto::TExtractOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
 
@@ -4626,10 +4626,10 @@ struct PTOExtractToEmitC : public OpConversionPattern<pto::ExtractOp_DPS> {
 // pto.tfillpad lowering -> TFILLPAD_EXPAND(dst, src)
 //===----------------------------------------------------------------------===//
 
-struct PTOFillPadToEmitC : public OpConversionPattern<pto::FillPadOp_DPS> {
-  using OpConversionPattern<pto::FillPadOp_DPS>::OpConversionPattern;
+struct PTOFillPadToEmitC : public OpConversionPattern<pto::TFillPadOp> {
+  using OpConversionPattern<pto::TFillPadOp>::OpConversionPattern;
 
-  LogicalResult matchAndRewrite(pto::FillPadOp_DPS op, OpAdaptor adaptor,
+  LogicalResult matchAndRewrite(pto::TFillPadOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
 
@@ -4657,10 +4657,10 @@ static std::string maskPatternTok(mlir::pto::MaskPatternAttr a) {
   return (std::string("pto::MaskPattern::") + mlir::pto::stringifyMaskPattern(v).str());
 }
 
-struct PTOGatherToEmitC : public OpConversionPattern<pto::GatherOp_DPS> {
-  using OpConversionPattern<pto::GatherOp_DPS>::OpConversionPattern;
+struct PTOGatherToEmitC : public OpConversionPattern<pto::TGatherOp> {
+  using OpConversionPattern<pto::TGatherOp>::OpConversionPattern;
 
-  LogicalResult matchAndRewrite(pto::GatherOp_DPS op, OpAdaptor adaptor,
+  LogicalResult matchAndRewrite(pto::TGatherOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     auto *ctx = rewriter.getContext();
@@ -4720,10 +4720,10 @@ struct PTOGatherToEmitC : public OpConversionPattern<pto::GatherOp_DPS> {
 };
 
 
-struct PTOGatherbToEmitC : public OpConversionPattern<pto::GatherbOp_DPS> {
-  using OpConversionPattern<pto::GatherbOp_DPS>::OpConversionPattern;
+struct PTOGatherbToEmitC : public OpConversionPattern<pto::TGatherbOp> {
+  using OpConversionPattern<pto::TGatherbOp>::OpConversionPattern;
 
-  LogicalResult matchAndRewrite(pto::GatherbOp_DPS op, OpAdaptor adaptor,
+  LogicalResult matchAndRewrite(pto::TGatherbOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
 

@@ -201,6 +201,26 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
       (void)texpOp;
       UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
       OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto texpandsOp = dyn_cast<pto::TExpandsOp>(op)) {
+      (void)texpandsOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto textractOp = dyn_cast<pto::TExtractOp>(op)) {
+      (void)textractOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tfillpadOp = dyn_cast<pto::TFillPadOp>(op)) {
+      (void)tfillpadOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tgatherOp = dyn_cast<pto::TGatherOp>(op)) {
+      (void)tgatherOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tgatherbOp = dyn_cast<pto::TGatherbOp>(op)) {
+      (void)tgatherbOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
     } else if (auto tgemvOp = dyn_cast<pto::TGemvOp>(op)) {
       (void)tgemvOp;
       UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));

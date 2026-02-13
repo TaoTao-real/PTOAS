@@ -1833,7 +1833,7 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::ExpandsOp_DPS>(
+        rewriter.replaceOpWithNewOp<pto::TExpandsOp>(
             op,
             TypeRange{},
             scalar,
@@ -1862,7 +1862,7 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::ExtractOp_DPS>(
+        rewriter.replaceOpWithNewOp<pto::TExtractOp>(
             op,
             TypeRange{},
             src,
@@ -1889,7 +1889,7 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::FillPadOp_DPS>(
+        rewriter.replaceOpWithNewOp<pto::TFillPadOp>(
             op,
             TypeRange{},
             src,
@@ -1981,12 +1981,13 @@ struct PTOViewToMemrefPass
             return;
           }
 
-          rewriter.replaceOpWithNewOp<pto::GatherOp_DPS>(
+          rewriter.replaceOpWithNewOp<pto::TGatherOp>(
               op,
               TypeRange{},
               src,
               dst,
-              indices);
+              indices,
+              /*maskPattern=*/pto::MaskPatternAttr());
         } else {
           if (!maskPattern) {
             op.emitError("expects maskPattern when indices is absent");
@@ -1994,7 +1995,7 @@ struct PTOViewToMemrefPass
             return;
           }
 
-          rewriter.replaceOpWithNewOp<pto::GatherOp_DPS>(
+          rewriter.replaceOpWithNewOp<pto::TGatherOp>(
               op,
               TypeRange{},
               src,
@@ -2024,7 +2025,7 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::GatherbOp_DPS>(
+        rewriter.replaceOpWithNewOp<pto::TGatherbOp>(
             op,
             TypeRange{},
             src,
