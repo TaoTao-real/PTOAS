@@ -295,6 +295,9 @@ static Value computeSubsetValidDim(IRRewriter &rewriter, Location loc,
   int64_t pvConst = 0, offConst = 0;
   if (getConstIndexValue(parentValid, pvConst) &&
       getConstIndexValue(offset, offConst)) {
+    if (pvConst == size) {
+      return sizeVal;
+    }
     int64_t diff = pvConst - offConst;
     if (diff < 0) diff = 0;
     int64_t clipped = std::min<int64_t>(size, diff);

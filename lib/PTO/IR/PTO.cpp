@@ -6735,9 +6735,14 @@ LogicalResult SubsetOp::inferReturnTypes(
           auto offOpt = getConstIndexValue(operands[1 + i]);
           if (offOpt) {
             off = *offOpt;
-            int64_t diff = pv - off;
-            if (diff < 0) diff = 0;
-            vdim = std::min<int64_t>(sizeDim, diff);
+            // If parent valid equals subset size, keep size regardless of offset.
+            if (pv == sizeDim) {
+              vdim = sizeDim;
+            } else {
+              int64_t diff = pv - off;
+              if (diff < 0) diff = 0;
+              vdim = std::min<int64_t>(sizeDim, diff);
+            }
           } else {
             vdim = sizeDim;
           }
