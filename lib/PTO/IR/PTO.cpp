@@ -955,8 +955,10 @@ LogicalResult AllocTileOp::verify() {
   if (vs.size() != 2)
     return emitOpError("result tile_buf must have rank-2 validShape");
 
-  bool needVR = (vs[0] == -1);
-  bool needVC = (vs[1] == -1);
+  // TileBuf valid dims use a negative sentinel (e.g. '?' / -1). Be robust to
+  // any negative value (some code may materialize MLIR dynamic sentinels).
+  bool needVR = (vs[0] < 0);
+  bool needVC = (vs[1] < 0);
 
   // 你要求的：v_row=?, v_col=? 时必须同时给两个
   // （这条规则由下面两句自然实现）
@@ -1008,10 +1010,12 @@ LogicalResult TLoadOp ::verify() {
   // Only check element counts when both sides are statically known.
   int64_t partElems = srcType.getNumElements();
   int64_t tileValidElems = mlir::ShapedType::kDynamic;
-  if (!llvm::is_contained(dstType.getValidShape(),
-                          mlir::ShapedType::kDynamic)) {
+  auto validShape = dstType.getValidShape();
+  const bool anyDynamicValid =
+      llvm::any_of(validShape, [](int64_t v) { return v < 0; });
+  if (!anyDynamicValid) {
     tileValidElems = 1;
-    for (int64_t dim : dstType.getValidShape())
+    for (int64_t dim : validShape)
       tileValidElems *= dim;
   }
 
@@ -6726,26 +6730,24 @@ LogicalResult SubsetOp::inferReturnTypes(
       int64_t pv = parentValid[i];
       // In current subset usage, valid dims are treated as static.
       // Only refine when both parent valid and offset are compile-time constants.
-      if (pv == ShapedType::kDynamic) {
-        vdim = sizeDim;
-      } else {
-        int64_t off = 0;
-        if (operands.size() > 1 + i) {
-          auto offOpt = getConstIndexValue(operands[1 + i]);
-          if (offOpt) {
-            off = *offOpt;
-            if (pv == sizeDim) {
-              vdim = sizeDim;
-            } else {
-              int64_t diff = pv - off;
-              if (diff < 0) diff = 0;
-              vdim = std::min<int64_t>(sizeDim, diff);
-            }
-          } else {
-            vdim = sizeDim;
+      if (pv >= 0 && operands.size() > 1 + i) {
+        auto offOpt = getConstIndexValue(operands[1 + i]);
+        if (offOpt) {
+          int64_t off = *offOpt;
+          // Interpret parent valid dims as a per-tile "period" when the parent
+          // buffer is wider than the valid region (e.g. ping/pong workspace).
+          // This avoids inferring a zero valid dim when taking a view at an
+          // offset equal to the parent valid dim.
+          int64_t diff = 0;
+          if (pv > 0) {
+            int64_t offMod = off % pv;
+            if (offMod < 0)
+              offMod += pv;
+            diff = pv - offMod; // in [1, pv] when pv>0
           }
-        } else {
-          vdim = sizeDim;
+          if (diff < 0)
+            diff = 0;
+          vdim = std::min<int64_t>(sizeDim, diff);
         }
       }
     }

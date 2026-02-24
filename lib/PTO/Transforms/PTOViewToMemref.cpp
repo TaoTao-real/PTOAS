@@ -295,13 +295,19 @@ static Value computeSubsetValidDim(IRRewriter &rewriter, Location loc,
   int64_t pvConst = 0, offConst = 0;
   if (getConstIndexValue(parentValid, pvConst) &&
       getConstIndexValue(offset, offConst)) {
-    if (pvConst == size) {
-      return sizeVal;
+    if (pvConst >= 0) {
+      int64_t diff = 0;
+      if (pvConst > 0) {
+        int64_t offMod = offConst % pvConst;
+        if (offMod < 0)
+          offMod += pvConst;
+        diff = pvConst - offMod; // in [1, pvConst] when pvConst>0
+      }
+      if (diff < 0)
+        diff = 0;
+      int64_t clipped = std::min<int64_t>(size, diff);
+      return rewriter.create<arith::ConstantIndexOp>(loc, clipped);
     }
-    int64_t diff = pvConst - offConst;
-    if (diff < 0) diff = 0;
-    int64_t clipped = std::min<int64_t>(size, diff);
-    return rewriter.create<arith::ConstantIndexOp>(loc, clipped);
   }
   // Keep static valid dims when runtime values are not constant.
   return sizeVal;
@@ -485,13 +491,16 @@ struct PTOViewToMemrefPass
         Value vCol = op.getValidCol();
         ArrayRef<int64_t> validShape = tbTy.getValidShape();
         if (!tbTy.hasDynamicValid()) {
-          if (validShape.size() >= 1 && validShape[0] != ShapedType::kDynamic) {
+          // TileBuf valid dims use a negative sentinel (e.g. '?' / -1), which is
+          // distinct from MLIR's ShapedType::kDynamic (INT64_MIN). Treat any
+          // negative value as dynamic here.
+          if (validShape.size() >= 1 && validShape[0] >= 0) {
             vRow = rewriter
                        .create<arith::ConstantOp>(loc, rewriter.getIndexType(),
                                                   rewriter.getIndexAttr(validShape[0]))
                        .getResult();
           }
-          if (validShape.size() >= 2 && validShape[1] != ShapedType::kDynamic) {
+          if (validShape.size() >= 2 && validShape[1] >= 0) {
             vCol = rewriter
                        .create<arith::ConstantOp>(loc, rewriter.getIndexType(),
                                                   rewriter.getIndexAttr(validShape[1]))
