@@ -1897,10 +1897,10 @@ struct ArithTruncIToEmitC : public OpConversionPattern<arith::TruncIOp> {
 // %dst = pto.mgather %mem, %idx : memref<...>, memref<...> -> memref<...>
 //===----------------------------------------------------------------------===//
 
-struct PTOMGatherToMGATHER : public OpConversionPattern<pto::MGatherDpsOp> {
-  using OpConversionPattern<pto::MGatherDpsOp>::OpConversionPattern;
+struct PTOMGatherToMGATHER : public OpConversionPattern<pto::TMGatherOp> {
+  using OpConversionPattern<pto::TMGatherOp>::OpConversionPattern;
 
-  LogicalResult matchAndRewrite(pto::MGatherDpsOp op, OpAdaptor adaptor,
+  LogicalResult matchAndRewrite(pto::TMGatherOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     Value mem = peelUnrealized(adaptor.getMem());
     Value dst = peelUnrealized(adaptor.getDst());
@@ -1970,8 +1970,8 @@ static KernelKind inferKernelKind(func::FuncOp f) {
   bool hasMM  = false;
   f.walk([&](Operation *op) {
     if (isa<mlir::pto::AddFDpsOp>(op)) hasAdd = true;
-    if (isa<mlir::pto::MatmulDpsOp>(op)) hasMM = true;
-    if (isa<mlir::pto::MatmulAccDpsOp>(op)) hasMM = true;
+    if (isa<mlir::pto::TMatmulOp>(op)) hasMM = true;
+    if (isa<mlir::pto::TMatmulAccOp>(op)) hasMM = true;
   });
   if (hasMM)  return KernelKind::Matmul;
   if (hasAdd) return KernelKind::VecAdd;
@@ -2059,22 +2059,22 @@ enum class Role { A, B, C, Unknown };
 
 static Role inferSubviewRole(memref::SubViewOp sv) {
   for (Operation *u : sv.getResult().getUsers()) {
-    if (auto ld = dyn_cast<mlir::pto::LoadDpsOp>(u)) {
+    if (auto ld = dyn_cast<mlir::pto::TLoadOp>(u)) {
       Value ub = ld.getDst();
       if (!ub) continue;
       for (Operation *uu : ub.getUsers()) {
-        if (auto mm = dyn_cast<mlir::pto::MatmulDpsOp>(uu)) {
+        if (auto mm = dyn_cast<mlir::pto::TMatmulOp>(uu)) {
           if (mm.getLhs() == ub) return Role::A;
           if (mm.getRhs() == ub) return Role::B;
         }
-        if (auto mmacc = dyn_cast<mlir::pto::MatmulAccDpsOp>(uu)) {
+        if (auto mmacc = dyn_cast<mlir::pto::TMatmulAccOp>(uu)) {
           if (mmacc.getLhs() == ub) return Role::A;
           if (mmacc.getRhs() == ub) return Role::B;
         }
       }
     }
 
-    if (auto st = dyn_cast<mlir::pto::StoreDpsOp>(u)) {
+    if (auto st = dyn_cast<mlir::pto::TStoreOp>(u)) {
       if (st.getDst() == sv.getResult()) return Role::C;
     }
   }
@@ -2830,12 +2830,12 @@ struct PointerCastConversion : public OpConversionPattern<pto::PointerCastOp> {
     collectUserOpsThroughCasts(op.getResult(), users);
 
     for (Operation *user : users) {
-      if (auto mm = dyn_cast<pto::MatmulDpsOp>(user)) {
+      if (auto mm = dyn_cast<pto::TMatmulOp>(user)) {
         if (mm.getDst() && peelUnrealized(mm.getDst()) == op.getResult()) return TileRole::Acc;
         if (peelUnrealized(mm.getLhs()) == op.getResult()) return TileRole::Left;
         if (peelUnrealized(mm.getRhs()) == op.getResult()) return TileRole::Right;
       }
-      if (auto mmacc = dyn_cast<pto::MatmulAccDpsOp>(user)) {
+      if (auto mmacc = dyn_cast<pto::TMatmulAccOp>(user)) {
         if (mmacc.getDst() && peelUnrealized(mmacc.getDst()) == op.getResult()) return TileRole::Acc;
         if (peelUnrealized(mmacc.getAccIn()) == op.getResult()) return TileRole::Acc;
         if (peelUnrealized(mmacc.getLhs()) == op.getResult()) return TileRole::Left;
@@ -3039,13 +3039,13 @@ struct PointerCastConversion : public OpConversionPattern<pto::PointerCastOp> {
 // pto.load_dps / pto.store_dps lowering (FIX: keep optional result)
 //===----------------------------------------------------------------------===
 
-struct PTOLoadDpsToTLOAD : public OpConversionPattern<pto::LoadDpsOp> {
-  using OpConversionPattern<pto::LoadDpsOp>::OpConversionPattern;
+struct PTOTLoadToTLOAD : public OpConversionPattern<pto::TLoadOp> {
+  using OpConversionPattern<pto::TLoadOp>::OpConversionPattern;
 
-  LogicalResult matchAndRewrite(pto::LoadDpsOp op, OpAdaptor adaptor,
+  LogicalResult matchAndRewrite(pto::TLoadOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     if (!op.getDst())
-      return rewriter.notifyMatchFailure(op, "expected outs(dst) on pto.load_dps");
+      return rewriter.notifyMatchFailure(op, "expected outs(dst) on pto.tload");
 
     Value src = peelUnrealized(adaptor.getSrc());
     Value dst = peelUnrealized(adaptor.getDst());
@@ -3077,13 +3077,13 @@ struct PTOLoadDpsToTLOAD : public OpConversionPattern<pto::LoadDpsOp> {
   }
 };
 
-struct PTOStoreDpsToTSTORE : public OpConversionPattern<pto::StoreDpsOp> {
-  using OpConversionPattern<pto::StoreDpsOp>::OpConversionPattern;
+struct PTOTStoreToTSTORE : public OpConversionPattern<pto::TStoreOp> {
+  using OpConversionPattern<pto::TStoreOp>::OpConversionPattern;
 
-  LogicalResult matchAndRewrite(pto::StoreDpsOp op, OpAdaptor adaptor,
+  LogicalResult matchAndRewrite(pto::TStoreOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     if (!op.getDst())
-      return rewriter.notifyMatchFailure(op, "expected outs(dst) on pto.store_dps");
+      return rewriter.notifyMatchFailure(op, "expected outs(dst) on pto.tstore");
 
     Value src = peelUnrealized(adaptor.getSrc());
     Value dst = peelUnrealized(adaptor.getDst());
@@ -3148,10 +3148,10 @@ struct PTOAddfDpsToTADD : public OpConversionPattern<pto::AddFDpsOp> {
 //===----------------------------------------------------------------------===//
 // pto.matmul_dps lowering (Simplified: No internal copy/sync)
 //===----------------------------------------------------------------------===//
-struct PTOMatmulDpsToTMATMUL : public OpConversionPattern<pto::MatmulDpsOp> {
-  using OpConversionPattern<pto::MatmulDpsOp>::OpConversionPattern;
+struct PTOTMatmulToTMATMUL : public OpConversionPattern<pto::TMatmulOp> {
+  using OpConversionPattern<pto::TMatmulOp>::OpConversionPattern;
 
-  LogicalResult matchAndRewrite(pto::MatmulDpsOp op, OpAdaptor adaptor,
+  LogicalResult matchAndRewrite(pto::TMatmulOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     // 1. 获取操作数 (剥离 Cast)
     Value lhs = peelUnrealized(adaptor.getLhs()); // A (Left)
@@ -3176,12 +3176,12 @@ struct PTOMatmulDpsToTMATMUL : public OpConversionPattern<pto::MatmulDpsOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// pto.gemv_dps lowering
+// pto.tgemv lowering
 //===----------------------------------------------------------------------===//
-struct PTOGemvDpsToTGEMV : public OpConversionPattern<pto::GemvDpsOp> {
-  using OpConversionPattern<pto::GemvDpsOp>::OpConversionPattern;
+struct PTOTGemvToTGEMV : public OpConversionPattern<pto::TGemvOp> {
+  using OpConversionPattern<pto::TGemvOp>::OpConversionPattern;
 
-  LogicalResult matchAndRewrite(pto::GemvDpsOp op, OpAdaptor adaptor,
+  LogicalResult matchAndRewrite(pto::TGemvOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     // 1. 获取操作数 (剥离 Cast)
     Value lhs = peelUnrealized(adaptor.getLhs()); // A (Matrix)
@@ -3205,15 +3205,15 @@ struct PTOGemvDpsToTGEMV : public OpConversionPattern<pto::GemvDpsOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// pto.gemv_acc_dps lowering
+// pto.tgemv.acc lowering
 //===----------------------------------------------------------------------===//
-struct PTOGemvAccDpsToTGEMVACC : public OpConversionPattern<pto::GemvAccDpsOp> {
-  using OpConversionPattern<pto::GemvAccDpsOp>::OpConversionPattern;
+struct PTOTGemvAccToTGEMVACC : public OpConversionPattern<pto::TGemvAccOp> {
+  using OpConversionPattern<pto::TGemvAccOp>::OpConversionPattern;
 
-  LogicalResult matchAndRewrite(pto::GemvAccDpsOp op, OpAdaptor adaptor,
+  LogicalResult matchAndRewrite(pto::TGemvAccOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     if (!op.getDst())
-      return rewriter.notifyMatchFailure(op, "expected outs(dst) for pto.gemv_acc_dps");
+      return rewriter.notifyMatchFailure(op, "expected outs(dst) for pto.tgemv.acc");
 
     // 1. 获取操作数
     Value accIn = peelUnrealized(adaptor.getAccIn()); // AccOld
@@ -3240,13 +3240,13 @@ struct PTOGemvAccDpsToTGEMVACC : public OpConversionPattern<pto::GemvAccDpsOp> {
 //===----------------------------------------------------------------------===//
 // pto.matmul_acc_dps lowering (Simplified: No internal copy/sync)
 //===----------------------------------------------------------------------===//
-struct PTOMatmulAccDpsToTMATMULACC : public OpConversionPattern<pto::MatmulAccDpsOp> {
-  using OpConversionPattern<pto::MatmulAccDpsOp>::OpConversionPattern;
+struct PTOTMatmulAccToTMATMULACC : public OpConversionPattern<pto::TMatmulAccOp> {
+  using OpConversionPattern<pto::TMatmulAccOp>::OpConversionPattern;
 
-  LogicalResult matchAndRewrite(pto::MatmulAccDpsOp op, OpAdaptor adaptor,
+  LogicalResult matchAndRewrite(pto::TMatmulAccOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     if (!op.getDst())
-      return rewriter.notifyMatchFailure(op, "expected outs(dst) for pto.matmul_acc_dps");
+      return rewriter.notifyMatchFailure(op, "expected outs(dst) for pto.tmatmul.acc");
 
     // 1. 获取操作数
     Value accIn = peelUnrealized(adaptor.getAccIn()); // AccOld
@@ -3817,10 +3817,10 @@ struct PTOStoreScalarToEmitC : public OpConversionPattern<pto::StoreScalarOp> {
 // pto.tabs lowering -> TABS(dst, src)
 //===----------------------------------------------------------------------===//
 
-struct PTOAbsToTABS : public OpConversionPattern<pto::AbsOp_DPS> {
-  using OpConversionPattern<pto::AbsOp_DPS>::OpConversionPattern;
+struct PTOTAbsToTABS : public OpConversionPattern<pto::TAbsOp> {
+  using OpConversionPattern<pto::TAbsOp>::OpConversionPattern;
 
-  LogicalResult matchAndRewrite(pto::AbsOp_DPS op, OpAdaptor adaptor,
+  LogicalResult matchAndRewrite(pto::TAbsOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     Value src = peelUnrealized(adaptor.getSrc());
     Value dst = peelUnrealized(adaptor.getDst());
@@ -3839,10 +3839,10 @@ struct PTOAbsToTABS : public OpConversionPattern<pto::AbsOp_DPS> {
 // pto.tadd lowering -> TADD(dst, src0, src1)
 //===----------------------------------------------------------------------===//
 
-struct PTOAddToTADD : public OpConversionPattern<pto::AddOp_DPS> {
-  using OpConversionPattern<pto::AddOp_DPS>::OpConversionPattern;
+struct PTOTAddToTADD : public OpConversionPattern<pto::TAddOp> {
+  using OpConversionPattern<pto::TAddOp>::OpConversionPattern;
 
-  LogicalResult matchAndRewrite(pto::AddOp_DPS op, OpAdaptor adaptor,
+  LogicalResult matchAndRewrite(pto::TAddOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     Value src0 = peelUnrealized(adaptor.getSrc0());
     Value src1 = peelUnrealized(adaptor.getSrc1());
@@ -4034,10 +4034,10 @@ struct ReinterpretCastToEmitC : public OpConversionPattern<memref::ReinterpretCa
 // pto.taddc lowering -> TADDC(dst, src0, src1, src2)
 //===----------------------------------------------------------------------===//
 
-struct PTOAddCToTADDC : public OpConversionPattern<pto::AddCOp_DPS> {
-  using OpConversionPattern<pto::AddCOp_DPS>::OpConversionPattern;
+struct PTOTAddCToTADDC : public OpConversionPattern<pto::TAddCOp> {
+  using OpConversionPattern<pto::TAddCOp>::OpConversionPattern;
 
-  LogicalResult matchAndRewrite(pto::AddCOp_DPS op, OpAdaptor adaptor,
+  LogicalResult matchAndRewrite(pto::TAddCOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     Value src0 = peelUnrealized(adaptor.getSrc0());
@@ -4112,10 +4112,10 @@ struct PTOAddSCToTADDSC : public OpConversionPattern<pto::AddSCOp_DPS> {
     return success();
   }
 };
-struct PTOAndToEmitC : public OpConversionPattern<pto::AndOp_DPS> {
-  using OpConversionPattern<pto::AndOp_DPS>::OpConversionPattern;
+struct PTOTAndToEmitC : public OpConversionPattern<pto::TAndOp> {
+  using OpConversionPattern<pto::TAndOp>::OpConversionPattern;
 
-  LogicalResult matchAndRewrite(pto::AndOp_DPS op, OpAdaptor adaptor,
+  LogicalResult matchAndRewrite(pto::TAndOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     Value a   = peelUnrealized(adaptor.getSrc0());
     Value b   = peelUnrealized(adaptor.getSrc1());
@@ -4150,10 +4150,10 @@ struct PTOAndSToEmitC : public OpConversionPattern<pto::AndSOp_DPS> {
 };
 
 
-struct PTOCIToEmitC : public OpConversionPattern<pto::CIOp_DPS> {
-  using OpConversionPattern<pto::CIOp_DPS>::OpConversionPattern;
+struct PTOTCIToEmitC : public OpConversionPattern<pto::TCIOp> {
+  using OpConversionPattern<pto::TCIOp>::OpConversionPattern;
 
-  LogicalResult matchAndRewrite(pto::CIOp_DPS op, OpAdaptor adaptor,
+  LogicalResult matchAndRewrite(pto::TCIOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     auto *ctx = rewriter.getContext();
@@ -4904,13 +4904,13 @@ struct PTOMinsToEmitC : public OpConversionPattern<pto::MinsOp_DPS> {
   }
 };
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering for TMOV DPS/memref op -> EmitC)
+// PTOConvert.cpp  (add lowering for TMOV op -> EmitC)
 //===----------------------------------------------------------------------===//
 
-struct PTOMovToEmitC : public OpConversionPattern<pto::MovDpsOp> {
-  using OpConversionPattern<pto::MovDpsOp>::OpConversionPattern;
+struct PTOMovToEmitC : public OpConversionPattern<pto::TMovOp> {
+  using OpConversionPattern<pto::TMovOp>::OpConversionPattern;
 
-  LogicalResult matchAndRewrite(pto::MovDpsOp op, OpAdaptor adaptor,
+  LogicalResult matchAndRewrite(pto::TMovOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
 
@@ -5458,102 +5458,6 @@ static void replaceOrEraseWithOpaqueCall(Operation *op,
   else
     rewriter.replaceOp(op, call.getResults());
 }
-
-// ---------- DPS ----------
-struct PTOMatmulBiasDpsToTMATMUL_BIAS
-    : public OpConversionPattern<pto::MatmulBiasDpsOp> {
-  using OpConversionPattern<pto::MatmulBiasDpsOp>::OpConversionPattern;
-
-  LogicalResult matchAndRewrite(pto::MatmulBiasDpsOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    Value a    = peelUnrealized(adaptor.getA());
-    Value b    = peelUnrealized(adaptor.getB());
-    Value bias = peelUnrealized(adaptor.getBias());
-    Value dst  = peelUnrealized(adaptor.getDst());
-
-    // intrinsic: TMATMUL_BIAS(dst, a, b, bias)
-    replaceOrEraseWithOpaqueCall(op.getOperation(), "TMATMUL_BIAS",
-                                {dst, a, b, bias}, rewriter);
-    return success();
-  }
-};
-
-struct PTOMatmulMxDpsToTMATMUL_MX
-    : public OpConversionPattern<pto::MatmulMxDpsOp> {
-  using OpConversionPattern<pto::MatmulMxDpsOp>::OpConversionPattern;
-
-  LogicalResult matchAndRewrite(pto::MatmulMxDpsOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    Value a       = peelUnrealized(adaptor.getA());
-    Value aScale  = peelUnrealized(adaptor.getAScale());
-    Value b       = peelUnrealized(adaptor.getB());
-    Value bScale  = peelUnrealized(adaptor.getBScale());
-    Value dst     = peelUnrealized(adaptor.getDst());
-
-    // intrinsic: TMATMUL_MX(dst, a, a_scale, b, b_scale)
-    replaceOrEraseWithOpaqueCall(op.getOperation(), "TMATMUL_MX",
-                                {dst, a, aScale, b, bScale}, rewriter);
-    return success();
-  }
-};
-
-struct PTOMatmulMxAccDpsToTMATMUL_MX_ACC
-    : public OpConversionPattern<pto::MatmulMxAccDpsOp> {
-  using OpConversionPattern<pto::MatmulMxAccDpsOp>::OpConversionPattern;
-
-  LogicalResult matchAndRewrite(pto::MatmulMxAccDpsOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    Value cIn     = peelUnrealized(adaptor.getCIn());
-    Value a       = peelUnrealized(adaptor.getA());
-    Value aScale  = peelUnrealized(adaptor.getAScale());
-    Value b       = peelUnrealized(adaptor.getB());
-    Value bScale  = peelUnrealized(adaptor.getBScale());
-    Value dst     = peelUnrealized(adaptor.getDst());
-
-    // intrinsic: TMATMUL_MX_ACC(dst, c_in, a, a_scale, b, b_scale)
-    replaceOrEraseWithOpaqueCall(op.getOperation(), "TMATMUL_MX_ACC",
-                                {dst, cIn, a, aScale, b, bScale}, rewriter);
-    return success();
-  }
-};
-
-struct PTOMatmulMxBiasDpsToTMATMUL_MX_BIAS
-    : public OpConversionPattern<pto::MatmulMxBiasDpsOp> {
-  using OpConversionPattern<pto::MatmulMxBiasDpsOp>::OpConversionPattern;
-
-  LogicalResult matchAndRewrite(pto::MatmulMxBiasDpsOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    Value a       = peelUnrealized(adaptor.getA());
-    Value aScale  = peelUnrealized(adaptor.getAScale());
-    Value b       = peelUnrealized(adaptor.getB());
-    Value bScale  = peelUnrealized(adaptor.getBScale());
-    Value bias    = peelUnrealized(adaptor.getBias());
-    Value dst     = peelUnrealized(adaptor.getDst());
-
-    // intrinsic: TMATMUL_MX_BIAS(dst, a, a_scale, b, b_scale, bias)
-    replaceOrEraseWithOpaqueCall(op.getOperation(), "TMATMUL_MX_BIAS",
-                                {dst, a, aScale, b, bScale, bias}, rewriter);
-    return success();
-  }
-};
-
-// ---------- Gemv DPS Ops ----------
-struct PTOGemvBiasDpsToTGEMV_BIAS
-    : public OpConversionPattern<pto::GemvBiasDpsOp> {
-  using OpConversionPattern<pto::GemvBiasDpsOp>::OpConversionPattern;
-
-  LogicalResult matchAndRewrite(pto::GemvBiasDpsOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    Value a    = peelUnrealized(adaptor.getA());
-    Value b    = peelUnrealized(adaptor.getB());
-    Value bias = peelUnrealized(adaptor.getBias());
-    Value dst  = peelUnrealized(adaptor.getDst());
-
-    replaceOrEraseWithOpaqueCall(op.getOperation(), "TGEMV_BIAS",
-                                {dst, a, b, bias}, rewriter);
-    return success();
-  }
-};
 
 // ---------- TOp ----------
 struct PTOTGemvBiasToTGEMV_BIAS
@@ -6207,10 +6111,10 @@ struct PTOXORToEmitC : public OpConversionPattern<pto::XOROp_DPS> {
     return success();
   }
 };
-struct PTOTransToEmitC : public OpConversionPattern<pto::TransDpsOp> {
-  using OpConversionPattern<pto::TransDpsOp>::OpConversionPattern;
+struct PTOTTransToEmitC : public OpConversionPattern<pto::TTransOp> {
+  using OpConversionPattern<pto::TTransOp>::OpConversionPattern;
 
-  LogicalResult matchAndRewrite(pto::TransDpsOp op, OpAdaptor adaptor,
+  LogicalResult matchAndRewrite(pto::TTransOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
 
@@ -6915,7 +6819,7 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOStoreFPSToEmitC>(typeConverter, ctx);
   patterns.add<PTOSubSSToEmitC>(typeConverter, ctx);
   patterns.add<PTOSqrtSToEmitC>(typeConverter, ctx);
-  patterns.add<PTOTransToEmitC>(typeConverter, ctx);
+  patterns.add<PTOTTransToEmitC>(typeConverter, ctx);
   patterns.add<PTOSelSToEmitC>(typeConverter, ctx);
   patterns.add<PTOColMinToEmitC>(typeConverter, ctx);
   patterns.add<PTORowExpandSubToEmitC>(typeConverter, ctx);
@@ -6962,7 +6866,7 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<ArithMulUIExtendedToEmitC>(typeConverter, ctx);
   patterns.add<AffineApplyMulConstToEmitC>(typeConverter, ctx);
   patterns.add<PTONegToEmitC>(typeConverter, ctx);
-  patterns.add<PTOCIToEmitC>(typeConverter, ctx);
+  patterns.add<PTOTCIToEmitC>(typeConverter, ctx);
   patterns.add<PTOCmpToEmitC>(typeConverter, ctx);
   patterns.add<PTOCmpSToEmitC>(typeConverter, ctx);
   patterns.add<PTOColSumToEmitC>(typeConverter, ctx);
@@ -6972,7 +6876,7 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PointerCastConversion>(typeConverter, ctx);
   patterns.add<PTOSetValToSETVAL, PTOGetValToGETVAL,
                PTOLoadScalarToEmitC, PTOStoreScalarToEmitC>(typeConverter, ctx);
-  patterns.add<PTOAndToEmitC>(typeConverter, ctx);
+  patterns.add<PTOTAndToEmitC>(typeConverter, ctx);
   patterns.add<PTOMulToEmitC>(typeConverter, ctx);
   patterns.add<PTOAndSToEmitC>(typeConverter, ctx);
   patterns.add<PTOCvtToEmitC>(typeConverter, ctx);
@@ -7032,20 +6936,20 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOColExpandToEmitC>(typeConverter, ctx);
   patterns.add<PTOColMaxToEmitC>(typeConverter, ctx);
   patterns.add<PTOMinToEmitC>(typeConverter, ctx);
-  patterns.add<PTOLoadDpsToTLOAD>(typeConverter, ctx);
-  patterns.add<PTOStoreDpsToTSTORE>(typeConverter, ctx);
+  patterns.add<PTOTLoadToTLOAD>(typeConverter, ctx);
+  patterns.add<PTOTStoreToTSTORE>(typeConverter, ctx);
   patterns.add<PTOMScatterToMSCATTER>(typeConverter, ctx);
-  patterns.add<PTOAddCToTADDC>(typeConverter, ctx);
+  patterns.add<PTOTAddCToTADDC>(typeConverter, ctx);
   patterns.add<PTOMinsToEmitC>(typeConverter, ctx);
   patterns.add<PTOAddfDpsToTADD>(typeConverter, ctx);
   patterns.add<PTOMGatherToMGATHER>(typeConverter, ctx);
-  patterns.add<PTOMatmulDpsToTMATMUL>(typeConverter, ctx);
-  patterns.add<PTOMatmulAccDpsToTMATMULACC>(typeConverter, ctx);
-  patterns.add<PTOGemvDpsToTGEMV>(typeConverter, ctx);
-  patterns.add<PTOGemvAccDpsToTGEMVACC>(typeConverter, ctx);
+  patterns.add<PTOTMatmulToTMATMUL>(typeConverter, ctx);
+  patterns.add<PTOTMatmulAccToTMATMULACC>(typeConverter, ctx);
+  patterns.add<PTOTGemvToTGEMV>(typeConverter, ctx);
+  patterns.add<PTOTGemvAccToTGEMVACC>(typeConverter, ctx);
   patterns.add<ReinterpretCastToEmitC>(typeConverter, ctx);
-  patterns.add<PTOAbsToTABS>(typeConverter, ctx);
-  patterns.add<PTOAddToTADD>(typeConverter, ctx);
+  patterns.add<PTOTAbsToTABS>(typeConverter, ctx);
+  patterns.add<PTOTAddToTADD>(typeConverter, ctx);
   patterns.add<PTOAddSCToTADDSC>(typeConverter, ctx);
   patterns.add<ArithCastOPToEmitC>(typeConverter, ctx);
   patterns.add<ArithTruncIToEmitC>(typeConverter, ctx);
@@ -7059,15 +6963,14 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOGetSubBlockNumToEmitC>(typeConverter, ctx);
   patterns.add<PTOPrintToTPRINT>(typeConverter, ctx);
   patterns.add<
-    PTOMatmulBiasDpsToTMATMUL_BIAS,
-    PTOMatmulMxDpsToTMATMUL_MX,
-    PTOMatmulMxAccDpsToTMATMUL_MX_ACC,
-    PTOMatmulMxBiasDpsToTMATMUL_MX_BIAS,
     PTOTMatmulBiasToTMATMUL_BIAS,
     PTOTMatmulMxToTMATMUL_MX,
     PTOTMatmulMxAccToTMATMUL_MX_ACC,
     PTOTMatmulMxBiasToTMATMUL_MX_BIAS,
-    PTOGemvBiasDpsToTGEMV_BIAS,
+    PTOTMatmulBiasToTMATMUL_BIAS,
+    PTOTMatmulMxToTMATMUL_MX,
+    PTOTMatmulMxAccToTMATMUL_MX_ACC,
+    PTOTMatmulMxBiasToTMATMUL_MX_BIAS,
     PTOTGemvBiasToTGEMV_BIAS,
     PTOBarrierToEmitC
   >(typeConverter, ctx);

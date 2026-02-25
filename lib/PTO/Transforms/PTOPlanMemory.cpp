@@ -133,6 +133,90 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
     } else if (auto printDpsOp = dyn_cast<pto::PrintOp_DPS>(op)) {
       // PrintOp_DPS only reads from buffer, similar to LoadOp
       OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tabsOp = dyn_cast<pto::TAbsOp>(op)) {
+      // tabs is a read(src)+write(dst) local-buffer op.
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(tabsOp->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto taddcOp = dyn_cast<pto::TAddCOp>(op)) {
+      // taddc is a read(src0/src1/src2)+write(dst) local-buffer op.
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(taddcOp->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tandOp = dyn_cast<pto::TAndOp>(op)) {
+      // tand is a read(src0/src1)+write(dst) local-buffer op.
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(tandOp->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tciOp = dyn_cast<pto::TCIOp>(op)) {
+      // tci is a write(dst) op with scalar seed S.
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(tciOp->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tloadOp = dyn_cast<pto::TLoadOp>(op)) {
+      (void)tloadOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tstoreOp = dyn_cast<pto::TStoreOp>(op)) {
+      (void)tstoreOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tmovOp = dyn_cast<pto::TMovOp>(op)) {
+      (void)tmovOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto ttransOp = dyn_cast<pto::TTransOp>(op)) {
+      (void)ttransOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tmatmulOp = dyn_cast<pto::TMatmulOp>(op)) {
+      (void)tmatmulOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tmatmulAccOp = dyn_cast<pto::TMatmulAccOp>(op)) {
+      (void)tmatmulAccOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tmatmulBiasOp = dyn_cast<pto::TMatmulBiasOp>(op)) {
+      (void)tmatmulBiasOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tmatmulMxOp = dyn_cast<pto::TMatmulMxOp>(op)) {
+      (void)tmatmulMxOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tmatmulMxAccOp = dyn_cast<pto::TMatmulMxAccOp>(op)) {
+      (void)tmatmulMxAccOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tmatmulMxBiasOp = dyn_cast<pto::TMatmulMxBiasOp>(op)) {
+      (void)tmatmulMxBiasOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tgemvOp = dyn_cast<pto::TGemvOp>(op)) {
+      (void)tgemvOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tgemvAccOp = dyn_cast<pto::TGemvAccOp>(op)) {
+      (void)tgemvAccOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tgemvBiasOp = dyn_cast<pto::TGemvBiasOp>(op)) {
+      (void)tgemvBiasOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto mgatherOp = dyn_cast<pto::TMGatherOp>(op)) {
+      (void)mgatherOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto textractOp = dyn_cast<pto::TExtractOp>(op)) {
+      (void)textractOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tmovfpOp = dyn_cast<pto::TMovFPOp>(op)) {
+      (void)tmovfpOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tstorefpOp = dyn_cast<pto::TStoreFPOp>(op)) {
+      (void)tstorefpOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
     } else if (auto storeOp = dyn_cast<memref::StoreOp>(op)) {
       UpdateStoreOpInfo(curOpInfo, storeOp.getMemRef(), live);
     } else if (auto dstStyleOp = dyn_cast<DestinationStyleOpInterface>(op)) {
