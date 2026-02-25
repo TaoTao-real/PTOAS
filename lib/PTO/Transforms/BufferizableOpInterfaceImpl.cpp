@@ -213,11 +213,11 @@ struct PTOStoreOpInterface
   }
 };
 
-/// MrgSortOp_DPS format2 has dsts = [memref, vector<4xi16>]. The vector init
+/// TMrgSortOp format2 has dsts = [memref, vector<4xi16>]. The vector init
 /// must not participate in bufferization (not a tensor/memref).
 struct PTOMrgSortDpsOpInterface
     : public DstBufferizableOpInterfaceExternalModel<PTOMrgSortDpsOpInterface,
-                                                     pto::MrgSortOp_DPS> {
+                                                     pto::TMrgSortOp> {
   LogicalResult bufferize(Operation *op, RewriterBase &rewriter,
                          const BufferizationOptions &options) const {
     return bufferizeDestinationStyleOpInterface(
@@ -659,7 +659,7 @@ void mlir::pto::registerBufferizableOpInterfaceExternalModels(
     // CopyOp::attachInterface<PTOCopyOpInterface>(*ctx);
     TLoadOp::attachInterface<PTOLoadOpInterface>(*ctx);
     TStoreOp::attachInterface<PTOStoreOpInterface>(*ctx);
-    MrgSortOp_DPS::attachInterface<PTOMrgSortDpsOpInterface>(*ctx);
+    TMrgSortOp::attachInterface<PTOMrgSortDpsOpInterface>(*ctx);
     AddFDpsOp::attachInterface<PTOAddFOpInterface>(*ctx);
     TMatmulOp::attachInterface<PTOMatmulOpInterface>(*ctx);
     // MixMatmulOp::attachInterface<PTOMixMatmulOpInterface>(*ctx);

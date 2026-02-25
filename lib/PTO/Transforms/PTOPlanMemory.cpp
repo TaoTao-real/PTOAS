@@ -241,6 +241,106 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
       (void)tminOp;
       UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
       OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tminsOp = dyn_cast<pto::TMinsOp>(op)) {
+      (void)tminsOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tmovfpOp = dyn_cast<pto::TMovFPOp>(op)) {
+      (void)tmovfpOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tmrgsortOp = dyn_cast<pto::TMrgSortOp>(op)) {
+      (void)tmrgsortOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tmulOp = dyn_cast<pto::TMulOp>(op)) {
+      (void)tmulOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tmulsOp = dyn_cast<pto::TMulsOp>(op)) {
+      (void)tmulsOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tnegOp = dyn_cast<pto::TNegOp>(op)) {
+      (void)tnegOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tnotOp = dyn_cast<pto::TNotOp>(op)) {
+      (void)tnotOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto torOp = dyn_cast<pto::TOrOp>(op)) {
+      (void)torOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto torsOp = dyn_cast<pto::TOrsOp>(op)) {
+      (void)torsOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tpartaddOp = dyn_cast<pto::TPartAddOp>(op)) {
+      (void)tpartaddOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tpartmaxOp = dyn_cast<pto::TPartMaxOp>(op)) {
+      (void)tpartmaxOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tpartminOp = dyn_cast<pto::TPartMinOp>(op)) {
+      (void)tpartminOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tpreluOp = dyn_cast<pto::TPreluOp>(op)) {
+      (void)tpreluOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto trecipOp = dyn_cast<pto::TRecipOp>(op)) {
+      (void)trecipOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto treluOp = dyn_cast<pto::TReluOp>(op)) {
+      (void)treluOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tremOp = dyn_cast<pto::TRemOp>(op)) {
+      (void)tremOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto tremsOp = dyn_cast<pto::TRemSOp>(op)) {
+      (void)tremsOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto treshapeOp = dyn_cast<pto::TReshapeOp>(op)) {
+      (void)treshapeOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto trowexpandOp = dyn_cast<pto::TRowExpandOp>(op)) {
+      (void)trowexpandOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto trowexpanddivOp = dyn_cast<pto::TRowExpandDivOp>(op)) {
+      (void)trowexpanddivOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto trowexpandmulOp = dyn_cast<pto::TRowExpandMulOp>(op)) {
+      (void)trowexpandmulOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto trowexpandsubOp = dyn_cast<pto::TRowExpandSubOp>(op)) {
+      (void)trowexpandsubOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto trowmaxOp = dyn_cast<pto::TRowMaxOp>(op)) {
+      (void)trowmaxOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto trowminOp = dyn_cast<pto::TRowMinOp>(op)) {
+      (void)trowminOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
+    } else if (auto trowsumOp = dyn_cast<pto::TRowSumOp>(op)) {
+      (void)trowsumOp;
+      UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
+      OpKillHandle(curOpInfo, live, op->getBlock());
     } else if (auto tgemvOp = dyn_cast<pto::TGemvOp>(op)) {
       (void)tgemvOp;
       UpdateOpGenInfo(curOpInfo, llvm::to_vector(op->getOperands()));
