@@ -499,10 +499,6 @@ unsigned BlockSyncAnalysis::InsertBranchSync(
                  << ", ElseAnchor=" << (elseAnchor ? elseAnchor->GetIndex() : -1) << "\n";
  
     InsertSeqSync(nowCompound, syncElement, ifStart + 1, ifEnd, 
-                  syncRecordIfList, forEndIndex, nullptr);
-
-    // [Fix] 传递 waitAnchor 给 If 分支
-    InsertSeqSync(nowCompound, syncElement, ifStart + 1, ifEnd, 
                   syncRecordIfList, forEndIndex, waitAnchor);
 
     if (branchElement->branchId != branchElement->endId) {
