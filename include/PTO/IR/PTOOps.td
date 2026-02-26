@@ -428,13 +428,24 @@ def TStoreOp: PTO_TOp<"tstore", [
       //
       // Sync insertion must use the correct pipe, otherwise the generated
       // set_flag/wait_flag pairs won't order the actual hardware instructions.
-      if (auto tb = ::mlir::dyn_cast<::mlir::pto::TileBufType>(getSrc().getType())) {
-        if (auto as = ::mlir::dyn_cast_or_null<::mlir::pto::AddressSpaceAttr>(
-                tb.getMemorySpace())) {
-          if (as.getAddressSpace() == ::mlir::pto::AddressSpace::ACC)
-            return ::mlir::pto::PIPE::PIPE_FIX;
+      auto isAcc = [](Type ty) -> bool {
+        if (auto tb = ::mlir::dyn_cast<::mlir::pto::TileBufType>(ty)) {
+          if (auto as = ::mlir::dyn_cast_or_null<::mlir::pto::AddressSpaceAttr>(
+                  tb.getMemorySpace()))
+            return as.getAddressSpace() == ::mlir::pto::AddressSpace::ACC;
+          return false;
         }
-      }
+        if (auto mr = ::mlir::dyn_cast<::mlir::MemRefType>(ty)) {
+          if (auto ms = mr.getMemorySpace()) {
+            if (auto as = ::mlir::dyn_cast<::mlir::pto::AddressSpaceAttr>(ms))
+              return as.getAddressSpace() == ::mlir::pto::AddressSpace::ACC;
+          }
+          return false;
+        }
+        return false;
+      };
+      if (isAcc(getSrc().getType()))
+        return ::mlir::pto::PIPE::PIPE_FIX;
       return ::mlir::pto::PIPE::PIPE_MTE3;
     }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
@@ -861,19 +872,35 @@ def TMovOp  : PTO_TOp<"tmov", [
       // TMOV spans multiple hardware pipelines depending on the source/dest
       // domains. Most tile-domain moves are executed by MTE1 (e.g. MAT->L0),
       // while UB->UB copies are vector-pipe operations.
-      auto srcTy = llvm::dyn_cast<::mlir::pto::TileBufType>(getSrc().getType());
-      auto dstTy = llvm::dyn_cast<::mlir::pto::TileBufType>(getDst().getType());
-      if (!srcTy || !dstTy) {
-        return ::mlir::pto::PIPE::PIPE_V;
-      }
-      auto srcAS = llvm::dyn_cast<::mlir::pto::AddressSpaceAttr>(srcTy.getMemorySpace());
-      auto dstAS = llvm::dyn_cast<::mlir::pto::AddressSpaceAttr>(dstTy.getMemorySpace());
-      if (!srcAS || !dstAS) {
-        return ::mlir::pto::PIPE::PIPE_V;
-      }
+      auto getASFromType = [](Type ty)
+          -> std::optional<::mlir::pto::AddressSpace> {
+        // Pre-lowering: tile_buf carries the address space in its memorySpace.
+        if (auto tb = llvm::dyn_cast<::mlir::pto::TileBufType>(ty)) {
+          if (auto as = llvm::dyn_cast_or_null<::mlir::pto::AddressSpaceAttr>(
+                  tb.getMemorySpace()))
+            return as.getAddressSpace();
+          return std::nullopt;
+        }
+        // Post PTOViewToMemref: tile_buf is erased to memref but memorySpace is
+        // preserved in memref's memorySpace attribute.
+        if (auto mr = llvm::dyn_cast<::mlir::MemRefType>(ty)) {
+          if (auto ms = mr.getMemorySpace()) {
+            if (auto as =
+                    llvm::dyn_cast<::mlir::pto::AddressSpaceAttr>(ms))
+              return as.getAddressSpace();
+          }
+          return std::nullopt;
+        }
+        return std::nullopt;
+      };
 
-      const auto s = srcAS.getAddressSpace();
-      const auto d = dstAS.getAddressSpace();
+      auto sOpt = getASFromType(getSrc().getType());
+      auto dOpt = getASFromType(getDst().getType());
+      if (!sOpt.has_value() || !dOpt.has_value())
+        return ::mlir::pto::PIPE::PIPE_V;
+
+      const auto s = sOpt.value();
+      const auto d = dOpt.value();
 
       // UB -> UB copy is vector pipe.
       if (s == ::mlir::pto::AddressSpace::VEC && d == ::mlir::pto::AddressSpace::VEC) {
