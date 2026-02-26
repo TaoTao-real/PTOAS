@@ -1920,7 +1920,7 @@ llvm::LogicalResult mlir::pto::TGatherOp::verify() {
 
   return success();
 }
-mlir::LogicalResult mlir::pto::TGatherbOp::verify() {
+mlir::LogicalResult mlir::pto::TGatherBOp::verify() {
   Type srcTy = getSrc().getType();
   Type offTy = getOffsets().getType();
   Type dstTy = getDst().getType();
@@ -2105,7 +2105,7 @@ mlir::LogicalResult mlir::pto::TMinOp::verify() {
 // TMINS verifier (PTO.cpp)
 //===----------------------------------------------------------------------===//
 
-mlir::LogicalResult mlir::pto::TMinsOp::verify() {
+mlir::LogicalResult mlir::pto::TMinSOp::verify() {
   Type srcTy = getSrc().getType();
   Type dstTy = getDst().getType();
   if (!isPTOShapedLike(srcTy) || !isPTOShapedLike(dstTy))
@@ -2340,8 +2340,8 @@ LogicalResult TGetValOp::verify() {
   return success();
 }
 
-// ---- TMScatterOp ----
-LogicalResult TMScatterOp::verify() {
+// ---- MScatterOp ----
+LogicalResult MScatterOp::verify() {
   int64_t srcrank = getPTOTypeRank(getSrc().getType());
   int64_t memrank = getPTOTypeRank(getMem().getType());
   int64_t idxrank = getPTOTypeRank(getIdx().getType());
@@ -2352,8 +2352,8 @@ LogicalResult TMScatterOp::verify() {
   return success();
 }
 
-// ---- TMGatherOp ----
-LogicalResult TMGatherOp::verify() {
+// ---- MGatherOp ----
+LogicalResult MGatherOp::verify() {
   int64_t memrank = getPTOTypeRank(getMem().getType());
   int64_t idxrank = getPTOTypeRank(getIdx().getType());
   int64_t dstrank = getPTOTypeRank(getDst().getType());
@@ -2539,7 +2539,7 @@ mlir::LogicalResult mlir::pto::TMulOp::verify() {
 // PTO.cpp  (add verifier for TMULS DPS/tilebuf op)
 //===----------------------------------------------------------------------===//
 
-mlir::LogicalResult mlir::pto::TMulsOp::verify() {
+mlir::LogicalResult mlir::pto::TMulSOp::verify() {
   Type srcTy = getSrc0().getType();
   Type dstTy = getDst().getType();
   if (!isPTOShapedLike(srcTy) || !isPTOShapedLike(dstTy))
@@ -2692,7 +2692,7 @@ mlir::LogicalResult mlir::pto::TOrOp::verify() {
 // PTO.cpp  (add verifier for TORS DPS/tilebuf op)
 //===----------------------------------------------------------------------===//
 
-mlir::LogicalResult mlir::pto::TOrsOp::verify() {
+mlir::LogicalResult mlir::pto::TOrSOp::verify() {
   Type srcTy = getSrc().getType();
   Type dstTy = getDst().getType();
   if (!isPTOShapedLike(srcTy) || !isPTOShapedLike(dstTy))
@@ -2799,7 +2799,7 @@ mlir::LogicalResult mlir::pto::TPartMinOp::verify() {
 // PTO.cpp  (add verifier for TPRELU DPS/tilebuf op)
 //===----------------------------------------------------------------------===//
 
-mlir::LogicalResult mlir::pto::TPreluOp::verify() {
+mlir::LogicalResult mlir::pto::TPReluOp::verify() {
   Type t0 = getSrc0().getType();
   Type t1 = getSrc1().getType();
   Type td = getDst().getType();
@@ -3132,7 +3132,7 @@ mlir::LogicalResult mlir::pto::TSelOp::verify() {
 // PTO.cpp  (add verifier for TSELS DPS/tilebuf op)
 //===----------------------------------------------------------------------===//
 
-mlir::LogicalResult mlir::pto::TSelsOp::verify() {
+mlir::LogicalResult mlir::pto::TSelSOp::verify() {
   Type t0 = getSrc0().getType();
   Type t1 = getSrc1().getType();
   Type td = getDst().getType();
@@ -3376,7 +3376,7 @@ mlir::LogicalResult mlir::pto::TTransOp::verify() {
 // PTO.cpp  (add TXOR DPS/tilebuf implementation)
 //===----------------------------------------------------------------------===//
 
-mlir::LogicalResult mlir::pto::TXOROp::verify() {
+mlir::LogicalResult mlir::pto::TXorOp::verify() {
   Type src0Ty = getSrc0().getType();
   Type src1Ty = getSrc1().getType();
   Type dstTy = getDst().getType();
@@ -3393,7 +3393,7 @@ mlir::LogicalResult mlir::pto::TXOROp::verify() {
 // PTO.cpp  (add TXORS DPS/tilebuf implementation)
 //===----------------------------------------------------------------------===//
 
-mlir::LogicalResult mlir::pto::TXORSOp::verify() {
+mlir::LogicalResult mlir::pto::TXorSOp::verify() {
   Type srcTy = getSrc().getType();
   Type dstTy = getDst().getType();
   if (!isPTOShapedLike(srcTy) || !isPTOShapedLike(dstTy))
@@ -3408,7 +3408,7 @@ mlir::LogicalResult mlir::pto::TXORSOp::verify() {
 // PTO.cpp  (add TSYNC DPS/tilebuf implementation)
 //===----------------------------------------------------------------------===//
 
-mlir::LogicalResult mlir::pto::TSYNCOp::verify() {
+mlir::LogicalResult mlir::pto::TSyncOp::verify() {
   Type eventsTy = getEvents().getType();
   Type dstTy = getDst().getType();
   if (!isPTOShapedLike(eventsTy) || !isPTOShapedLike(dstTy))
@@ -4504,7 +4504,7 @@ void StoreScalarOp::getEffects(
 // === Tile/Device ops added for InsertSync ===
 
 // MGATHER: Read(mem, idx) -> Write(dst)
-void TMGatherOp::getEffects(
+void MGatherOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   PTO_ADD_READ(getMemMutable());
   PTO_ADD_READ(getIdxMutable());
@@ -4512,7 +4512,7 @@ void TMGatherOp::getEffects(
 }
 
 // MSCATTER: Read(src, idx) -> Write(mem)
-void TMScatterOp::getEffects(
+void MScatterOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   PTO_ADD_READ(getSrcMutable());
   PTO_ADD_READ(getIdxMutable());
@@ -4601,14 +4601,14 @@ void TGatherOp::getEffects(
   PTO_ADD_WRITE(getDstMutable());
 }
 
-PTO_DEFINE_BINARY_EFFECTS(TGatherbOp, getSrcMutable(), getOffsetsMutable(), getDstMutable())
+PTO_DEFINE_BINARY_EFFECTS(TGatherBOp, getSrcMutable(), getOffsetsMutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TLogOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TLReluOp, getSrcMutable(), getDstMutable())
 
 PTO_DEFINE_BINARY_EFFECTS(TMaxOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TMaxSOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TMinOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
-PTO_DEFINE_UNARY_EFFECTS(TMinsOp, getSrcMutable(), getDstMutable())
+PTO_DEFINE_UNARY_EFFECTS(TMinSOp, getSrcMutable(), getDstMutable())
 
 PTO_DEFINE_BINARY_EFFECTS(TMovFPOp, getSrcMutable(), getFpMutable(), getDstMutable())
 
@@ -4627,16 +4627,16 @@ void TMrgSortOp::getEffects(
 }
 
 PTO_DEFINE_BINARY_EFFECTS(TMulOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
-PTO_DEFINE_UNARY_EFFECTS(TMulsOp, getSrc0Mutable(), getDstMutable())
+PTO_DEFINE_UNARY_EFFECTS(TMulSOp, getSrc0Mutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TNegOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TNotOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TOrOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
-PTO_DEFINE_UNARY_EFFECTS(TOrsOp, getSrcMutable(), getDstMutable())
+PTO_DEFINE_UNARY_EFFECTS(TOrSOp, getSrcMutable(), getDstMutable())
 
 PTO_DEFINE_BINARY_EFFECTS(TPartAddOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TPartMaxOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TPartMinOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
-PTO_DEFINE_BINARY_EFFECTS(TPreluOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
+PTO_DEFINE_BINARY_EFFECTS(TPReluOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 
 PTO_DEFINE_UNARY_EFFECTS(TRecipOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TReluOp, getSrcMutable(), getDstMutable())
@@ -4682,7 +4682,7 @@ void TSelOp::getEffects(
   PTO_ADD_WRITE(getDstMutable());
 }
 
-PTO_DEFINE_BINARY_EFFECTS(TSelsOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
+PTO_DEFINE_BINARY_EFFECTS(TSelSOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 
 PTO_DEFINE_BINARY_EFFECTS(TShlOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TShrOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
@@ -4703,8 +4703,8 @@ PTO_DEFINE_TERNARY_EFFECTS(TSubCOp, getSrc0Mutable(), getSrc1Mutable(), getSrc2M
 PTO_DEFINE_UNARY_EFFECTS(TSubSOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TSubSCOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 
-PTO_DEFINE_UNARY_EFFECTS(TXORSOp, getSrcMutable(), getDstMutable())
-PTO_DEFINE_BINARY_EFFECTS(TXOROp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
+PTO_DEFINE_UNARY_EFFECTS(TXorSOp, getSrcMutable(), getDstMutable())
+PTO_DEFINE_BINARY_EFFECTS(TXorOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 
 // TTRANS: Read(src) -> Write(tmp, dst)
 void TTransOp::getEffects(

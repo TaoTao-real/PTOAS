@@ -1048,13 +1048,13 @@ struct PTOViewToMemrefPass
             op, op->getOperand(0), op.getOperand(1), op->getOperand(2));
       }
 
-      // --- TMulsOp [Src, Scalar, Dst] ---
-      SmallVector<mlir::pto::TMulsOp, 8> muls;
-      func.walk([&](mlir::pto::TMulsOp op) { muls.push_back(op); });
+      // --- TMulSOp [Src, Scalar, Dst] ---
+      SmallVector<mlir::pto::TMulSOp, 8> muls;
+      func.walk([&](mlir::pto::TMulSOp op) { muls.push_back(op); });
       for (auto op : muls) {
         IRRewriter rewriter(ctx);
         rewriter.setInsertionPoint(op);
-        rewriter.replaceOpWithNewOp<pto::TMulsOp>(
+        rewriter.replaceOpWithNewOp<pto::TMulSOp>(
             op, op->getOperand(0), op.getScalar(), op->getOperand(2));
       }
 
@@ -1914,8 +1914,8 @@ struct PTOViewToMemrefPass
         }
       }
 
-      SmallVector<mlir::pto::TGatherbOp, 8> gatherbops;
-      func.walk([&](mlir::pto::TGatherbOp op) { gatherbops.push_back(op); });
+      SmallVector<mlir::pto::TGatherBOp, 8> gatherbops;
+      func.walk([&](mlir::pto::TGatherBOp op) { gatherbops.push_back(op); });
 
       for (auto op : gatherbops) {
         IRRewriter rewriter(ctx);
@@ -1934,7 +1934,7 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::TGatherbOp>(
+        rewriter.replaceOpWithNewOp<pto::TGatherBOp>(
             op,
             TypeRange{},
             src,
@@ -2079,8 +2079,8 @@ struct PTOViewToMemrefPass
             dst);
       }
 
-      SmallVector<mlir::pto::TMinsOp, 8> minsops;
-      func.walk([&](mlir::pto::TMinsOp op) { minsops.push_back(op); });
+      SmallVector<mlir::pto::TMinSOp, 8> minsops;
+      func.walk([&](mlir::pto::TMinSOp op) { minsops.push_back(op); });
 
       for (auto op : minsops) {
         IRRewriter rewriter(ctx);
@@ -2099,7 +2099,7 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::TMinsOp>(
+        rewriter.replaceOpWithNewOp<pto::TMinSOp>(
             op,
             TypeRange{},
             src,
@@ -2284,8 +2284,8 @@ struct PTOViewToMemrefPass
             dst);
       }
 
-      SmallVector<mlir::pto::TOrsOp, 8> orsops;
-      func.walk([&](mlir::pto::TOrsOp op) { orsops.push_back(op); });
+      SmallVector<mlir::pto::TOrSOp, 8> orsops;
+      func.walk([&](mlir::pto::TOrSOp op) { orsops.push_back(op); });
 
       for (auto op : orsops) {
         IRRewriter rewriter(ctx);
@@ -2304,7 +2304,7 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::TOrsOp>(
+        rewriter.replaceOpWithNewOp<pto::TOrSOp>(
             op,
             TypeRange{},
             src,
@@ -2339,8 +2339,8 @@ struct PTOViewToMemrefPass
             dst);
       }
 
-      SmallVector<mlir::pto::TMGatherOp, 8> mgatherops;
-      func.walk([&](mlir::pto::TMGatherOp op) { mgatherops.push_back(op); });
+      SmallVector<mlir::pto::MGatherOp, 8> mgatherops;
+      func.walk([&](mlir::pto::MGatherOp op) { mgatherops.push_back(op); });
 
       for (auto op : mgatherops) {
         IRRewriter rewriter(ctx);
@@ -2359,7 +2359,7 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::TMGatherOp>(
+        rewriter.replaceOpWithNewOp<pto::MGatherOp>(
             op,
             TypeRange{},
             mem,
@@ -2367,8 +2367,8 @@ struct PTOViewToMemrefPass
             dst);
       }
 
-      SmallVector<mlir::pto::TMScatterOp, 8> mascatterops;
-      func.walk([&](mlir::pto::TMScatterOp op) { mascatterops.push_back(op); });
+      SmallVector<mlir::pto::MScatterOp, 8> mascatterops;
+      func.walk([&](mlir::pto::MScatterOp op) { mascatterops.push_back(op); });
 
       for (auto op : mascatterops) {
         IRRewriter rewriter(ctx);
@@ -2387,7 +2387,7 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::TMScatterOp>(
+        rewriter.replaceOpWithNewOp<pto::MScatterOp>(
             op,
             TypeRange{},
             src,

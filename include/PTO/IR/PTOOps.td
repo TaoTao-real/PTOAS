@@ -234,7 +234,7 @@ def BindTileOp : PTO_Op<"bind_tile", [
   }];
 }
 
-def PTO_SubsetOp : PTO_Op<"subset", [
+def SubsetOp : PTO_Op<"subset", [
     Pure,
     ViewLikeOpInterface,
     DeclareOpInterfaceMethods<InferTypeOpInterface> // 启用 C++ 推导
@@ -1144,7 +1144,7 @@ def GetSubBlockNumOp : PTO_Op<"get_subblock_num", [Pure]> {
 
 def PTO_PipeEventTypeLikeAttr : AnyAttrOf<[PTO_PipeEventTypeAttr, PTO_SyncOpTypeAttr]>;
 
-def PTO_RecordEventOp : PTO_Op<"record_event"> {
+def RecordEventOp : PTO_Op<"record_event"> {
   let summary = "Record an event for synchronization (High Level)";
   let description = [{
     Records an event from a source operation type to a destination operation type.
@@ -1161,7 +1161,7 @@ def PTO_RecordEventOp : PTO_Op<"record_event"> {
   }];
 }
 
-def PTO_WaitEventOp : PTO_Op<"wait_event"> {
+def WaitEventOp : PTO_Op<"wait_event"> {
   let summary = "Wait for an event (High Level)";
   let description = [{
     Waits for an event from a source operation type to a destination operation type.
@@ -1179,7 +1179,7 @@ def PTO_WaitEventOp : PTO_Op<"wait_event"> {
 }
 
 // High-Level Barrier (single pipe) with op type mapping
-def PTO_BarrierSyncOp : PTO_Op<"barrier_sync"> {
+def BarrierSyncOp : PTO_Op<"barrier_sync"> {
   let summary = "High-level barrier mapped from SyncOpType to PIPE";
   let description = [{
     A convenience barrier that specifies a SyncOpType instead of PIPE. The lowering
@@ -1219,7 +1219,7 @@ def SectionVectorOp : PTO_SectionOp<"section.vector">;
 // Synchronization Ops
 //===----------------------------------------------------------------------===//
 
-def PTO_SetFlagOp : PTO_Op<"set_flag"> {
+def SetFlagOp : PTO_Op<"set_flag"> {
   let summary = "Set synchronization flag between pipes";
   let arguments = (ins
     PTO_PipeAttr:$src_pipe,
@@ -1232,7 +1232,7 @@ def PTO_SetFlagOp : PTO_Op<"set_flag"> {
   }];
 }
 
-def PTO_WaitFlagOp : PTO_Op<"wait_flag"> {
+def WaitFlagOp : PTO_Op<"wait_flag"> {
   let summary = "Wait for synchronization flag";
   let arguments = (ins
     PTO_PipeAttr:$src_pipe,
@@ -1245,7 +1245,7 @@ def PTO_WaitFlagOp : PTO_Op<"wait_flag"> {
   }];
 }
 
-def PTO_SyncSetOp : PTO_Op<"sync.set"> {
+def SyncSetOp : PTO_Op<"sync.set"> {
   let summary = "Set a synchronization signal (trigger) between cube and vector.";
   let description = [{
     Sets a synchronization signal on the specified pipeline stage.
@@ -1260,7 +1260,7 @@ def PTO_SyncSetOp : PTO_Op<"sync.set"> {
   let assemblyFormat = "$pipe `,` $event_id attr-dict";
 }
 
-def PTO_SyncWaitOp : PTO_Op<"sync.wait"> {
+def SyncWaitOp : PTO_Op<"sync.wait"> {
   let summary = "Wait for a synchronization signal (barrier) between cube and vector.";
   let description = [{
     Waits for a synchronization signal on the specified pipeline stage.
@@ -1371,7 +1371,7 @@ def SetFFTsOp : PTO_Op<"set_ffts", [MemoryEffects<[MemRead, MemWrite]>]> {
 }
 // ---- tile-world TOp version (with 't') ----
 // pto.tmgather ins(%mem, %idx) outs(%dst) [ ...] -> tensor?
-def TMGatherOp : PTO_TOp<"mgather", [
+def MGatherOp : PTO_TOp<"mgather", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -1503,7 +1503,7 @@ def TGetValOp : PTO_TOp<"tgetval", [
 
 // ---- tile-world TOp version (with 't') ----
 // pto.tmscatter ins(%src, %idx) outs(%mem) [ ...]
-def TMScatterOp : PTO_TOp<"mscatter", [
+def MScatterOp : PTO_TOp<"mscatter", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -1692,7 +1692,7 @@ def PTO_PrintOp_DPS: PTO_TOp<"print_dps", [
 // PTO_TOPs(Tilebuffer, DPS)
 //===----------------------------------------------------------------------===//
 
-def PTO_TAbsOp : PTO_TOp<"tabs", [
+def TAbsOp : PTO_TOp<"tabs", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -1724,7 +1724,7 @@ def PTO_TAbsOp : PTO_TOp<"tabs", [
   }];
 }
 
-def PTO_TAddOp : PTO_TOp<"tadd", [
+def TAddOp : PTO_TOp<"tadd", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -1761,7 +1761,7 @@ def PTO_TAddOp : PTO_TOp<"tadd", [
   }];
 }
 
-def PTO_TAddCOp : PTO_TOp<"taddc", [
+def TAddCOp : PTO_TOp<"taddc", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -1795,7 +1795,7 @@ def PTO_TAddCOp : PTO_TOp<"taddc", [
   }];
 }
 
-def PTO_TAddSOp : PTO_TOp<"tadds", [
+def TAddSOp : PTO_TOp<"tadds", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -1828,7 +1828,7 @@ def PTO_TAddSOp : PTO_TOp<"tadds", [
   }];
 }
 
-def PTO_TAddSCOp : PTO_TOp<"taddsc", [
+def TAddSCOp : PTO_TOp<"taddsc", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -1857,7 +1857,7 @@ def PTO_TAddSCOp : PTO_TOp<"taddsc", [
 }
 
 
-def PTO_TAndOp : PTO_TOp<"tand", [
+def TAndOp : PTO_TOp<"tand", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -1880,7 +1880,7 @@ def PTO_TAndOp : PTO_TOp<"tand", [
   }];
 }
 
-def PTO_TAndSOp : PTO_TOp<"tands", [
+def TAndSOp : PTO_TOp<"tands", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -1904,7 +1904,7 @@ def PTO_TAndSOp : PTO_TOp<"tands", [
 }
 
 
-def PTO_TCIOp : PTO_TOp<"tci", [
+def TCIOp : PTO_TOp<"tci", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -1933,7 +1933,7 @@ def PTO_TCIOp : PTO_TOp<"tci", [
   }];
 }
 
-def PTO_TCmpOp : PTO_TOp<"tcmp", [
+def TCmpOp : PTO_TOp<"tcmp", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -1968,7 +1968,7 @@ def PTO_TCmpOp : PTO_TOp<"tcmp", [
   }];
 }
 
-def PTO_TCmpSOp : PTO_TOp<"tcmps", [
+def TCmpSOp : PTO_TOp<"tcmps", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -1999,7 +1999,7 @@ def PTO_TCmpSOp : PTO_TOp<"tcmps", [
   }];
 }
 
-def PTO_TColExpandOp : PTO_TOp<"tcolexpand", [
+def TColExpandOp : PTO_TOp<"tcolexpand", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2027,7 +2027,7 @@ def PTO_TColExpandOp : PTO_TOp<"tcolexpand", [
   }];
 }
 
-def PTO_TColMaxOp : PTO_TOp<"tcolmax", [
+def TColMaxOp : PTO_TOp<"tcolmax", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2055,7 +2055,7 @@ def PTO_TColMaxOp : PTO_TOp<"tcolmax", [
   }];
 }
 
-def PTO_TColMinOp : PTO_TOp<"tcolmin", [
+def TColMinOp : PTO_TOp<"tcolmin", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2083,7 +2083,7 @@ def PTO_TColMinOp : PTO_TOp<"tcolmin", [
   }];
 }
 
-def PTO_TColSumOp : PTO_TOp<"tcolsum", [
+def TColSumOp : PTO_TOp<"tcolsum", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2111,7 +2111,7 @@ def PTO_TColSumOp : PTO_TOp<"tcolsum", [
   }];
 }
 
-def PTO_TCvtOp : PTO_TOp<"tcvt", [
+def TCvtOp : PTO_TOp<"tcvt", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2140,7 +2140,7 @@ def PTO_TCvtOp : PTO_TOp<"tcvt", [
   }];
 }
 
-def PTO_TDivOp : PTO_TOp<"tdiv", [
+def TDivOp : PTO_TOp<"tdiv", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2174,7 +2174,7 @@ def PTO_TDivOp : PTO_TOp<"tdiv", [
 
 }
 
-def PTO_TDivSOp : PTO_TOp<"tdivs", [
+def TDivSOp : PTO_TOp<"tdivs", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2200,7 +2200,7 @@ def PTO_TDivSOp : PTO_TOp<"tdivs", [
 
 }
 
-def PTO_TExpOp : PTO_TOp<"texp", [
+def TExpOp : PTO_TOp<"texp", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2228,7 +2228,7 @@ def PTO_TExpOp : PTO_TOp<"texp", [
   }];
 }
 
-def PTO_TExpandsOp : PTO_TOp<"texpands", [
+def TExpandsOp : PTO_TOp<"texpands", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2256,7 +2256,7 @@ def PTO_TExpandsOp : PTO_TOp<"texpands", [
   }];
 }
 
-def PTO_TExtractOp : PTO_TOp<"textract", [
+def TExtractOp : PTO_TOp<"textract", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2288,7 +2288,7 @@ def PTO_TExtractOp : PTO_TOp<"textract", [
   }];
 }
 
-def PTO_TFillPadOp : PTO_TOp<"tfillpad", [
+def TFillPadOp : PTO_TOp<"tfillpad", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2316,7 +2316,7 @@ def PTO_TFillPadOp : PTO_TOp<"tfillpad", [
   }];
 }
 
-def PTO_TGatherOp : PTO_TOp<"tgather", [
+def TGatherOp : PTO_TOp<"tgather", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2343,7 +2343,7 @@ def PTO_TGatherOp : PTO_TOp<"tgather", [
   }];
 }
 
-def PTO_TGatherbOp : PTO_TOp<"tgatherb", [
+def TGatherBOp : PTO_TOp<"tgatherb", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2372,7 +2372,7 @@ def PTO_TGatherbOp : PTO_TOp<"tgatherb", [
   }];
 }
 
-def PTO_TLogOp : PTO_TOp<"tlog", [
+def TLogOp : PTO_TOp<"tlog", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2400,7 +2400,7 @@ def PTO_TLogOp : PTO_TOp<"tlog", [
   }];
 }
 
-def PTO_TLReluOp : PTO_TOp<"tlrelu", [
+def TLReluOp : PTO_TOp<"tlrelu", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2429,7 +2429,7 @@ def PTO_TLReluOp : PTO_TOp<"tlrelu", [
   }];
 }
 
-def PTO_TMaxOp : PTO_TOp<"tmax", [
+def TMaxOp : PTO_TOp<"tmax", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2458,7 +2458,7 @@ def PTO_TMaxOp : PTO_TOp<"tmax", [
   }];
 }
 
-def PTO_TMaxSOp : PTO_TOp<"tmaxs", [
+def TMaxSOp : PTO_TOp<"tmaxs", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2487,7 +2487,7 @@ def PTO_TMaxSOp : PTO_TOp<"tmaxs", [
   }];
 }
 
-def PTO_TMinOp : PTO_TOp<"tmin", [
+def TMinOp : PTO_TOp<"tmin", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2516,7 +2516,7 @@ def PTO_TMinOp : PTO_TOp<"tmin", [
   }];
 }
 
-def PTO_TMinsOp : PTO_TOp<"tmins", [
+def TMinSOp : PTO_TOp<"tmins", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2545,7 +2545,7 @@ def PTO_TMinsOp : PTO_TOp<"tmins", [
   }];
 }
 
-def PTO_TMovFPOp : PTO_TOp<"tmov.fp", [
+def TMovFPOp : PTO_TOp<"tmov.fp", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2576,7 +2576,7 @@ def PTO_TMovFPOp : PTO_TOp<"tmov.fp", [
   }];
 }
 
-def PTO_TMrgSortOp: PTO_TOp<"tmrgsort", [
+def TMrgSortOp: PTO_TOp<"tmrgsort", [
   AttrSizedOperandSegments,
   PTO_DpsInitOpInterface,
   OpPipeInterface,
@@ -2609,7 +2609,7 @@ def PTO_TMrgSortOp: PTO_TOp<"tmrgsort", [
   }];
 }
 
-def PTO_TMulOp: PTO_TOp<"tmul", [
+def TMulOp: PTO_TOp<"tmul", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2642,7 +2642,7 @@ def PTO_TMulOp: PTO_TOp<"tmul", [
 // PTOOps.td  (add TMULS DPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TMulsOp: PTO_TOp<"tmuls", [
+def TMulSOp: PTO_TOp<"tmuls", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2674,7 +2674,7 @@ def PTO_TMulsOp: PTO_TOp<"tmuls", [
 // PTOOps.td  (add TNEG TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TNegOp: PTO_TOp<"tneg", [
+def TNegOp: PTO_TOp<"tneg", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2705,7 +2705,7 @@ def PTO_TNegOp: PTO_TOp<"tneg", [
 // PTOOps.td  (add TNOT TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TNotOp: PTO_TOp<"tnot", [
+def TNotOp: PTO_TOp<"tnot", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2736,7 +2736,7 @@ def PTO_TNotOp: PTO_TOp<"tnot", [
 // PTOOps.td  (add TOR TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TOrOp: PTO_TOp<"tor", [
+def TOrOp: PTO_TOp<"tor", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2768,7 +2768,7 @@ def PTO_TOrOp: PTO_TOp<"tor", [
 // PTOOps.td  (add TORS TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TOrsOp: PTO_TOp<"tors", [
+def TOrSOp: PTO_TOp<"tors", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2800,7 +2800,7 @@ def PTO_TOrsOp: PTO_TOp<"tors", [
 // PTOOps.td  (add TPARTADD TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TPartAddOp: PTO_TOp<"tpartadd", [
+def TPartAddOp: PTO_TOp<"tpartadd", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2832,7 +2832,7 @@ def PTO_TPartAddOp: PTO_TOp<"tpartadd", [
 // PTOOps.td  (add TPARTMAX TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TPartMaxOp: PTO_TOp<"tpartmax", [
+def TPartMaxOp: PTO_TOp<"tpartmax", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2864,7 +2864,7 @@ def PTO_TPartMaxOp: PTO_TOp<"tpartmax", [
 // PTOOps.td  (add TPARTMIN TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TPartMinOp: PTO_TOp<"tpartmin", [
+def TPartMinOp: PTO_TOp<"tpartmin", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2896,7 +2896,7 @@ def PTO_TPartMinOp: PTO_TOp<"tpartmin", [
 // PTOOps.td  (add TPRELU TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TPreluOp: PTO_TOp<"tprelu", [
+def TPReluOp: PTO_TOp<"tprelu", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2928,7 +2928,7 @@ def PTO_TPreluOp: PTO_TOp<"tprelu", [
 // PTOOps.td  (add TRECIP TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TRecipOp: PTO_TOp<"trecip", [
+def TRecipOp: PTO_TOp<"trecip", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2959,7 +2959,7 @@ def PTO_TRecipOp: PTO_TOp<"trecip", [
 // PTOOps.td  (add TRELU TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TReluOp: PTO_TOp<"trelu", [
+def TReluOp: PTO_TOp<"trelu", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -2990,7 +2990,7 @@ def PTO_TReluOp: PTO_TOp<"trelu", [
 // PTOOps.td  (add TREM TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TRemOp: PTO_TOp<"trem", [
+def TRemOp: PTO_TOp<"trem", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -3022,7 +3022,7 @@ def PTO_TRemOp: PTO_TOp<"trem", [
 // PTOOps.td  (add TREMS TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TRemSOp: PTO_TOp<"trems", [
+def TRemSOp: PTO_TOp<"trems", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -3054,7 +3054,7 @@ def PTO_TRemSOp: PTO_TOp<"trems", [
 // PTOOps.td  (add TRESHAPE TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TReshapeOp: PTO_TOp<"treshape", [
+def TReshapeOp: PTO_TOp<"treshape", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -3085,7 +3085,7 @@ def PTO_TReshapeOp: PTO_TOp<"treshape", [
 // PTOOps.td  (add TROWEXPAND TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TRowExpandOp: PTO_TOp<"trowexpand", [
+def TRowExpandOp: PTO_TOp<"trowexpand", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -3116,7 +3116,7 @@ def PTO_TRowExpandOp: PTO_TOp<"trowexpand", [
 // PTOOps.td  (add TROWEXPANDDIV TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TRowExpandDivOp: PTO_TOp<"trowexpanddiv", [
+def TRowExpandDivOp: PTO_TOp<"trowexpanddiv", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -3148,7 +3148,7 @@ def PTO_TRowExpandDivOp: PTO_TOp<"trowexpanddiv", [
 // PTOOps.td  (add TROWEXPANDMUL TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TRowExpandMulOp: PTO_TOp<"trowexpandmul", [
+def TRowExpandMulOp: PTO_TOp<"trowexpandmul", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -3180,7 +3180,7 @@ def PTO_TRowExpandMulOp: PTO_TOp<"trowexpandmul", [
 // PTOOps.td  (add TROWEXPANDSUB TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TRowExpandSubOp: PTO_TOp<"trowexpandsub", [
+def TRowExpandSubOp: PTO_TOp<"trowexpandsub", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -3212,7 +3212,7 @@ def PTO_TRowExpandSubOp: PTO_TOp<"trowexpandsub", [
 // PTOOps.td  (add TROWMAX TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TRowMaxOp: PTO_TOp<"trowmax", [
+def TRowMaxOp: PTO_TOp<"trowmax", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -3244,7 +3244,7 @@ def PTO_TRowMaxOp: PTO_TOp<"trowmax", [
 // PTOOps.td  (add TROWMIN TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TRowMinOp: PTO_TOp<"trowmin", [
+def TRowMinOp: PTO_TOp<"trowmin", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -3276,7 +3276,7 @@ def PTO_TRowMinOp: PTO_TOp<"trowmin", [
 // PTOOps.td  (add TROWSUM TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TRowSumOp: PTO_TOp<"trowsum", [
+def TRowSumOp: PTO_TOp<"trowsum", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -3308,7 +3308,7 @@ def PTO_TRowSumOp: PTO_TOp<"trowsum", [
 // PTOOps.td  (add TRSQRT TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TRsqrtOp: PTO_TOp<"trsqrt", [
+def TRsqrtOp: PTO_TOp<"trsqrt", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -3339,7 +3339,7 @@ def PTO_TRsqrtOp: PTO_TOp<"trsqrt", [
 // PTOOps.td  (add TSCATTER TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TScatterOp: PTO_TOp<"tscatter", [
+def TScatterOp: PTO_TOp<"tscatter", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -3371,7 +3371,7 @@ def PTO_TScatterOp: PTO_TOp<"tscatter", [
 // PTOOps.td  (add TSEL TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TSelOp: PTO_TOp<"tsel", [
+def TSelOp: PTO_TOp<"tsel", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -3404,7 +3404,7 @@ def PTO_TSelOp: PTO_TOp<"tsel", [
 // PTOOps.td  (add TSELS TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TSelsOp: PTO_TOp<"tsels", [
+def TSelSOp: PTO_TOp<"tsels", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -3437,7 +3437,7 @@ def PTO_TSelsOp: PTO_TOp<"tsels", [
 // PTOOps.td  (add TSHL TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TShlOp: PTO_TOp<"tshl", [
+def TShlOp: PTO_TOp<"tshl", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -3469,7 +3469,7 @@ def PTO_TShlOp: PTO_TOp<"tshl", [
 // PTOOps.td  (add TSHR TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TShrOp: PTO_TOp<"tshr", [
+def TShrOp: PTO_TOp<"tshr", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -3501,7 +3501,7 @@ def PTO_TShrOp: PTO_TOp<"tshr", [
 // PTOOps.td  (add TSHLS/TSHRS TBDPS: shift-left/right by scalar)
 //===----------------------------------------------------------------------===//
 
-def PTO_TShlSOp : PTO_TOp<"tshls", [
+def TShlSOp : PTO_TOp<"tshls", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -3525,7 +3525,7 @@ def PTO_TShlSOp : PTO_TOp<"tshls", [
   }];
 }
 
-def PTO_TShrSOp : PTO_TOp<"tshrs", [
+def TShrSOp : PTO_TOp<"tshrs", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -3552,7 +3552,7 @@ def PTO_TShrSOp : PTO_TOp<"tshrs", [
 // PTOOps.td  (add TSORT32 TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TSort32Op: PTO_TOp<"tsort32", [
+def TSort32Op: PTO_TOp<"tsort32", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -3584,7 +3584,7 @@ def PTO_TSort32Op: PTO_TOp<"tsort32", [
 // PTOOps.td  (add TSQRT TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TSqrtOp: PTO_TOp<"tsqrt", [
+def TSqrtOp: PTO_TOp<"tsqrt", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,  
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -3616,7 +3616,7 @@ def PTO_TSqrtOp: PTO_TOp<"tsqrt", [
 // PTOOps.td  (add TSTORE_FP TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TStoreFPOp: PTO_TOp<"tstore_fp", [
+def TStoreFPOp: PTO_TOp<"tstore_fp", [
   PTO_DpsInitOpInterface,
 ]> {
   let summary = "TSTORE_FP: Store an accumulator tile into global memory using a scaling (fp) tile for vector quantization parameters.";
@@ -3644,7 +3644,7 @@ def PTO_TStoreFPOp: PTO_TOp<"tstore_fp", [
 // PTOOps.td  (add TSUB TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TSubOp: PTO_TOp<"tsub", [
+def TSubOp: PTO_TOp<"tsub", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -3676,7 +3676,7 @@ def PTO_TSubOp: PTO_TOp<"tsub", [
 // PTOOps.td  (add TSUBC TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TSubCOp: PTO_TOp<"tsubc", [
+def TSubCOp: PTO_TOp<"tsubc", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -3712,7 +3712,7 @@ def PTO_TSubCOp: PTO_TOp<"tsubc", [
 // PTOOps.td  (add TSUBS TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TSubSOp: PTO_TOp<"tsubs", [
+def TSubSOp: PTO_TOp<"tsubs", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -3746,7 +3746,7 @@ def PTO_TSubSOp: PTO_TOp<"tsubs", [
 // PTOOps.td  (add TSUBSC TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TSubSCOp: PTO_TOp<"tsubsc", [
+def TSubSCOp: PTO_TOp<"tsubsc", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -3782,7 +3782,7 @@ def PTO_TSubSCOp: PTO_TOp<"tsubsc", [
 // PTOOps.td  (add TXORS TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TXORSOp: PTO_TOp<"txors", [
+def TXorSOp: PTO_TOp<"txors", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -3815,7 +3815,7 @@ def PTO_TXORSOp: PTO_TOp<"txors", [
 // PTOOps.td  (add TSYNC TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TSYNCOp: PTO_TOp<"tsync", [
+def TSyncOp: PTO_TOp<"tsync", [
   PTO_DpsInitOpInterface,
 ]> {
   let summary = "TSYNC: Synchronize PTO execution with event tokens or single-op barrier.";
@@ -3843,7 +3843,7 @@ def PTO_TSYNCOp: PTO_TOp<"tsync", [
 // PTOOps.td  (add TXOR TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
-def PTO_TXOROp: PTO_TOp<"txor", [
+def TXorOp: PTO_TOp<"txor", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
@@ -3873,7 +3873,7 @@ def PTO_TXOROp: PTO_TOp<"txor", [
 
 }
 
-def PTO_TPrintOp: PTO_TOp<"tprint", [
+def TPrintOp: PTO_TOp<"tprint", [
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
