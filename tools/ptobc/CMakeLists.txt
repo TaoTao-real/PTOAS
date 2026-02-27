@@ -22,7 +22,7 @@ llvm_map_components_to_libnames(PTObc_LLVM_LIBS Support)
 
 target_link_libraries(ptobc_lib PUBLIC
   ${PTObc_LLVM_LIBS}
-  PTOAS::PTOIR
+  PTOIR
   MLIRIR
   MLIRParser
   MLIRSupport

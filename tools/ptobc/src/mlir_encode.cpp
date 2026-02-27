@@ -194,11 +194,33 @@ struct Encoder {
     return id;
   }
 
-  uint64_t internConstInt(uint64_t typeId, int64_t value) {
+  uint64_t internConstInt64(uint64_t typeId, int64_t value) {
     Buffer p;
     writeULEB128(typeId, p.bytes);
     writeSLEB128(value, p.bytes);
     return internConst(/*tag=*/0x01, p.bytes);
+  }
+
+  uint64_t internConstIntBits(uint64_t typeId, const llvm::APInt &bits) {
+    Buffer p;
+    writeULEB128(typeId, p.bytes);
+
+    const unsigned byteLen = (bits.getBitWidth() + 7) / 8;
+    writeULEB128(byteLen, p.bytes);
+
+    // little-endian bytes
+    llvm::SmallVector<uint64_t, 4> words;
+    words.resize(bits.getNumWords());
+    std::memcpy(words.data(), bits.getRawData(), words.size() * sizeof(uint64_t));
+
+    for (unsigned i = 0; i < byteLen; ++i) {
+      unsigned word = i / 8;
+      unsigned off = (i % 8) * 8;
+      uint8_t b = uint8_t((words[word] >> off) & 0xFFu);
+      p.bytes.push_back(b);
+    }
+
+    return internConst(/*tag=*/0x04, p.bytes);
   }
 
   uint64_t internConstFloatBits(uint64_t dtypeId, const llvm::APInt &bits) {
@@ -345,7 +367,12 @@ void Encoder::encodeOp(mlir::Operation& op, Buffer& out) {
       uint64_t cid = 0;
       if (auto ia = llvm::dyn_cast<mlir::IntegerAttr>(a)) {
         uint64_t typeId = internType(file, cst.getType());
-        cid = internConstInt(typeId, ia.getValue().getSExtValue());
+        const llvm::APInt &v = ia.getValue();
+        if (v.getBitWidth() <= 64) {
+          cid = internConstInt64(typeId, v.getSExtValue());
+        } else {
+          cid = internConstIntBits(typeId, v);
+        }
       } else if (auto fa = llvm::dyn_cast<mlir::FloatAttr>(a)) {
         uint64_t dtypeId = internType(file, cst.getType());
         cid = internConstFloatBits(dtypeId, fa.getValue().bitcastToAPInt());

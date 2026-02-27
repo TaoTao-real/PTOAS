@@ -100,6 +100,8 @@ struct ConstEntryParsed {
   int64_t intValue = 0;
   // tag=0x02 float bits: type_id + bytes
   std::vector<uint8_t> floatBytes;
+  // tag=0x04 wide int bits: type_id + bytes
+  std::vector<uint8_t> intBytes;
 };
 
 struct DbgFileEntry { uint64_t pathSid; uint8_t hashKind; std::vector<uint8_t> hashBytes; };
@@ -242,6 +244,16 @@ static void parseConstPoolSection(const std::vector<uint8_t>& data,
       ConstEntryParsed e;
       e.tag = tag;
       consts.push_back(std::move(e));
+    } else if (tag == 0x04) {
+      // wide int bits: type_id(uLEB), blen(uLEB), bytes(blen)
+      uint64_t tid = r.readULEB();
+      uint64_t blen = r.readULEB();
+      auto bytes = r.readBytes(blen);
+      ConstEntryParsed e;
+      e.tag = tag;
+      e.typeId = tid;
+      e.intBytes = std::move(bytes);
+      consts.push_back(std::move(e));
     } else {
       throw std::runtime_error("unknown ConstEntry tag");
     }
@@ -315,6 +327,29 @@ static mlir::Attribute buildConstAttr(BuildCtx &bc, uint64_t constId) {
     llvm::APInt bits(bitWidth, words);
     llvm::APFloat f(ft.getFloatSemantics(), bits);
     return mlir::FloatAttr::get(ft, f);
+  }
+
+  if (e.tag == 0x04) {
+    auto ty = getType(bc, e.typeId);
+    auto it = mlir::dyn_cast<mlir::IntegerType>(ty);
+    if (!it) throw std::runtime_error("ConstIntBits type is not IntegerType");
+
+    unsigned bitWidth = it.getWidth();
+    unsigned byteLen = (bitWidth + 7) / 8;
+    if (e.intBytes.size() != byteLen) {
+      throw std::runtime_error("ConstIntBits byte_len mismatch");
+    }
+
+    const unsigned numWords = (bitWidth + 63) / 64;
+    llvm::SmallVector<uint64_t, 4> words(numWords, 0);
+    for (unsigned i = 0; i < byteLen; ++i) {
+      unsigned w = i / 8;
+      unsigned off = (i % 8) * 8;
+      words[w] |= (uint64_t(e.intBytes[i]) << off);
+    }
+
+    llvm::APInt bits(bitWidth, words);
+    return mlir::IntegerAttr::get(it, bits);
   }
 
   throw std::runtime_error("unsupported const tag");
