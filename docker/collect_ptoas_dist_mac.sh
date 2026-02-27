@@ -33,6 +33,7 @@ done
 
 PTOAS_BIN="${PTO_SOURCE_DIR}/build/tools/ptoas/ptoas"
 PTOAS_DEPS_DIR="${PTOAS_DIST_DIR}/lib"
+UNRESOLVED_NON_SYSTEM_COUNT=0
 
 if [ ! -f "$PTOAS_BIN" ]; then
   echo "Error: ptoas binary not found at $PTOAS_BIN" >&2
@@ -108,7 +109,15 @@ collect_dylibs() {
     local resolved
     resolved="$(resolve_dep_path "$bin" "$dep" || true)"
     if [ -z "$resolved" ]; then
-      echo "WARN: unresolved dep for $bin -> $dep"
+      case "$dep" in
+        /usr/lib/*|/System/Library/*)
+          # Expected on macOS: system libs are provided by the host.
+          ;;
+        *)
+          echo "WARN: unresolved non-system dep for $bin -> $dep"
+          UNRESOLVED_NON_SYSTEM_COUNT=$((UNRESOLVED_NON_SYSTEM_COUNT + 1))
+          ;;
+      esac
       continue
     fi
 
@@ -142,5 +151,6 @@ ls -la "${PTOAS_DIST_DIR}/bin/"
 DYLIB_COUNT=$(find "${PTOAS_DEPS_DIR}" -name "*.dylib" 2>/dev/null | wc -l)
 echo "=== Collected .dylib dependencies (${DYLIB_COUNT} files) ==="
 du -sh "${PTOAS_DEPS_DIR}/"
+echo "=== Unresolved non-system deps: ${UNRESOLVED_NON_SYSTEM_COUNT} ==="
 echo ""
 echo "Distribution created at: ${PTOAS_DIST_DIR}"
