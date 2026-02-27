@@ -298,6 +298,44 @@ This operation defines the physical "base" and stride rules for global memory. I
 
 ---
 
+##### `pto.get_tensor_view_dim` - Get Tensor View Dimension Size
+
+**Summary:** Returns the size of a given dimension of a logical tensor view.
+
+**Semantics:**
+
+```mlir
+dim = get_tensor_view_dim(tv_or_mr, dim_index)
+```
+
+This op is primarily defined on `!pto.tensor_view`, but after lowering it is also allowed to operate on the memref view produced by `pto.make_tensor_view`.
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `tensor_view` | `!pto.tensor_view<...>` or `memref<...>` | Logical tensor view or its lowered memref |
+| `dim_index` | `index` | Dimension index (0-based) |
+
+**Results:** `index` — the runtime size of the requested dimension.
+
+**Notes:**
+
+- Commonly used to drive `partition_view`/`memref.subview` sizes when the tensor_view shape is dynamic.
+- If PPC lowering has already converted the view to `memref`, this op lowers to a plain `memref.dim`.
+
+**Basic Example:**
+
+```mlir
+%h = pto.get_tensor_view_dim %tv, %c0 : !pto.tensor_view<?x?xf32> -> index
+%w = pto.get_tensor_view_dim %tv, %c1 : !pto.tensor_view<?x?xf32> -> index
+%pv = pto.partition_view %tv,
+       offsets = [%c0, %c0], sizes = [%h, %w]
+       : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<32x32xf32>
+```
+
+---
+
 ##### `pto.partition_view` - Partition Tensor View
 
 **Summary:** Creates a logical window on a tensor_view using offsets and sizes, producing a `partition_tensor_view`.
@@ -5096,11 +5134,81 @@ pto.tprint ins(%src : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=
 
 ---
 
+##### `pto.print` - Print Scalar with Format String
+
+**Summary:** Prints a scalar value using a compile-time format string (host-visible debug output).
+
+**Semantics:**
+
+```c
+printf(format, scalar);
+```
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `format` | `StrAttr` | Compile-time format string (e.g. `"%+08.3f"`); must be a literal attribute |
+| `scalar` | `index` / integer / float | Numeric value to print |
+
+**Results:** None.
+
+**Constraints & Verification:**
+
+- `format` is a string attribute; it is not a pointer operand.
+- `scalar` must be a numeric type (index / signless integer / float).
+- The op is side-effecting (marked with `MemWrite`) to prevent CSE from removing it.
+
+**Hardware Mapping:**
+
+- Lowered to a call to a debug printing routine (e.g. `cce::printf`) in the generated C++.
+
+**Basic Example:**
+
+```mlir
+// Print a single float with fixed width/precision.
+pto.print ins("%+08.3f", %v : f32)
+```
+
+---
+
+##### `pto.trap` - Trap / Abort Execution
+
+**Summary:** Unconditionally aborts execution at runtime. Intended for assertions and debug-only fail-fast paths.
+
+**Semantics:**
+
+```c
+trap(); // does not return
+```
+
+**Arguments:** None.
+
+**Results:** None.
+
+**Constraints & Verification:**
+
+- May be used anywhere; terminates the current kernel or program as implementation-defined.
+- Typically combined with `pto.print` or higher-level assertions for diagnostics.
+
+**Hardware Mapping:**
+
+- Lowered to a device-specific trap/abort intrinsic in the generated C++ (e.g. `TRAP()` or equivalent).
+
+**Basic Example:**
+
+```mlir
+// Debug-only guard, e.g. in a lowered assertion.
+pto.trap
+```
+
+---
+
 ## 5. Operation Summary Table
 
 | Category | Count | Pipeline |
 |----------|-------|----------|
-| Pointer/View | 4 | - |
+| Pointer/View | 5 | - |
 | DMA Data Movement | 4 | MTE2/MTE3/V |
 | Matrix Compute | 9 | M (Cube) |
 | Vector Arithmetic & Math | 31 | V (Vector) |
@@ -5117,6 +5225,6 @@ pto.tprint ins(%src : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=
 | Synchronization | 5 | - |
 | CV-Related | 2 | - |
 | Runtime Intrinsics | 4 | - (Pure) |
-| Debug | 1 | - |
+| Debug | 3 | - |
 
-**Total: 103 operations**
+**Total: 106 operations**

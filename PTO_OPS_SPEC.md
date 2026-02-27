@@ -12,6 +12,7 @@
 |------|-----|---------|-------------------|
 | View | make_tensor_view | Wrap a pointer as a tensor_view descriptor (no allocation, no copy). | `%dst = pto.make_tensor_view %ptr, shape = [sh1,sh2,sh3,sh4,sh5] strides = [st1,st2,st3,st4,st5] : !pto.tensor_view<sh1xsh2xsh3xsh4xsh5xdtype>` |
 |  | partition_view | Partition a tensor view into a smaller logical view (logical slicing). | `%dst = pto.partition_view %src, offsets = [of1,of2,of3,of4,of5], sizes = [sh1,sh2,sh3,sh4,sh5] : !pto.tensor_view<sh1xsh2xsh3xsh4xsh5xdtype> -> !pto.partition_tensor_view<sh1xsh2xsh3xsh4xsh5xdtype>` |
+|  | get_tensor_view_dim | Get the size of one dimension of a tensor_view (or its lowered memref view). | `%dim = pto.get_tensor_view_dim %tv, %dim_index : !pto.tensor_view<?x?xdtype> -> index` |
 |  | alloc_tile(静态参数) | Allocates a tile buffer (logical buffer). | `%dst = pto.alloc_tile : !pto.tile_buf<loc, dtype, rows, cols, v_row, v_col, blayout, slayou, fractal, pad>` |
 |  | alloc_tile(动态参数) | Allocates a tile buffer (logical buffer). | `%dst = pto.alloc_tile valid_row = %vr valid_col = %vc : !pto.tile_buf<loc, dtype, rows, cols, v_row=?, v_col=?, blayout, slayou, fractal, pad>` |
 | 获取核参数 | get_block_idx | Get block index. | `%idx  = pto.get_block_idx` |
@@ -107,3 +108,5 @@
 |  | TPARTMAX | Partial elementwise max with implementation-defined handling of mismatched valid regions. | `pto.tpartmax ins(%src0, %src1 : !pto.tile_buf<...>, !pto.tile_buf<...>) outs(%dst : !pto.tile_buf<...>)` |
 |  | TPARTMIN | Partial elementwise min with implementation-defined handling of mismatched valid regions. | `pto.tpartmin ins(%src0, %src1 : !pto.tile_buf<...>, !pto.tile_buf<...>) outs(%dst : !pto.tile_buf<...>)` |
 | 打印 | TPRINT | Print the contents of a Tile or GlobalTensor for debugging purposes directly from device code. The TPRINT instruction outputs the logical view of data stored in a Tile or GlobalTensor. It supports common data types (e.g., float, half, int8, uint32) and multiple memory layouts (ND, DN, NZ for GlobalTensor; vector tiles for on-chip buffers). Important: This instruction is for development and debugging ONLY. It incurs significant runtime overhead and must not be used in production kernels. Output may be truncated if it exceeds the internal print buffer. Requires CCE compilation option -D_DEBUG --cce-enable-print | `pto.tprint ins(%src : !pto.tile_buf<...> \| !pto.partition_tensor_view<MxNxdtype>)` |
+|  | print | Print a scalar value using a compile-time format string (host-visible debug output). | `pto.print ins("%+08.3f", %scalar : f32)` |
+| 调试/异常 | trap | Abort execution immediately (debug-time trap). No operands, no results. | `pto.trap` |
