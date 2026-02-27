@@ -77,9 +77,9 @@ public:
 
 private:
   ComputeDomain getOpDomain(Operation *op) {
-    if (llvm::isa<pto::MatmulOp>(op)) return ComputeDomain::CUBE;
-    if (llvm::isa<pto::MatmulAccOp>(op)) return ComputeDomain::CUBE;
-    if (llvm::isa<pto::AddFOp>(op)) return ComputeDomain::VECTOR;
+    if (llvm::isa<pto::TMatmulOp>(op)) return ComputeDomain::CUBE;
+    if (llvm::isa<pto::TMatmulAccOp>(op)) return ComputeDomain::CUBE;
+    if (llvm::isa<pto::TAddOp>(op)) return ComputeDomain::VECTOR;
     return ComputeDomain::OTHER;
   }
 };

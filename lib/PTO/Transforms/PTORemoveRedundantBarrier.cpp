@@ -23,7 +23,7 @@ bool isResourceOp(Operation *op, Attribute targetPipe) {
         return pto::PipeAttr::get(op->getContext(), pto::PIPE::PIPE_MTE2) == targetPipe;
     if (auto storeOp = dyn_cast<pto::TStoreOp>(op)) 
         return pto::PipeAttr::get(op->getContext(), pto::PIPE::PIPE_MTE3) == targetPipe;
-    if (auto addfOp = dyn_cast<pto::AddFOp>(op)) 
+    if (auto addfOp = dyn_cast<pto::TAddOp>(op)) 
         return pto::PipeAttr::get(op->getContext(), pto::PIPE::PIPE_V) == targetPipe;
     return false;
 }
@@ -108,7 +108,7 @@ struct PTORemoveRedundantBarrierPass : public PassWrapper<PTORemoveRedundantBarr
     auto getOpPipe = [&](Operation *op) -> Attribute {
       if (isa<pto::TLoadOp>(op)) return attrMTE2;
       if (isa<pto::TStoreOp>(op)) return attrMTE3;
-      if (isa<pto::AddFOp>(op)) return attrVec;
+      if (isa<pto::TAddOp>(op)) return attrVec;
       return {};
     };
  

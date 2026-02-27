@@ -347,7 +347,7 @@ struct InsertLoadStoreForMixCVPass
 
     // addf on UB
     auto outUb = createAllocWithAlign(rewriter, loc, ubTileTy, 64);
-    rewriter.create<pto::AddFDpsOp>(loc, TypeRange{}, cUb.getResult(),
+    rewriter.create<pto::TAddOp>(loc, TypeRange{}, cUb.getResult(),
                                     tmatUb.getResult(), outUb.getResult());
 
     // UB -> OUT(GM)

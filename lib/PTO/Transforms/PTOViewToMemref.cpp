@@ -1068,34 +1068,24 @@ struct PTOViewToMemrefPass
           Value src0 = op->getOperand(0);
           auto config = lookupConfig(src0);
           
-          rewriter.replaceOpWithNewOp<pto::AddFDpsOp>(
+          rewriter.replaceOpWithNewOp<pto::TAddOp>(
               op, TypeRange{}, 
               op->getOperand(0), op->getOperand(1), op->getOperand(2));
       }
 
-      // --- TMatmulOp [Lhs, Rhs, Bias?, Dst] ---
+      // --- TMatmulOp [Lhs, Rhs, Dst] (no optional bias in ODS) ---
       SmallVector<mlir::pto::TMatmulOp , 8> matmuls;
       func.walk([&](mlir::pto::TMatmulOp  op) { matmuls.push_back(op); });
       for (auto op : matmuls) {
         IRRewriter rewriter(ctx);
         rewriter.setInsertionPoint(op);
-        
         Value lhs = op->getOperand(0);
         Value rhs = op->getOperand(1);
-        Value bias, dst;
-
-        if (op->getNumOperands() == 4) {
-            bias = op->getOperand(2);
-            dst  = op->getOperand(3);
-        } else {
-            bias = Value(); 
-            dst  = op->getOperand(2);
-        }
+        Value dst = op->getOperand(2);
 
         auto config = lookupConfig(lhs);
 
-        rewriter.replaceOpWithNewOp<pto::TMatmulOp>(
-          op, TypeRange{}, lhs, rhs, bias, dst);
+        rewriter.replaceOpWithNewOp<pto::TMatmulOp>(op, TypeRange{}, lhs, rhs, dst);
       }
 
       // --- TMatmulAccOp [Acc, Lhs, Rhs, Dst] ---
@@ -2410,7 +2400,7 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::PrintOp_DPS>(
+        rewriter.replaceOpWithNewOp<pto::TPrintOp>(
             op,
             TypeRange{},
             src);

@@ -978,183 +978,6 @@ LogicalResult TStoreOp::verify() {
   return success();
 }
 
-LogicalResult mlir::pto::TransOp::inferReturnTypes(
-    MLIRContext *context,
-    std::optional<Location> location,
-    ValueRange operands,
-    DictionaryAttr attributes,
-    OpaqueProperties properties,
-    RegionRange regions,
-    SmallVectorImpl<Type> &inferredReturnTypes) {
-  if (operands.empty())
-    return emitOptionalError(location, "missing operand 'src'");
-  Type srcTy = operands[0].getType();
-  // 1) 非 ShapedType：没法推 shape，就保持类型不变
-  auto shaped = dyn_cast<ShapedType>(srcTy);
-  if (!shaped) {
-    inferredReturnTypes.push_back(srcTy);
-    return success();
-  }
-  // 2) Unranked：只能推 element type + unranked
-  if (!shaped.hasRank()) {
-    if (isa<TensorType>(srcTy)) {
-      inferredReturnTypes.push_back(UnrankedTensorType::get(shaped.getElementType()));
-      return success();
-    }
-    if (isa<MemRefType>(srcTy)) {
-      inferredReturnTypes.push_back(UnrankedMemRefType::get(shaped.getElementType(),
-                                                          /*memorySpace=*/Attribute()));
-      return success();
-    }
-    inferredReturnTypes.push_back(srcTy);
-    return success();
-  }
-  int64_t rank = shaped.getRank();
-  // 取 optional attr: valid_range
-  auto vr = attributes.get("valid_range").dyn_cast_or_null<DenseI64ArrayAttr>();
-  // 3) 没给 valid_range：按“类型不变”推导（你也可以改成默认 reverse）
-  if (!vr) {
-    inferredReturnTypes.push_back(srcTy);
-    return success();
-  }
-  // 4) valid_range 作为 perm：校验长度 & 合法性
-  ArrayRef<int64_t> perm = vr.asArrayRef();
-  if ((int64_t)perm.size() != rank)
-    return emitOptionalError(location, "valid_range size must equal src rank");
-  SmallVector<bool> seen(rank, false);
-  for (int64_t p : perm) {
-    if (p < 0 || p >= rank)
-      return emitOptionalError(location, "valid_range axis out of range");
-    if (seen[p])
-      return emitOptionalError(location, "valid_range has duplicate axis");
-    seen[p] = true;
-  }
-  // 5) 推导输出 shape
-  SmallVector<int64_t> outShape(rank, ShapedType::kDynamic);
-  ArrayRef<int64_t> inShape = shaped.getShape();
-  for (int64_t i = 0; i < rank; ++i)
-    outShape[i] = inShape[perm[i]];
-  // 6) 构造 result type（分别处理 tensor / memref）
-  if (auto rt = dyn_cast<RankedTensorType>(srcTy)) {
-    inferredReturnTypes.push_back(
-        RankedTensorType::get(outShape, rt.getElementType(), rt.getEncoding()));
-    return success();
-  }
-  if (auto mr = dyn_cast<MemRefType>(srcTy)) {
-    // 注意：transpose 会改变 layout/strides，这里最保守做法是给 identity layout；
-    // 如果你的语义是“只转 logical shape”，那还需要同步推导 affine map/strides。
-    inferredReturnTypes.push_back(
-        MemRefType::get(outShape, mr.getElementType(),
-                        /*layout=*/AffineMapAttr(),
-                        mr.getMemorySpace()));
-    return success();
-  }
-  // 其它 shaped 直接回退
-  inferredReturnTypes.push_back(srcTy);
-  return success();
-}
-
-LogicalResult AddFOp::verify() {
-  // 获取操作数类型 (取 lhs 即可，因为 AllTypesMatch 保证了它们一致)
-  Type operandType = getLhs().getType();
-  int64_t rank = getPTOTypeRank(operandType);
-
-  // 检查是否获取到了有效的 Rank
-  if (rank == -1) {
-    return emitOpError("operand type ") << operandType 
-           << " does not support PTO type (unknown rank or unranked type)";
-  }
-
-  return success();
-}
-
-LogicalResult AddFDpsOp::verify() {
-  Type operandType = getLhs().getType();
-  int64_t rank = getPTOTypeRank(operandType);
-
-  if (rank == -1) {
-    return emitOpError("operand type ") << operandType 
-           << " does not support PTO type (unknown rank or unranked type)";
-  }
-
-  return success();
-}
-
-
-LogicalResult mlir::pto::TransOp::verify() {
-  if (getOperation()->getNumOperands() != 1 || getOperation()->getNumResults() != 1)
-    return emitOpError("expects 1 operands and 1 result");
-
-  return success();
-}
-
-
-
-//===----------------------------------------------------------------------===//
-// PTO_TCvtOp_DPS verification
-//===----------------------------------------------------------------------===//
-
-
-//===----------------------------------------------------------------------===//
-// TLOG verifier (PTO.cpp)
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// TMINS verifier (PTO.cpp)
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// PTO.cpp  (add verifier for TMOV_FP DPS/memref op)
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// PTO.cpp  (custom parse/print/verify for TMRGSORT DPS and TMrgSort op)
-//===----------------------------------------------------------------------===//
-
-// Format1: ins(%src, %blockLen : !pto.tile_buf<…>, type) outs(%dst : !pto.tile_buf<…>); blockLen only here
-// Format2: ins(%src0..%src3 {exhausted = false} : ...)
-//          outs(%dst, %tmp, %executed : !pto.tile_buf<...>, !pto.tile_buf<...>, vector<4xi16>);
-//          exhausted/executed only here
-
-//===----------------------------------------------------------------------===//
-// PTO.cpp  (add verifier for TMUL DPS/memref op)
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// PTO.cpp  (add verifier for TMULS DPS/memref op)
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// PTO.cpp  (add verifier for TNEG DPS/memref op)
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// PTO.cpp  (add verifier for TNOT DPS/memref op)
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// PTO.cpp  (add verifier for TOR DPS/memref op)
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// PTO.cpp  (add verifier for TORS DPS/memref op)
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// PTO.cpp  (add verifier for TPARTADD DPS/memref op)
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// PTO.cpp  (add TSTORE DPS/memref implementation)
-//===----------------------------------------------------------------------===//
-
-mlir::LogicalResult mlir::pto::PrintOp_DPS::verify() {
-  auto srcTy = mlir::dyn_cast<mlir::MemRefType>(getSrc().getType());
-  if (!srcTy)
-    return emitOpError() << "expects memref types for src";
-  return mlir::success();
-}
-
 LogicalResult pto::TAbsOp::verify() {
   Type srcTy = getSrc().getType();
   Type dstTy = getDst().getType();
@@ -3433,90 +3256,6 @@ mlir::LogicalResult mlir::pto::TPrintOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
-// pto.addf custom asm to support BOTH formats:
-//
-//  (A) legacy tile IR:
-//    %r = pto.addf %a, %b : (T, T) -> T
-//
-//  (B) newer short form:
-//    %r = pto.addf %a, %b : T
-//===----------------------------------------------------------------------===//
-
-//ParseResult mlir::pto::AddFOp::parse(OpAsmParser &parser, OperationState &result) {
-//  OpAsmParser::UnresolvedOperand lhs, rhs;
-//
-//  // %lhs, %rhs
-//  if (parser.parseOperand(lhs) || parser.parseComma() || parser.parseOperand(rhs))
-//    return failure();
-//
-//  // attr-dict
-//  if (parser.parseOptionalAttrDict(result.attributes))
-//    return failure();
-//
-//  // :
-//  if (parser.parseColon())
-//    return failure();
-//
-//  Type lhsTy, rhsTy, resTy;
-//
-//  // legacy form: (T, T) -> T
-//  if (succeeded(parser.parseOptionalLParen())) {
-//    lhsTy = parsePTOTypeAllowNoBang(parser);
-//    if (!lhsTy) return parser.emitError(parser.getCurrentLocation(), "failed to parse lhs type");
-//
-//    if (parser.parseComma()) return failure();
-//
-//    rhsTy = parsePTOTypeAllowNoBang(parser);
-//    if (!rhsTy) return parser.emitError(parser.getCurrentLocation(), "failed to parse rhs type");
-//
-//    if (parser.parseRParen() || parser.parseArrow()) return failure();
-//
-//    resTy = parsePTOTypeAllowNoBang(parser);
-//    if (!resTy) return parser.emitError(parser.getCurrentLocation(), "failed to parse result type");
-//  } else {
-//    // short form: T
-//    lhsTy = parsePTOTypeAllowNoBang(parser);
-//    if (!lhsTy) return parser.emitError(parser.getCurrentLocation(), "failed to parse type");
-//    rhsTy = lhsTy;
-//    resTy = lhsTy;
-//  }
-//
-//  // resolve operands
-//  if (parser.resolveOperand(lhs, lhsTy, result.operands)) return failure();
-//  if (parser.resolveOperand(rhs, rhsTy, result.operands)) return failure();
-//
-//  result.addTypes(resTy);
-//  return success();
-//}
-
-//void mlir::pto::AddFOp::print(OpAsmPrinter &p) {
-//  p << " " << getLhs() << ", " << getRhs();
-//  p.printOptionalAttrDict((*this)->getAttrs());
-//
-//  p << " : (" << getLhs().getType() << ", " << getRhs().getType() << ") -> "
-//    << getResult().getType();
-//}
-
-// LogicalResult mlir::pto::AddFOp::inferReturnTypes(
-//     MLIRContext *context, std::optional<Location> location,
-//     ValueRange operands, DictionaryAttr attributes,
-//     OpaqueProperties properties, RegionRange regions,
-//     SmallVectorImpl<Type> &inferredReturnTypes) {
-//   (void)context;
-//   (void)location;
-//   (void)attributes;
-//   (void)properties;
-//   (void)regions;
-
-//   if (operands.size() != 2)
-//     return failure();
-//   if (operands[0].getType() != operands[1].getType())
-//     return failure();
-//   inferredReturnTypes.push_back(operands[0].getType());
-//   return success();
-// }
-
-//===----------------------------------------------------------------------===//
 // PTO Matmul* custom verification and type inference (keep your existing code)
 //===----------------------------------------------------------------------===//
 
@@ -3641,30 +3380,6 @@ static LogicalResult verifyMatmulAccCommon(Operation *op, Value accIn, Value lhs
   return success();
 }
 
-// non-DPS: pto.matmul
-LogicalResult mlir::pto::MatmulOp::verify() {
-  if (getOperation()->getNumResults() != 1)
-    return emitOpError("expects exactly 1 result for non-dps matmul");
-
-  Type resT = getResult().getType();
-
-  Type resElem;
-  if (auto rt = dyn_cast<RankedTensorType>(resT)) {
-    resElem = rt.getElementType();
-  } else if (auto tt = dyn_cast<mlir::pto::TileType>(resT)) {
-    resElem = tt.getElementType();
-  } else {
-    return emitOpError("result must be ranked tensor or !pto.tile");
-  }
-
-  Value bias = getBias();
-  return verifyMatmulCommon(getOperation(), getLhs(), getRhs(),
-                            (bias ? bias : Value{}),
-                            /*dstElem=*/Type{},
-                            /*resElem=*/resElem);
-}
-
-
 LogicalResult mlir::pto::TMatmulOp::verify() {
   if (getPTOTypeRank(getLhs().getType()) == -1 || getPTOTypeRank(getRhs().getType()) == -1 ||
       getPTOTypeRank(getDst().getType()) == -1)
@@ -3678,25 +3393,6 @@ LogicalResult mlir::pto::TGemvOp::verify() {
       getPTOTypeRank(getDst().getType()) == -1)
     return emitOpError("lhs/rhs/dst must be PTO shaped-like types");
   return success();
-}
-
-LogicalResult mlir::pto::MatmulAccOp::verify() {
-  if (getOperation()->getNumResults() != 1)
-    return emitOpError("expects exactly 1 result for non-dps matmul_acc");
-
-  auto resTy = dyn_cast<RankedTensorType>(getResult().getType());
-  if (!resTy)
-    return emitOpError("result must be a ranked tensor type");
-
-  if (auto accRT = dyn_cast<RankedTensorType>(getAccIn().getType())) {
-    if (accRT != resTy)
-      return emitOpError() << "result type must equal acc_in tensor type, but got result="
-                           << resTy << " acc_in=" << accRT;
-  }
-
-  return verifyMatmulAccCommon(getOperation(), getAccIn(), getLhs(), getRhs(),
-                               /*dstElem=*/Type{},
-                               /*resElem=*/resTy.getElementType());
 }
 
 LogicalResult mlir::pto::TMatmulAccOp::verify() {
@@ -3778,63 +3474,12 @@ static RankedTensorType inferMatmulResult2DFromAB(ValueRange operands) {
   return RankedTensorType();
 }
 
-LogicalResult mlir::pto::MatmulOp::inferReturnTypes(
-    MLIRContext *context, std::optional<Location> location,
-    ValueRange operands, DictionaryAttr attributes,
-    OpaqueProperties properties, RegionRange regions,
-    SmallVectorImpl<Type> &inferredReturnTypes) {
-  (void)location;
-  (void)attributes;
-  (void)properties;
-  (void)regions;
-
-  if (mlir::Type tileTy = inferMatmulTileResult2DFromAB(context, operands)) {
-    inferredReturnTypes.push_back(tileTy);
-    return success();
-  }
-
-  auto rt2d = inferMatmulResult2DFromAB(operands);
-  if (rt2d) {
-    inferredReturnTypes.push_back(rt2d);
-    return success();
-  }
-
-  if (operands.size() < 2)
-    return failure();
-  auto lhsTy = dyn_cast<ShapedType>(operands[0].getType());
-  if (!lhsTy)
-    return failure();
-
-  inferredReturnTypes.push_back(
-      RankedTensorType::get({ShapedType::kDynamic}, lhsTy.getElementType()));
-  return success();
-}
-
-
 static RankedTensorType inferAccReturnFromAccIn(ValueRange operands) {
   if (operands.empty())
     return RankedTensorType();
   if (auto accRT = dyn_cast<RankedTensorType>(operands[0].getType()))
     return accRT;
   return RankedTensorType();
-}
-
-LogicalResult mlir::pto::MatmulAccOp::inferReturnTypes(
-    MLIRContext *context, std::optional<Location> location,
-    ValueRange operands, DictionaryAttr attributes,
-    OpaqueProperties properties, RegionRange regions,
-    SmallVectorImpl<Type> &inferredReturnTypes) {
-  (void)context;
-  (void)location;
-  (void)attributes;
-  (void)properties;
-  (void)regions;
-
-  auto rt = inferAccReturnFromAccIn(operands);
-  if (!rt)
-    return failure();
-  inferredReturnTypes.push_back(rt);
-  return success();
 }
 
 namespace mlir {
@@ -4423,15 +4068,6 @@ static void addEffect(
   if (result)
     effects.emplace_back(effect, result, SideEffects::DefaultResource::get());
 }
- 
-// 5. AddFDpsOp: Read(lhs, rhs) -> Write(dst)
-void AddFDpsOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
-  addEffect(effects, &getLhsMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getRhsMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
-}
-
 
 // === TLoadOp ===
 // Read: src, Write: dst
@@ -4731,16 +4367,6 @@ void TMatmulOp::getEffects(SmallVectorImpl<SideEffects::EffectInstance<MemoryEff
   // Singleton -> 直接取地址
   addEffect(effects, &getLhsMutable(), MemoryEffects::Read::get());
   addEffect(effects, &getRhsMutable(), MemoryEffects::Read::get());
-  
-  // Optional -> 返回的是 Range，需要迭代器
-  auto biasMutable = getBiasMutable();
-  if (!biasMutable.empty()) {
-    // 这里的 Range 迭代器解引用后是 OpOperand&，再取地址
-    addEffect(effects, &*biasMutable.begin(), MemoryEffects::Read::get());
-  }
-
-  // Singleton
-  addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
 }
 
 // === TMatmulAccOp ===
@@ -4818,10 +4444,6 @@ void TMatmulMxBiasOp::getEffects(SmallVectorImpl<SideEffects::EffectInstance<Mem
   // 这里的 bias 是必选的 AnyType:$bias，所以是 Singleton
   addEffect(effects, &getBiasMutable(), MemoryEffects::Read::get());
   addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
-}
-
-void PrintOp_DPS::getEffects(SmallVectorImpl<mlir::SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
-  effects.emplace_back(MemoryEffects::Read::get(), mlir::SideEffects::DefaultResource::get());
 }
 
 // [Include 必须放在最后]

@@ -226,9 +226,9 @@ struct PTOMrgSortDpsOpInterface
   }
 };
 
-struct PTOAddFOpInterface
-    : public DstBufferizableOpInterfaceExternalModel<PTOAddFOpInterface,
-                                                     pto::AddFDpsOp> {
+struct PTOAddOpInterface
+    : public DstBufferizableOpInterfaceExternalModel<PTOAddOpInterface,
+                                                     pto::TAddOp> {
   bool bufferizesToMemoryRead(Operation *op, OpOperand &opOperand,
                               const AnalysisState &state) const {
     // Operand is read if it is used in the computation.
@@ -660,7 +660,7 @@ void mlir::pto::registerBufferizableOpInterfaceExternalModels(
     TLoadOp::attachInterface<PTOLoadOpInterface>(*ctx);
     TStoreOp::attachInterface<PTOStoreOpInterface>(*ctx);
     TMrgSortOp::attachInterface<PTOMrgSortDpsOpInterface>(*ctx);
-    AddFDpsOp::attachInterface<PTOAddFOpInterface>(*ctx);
+    TAddOp::attachInterface<PTOAddOpInterface>(*ctx);
     TMatmulOp::attachInterface<PTOMatmulOpInterface>(*ctx);
     // MixMatmulOp::attachInterface<PTOMixMatmulOpInterface>(*ctx);
     // MixGroupMatmulOp::attachInterface<PTOMixGroupMatmulOpInterface>(*ctx);

@@ -121,22 +121,21 @@ struct StoreToDPSPattern : public OpRewritePattern<pto::StoreOp> {
 // ============================================================================
 // Pattern 4: MatmulOp -> MatmulDpsOp
 // ============================================================================
-struct MatmulToDPSPattern : public OpRewritePattern<pto::MatmulOp> {
-  using OpRewritePattern<pto::MatmulOp>::OpRewritePattern;
+struct MatmulToDPSPattern : public OpRewritePattern<pto::TMatmulOp> {
+  using OpRewritePattern<pto::TMatmulOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(pto::MatmulOp op, PatternRewriter &rewriter) const override {
+  LogicalResult matchAndRewrite(pto::TMatmulOp op, PatternRewriter &rewriter) const override {
     Type resType = op.getResult().getType();
-    Value bias = op.getBias(); // 获取 Bias (Optional)
 
     // === Path A: Tensor 流程 ===
     if (auto tensorType = llvm::dyn_cast<RankedTensorType>(resType)) {
       Value initTensor = rewriter.create<tensor::EmptyOp>(
           op.getLoc(), tensorType.getShape(), tensorType.getElementType());
 
-      // 注意参数顺序：lhs, rhs, bias, dst
+      // 注意参数顺序：lhs, rhs, dst
       rewriter.replaceOpWithNewOp<pto::TMatmulOp >(
           op, tensorType, 
-          op.getLhs(), op.getRhs(), bias, initTensor);
+          op.getLhs(), op.getRhs(), initTensor);
       return success();
     }
 
@@ -148,7 +147,7 @@ struct MatmulToDPSPattern : public OpRewritePattern<pto::MatmulOp> {
       rewriter.create<pto::TMatmulOp>(
           op.getLoc(),
           TypeRange{}, // Void result
-          op.getLhs(), op.getRhs(), bias, // inputs
+          op.getLhs(), op.getRhs(), // inputs
           alloc                          // output
       );
 
@@ -163,10 +162,10 @@ struct MatmulToDPSPattern : public OpRewritePattern<pto::MatmulOp> {
 // ============================================================================
 // Pattern 5: MatmulAccOp -> MatmulAccDpsOp [新增]
 // ============================================================================
-struct MatmulAccToDPSPattern : public OpRewritePattern<pto::MatmulAccOp> {
-  using OpRewritePattern<pto::MatmulAccOp>::OpRewritePattern;
+struct MatmulAccToDPSPattern : public OpRewritePattern<pto::TMatmulAccOp> {
+  using OpRewritePattern<pto::TMatmulAccOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(pto::MatmulAccOp op,
+  LogicalResult matchAndRewrite(pto::TMatmulAccOp op,
                                 PatternRewriter &rewriter) const override {
     Type resType = op.getResult().getType();
 
@@ -181,8 +180,8 @@ struct MatmulAccToDPSPattern : public OpRewritePattern<pto::MatmulAccOp> {
           op, 
           tensorType,        // Result Type
           op.getAccIn(),     // acc_in
-          op.getLhs(),       // lhs
-          op.getRhs(),       // rhs
+          op.getLhs(),      // lhs
+          op.getRhs(),      // rhs
           initTensor        // dst (outs)
       );
       return success();
@@ -259,49 +258,6 @@ struct MovToDPSPattern : public OpRewritePattern<pto::MovOp> {
 };
 
 // ============================================================================
-// Pattern 7: TransOp -> TransDpsOp
-// ============================================================================
-struct TransposeToDPSPattern : public OpRewritePattern<pto::TransOp> {
-  using OpRewritePattern<pto::TransOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(pto::TransOp op, PatternRewriter &rewriter) const override {
-    Type resType = op.getResult().getType();
-
-    // === Path A: Tensor 流程 (Tensor Empty) ===
-    if (auto tensorType = llvm::dyn_cast<RankedTensorType>(resType)) {
-      Value initTensor = rewriter.create<tensor::EmptyOp>(
-          op.getLoc(), tensorType.getShape(), tensorType.getElementType());
-      
-      // 创建带返回值的 DPS Op
-      rewriter.replaceOpWithNewOp<pto::TTransOp>(
-          op, tensorType, op.getSrc(), op.getTmp(), initTensor);
-      return success();
-    }
-
-    // === Path B: Tile 流程 (Alloc Tile) ===
-    if (auto tileBufType = getTileBufType(resType, pto::AddressSpace::VEC)) {
-      // 1. 显式分配 Buffer
-      Value alloc = rewriter.create<pto::AllocTileOp>(op.getLoc(), tileBufType,Value(), /*valid_col*/Value());
-      
-      // 2. 创建无返回值的 DPS Op (Void return)
-      rewriter.create<pto::TTransOp>(
-          op.getLoc(),
-          TypeRange{}, // 无返回值
-          op.getSrc(), // ins
-          op.getTmp(),
-          alloc        // outs
-      );
-
-      // 3. 用 alloc 替换原来的 SSA Value
-      rewriter.replaceOp(op, alloc);
-      return success();
-    }
-
-    return failure();
-  }
-};
-
-// ============================================================================
 // Pass Definition
 // ============================================================================
 struct PTOConvertToDPSPass : public PassWrapper<PTOConvertToDPSPass, OperationPass<func::FuncOp>> {
@@ -328,8 +284,7 @@ struct PTOConvertToDPSPass : public PassWrapper<PTOConvertToDPSPass, OperationPa
                  StoreToDPSPattern, 
                  MatmulToDPSPattern,
                  MatmulAccToDPSPattern,
-                 MovToDPSPattern,
-                 TransposeToDPSPattern>(context);
+                 MovToDPSPattern>(context);
 
     if (failed(applyPatternsAndFoldGreedily(func, std::move(patterns)))) {
       signalPassFailure();

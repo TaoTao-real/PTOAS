@@ -452,28 +452,6 @@ def TStoreOp: PTO_TOp<"tstore", [
   }];
 }
 
-// DPS addf for post-bufferization / EmitPTOManual lowering in tile world.
-//   tensor:  %res = pto.addf_dps ins(%a,%b) outs(%dst) -> tensor<...>?
-//   memref:  pto.addf_dps ins(%a,%b) outs(%dst)
-class PTO_TBinaryFloatOp<string mnemonic, list<Trait> traits = []>
-    : PTO_TOp<mnemonic, traits> {
-  
-  let arguments = (ins 
-    PTODpsType:$lhs, 
-    PTODpsType:$rhs, 
-    PTODpsType:$dst
-  );
-  
-  let results = (outs Optional<AnyRankedTensor>:$result);
-
-  let assemblyFormat = [{
-    `ins` `(` $lhs `,` $rhs `:` qualified(type($lhs)) `,` qualified(type($rhs)) `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    attr-dict
-    (`->` qualified(type($result))^)?
-  }];
-}
-
 def TTransOp : PTO_TOp<"ttrans", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
@@ -676,7 +654,6 @@ def TMatmulOp : PTO_TOp<"tmatmul", [
   let arguments = (ins
     PTODpsType:$lhs,
     PTODpsType:$rhs,
-    Optional<PTODpsType>:$bias,
     PTODpsType:$dst
   );
 
@@ -688,7 +665,6 @@ def TMatmulOp : PTO_TOp<"tmatmul", [
 
   let assemblyFormat = [{
     `ins` `(` $lhs `,` $rhs `:` qualified(type($lhs)) `,` qualified(type($rhs)) `)`
-    ( `bias` `=` $bias^ `:` qualified(type($bias)) )?
     `outs` `(` $dst `:` qualified(type($dst) ) `)`
     attr-dict
     ( `->` qualified(type($result))^ )?
@@ -958,92 +934,6 @@ def StoreOp : PTO_Op<"store"> {
 }
 
 //===----------------------------------------------------------------------===//
-// Arith Ops
-//===----------------------------------------------------------------------===//
-
-def AddFOp : PTO_Op<"addf", [
-    AllTypesMatch<["lhs", "rhs", "result"]>, 
-    DeclareOpInterfaceMethods<InferTypeOpInterface>
-  ]> {
-  let summary = "PTO addf (non-DPS).";
-
-  let arguments = (ins
-    AnyType:$lhs,
-    AnyType:$rhs);
-
-  let results = (outs AnyType:$result);
-
-  let assemblyFormat = [{
-    $lhs `,` $rhs 
-    attr-dict 
-    `:` `(` qualified(type($lhs)) `,` qualified(type($rhs)) `)` `->` qualified(type($result))
-  }];
-
-  let hasVerifier = 1;
-}
-
-// Non-DPS transpose (your desired IR uses this):
-//   %tb = pto.trans %ta : tensor<32x32xf32>
-def TransOp : PTO_Op<"trans", [
-    DeclareOpInterfaceMethods<InferTypeOpInterface>
-  ]> {
-  let summary = "PTO transpose (non-DPS).";
-  let arguments = (ins
-    AnyType:$src,
-    AnyType:$tmp);
-  let results = (outs AnyType:$result);
-
-  let assemblyFormat = [{
-    $src `,` $tmp attr-dict `:` qualified(type($src)) `,` qualified(type($tmp)) `->` qualified(type($result))
-  }];
-
-
-  let hasVerifier = 1;
-}
-
-// DPS addf for post-bufferization / EmitPTOManual lowering.
-//    tensor:  %res = pto.addf_dps ins(%a,%b) outs(%dst) -> tensor<...>?
-//    memref:  pto.addf_dps ins(%a,%b) outs(%dst)
-class PTO_BinaryFloatDpsOp<string mnemonic, list<Trait> traits = []>
-    : PTO_DpsOp<mnemonic, traits> {
-  
-  let arguments = (ins 
-    PTODpsType:$lhs, 
-    PTODpsType:$rhs, 
-    PTODpsType:$dst);
-  
-  let results = (outs Optional<AnyRankedTensor>:$result);
-
-  let assemblyFormat = [{
-    `ins` `(` $lhs `,` $rhs `:` qualified(type($lhs)) `,` qualified(type($rhs)) `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)` 
-    attr-dict
-    (`->` qualified(type($result))^)?
-  }];
-}
-
-def AddFDpsOp : PTO_BinaryFloatDpsOp<"addf_dps", [
-  OpPipeInterface,
-  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-]>{
-  let extraClassDeclaration = [{
-    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
-    static StringRef getOpName() { return "pto_add"; }
-    ::mlir::MutableOperandRange getDpsInitsMutable() {
-        return getDstMutable();
-    }
-  }];
-
-  let hasVerifier = 1;
-
-  let builders = [
-    OpBuilder<(ins "Value":$lhs, "Value":$rhs, "Value":$dst), [{
-      build($_builder, $_state, TypeRange{}, lhs, rhs, dst);
-    }]>
-  ];
-}
-
-//===----------------------------------------------------------------------===//
 // Pointer Cast Op (existing)
 //===----------------------------------------------------------------------===//
 
@@ -1281,68 +1171,6 @@ def BarrierOp : PTO_Op<"barrier"> {
   let assemblyFormat = "$pipe attr-dict";
 }
 
-//===----------------------------------------------------------------------===//
-// Matmul Ops
-//===----------------------------------------------------------------------===//
-
-def MatmulOp : PTO_Op<"matmul", [
-    DeclareOpInterfaceMethods<InferTypeOpInterface>
-  ]> {
-  let summary = "PTO matrix multiplication operation (optional bias), non-destination-style.";
-
-  let arguments = (ins
-    AnyType:$lhs,
-    AnyType:$rhs,
-    Optional<AnyType>:$bias
-  );
-
-  let results = (outs
-    AnyType:$result
-  );
-
-  let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `ins` `(` $lhs `,` $rhs `:` qualified(type($lhs)) `,` qualified(type($rhs)) `)`
-    ( `bias` `=` $bias^ `:` qualified(type($bias)) )?
-    attr-dict
-    `->` qualified(type($result))
-  }];
-}
-
-//===----------------------------------------------------------------------===//
-// Matmul Acc Ops
-//===----------------------------------------------------------------------===//
-
-def MatmulAccOp : PTO_Op<"matmul_acc", [
-    DeclareOpInterfaceMethods<InferTypeOpInterface>
-  ]> {
-  let summary = "PTO matrix multiplication accumulate operation, non-destination-style (no bias).";
-
-  let arguments = (ins
-    AnyType:$acc_in,
-    AnyType:$lhs,
-    AnyType:$rhs
-  );
-  let results = (outs AnyType:$result);
-
-  let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `ins` `(` $acc_in `,` $lhs `,` $rhs `:` qualified(type($acc_in) ) `,` qualified(type($lhs)) `,` qualified(type($rhs)) `)`
-    attr-dict
-    `->` qualified(type($result))
-  }];
-}
-
-//===----------------------------------------------------------------------===//
-// Gemv Ops (Matrix-Vector Multiplication)
-//===----------------------------------------------------------------------===//
-
-// ===----------------------------------------------------------------------===//
-// Move Ops (For CV Separation)
-// ===----------------------------------------------------------------------===//
-
 // High-Level Mov: 值语义
 def MovOp : PTO_Op<"mov", [
     SameOperandsAndResultType, // 输入输出类型相同 (!pto.tile -> !pto.tile)
@@ -1502,7 +1330,7 @@ def TGetValOp : PTO_TOp<"tgetval", [
 
 
 // ---- tile-world TOp version (with 't') ----
-// pto.tmscatter ins(%src, %idx) outs(%mem) [ ...]
+// pto.mscatter ins(%src, %idx) outs(%mem) [ ...]
 def MScatterOp : PTO_TOp<"mscatter", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
@@ -1530,161 +1358,6 @@ def MScatterOp : PTO_TOp<"mscatter", [
     static StringRef getIntrinsicName() { return "MSCATTER"; }
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_MTE3; }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getMemMutable(); }
-  }];
-}
-
-//===----------------------------------------------------------------------===//
-// TADDS (sync, tilebuf-based tile + scalar)
-// dst = src + scalar
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// TADDSC (sync, tilebuf-based tile + scalar + tile)
-// dst = src0 + scalar + src1
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// TCOLEXPAND (tilebuf, DPS style: ins/outs, 0 result)
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// TCOLMAX (tilebuf, DPS style: ins/outs, 0 result)
-// dst[0, j] = max_i src[i, j]
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// TCOLMIN (tilebuf, DPS style: ins/outs, 0 result)
-// dst[0, j] = min_i src[i, j]
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// TCOLSUM (tilebuf, DPS style: ins/outs, explicit tmp)
-// dst[0, j] = sum_i src[i, j]
-// intrinsic: TCOLSUM(dst, src, tmp, isBinary)
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// TCVT (tilebuf, DPS)
-//   dst = cast_rmode(src)
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// TDIV (sync, tilebuf-based tile div)  DPS style
-// dst = src0 / src1 elementwise
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// TDIVS (tilebuf, DPS)
-// pto.tdivs ins(%src, %scalar) outs(%dst) [scalar_lhs = true|false]
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// TEXP (tilebuf, DPS)
-// pto.texp ins(%src) outs(%dst)
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// TEXPANDS (tilebuf, DPS)
-// pto.texpands ins(%scalar) outs(%dst)
-//===----------------------------------------------------------------------===//
-
-
-//===----------------------------------------------------------------------===//
-// TEXTRACT (tilebuf, DPS)
-// Copy a sub-window from src into dst, starting at (indexRow, indexCol).
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// TFILLPAD (tilebuf, DPS)
-// Copy src into dst and fill padded region with dst's compile-time PadVal.
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// TGATHER (tilebuf, DPS)
-// - Index gather:   TGATHER(dst, src0, indices)
-// - Mask gather:    TGATHER<DstTile, SrcTile, MaskPattern::Pxxxx>(dst, src)
-//===----------------------------------------------------------------------===//
-
-
-
-
-//===----------------------------------------------------------------------===//
-// TLOG (tilebuf, DPS)
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// TLRELU (tilebuf, DPS)
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// TMAX (tilebuf, DPS)
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// TMAXS (tilebuf, DPS)
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// TMIN (tilebuf, DPS)
-//===----------------------------------------------------------------------===//
-
-
-//===----------------------------------------------------------------------===//
-// TMINS (tilebuf, DPS)
-//===----------------------------------------------------------------------===//
-
-
-//===----------------------------------------------------------------------===//
-// PTOOps.td  (add TMOV_FP DPS/tilebuf op)
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// PTOOps.td  (add TMRGSORT DPS/tilebuf op - two formats: 1 tile+blockLen+dst or 4 tiles)
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// PTOOps.td  (add TMUL DPS/tilebuf op)
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// PTOOps.td  (add TMULS DPS/tilebuf op)
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// PTOOps.td  (add TNEG DPS/tilebuf op)
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// PTOOps.td  (add TNOT DPS/tilebuf op)
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// PTOOps.td  (add TOR DPS/tilebuf op)
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// PTOOps.td  (add TORS DPS/tilebuf op)
-//===----------------------------------------------------------------------===//
-
-//===----------------------------------------------------------------------===//
-// PTOOps.td  (add TPARTADD DPS/tilebuf op)
-//===----------------------------------------------------------------------===//
-
-def PTO_PrintOp_DPS: PTO_TOp<"print_dps", [
-    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
-  ]> {
-  let summary = "TPRINT: Print the contents of a Tile or GlobalTensor for debugging purposes directly from device code..";
-
-  let arguments = (ins
-    PTODpsType:$src
-  );
-
-  let results = (outs);
-
-  let hasVerifier = 1;
-  let assemblyFormat = [{
-    `ins` `(` $src `:` qualified(type($src)) `)`
-    attr-dict
   }];
 }
 

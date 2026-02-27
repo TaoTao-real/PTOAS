@@ -244,7 +244,7 @@ struct PTOHighDimLoweringPass : public PassWrapper<PTOHighDimLoweringPass, Opera
     RewritePatternSet patterns(&getContext());
     
     // 1. Elementwise Ops
-    patterns.add<HighDimElementwiseDPSLowering<pto::AddFDpsOp>>(&getContext());
+    patterns.add<HighDimElementwiseDPSLowering<pto::TAddOp>>(&getContext());
     
     // 2. Load Op
     patterns.add<HighDimLoadDPSLowering>(&getContext());

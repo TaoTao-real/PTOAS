@@ -76,7 +76,7 @@ bool isOptionalTileOp(ForOp forA) {
   auto endIt = std::prev(innerAOps.end());
   for (auto it = startIt; it != endIt; ++it) {
     Operation *originalOp = &*it;
-    if (isa<pto::AddFDpsOp>(originalOp)) {
+    if (isa<pto::TAddOp>(originalOp)) {
       return true;
     }
   }
@@ -123,15 +123,15 @@ bool mergeInnermostSCFFor(ForOp forA, ForOp forB) {
                 baseMemRef.getMixedOffsets(), originalMemRef.getMixedSizes(), originalMemRef.getMixedStrides());
         value2valueMap[originalMemRef->getResult(0)] = subView;
     }
-    if (isa<pto::AddFDpsOp>(originalOp)) {
+    if (isa<pto::TAddOp>(originalOp)) {
         Operation *Endop = &*std::prev(innerABody.end());
         Location loc = Endop->getLoc();
         builder.setInsertionPoint(Endop); // 插入位置：目标Block的末尾
-        pto::AddFDpsOp AddFDps = cast<pto::AddFDpsOp>(originalOp);
-        builder.create<pto::AddFDpsOp>(
+        pto::TAddOp AddFDps = cast<pto::TAddOp>(originalOp);
+        builder.create<pto::TAddOp>(
           loc,
           TypeRange{}, 
-          value2valueMap[AddFDps.getLhs()], value2valueMap[AddFDps.getRhs()], // ins
+          value2valueMap[AddFDps.getSrc0()], value2valueMap[AddFDps.getSrc1()], // ins
           value2valueMap[AddFDps.getDst()]                    // outs
       );
     }
