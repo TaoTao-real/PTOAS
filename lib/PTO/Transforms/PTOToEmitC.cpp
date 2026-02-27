@@ -6316,6 +6316,14 @@ struct SectionToEmitC : public OpConversionPattern<SectionOpTy> {
     std::string startMacro = "\n#if defined(" + getMacroName() + ")";
     rewriter.create<emitc::VerbatimOp>(loc, startMacro);
 
+    if constexpr (std::is_same_v<SectionOpTy, pto::SectionVectorOp>) {
+      // Vector mask is a global HW state and may be modified by previous kernels
+      // (or earlier sections). Reset it to a well-defined state for deterministic
+      // execution of VEC ops.
+      rewriter.create<emitc::VerbatimOp>(loc, "set_mask_norm();");
+      rewriter.create<emitc::VerbatimOp>(loc, "set_vector_mask(-1, -1);");
+    }
+
     Block &innerBlock = op.getBody().front();
     if (!innerBlock.empty()) {
       rewriter.inlineBlockBefore(&innerBlock, op.getOperation(), ValueRange{});
