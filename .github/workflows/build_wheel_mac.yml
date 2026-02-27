@@ -192,9 +192,38 @@ jobs:
       - name: Smoke test wheel imports after collecting artifacts
         if: matrix.python == '3.11'
         run: |
-          # Keep a post-collect wheel import check so release packaging changes
-          # don't reintroduce ARM runtime kills (e.g. cs_invalid_page regressions).
-          bash "$PTO_SOURCE_DIR/docker/test_wheel_imports.sh"
+          # Test the copied wheel artifact from an isolated env with no build-tree
+          # paths, so post-collect/release regressions (e.g. ARM cs_invalid_page)
+          # are caught before upload.
+          brew install uv
+          uv python install 3.11
+          TEST_DIR="$RUNNER_TEMP/wheel-smoke-test"
+          VENV_DIR="$TEST_DIR/.venv"
+          mkdir -p "$TEST_DIR"
+          cd "$TEST_DIR"
+          uv venv --python 3.11 "$VENV_DIR"
+          source "$VENV_DIR/bin/activate"
+
+          unset PYTHONPATH
+          unset DYLD_LIBRARY_PATH
+          unset LD_LIBRARY_PATH
+
+          shopt -s nullglob
+          wheels=("$GITHUB_WORKSPACE"/wheelhouse/ptoas*.whl)
+          if [ "${#wheels[@]}" -ne 1 ]; then
+            echo "Expected exactly one wheel in \$GITHUB_WORKSPACE/wheelhouse, found ${#wheels[@]}:"
+            printf '  %s\n' "${wheels[@]}"
+            exit 1
+          fi
+          uv pip install "${wheels[0]}"
+
+          if [ "${{ matrix.arch }}" = "aarch64" ]; then
+            DYLD_PRINT_LIBRARIES=1 python -c "import mlir.ir; print('mlir.ir imported successfully')"
+            DYLD_PRINT_LIBRARIES=1 python -c "from mlir.dialects import pto; print('pto dialect imported successfully')"
+          else
+            python -c "import mlir.ir; print('mlir.ir imported successfully')"
+            python -c "from mlir.dialects import pto; print('pto dialect imported successfully')"
+          fi
 
       - name: Upload ptoas binary artifact
         if: matrix.python == '3.11'
