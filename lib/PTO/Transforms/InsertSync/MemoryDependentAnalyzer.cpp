@@ -1,5 +1,5 @@
-#include "PTO/Transforms/MemoryDependentAnalyzer.h"
-#include "PTO/Transforms/InsertSyncDebug.h"
+#include "PTO/Transforms/InsertSync/MemoryDependentAnalyzer.h"
+#include "PTO/Transforms/InsertSync/InsertSyncDebug.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "llvm/Support/Debug.h"

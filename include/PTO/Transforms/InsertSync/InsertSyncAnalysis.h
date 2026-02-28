@@ -1,8 +1,8 @@
 #ifndef MLIR_DIALECT_PTO_TRANSFORMS_INSERTSYNCANALYSIS_H
 #define MLIR_DIALECT_PTO_TRANSFORMS_INSERTSYNCANALYSIS_H
  
-#include "PTO/Transforms/SyncCommon.h"
-#include "PTO/Transforms/MemoryDependentAnalyzer.h"
+#include "PTO/Transforms/InsertSync/SyncCommon.h"
+#include "PTO/Transforms/InsertSync/MemoryDependentAnalyzer.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include <array>
  

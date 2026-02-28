@@ -1,7 +1,7 @@
 #ifndef MLIR_DIALECT_PTO_TRANSFORMS_INSERT_SYNC_DEBUG_H
 #define MLIR_DIALECT_PTO_TRANSFORMS_INSERT_SYNC_DEBUG_H
 
-#include "PTO/Transforms/SyncCommon.h"
+#include "PTO/Transforms/InsertSync/SyncCommon.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
 

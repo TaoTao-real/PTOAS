@@ -1,5 +1,5 @@
-#include "PTO/Transforms/SyncEventIdAllocation.h"
-#include "PTO/Transforms/SyncCommon.h"
+#include "PTO/Transforms/InsertSync/SyncEventIdAllocation.h"
+#include "PTO/Transforms/InsertSync/SyncCommon.h"
  
 #define DEBUG_TYPE "pto-inject-sync"
  

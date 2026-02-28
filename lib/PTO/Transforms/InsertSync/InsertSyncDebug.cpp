@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "PTO/Transforms/InsertSyncDebug.h"
+#include "PTO/Transforms/InsertSync/InsertSyncDebug.h"
 
 #include "mlir/IR/AsmState.h"
 #include "llvm/Support/CommandLine.h"
