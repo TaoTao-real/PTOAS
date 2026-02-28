@@ -14,4 +14,6 @@ module {
 // CHECK: __global__ AICORE void sync_ops()
 // CHECK: Event<Op::TLOAD, Op::VECTOR>
 // CHECK: ptoas_record_event
-// CHECK: TSYNC
+// CHECK: .Wait()
+// CHECK-NOT: PTOAS__MANUAL_EVENT_WAIT
+// CHECK-NOT: TSYNC

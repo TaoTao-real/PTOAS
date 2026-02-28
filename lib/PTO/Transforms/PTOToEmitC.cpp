@@ -3724,7 +3724,8 @@ struct PTOWaitFlagToEmitC : public OpConversionPattern<mlir::pto::WaitFlagOp> {
                                                    *state, srcTok, dstTok,
                                                    evtTok);
               rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
-                  op, TypeRange{}, "TSYNC", ArrayAttr{}, ArrayAttr{},
+                  op, TypeRange{}, "PTOAS__MANUAL_EVENT_WAIT", ArrayAttr{},
+                  ArrayAttr{},
                   ValueRange{ev});
               return success();
             }
