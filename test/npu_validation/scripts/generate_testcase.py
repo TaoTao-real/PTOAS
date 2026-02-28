@@ -1024,12 +1024,12 @@ def generate_testcase(
     input_generate = []
     elem_count = logical_elem_count
     # Some kernels use an integer tensor as "indices". The safe in-range domain
-    # depends on the op semantics. For the pto-isa a2a3 implementations:
-    # - TSCATTER: indices are linear indices in [0, rows*cols)
+    # depends on the op semantics (see pto-isa docs):
+    # - TSCATTER: indices are row indices in [0, rows)
     # - TGATHER/TGATHERB: indices are linear indices in [0, rows*cols)
     index_mod = None
     if "TSCATTER" in raw_kernel:
-        index_mod = max(elem_count, 1)
+        index_mod = max(rows, 1)
     elif any(m in raw_kernel for m in ("TGATHER", "TGATHERB")):
         index_mod = max(elem_count, 1)
     mrgsort_packed = "TMRGSORT" in raw_kernel
