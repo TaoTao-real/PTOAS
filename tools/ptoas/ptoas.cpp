@@ -107,6 +107,11 @@ static llvm::cl::opt<bool> emitAddPtrTrace(
     llvm::cl::desc("Emit addptr trace comments in generated C++ output"),
     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> emitManualSyncAsEvent(
+    "emit-manual-sync-as-event",
+    llvm::cl::desc("Emit manual pto.record_event/pto.wait_event sync as typed Event<> + TSYNC() instead of set_flag/wait_flag"),
+    llvm::cl::init(false));
+
 // --------------------------------------------------------------------------
 // Post-process C++ output: rewrite marker calls into Tile member calls.
 //
@@ -552,6 +557,10 @@ int main(int argc, char **argv) {
       return 1;
     }
   }
+
+  if (emitManualSyncAsEvent)
+    module->getOperation()->setAttr("ptoas.emit_manual_sync_as_event",
+                                    UnitAttr::get(&context));
 
   // [Fix] ToolOutputFile Usage
   std::error_code ec;
