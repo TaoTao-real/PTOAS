@@ -38,7 +38,7 @@ private:
                           SmallVector<bool> syncFinder, SyncOperation *setFlag,
                           unsigned endId, unsigned &i);
  
-  /// 处理 Loop 结构中的冗余检查 (目前 NPU-IR 实现较为保守)
+  /// 处理 Loop 结构中的冗余检查 (当前实现较为保守)
   bool CheckLoopBetween(LoopInstanceElement *loopElement,
                         SyncOperation *setFlag, unsigned &i);
  

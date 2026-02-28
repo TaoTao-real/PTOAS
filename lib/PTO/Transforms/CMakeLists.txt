@@ -3,6 +3,7 @@ add_mlir_dialect_library(PTOTransforms
   PTOInsertCVMov.cpp
   PTOConvertToDPS.cpp
   PTOInsertSync.cpp
+  InsertSyncDebug.cpp
   PTOViewToMemref.cpp
   PTOToEmitC.cpp
   Utils.cpp
@@ -18,7 +19,7 @@ add_mlir_dialect_library(PTOTransforms
   PTOVFloopGather.cpp
   PTOIRTranslator.cpp
   SyncCommon.cpp
-  BlockSyncAnalysis.cpp
+  InsertSyncAnalysis.cpp
   MemoryDependentAnalyzer.cpp
   MoveSyncState.cpp
   RemoveRedundantSync.cpp
