@@ -7,6 +7,9 @@
 #   PTO_SOURCE_DIR  - Path to PTO source directory
 #   PTO_INSTALL_DIR - Path to PTO install directory
 #   LLVM_BUILD_DIR  - Path to LLVM build directory (for python packages location)
+#
+# Optional environment variables:
+#   WHEEL_PLAT_NAME - Explicit wheel platform tag (for bdist_wheel --plat-name)
 
 set -e
 
@@ -26,9 +29,14 @@ echo "Creating Python wheel..."
 echo "Copying PTO dialect files..."
 cp "${PTO_INSTALL_DIR}/mlir/dialects/"*.py "${PY_PACKAGE_DIR}/mlir/dialects/"
 
-# Copy setup.py to package directory
-echo "Copying setup.py..."
-cp "${PTO_SOURCE_DIR}/docker/setup.py" "${PY_PACKAGE_DIR}/"
+# Copy platform-specific setup.py to package directory.
+# On macOS, use setup_mac.py and rename it to setup.py in the build dir.
+SETUP_TEMPLATE="${PTO_SOURCE_DIR}/docker/setup.py"
+if [ "$(uname -s)" = "Darwin" ] && [ -f "${PTO_SOURCE_DIR}/docker/setup_mac.py" ]; then
+  SETUP_TEMPLATE="${PTO_SOURCE_DIR}/docker/setup_mac.py"
+fi
+echo "Copying $(basename "${SETUP_TEMPLATE}") as setup.py..."
+cp "${SETUP_TEMPLATE}" "${PY_PACKAGE_DIR}/setup.py"
 
 # Determine Python version tag (e.g., cp311, cp312)
 PY_VERSION=$(python -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")
@@ -37,7 +45,12 @@ echo "Python version tag: ${PY_VERSION}"
 # Build the wheel with version-specific tag
 echo "Building wheel..."
 cd "${PY_PACKAGE_DIR}"
-python setup.py bdist_wheel --python-tag "${PY_VERSION}"
+if [ -n "${WHEEL_PLAT_NAME:-}" ]; then
+  echo "Using wheel platform tag: ${WHEEL_PLAT_NAME}"
+  python setup.py bdist_wheel --python-tag "${PY_VERSION}" --plat-name "${WHEEL_PLAT_NAME}"
+else
+  python setup.py bdist_wheel --python-tag "${PY_VERSION}"
+fi
 
 echo "Wheel created at ${PY_PACKAGE_DIR}/dist/"
 ls -la "${PY_PACKAGE_DIR}/dist/"*.whl
