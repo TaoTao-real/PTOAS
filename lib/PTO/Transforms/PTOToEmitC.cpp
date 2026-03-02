@@ -3661,7 +3661,7 @@ struct PTOSetFlagToEmitC : public OpConversionPattern<mlir::pto::SetFlagOp> {
                                                    *state, srcTok, dstTok,
                                                    evtTok);
               rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
-                  op, TypeRange{}, "ptoas_record_event", ArrayAttr{},
+                  op, TypeRange{}, "PTOAS__MANUAL_EVENT_RECORD", ArrayAttr{},
                   ArrayAttr{}, ValueRange{ev});
               return success();
             }
@@ -7277,29 +7277,6 @@ struct EmitPTOManualPass
 	    // objects (auto token allocation) instead of explicit set_flag/wait_flag.
 	    // The lowering is opt-in and only applies to sync ops tagged by the
 	    // record_event/wait_event lowering pass.
-	    if (mop->hasAttr("ptoas.emit_manual_sync_as_event")) {
-	      bool needsManualEventHelper = false;
-	      mop.walk([&](Operation *op) {
-	        if (!op->hasAttr("ptoas.manual_event_sync"))
-	          return WalkResult::advance();
-	        if (isa<mlir::pto::SetFlagOp, mlir::pto::WaitFlagOp>(op)) {
-	          needsManualEventHelper = true;
-	          return WalkResult::interrupt();
-	        }
-	        return WalkResult::advance();
-	      });
-
-	      if (needsManualEventHelper) {
-	        builder.create<emitc::VerbatimOp>(
-	            loc, builder.getStringAttr(R"cpp(
-template <typename EventT>
-static inline void ptoas_record_event(EventT &event) {
-  event.Record();
-}
-)cpp"));
-	      }
-	    }
-
 	    // 1.5 Pre-lower SCF constructs not handled by SCFToEmitC.
 	    {
 	      // scf.while / scf.index_switch are lowered via CFG blocks. This is not

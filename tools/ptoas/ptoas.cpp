@@ -36,6 +36,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include <string>
+#include <unordered_map>
 
 using namespace mlir;
 using namespace pto;
@@ -233,6 +234,8 @@ static void rewriteTileGetSetValueMarkers(std::string &cpp) {
 // This avoids generating standalone TSYNC(ev) statements while keeping the
 // generated code compatible with pto-isa's event-driven sync style.
 // --------------------------------------------------------------------------
+using ManualEventOpTokMap = std::unordered_map<std::string, std::string>;
+
 static size_t skipSpaceAndComments(llvm::StringRef cpp, size_t pos) {
   auto isSpace = [](char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; };
   while (pos < cpp.size()) {
@@ -262,7 +265,62 @@ static size_t skipSpaceAndComments(llvm::StringRef cpp, size_t pos) {
   return pos;
 }
 
-static bool rewriteManualEventWaitMarkers(std::string &cpp) {
+static bool isIdentChar(char c) {
+  return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+}
+
+static std::string extractCalleeTokenFromStatement(llvm::StringRef stmt) {
+  // Very small heuristic parser:
+  //   "TADD(x,y)"              -> "TADD"
+  //   "pto::TADD(x,y)"         -> "TADD"
+  //   "TSTORE<...>(x,y)"       -> "TSTORE"
+  //   "v0 = TADD(x,y)"         -> "TADD"
+  // Returns empty on failure.
+  size_t lparen = stmt.find('(');
+  if (lparen == llvm::StringRef::npos)
+    return {};
+
+  // Walk backwards to find the token chunk before '('.
+  size_t end = lparen;
+  while (end > 0 && (stmt[end - 1] == ' ' || stmt[end - 1] == '\t'))
+    --end;
+  if (end == 0)
+    return {};
+
+  size_t start = end;
+  while (start > 0) {
+    char c = stmt[start - 1];
+    if (isIdentChar(c) || c == ':' || c == '<' || c == '>' )
+      --start;
+    else
+      break;
+  }
+  llvm::StringRef designator = stmt.slice(start, end).trim();
+  if (designator.empty())
+    return {};
+
+  // Drop template args: take prefix before first '<'.
+  if (size_t lt = designator.find('<'); lt != llvm::StringRef::npos)
+    designator = designator.take_front(lt);
+
+  // Drop namespaces: take suffix after last "::".
+  if (size_t scope = designator.rfind("::"); scope != llvm::StringRef::npos)
+    designator = designator.drop_front(scope + 2);
+
+  designator = designator.trim();
+  if (designator.empty())
+    return {};
+
+  // Ensure token looks like an identifier.
+  for (char c : designator) {
+    if (!isIdentChar(c))
+      return {};
+  }
+  return designator.str();
+}
+
+static bool rewriteManualEventWaitMarkers(std::string &cpp,
+                                         ManualEventOpTokMap *dstTokByVar) {
   static constexpr llvm::StringRef kMarker = "PTOAS__MANUAL_EVENT_WAIT";
   bool changed = false;
   size_t searchPos = 0;
@@ -388,6 +446,14 @@ static bool rewriteManualEventWaitMarkers(std::string &cpp) {
         insertion += evExpr.str();
       }
 
+      if (dstTokByVar) {
+        llvm::StringRef stmtRef(cpp.data() + nextStmtBegin,
+                                callRParen - nextStmtBegin + 1);
+        std::string calleeTok = extractCalleeTokenFromStatement(stmtRef);
+        if (!calleeTok.empty())
+          (*dstTokByVar)[evExpr.str()] = std::move(calleeTok);
+      }
+
       cpp.insert(callRParen, insertion);
 
       // Remove the marker statement only after successful injection.
@@ -399,6 +465,209 @@ static bool rewriteManualEventWaitMarkers(std::string &cpp) {
 
   continue_outer:
     continue;
+  }
+
+  return changed;
+}
+
+static bool rewriteManualEventRecordMarkers(std::string &cpp,
+                                           ManualEventOpTokMap *srcTokByVar) {
+  static constexpr llvm::StringRef kMarker = "PTOAS__MANUAL_EVENT_RECORD";
+  bool changed = false;
+  size_t searchPos = 0;
+
+  while (true) {
+    size_t markerPos = cpp.find(kMarker.str(), searchPos);
+    if (markerPos == std::string::npos)
+      break;
+
+    size_t lparenPos = markerPos + kMarker.size();
+    if (lparenPos >= cpp.size() || cpp[lparenPos] != '(') {
+      searchPos = markerPos + kMarker.size();
+      continue;
+    }
+
+    // Find matching ')'.
+    size_t argsBegin = lparenPos + 1;
+    int parenDepth = 0;
+    size_t rparenPos = std::string::npos;
+    for (size_t i = argsBegin; i < cpp.size(); ++i) {
+      char c = cpp[i];
+      if (c == '(') {
+        ++parenDepth;
+      } else if (c == ')') {
+        if (parenDepth == 0) {
+          rparenPos = i;
+          break;
+        }
+        --parenDepth;
+      }
+    }
+    if (rparenPos == std::string::npos) {
+      searchPos = markerPos + kMarker.size();
+      continue;
+    }
+
+    llvm::StringRef argRef(cpp.data() + argsBegin, rparenPos - argsBegin);
+    llvm::StringRef evExpr = argRef.trim();
+    if (evExpr.empty()) {
+      searchPos = rparenPos + 1;
+      continue;
+    }
+
+    // Standalone marker statement only.
+    size_t afterCall = skipSpaceAndComments(llvm::StringRef(cpp), rparenPos + 1);
+    if (afterCall >= cpp.size() || cpp[afterCall] != ';') {
+      searchPos = rparenPos + 1;
+      continue;
+    }
+    size_t semiPos = afterCall;
+
+    auto replaceWithRecord = [&]() {
+      std::string replacement;
+      replacement.reserve(evExpr.size() + 20);
+      replacement.append(evExpr.data(), evExpr.size());
+      replacement.append(".Record();");
+      cpp.replace(markerPos, (semiPos - markerPos) + 1, replacement);
+      changed = true;
+      searchPos = markerPos + replacement.size();
+    };
+
+    // Find the previous statement, and try to rewrite:
+    //   CALL(...); PTOAS__MANUAL_EVENT_RECORD(ev);
+    // into:
+    //   ev = CALL(...);
+    size_t prevSemi = cpp.rfind(';', markerPos == 0 ? 0 : markerPos - 1);
+    if (prevSemi == std::string::npos) {
+      replaceWithRecord();
+      continue;
+    }
+
+    size_t prevStmtStart = 0;
+    if (prevSemi > 0) {
+      size_t prevPrevSemi = cpp.rfind(';', prevSemi - 1);
+      if (prevPrevSemi != std::string::npos)
+        prevStmtStart = prevPrevSemi + 1;
+    }
+    prevStmtStart =
+        skipSpaceAndComments(llvm::StringRef(cpp), prevStmtStart);
+    if (prevStmtStart >= prevSemi) {
+      replaceWithRecord();
+      continue;
+    }
+
+    llvm::StringRef prevStmtRef(cpp.data() + prevStmtStart,
+                                (prevSemi + 1) - prevStmtStart);
+    // Reject statements that already contain an assignment before the call.
+    size_t callLParen = prevStmtRef.find('(');
+    if (callLParen == llvm::StringRef::npos ||
+        prevStmtRef.take_front(callLParen).contains('=')) {
+      replaceWithRecord();
+      continue;
+    }
+
+    if (srcTokByVar) {
+      std::string calleeTok = extractCalleeTokenFromStatement(prevStmtRef);
+      if (!calleeTok.empty())
+        (*srcTokByVar)[evExpr.str()] = std::move(calleeTok);
+    }
+
+    std::string assignPrefix;
+    assignPrefix.reserve(evExpr.size() + 4);
+    assignPrefix.append(evExpr.data(), evExpr.size());
+    assignPrefix.append(" = ");
+
+    cpp.insert(prevStmtStart, assignPrefix);
+    const size_t insertLen = assignPrefix.size();
+    markerPos += insertLen;
+    semiPos += insertLen;
+
+    cpp.erase(markerPos, (semiPos - markerPos) + 1);
+    changed = true;
+    searchPos = prevStmtStart + assignPrefix.size();
+  }
+
+  return changed;
+}
+
+static bool refineManualEventTemplateOps(std::string &cpp,
+                                        const ManualEventOpTokMap &srcTokByVar,
+                                        const ManualEventOpTokMap &dstTokByVar) {
+  bool changed = false;
+  size_t pos = 0;
+  while (true) {
+    size_t eventPos = cpp.find("Event<Op::", pos);
+    if (eventPos == std::string::npos)
+      break;
+
+    size_t lt = cpp.find('<', eventPos);
+    if (lt == std::string::npos) {
+      pos = eventPos + 1;
+      continue;
+    }
+    size_t gt = cpp.find('>', lt);
+    if (gt == std::string::npos) {
+      pos = eventPos + 1;
+      continue;
+    }
+
+    llvm::StringRef tmpl(cpp.data() + lt + 1, gt - (lt + 1));
+    // Expect: "Op::X, Op::Y"
+    size_t op1Pos = tmpl.find("Op::");
+    if (op1Pos == llvm::StringRef::npos) {
+      pos = gt + 1;
+      continue;
+    }
+    size_t comma = tmpl.find(',', op1Pos);
+    if (comma == llvm::StringRef::npos) {
+      pos = gt + 1;
+      continue;
+    }
+    llvm::StringRef op1Tok = tmpl.slice(op1Pos + 4, comma).trim();
+    size_t op2Pos = tmpl.find("Op::", comma);
+    if (op2Pos == llvm::StringRef::npos) {
+      pos = gt + 1;
+      continue;
+    }
+    llvm::StringRef op2Tok = tmpl.drop_front(op2Pos + 4).trim();
+
+    // Parse variable name right after '>': " ... > var;"
+    size_t varBegin = skipSpaceAndComments(llvm::StringRef(cpp), gt + 1);
+    size_t varEnd = varBegin;
+    while (varEnd < cpp.size() && isIdentChar(cpp[varEnd]))
+      ++varEnd;
+    if (varBegin == varEnd) {
+      pos = gt + 1;
+      continue;
+    }
+    llvm::StringRef varName(cpp.data() + varBegin, varEnd - varBegin);
+
+    std::string newOp1 = op1Tok.str();
+    std::string newOp2 = op2Tok.str();
+    if (op1Tok == "VECTOR") {
+      if (auto it = srcTokByVar.find(varName.str()); it != srcTokByVar.end())
+        newOp1 = it->second;
+    }
+    if (op2Tok == "VECTOR") {
+      if (auto it = dstTokByVar.find(varName.str()); it != dstTokByVar.end())
+        newOp2 = it->second;
+    }
+
+    if (newOp1 != op1Tok.str() || newOp2 != op2Tok.str()) {
+      std::string replacement;
+      replacement.reserve(64);
+      replacement.append("Event<Op::");
+      replacement.append(newOp1);
+      replacement.append(", Op::");
+      replacement.append(newOp2);
+      replacement.append(">");
+      cpp.replace(eventPos, (gt - eventPos) + 1, replacement);
+      changed = true;
+      pos = eventPos + replacement.size();
+      continue;
+    }
+
+    pos = gt + 1;
   }
 
   return changed;
@@ -816,7 +1085,12 @@ int main(int argc, char **argv) {
     return 1;
   }
   cppOS.flush();
-  rewriteManualEventWaitMarkers(cppOutput);
+  ManualEventOpTokMap manualEventSrcTokByVar;
+  ManualEventOpTokMap manualEventDstTokByVar;
+  rewriteManualEventWaitMarkers(cppOutput, &manualEventDstTokByVar);
+  rewriteManualEventRecordMarkers(cppOutput, &manualEventSrcTokByVar);
+  refineManualEventTemplateOps(cppOutput, manualEventSrcTokByVar,
+                               manualEventDstTokByVar);
   rewriteTileGetSetValueMarkers(cppOutput);
   rewritePtrScalarMarkers(cppOutput);
   rewriteAddPtrTraceMarkers(cppOutput, emitAddPtrTrace);

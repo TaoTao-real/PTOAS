@@ -297,13 +297,13 @@ process_one_dir() {
     # Regression guard: manual high sync can be emitted as typed Event<> and
     # threaded into the following op call (no standalone TSYNC/set_flag/wait_flag).
     if [[ "$base" == "syncHigh_event_thread" ]]; then
-      if ! grep -Fq "Event<Op::TLOAD, Op::VECTOR>" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing Event<Op::TLOAD, Op::VECTOR> emission"
+      if ! grep -Fq "Event<Op::TLOAD, Op::TADD>" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing Event<Op::TLOAD, Op::TADD> emission"
         overall=1
         continue
       fi
-      if ! grep -Fq "Event<Op::VECTOR, Op::TSTORE_VEC>" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing Event<Op::VECTOR, Op::TSTORE_VEC> emission"
+      if ! grep -Fq "Event<Op::TADD, Op::TSTORE_VEC>" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing Event<Op::TADD, Op::TSTORE_VEC> emission"
         overall=1
         continue
       fi
@@ -317,13 +317,23 @@ process_one_dir() {
         overall=1
         continue
       fi
-      if grep -Fq "PTOAS__MANUAL_EVENT_WAIT" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\twait marker was not threaded into following op call"
+      if grep -Fq "PTOAS__MANUAL_EVENT_WAIT" "$cpp" || grep -Fq "PTOAS__MANUAL_EVENT_RECORD" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmanual event markers were not rewritten"
         overall=1
         continue
       fi
       if grep -Eq "\\.Wait\\(" "$cpp"; then
         echo -e "${A}(${base}.py)\tFAIL\texplicit Event.Wait() found (expected wait to be threaded into op call)"
+        overall=1
+        continue
+      fi
+      if grep -Eq "\\.Record\\(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\texplicit Event.Record() found (expected record via assignment)"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "=\\s*TLOAD\\s*\\(" "$cpp" || ! grep -Eq "=\\s*TADD\\s*\\(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing assignment-based event record (expected ev = OP(...))"
         overall=1
         continue
       fi
