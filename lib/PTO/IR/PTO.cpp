@@ -2123,6 +2123,41 @@ LogicalResult StoreScalarOp::verify() {
 
   return success();
 }
+
+// ---- GetBufOp / RlsBufOp ----
+static LogicalResult verifyBufSyncOp(Operation *op, PipeAttr pipeAttr,
+                                     IntegerAttr bufIdAttr, IntegerAttr modeAttr) {
+  if (!pipeAttr)
+    return op->emitOpError("expects 'pipe' attribute");
+
+  pto::PIPE pipe = pipeAttr.getPipe();
+  if (pipe == pto::PIPE::PIPE_ALL || pipe == pto::PIPE::PIPE_UNASSIGNED)
+    return op->emitOpError("expects 'pipe' to be a concrete pipe, not PIPE_ALL/PIPE_UNASSIGNED");
+
+  if (!bufIdAttr)
+    return op->emitOpError("expects 'buf_id' attribute");
+  int64_t bufId = bufIdAttr.getInt();
+  if (bufId < 0 || bufId > 31)
+    return op->emitOpError("expects 'buf_id' in range [0, 31]");
+
+  if (modeAttr) {
+    int64_t mode = modeAttr.getInt();
+    if (mode < 0)
+      return op->emitOpError("expects 'mode' to be non-negative");
+  }
+
+  return success();
+}
+
+LogicalResult GetBufOp::verify() {
+  return verifyBufSyncOp(getOperation(), getPipe(), getBufIdAttr(),
+                         getModeAttr());
+}
+
+LogicalResult RlsBufOp::verify() {
+  return verifyBufSyncOp(getOperation(), getPipe(), getBufIdAttr(),
+                         getModeAttr());
+}
 // ---- TOp ----
 LogicalResult TGemvBiasOp::verify() {
   if (getPTOTypeRank(getA().getType()) == -1 ||

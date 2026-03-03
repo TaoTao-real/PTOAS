@@ -359,6 +359,15 @@ process_one_dir() {
         fi
       fi
 
+      # Smoke guard: A5 buffer-id sync ops must lower to get_buf/rls_buf calls.
+      if [[ "$base" == "test_a5_buf_sync" ]]; then
+        if ! grep -Fq "get_buf(" "$cpp" || ! grep -Fq "rls_buf(" "$cpp"; then
+          echo -e "${A}(${base}.pto)\tFAIL\tmissing get_buf/rls_buf lowering"
+          overall=1
+          continue
+        fi
+      fi
+
       echo -e "${A}(${base}.pto)\tOK\tgenerated: $(basename "$cpp")"
     done
   fi

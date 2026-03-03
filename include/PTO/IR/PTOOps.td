@@ -1166,6 +1166,58 @@ def WaitFlagOp : PTO_Op<"wait_flag"> {
   }];
 }
 
+//===----------------------------------------------------------------------===//
+// Buffer-ID Synchronization (A5)
+//===----------------------------------------------------------------------===//
+
+def GetBufOp : PTO_Op<"get_buf"> {
+  let summary = "Acquire a buffer-id token on a given pipe (A5)";
+  let description = [{
+    `pto.get_buf` participates in a buffer-id based ordering model. Operations
+    in the same pipe that are guarded by the same buffer-id are enforced to
+    execute in program order relative to other pipes using the same buffer-id.
+
+    This op is intended to be lowered to the CCEC builtin intrinsic `get_buf`.
+  }];
+
+  let arguments = (ins
+    PTO_PipeAttr:$pipe,
+    I32Attr:$buf_id,
+    DefaultValuedAttr<I32Attr, "0">:$mode
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `[` $pipe `,` $buf_id `]` attr-dict
+  }];
+}
+
+def RlsBufOp : PTO_Op<"rls_buf"> {
+  let summary = "Release a buffer-id token on a given pipe (A5)";
+  let description = [{
+    Releases the previously acquired buffer-id token for the given pipe.
+
+    This op is intended to be lowered to the CCEC builtin intrinsic `rls_buf`.
+  }];
+
+  let arguments = (ins
+    PTO_PipeAttr:$pipe,
+    I32Attr:$buf_id,
+    DefaultValuedAttr<I32Attr, "0">:$mode
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `[` $pipe `,` $buf_id `]` attr-dict
+  }];
+}
+
 def SyncSetOp : PTO_Op<"sync.set"> {
   let summary = "Set a synchronization signal (trigger) between cube and vector.";
   let description = [{

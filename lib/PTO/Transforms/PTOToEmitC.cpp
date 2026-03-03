@@ -3568,6 +3568,54 @@ struct PTOWaitFlagToEmitC : public OpConversionPattern<mlir::pto::WaitFlagOp> {
   }
 };
 
+struct PTOGetBufToEmitC : public OpConversionPattern<mlir::pto::GetBufOp> {
+  using OpConversionPattern<mlir::pto::GetBufOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(mlir::pto::GetBufOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    (void)adaptor;
+    auto *ctx = rewriter.getContext();
+
+    std::string pipeTok = pipeTokFromPipeAttr(op.getPipe());
+    auto argsAttr = rewriter.getArrayAttr({
+        emitc::OpaqueAttr::get(ctx, pipeTok),
+        op.getBufIdAttr(),
+        op.getModeAttr(),
+    });
+
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange{}, "get_buf",
+        /*args=*/argsAttr,
+        /*templateArgs=*/ArrayAttr{},
+        /*operands=*/ValueRange{});
+    return success();
+  }
+};
+
+struct PTORlsBufToEmitC : public OpConversionPattern<mlir::pto::RlsBufOp> {
+  using OpConversionPattern<mlir::pto::RlsBufOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(mlir::pto::RlsBufOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    (void)adaptor;
+    auto *ctx = rewriter.getContext();
+
+    std::string pipeTok = pipeTokFromPipeAttr(op.getPipe());
+    auto argsAttr = rewriter.getArrayAttr({
+        emitc::OpaqueAttr::get(ctx, pipeTok),
+        op.getBufIdAttr(),
+        op.getModeAttr(),
+    });
+
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange{}, "rls_buf",
+        /*args=*/argsAttr,
+        /*templateArgs=*/ArrayAttr{},
+        /*operands=*/ValueRange{});
+    return success();
+  }
+};
+
 struct PTOSyncSetToEmitC : public OpConversionPattern<mlir::pto::SyncSetOp> {
   PTOSyncSetToEmitC(TypeConverter &typeConverter, MLIRContext *ctx,
                     PTOArch targetArch)
@@ -6878,6 +6926,8 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOSubSCToEmitC>(typeConverter, ctx);
   patterns.add<PTOSubCSToEmitC>(typeConverter, ctx);
   patterns.add<PTOWaitFlagToEmitC>(typeConverter, ctx);
+  patterns.add<PTOGetBufToEmitC>(typeConverter, ctx);
+  patterns.add<PTORlsBufToEmitC>(typeConverter, ctx);
   patterns.add<PTOXORSToEmitC>(typeConverter, ctx);
   patterns.add<PTOSYNCToEmitC>(typeConverter, ctx);
   patterns.add<PTOSubSToEmitC>(typeConverter, ctx);
