@@ -3568,6 +3568,58 @@ struct PTOWaitFlagToEmitC : public OpConversionPattern<mlir::pto::WaitFlagOp> {
   }
 };
 
+struct PTOSetFlagDynToEmitC
+    : public OpConversionPattern<mlir::pto::SetFlagDynOp> {
+  using OpConversionPattern<mlir::pto::SetFlagDynOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(mlir::pto::SetFlagDynOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto *ctx = rewriter.getContext();
+
+    const std::string srcTok = pipeTokFromPipeAttr(op.getSrcPipeAttr());
+    const std::string dstTok = pipeTokFromPipeAttr(op.getDstPipeAttr());
+    auto argsAttr = rewriter.getArrayAttr({
+        emitc::OpaqueAttr::get(ctx, srcTok),
+        emitc::OpaqueAttr::get(ctx, dstTok),
+        // The index-typed integer refers to operand #0 (event id).
+        rewriter.getIndexAttr(0),
+    });
+
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange{}, "set_flag",
+        /*args=*/argsAttr,
+        /*templateArgs=*/ArrayAttr{},
+        /*operands=*/ValueRange{adaptor.getEventId()});
+    return success();
+  }
+};
+
+struct PTOWaitFlagDynToEmitC
+    : public OpConversionPattern<mlir::pto::WaitFlagDynOp> {
+  using OpConversionPattern<mlir::pto::WaitFlagDynOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(mlir::pto::WaitFlagDynOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto *ctx = rewriter.getContext();
+
+    const std::string srcTok = pipeTokFromPipeAttr(op.getSrcPipeAttr());
+    const std::string dstTok = pipeTokFromPipeAttr(op.getDstPipeAttr());
+    auto argsAttr = rewriter.getArrayAttr({
+        emitc::OpaqueAttr::get(ctx, srcTok),
+        emitc::OpaqueAttr::get(ctx, dstTok),
+        // The index-typed integer refers to operand #0 (event id).
+        rewriter.getIndexAttr(0),
+    });
+
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange{}, "wait_flag",
+        /*args=*/argsAttr,
+        /*templateArgs=*/ArrayAttr{},
+        /*operands=*/ValueRange{adaptor.getEventId()});
+    return success();
+  }
+};
+
 struct PTOGetBufToEmitC : public OpConversionPattern<mlir::pto::GetBufOp> {
   using OpConversionPattern<mlir::pto::GetBufOp>::OpConversionPattern;
 
@@ -6923,9 +6975,11 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<ArithCmpIToEmitC>(typeConverter, ctx);
   patterns.add<PTOBindTileToEmitC>(typeConverter, ctx);
   patterns.add<PTOSetFlagToEmitC>(typeConverter, ctx);
+  patterns.add<PTOSetFlagDynToEmitC>(typeConverter, ctx);
   patterns.add<PTOSubSCToEmitC>(typeConverter, ctx);
   patterns.add<PTOSubCSToEmitC>(typeConverter, ctx);
   patterns.add<PTOWaitFlagToEmitC>(typeConverter, ctx);
+  patterns.add<PTOWaitFlagDynToEmitC>(typeConverter, ctx);
   patterns.add<PTOGetBufToEmitC>(typeConverter, ctx);
   patterns.add<PTORlsBufToEmitC>(typeConverter, ctx);
   patterns.add<PTOXORSToEmitC>(typeConverter, ctx);

@@ -268,6 +268,17 @@ process_one_dir() {
       fi
     fi
 
+    # Regression guard: multi-buffer (ping-pong) sync must use the selected
+    # event id in the generated C++ (dynamic event id), not a fixed EVENT_ID0.
+    if [[ "$base" == "test_inject_sync_multibuf_loop" ]]; then
+      if ! grep -Eq "wait_flag\\(PIPE_MTE3,[[:space:]]*PIPE_MTE2,[[:space:]]*(\\([[:alnum:]_]+\\)[[:space:]]*)?v[0-9]+\\)" "$cpp" || \
+         ! grep -Eq "set_flag\\(PIPE_MTE3,[[:space:]]*PIPE_MTE2,[[:space:]]*(\\([[:alnum:]_]+\\)[[:space:]]*)?v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing dynamic event id for PIPE_MTE3->PIPE_MTE2 multi-buffer sync"
+        overall=1
+        continue
+      fi
+    fi
+
     # Regression guard for issue #117: vector mask must be reset for each
     # `pto.section.vector` region to avoid cross-kernel state leakage.
     # Use an existing sample (Complex/cv_region.py) that contains a vector section.
@@ -363,6 +374,17 @@ process_one_dir() {
       if [[ "$base" == "test_a5_buf_sync" ]]; then
         if ! grep -Fq "get_buf(" "$cpp" || ! grep -Fq "rls_buf(" "$cpp"; then
           echo -e "${A}(${base}.pto)\tFAIL\tmissing get_buf/rls_buf lowering"
+          overall=1
+          continue
+        fi
+      fi
+
+      # Regression guard: multi-buffer (ping-pong) sync must use the selected
+      # event id in the generated C++ (dynamic event id), not a fixed EVENT_ID0.
+      if [[ "$base" == "test_inject_sync_loop" ]]; then
+        if ! grep -Eq "wait_flag\\(PIPE_MTE3,[[:space:]]*PIPE_MTE2,[[:space:]]*(\\([[:alnum:]_]+\\)[[:space:]]*)?v[0-9]+\\)" "$cpp" || \
+           ! grep -Eq "set_flag\\(PIPE_MTE3,[[:space:]]*PIPE_MTE2,[[:space:]]*(\\([[:alnum:]_]+\\)[[:space:]]*)?v[0-9]+\\)" "$cpp"; then
+          echo -e "${A}(${base}.pto)\tFAIL\tmissing dynamic event id for PIPE_MTE3->PIPE_MTE2 multi-buffer sync"
           overall=1
           continue
         fi
