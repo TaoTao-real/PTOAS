@@ -41,7 +41,7 @@ on:
       pto_isa_repo:
         description: "pto-isa repo URL on remote"
         type: string
-        default: https://gitcode.com/cann/pto-isa.git
+        default: https://github.com/PTO-ISA/pto-isa.git
       pto_isa_commit:
         description: "pto-isa ref (commit/tag/branch; empty = default branch)"
         type: string
@@ -249,7 +249,7 @@ jobs:
           DEVICE_ID: ${{ github.event.inputs.device_id || '2' }}
           SKIP_CASES: ${{ github.event.inputs.skip_cases || '' }}
           RUN_ONLY_CASES: ${{ github.event.inputs.run_only_cases || '' }}
-          PTO_ISA_REPO: ${{ github.event.inputs.pto_isa_repo || 'https://gitcode.com/cann/pto-isa.git' }}
+          PTO_ISA_REPO: ${{ github.event.inputs.pto_isa_repo || 'https://github.com/PTO-ISA/pto-isa.git' }}
           PTO_ISA_COMMIT: ${{ github.event.inputs.pto_isa_commit || '' }}
           REMOTE_HOST: ${{ github.event.inputs.remote_host || '101.245.68.6' }}
           REMOTE_USER: ${{ github.event.inputs.remote_user || 'zhongxuan' }}
