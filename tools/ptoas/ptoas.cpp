@@ -1112,9 +1112,22 @@ int main(int argc, char **argv) {
   }
   pm.addPass(pto::createPTOResolveReservedBuffersPass());
 
-  // Conditionally add Sync pass based on flag.
-  if (enableInsertSync)
-    pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
+  // Conditionally add Sync pass based on flag
+  if (enableInsertSync) {
+    if (effectiveLevel == PTOBuildLevel::Level3) {
+      llvm::errs()
+          << "Warning: --enable-insert-sync is ignored because --pto-level=level3.\n";
+    } else {
+      pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
+    }
+  }
+
+  // Materialize ping/pong selection for planned multi-buffer pointer_cast ops.
+  pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOEnableMultiBufferPass());
+
+  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTORemoveRedundantBarrierPass());
+  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOHighDimLoweringPass());
+  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOVFloopGatherPass());
 
   pm.addPass(createCSEPass());
   if (arch == "a3") {

@@ -1282,6 +1282,12 @@ struct PTOViewToMemrefPass
         auto allocType = MemRefType::get(shape, elemTy, allocLayout, tbTy.getMemorySpace());
         Value alloc = rewriter.create<memref::AllocOp>(loc, allocType);
 
+        // Propagate multi-buffer intent so PlanMemory can allocate ping/pong
+        // addresses for this local buffer.
+        if (auto mb = op->getAttr("pto.multi_buffer")) {
+          alloc.getDefiningOp()->setAttr("pto.multi_buffer", mb);
+        }
+
         // BindTileOp 的 Builder 会自动处理空的 Value，将其视为静态维度
         auto bindOp = rewriter.create<pto::BindTileOp>(
             loc, targetType, alloc, vRow ? vRow : Value(), vCol ? vCol : Value(),
