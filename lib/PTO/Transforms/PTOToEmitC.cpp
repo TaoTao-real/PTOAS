@@ -4609,7 +4609,6 @@ struct PTOSyncToEmitC : public OpConversionPattern<mlir::pto::TSyncOp> {
     operands.reserve(adaptor.getEvents().size());
     for (Value event : adaptor.getEvents())
       operands.push_back(peelUnrealized(event));
-
     rewriter.create<emitc::CallOpaqueOp>(
         op.getLoc(), TypeRange{}, "TSYNC",
         /*args=*/ArrayAttr{},
