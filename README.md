@@ -1,10 +1,8 @@
-# PTOAS (PTO Assembler & Optimizer)
+# ptoas (PTO Assembler & Optimizer)
 
 ## 1. 项目简介 (Introduction)
 
-**PTOAS** (`ptoas`) 是一个基于 **LLVM/MLIR (llvmorg-19.1.7)***(Commit cd708029e0b2869e80abe31ddb175f7c35361f90)* 框架构建的专用编译器工具链，专为 **PTO Bytecode** (Programming Tiling Operator Bytecode) 设计。
-
-项目仓库：[https://github.com/zhangstevenunity/PTOAS](https://github.com/zhangstevenunity/PTOAS)
+**ptoas** (`ptoas`) 是一个基于 **LLVM/MLIR (llvmorg-19.1.7)***(Commit cd708029e0b2869e80abe31ddb175f7c35361f90)* 框架构建的专用编译器工具链，专为 **PTO Bytecode** (Programming Tiling Operator Bytecode) 设计。
 
 作为连接上层 AI 框架与底层各类NPU/GPGPU/CPU硬件，`ptoas` 采用 **Out-of-Tree** 架构构建，提供了完整的 C++ 与 Python 接口，主要职责包括：
 
@@ -18,7 +16,7 @@
 ## 2. 目录结构 (Directory Structure)
 
 ```text
-pto-project/
+pto-as/
 ├── include/
 │   └── PTO/               # PTO Dialect 的头文件与 TableGen 定义 (.td)
 ├── lib/
@@ -27,9 +25,10 @@ pto-project/
 │   └── Bindings/Python/   # Python Binding C++ 实现 (Pybind11)
 ├── python/                # Python 模块构建脚本与辅助代码
 ├── test/
-│   └── samples/            # 测试用例
+│   └── samples/           # 测试用例
 ├── tools/
-│   └── pto-opt/           # ptoas 命令行工具入口 (Target: pto-opt, Output: ptoas)
+│   ├── ptoas/             # ptoas 命令行工具入口 (Output: ptoas)
+│   └── ptobc/             # ptobc 命令行工具入口 (Output: ptobc)
 └── CMakeLists.txt         # 顶级构建配置
 
 ```
@@ -40,17 +39,6 @@ pto-project/
 
 ⚠️ **重要提示**：本项目严格依赖 **LLVM llvmorg-19.1.7** 版本。
 
-### 3.x 预编译安装 (Prebuilt Install, Linux)
-
-如果你只是想快速使用 `ptoas`（不编译 LLVM / 不需要本地 Python Binding），可以直接安装 Release 里的预编译包：
-
-```bash
-# Install latest
-curl -sSL https://raw.githubusercontent.com/zhangstevenunity/PTOAS/main/install.sh | bash
-
-# Install a specific version
-curl -sSL https://raw.githubusercontent.com/zhangstevenunity/PTOAS/main/install.sh | bash -s -- --tag v0.3
-```
 
 ### 3.0 环境变量配置 (Configuration)
 
@@ -58,15 +46,15 @@ curl -sSL https://raw.githubusercontent.com/zhangstevenunity/PTOAS/main/install.
 
 ```bash
 # ================= 配置区域 (请修改这里) =================
-# 设置您的工作根目录 (建议创建一个专门的目录存放 LLVM 和 PTOAS)
+# 设置您的工作根目录 (建议创建一个专门的目录存放 LLVM 和 ptoas)
 export WORKSPACE_DIR=$HOME/llvm-workspace
 
 # LLVM 源码与构建路径
 export LLVM_SOURCE_DIR=$WORKSPACE_DIR/llvm-project
 export LLVM_BUILD_DIR=$LLVM_SOURCE_DIR/build-shared
 
-# PTOAS 源码与安装路径
-export PTO_SOURCE_DIR=$WORKSPACE_DIR/PTOAS
+# pto-as 源码与安装路径
+export PTO_SOURCE_DIR=$WORKSPACE_DIR/pto-as
 export PTO_INSTALL_DIR=$PTO_SOURCE_DIR/install
 # =======================================================
 
@@ -116,14 +104,14 @@ ninja -C $LLVM_BUILD_DIR
 
 ```
 
-### 3.3 第二步：构建 PTOAS (Out-of-Tree)
+### 3.3 第二步：构建 ptoas (Out-of-Tree)
 
-下载 PTOAS 源码并基于刚刚编译好的 LLVM 19 进行构建。
+下载 ptoas 源码并基于刚刚编译好的 LLVM 19 进行构建。
 
 ```bash
-# 1. 下载 PTOAS 源码
+# 1. 下载 ptoas 源码
 cd $WORKSPACE_DIR
-git clone https://github.com/zhangstevenunity/PTOAS.git
+git clone https://gitcode.com/cann/pto-as.git
 cd $PTO_SOURCE_DIR
 
 # 2. 获取 pybind11 的 CMake 路径
@@ -242,7 +230,7 @@ python3 ./tmatmulk.py > ./tmatmulk.pto
 
 ### 5.4 上板验证
 
-该流程用于将 `test/samples` 下生成的 `.cpp`（PTOAS 输出）自动生成 NPU 验证用例，并在 NPU 上运行。
+该流程用于将 `test/samples` 下生成的 `.cpp`（ptoas 输出）自动生成 NPU 验证用例，并在 NPU 上运行。
 
 ```bash
 # 1) 生成 npu_validation 测试目录（会在当前 sample 目录下创建 npu_validation/）
