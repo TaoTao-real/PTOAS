@@ -2542,8 +2542,14 @@ mlir::LogicalResult mlir::pto::TPReluOp::verify() {
   Type e0 = getElemTy(t0), e1 = getElemTy(t1), et = getElemTy(tt), ed = getElemTy(td);
   if (!e0 || !e1 || !et || !ed)
     return emitOpError("failed to get element type for operands");
-  if (e0 != e1 || e0 != et || e0 != ed)
-    return emitOpError("expects src0/src1/tmp/dst to have the same element type");
+  // TPRELU C++ API (TPreluCheck): dst/src0/src1 same type (half or float); tmp must be uint8_t.
+  if (e0 != e1 || e0 != ed)
+    return emitOpError("expects src0/src1/dst to have the same element type (f16 or f32)");
+  if (!e0.isa<FloatType>() || (!e0.isF16() && !e0.isF32()))
+    return emitOpError("expects src0/src1/dst element type to be f16 or f32");
+  auto intTy = et.dyn_cast<IntegerType>();
+  if (!intTy || intTy.getWidth() != 8 || !intTy.isUnsigned())
+    return emitOpError("expects tmp to have element type uint8 (unsigned 8-bit integer)");
   auto s0 = getShapeVec(t0), s1 = getShapeVec(t1), st = getShapeVec(tt),
        sd = getShapeVec(td);
   if (s0 != s1 || s0 != st || s0 != sd)
