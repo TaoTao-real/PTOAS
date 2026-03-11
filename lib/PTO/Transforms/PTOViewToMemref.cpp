@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -26,6 +27,7 @@
 #include "Utils.h" // 假设包含一些通用的工具函数
 
 #include <algorithm>
+#include <functional>
 
 using namespace mlir;
 
@@ -403,6 +405,48 @@ static Type convertPTOTypeToMemRef(Type t) {
   }
   // 其他类型透传
   return t;
+}
+
+// Ensure scf.if result types follow the rewritten yield operand types.
+// PTOViewToMemref rewrites tile values to memref in branch bodies, but scf.if
+// result types are not auto-updated by those op-local rewrites.
+static LogicalResult reconcileSCFIfResultTypes(func::FuncOp func) {
+  SmallVector<scf::IfOp, 8> ifOps;
+  func.walk([&](scf::IfOp ifOp) { ifOps.push_back(ifOp); });
+
+  for (scf::IfOp ifOp : ifOps) {
+    if (ifOp.getNumResults() == 0)
+      continue;
+
+    auto thenYield = dyn_cast<scf::YieldOp>(ifOp.thenBlock()->getTerminator());
+    auto elseYield = dyn_cast<scf::YieldOp>(ifOp.elseBlock()->getTerminator());
+    if (!thenYield || !elseYield) {
+      ifOp.emitError("result-bearing scf.if must end with scf.yield in both "
+                     "then/else regions");
+      return failure();
+    }
+
+    if (thenYield.getNumOperands() != ifOp.getNumResults() ||
+        elseYield.getNumOperands() != ifOp.getNumResults()) {
+      ifOp.emitError("scf.if result count does not match yielded values");
+      return failure();
+    }
+
+    for (unsigned i = 0; i < ifOp.getNumResults(); ++i) {
+      Type thenTy = thenYield.getOperand(i).getType();
+      Type elseTy = elseYield.getOperand(i).getType();
+      if (thenTy != elseTy) {
+        ifOp.emitError() << "scf.if branch yield type mismatch at result #" << i
+                         << ": then=" << thenTy << ", else=" << elseTy;
+        return failure();
+      }
+
+      if (ifOp.getResult(i).getType() != thenTy)
+        ifOp.getResult(i).setType(thenTy);
+    }
+  }
+
+  return success();
 }
 
 // =============================================================================
@@ -2565,6 +2609,14 @@ struct PTOViewToMemrefPass
             op,
             TypeRange{},
             src);
+      }
+
+      // ------------------------------------------------------------------
+      // Stage 4: Reconcile control-flow result types
+      // ------------------------------------------------------------------
+      if (failed(reconcileSCFIfResultTypes(func))) {
+        signalPassFailure();
+        return;
       }
     }
     

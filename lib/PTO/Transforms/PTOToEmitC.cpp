@@ -38,6 +38,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "mlir/Dialect/Func/Transforms/FuncConversions.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"                   
+#include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Conversion/SCFToEmitC/SCFToEmitC.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 
@@ -7560,8 +7561,27 @@ struct EmitPTOManualPass
         return signalPassFailure();
     }
 
-    // 2. 配置转换目标
     PTOToEmitCTypeConverter typeConverter(ctx);
+
+    // 2. Pre-convert SCF structural op types (e.g. scf.if/scf.for results)
+    // using the same type converter. This avoids creating emitc.variable with
+    // unsupported types such as memref.
+    {
+      RewritePatternSet scfTypePatterns(ctx);
+      ConversionTarget scfTypeTarget(*ctx);
+      scf::populateSCFStructuralTypeConversionsAndLegality(
+          typeConverter, scfTypePatterns, scfTypeTarget);
+      scfTypeTarget.markUnknownOpDynamicallyLegal(
+          [](Operation *) { return true; });
+
+      if (failed(applyPartialConversion(mop, scfTypeTarget,
+                                        std::move(scfTypePatterns)))) {
+        mop.emitError("failed to reconcile SCF structural types");
+        return signalPassFailure();
+      }
+    }
+
+    // 3. 配置转换目标
     ConversionTarget target(*ctx);
 
     target.addIllegalDialect<memref::MemRefDialect>();
@@ -7597,14 +7617,14 @@ struct EmitPTOManualPass
     populatePTOToEmitCPatterns(patterns, typeConverter, ctx, *solver, targetArch);
     populateCallOpTypeConversionPattern(patterns, typeConverter);
 
-    // 3. 执行转换
+    // 4. 执行转换
     if (failed(applyPartialConversion(mop, target, std::move(patterns)))) {
       llvm::errs() << "Conversion FAILED! Rolling back executed.\n";
       return signalPassFailure();
     }
 
     // =========================================================================
-    // 4. [终极清理] 
+    // 5. [终极清理] 
     // 顺序至关重要：
     // Step A: 先移除所有 Cast，让 Loop 的 Operand 类型变成底层类型 (如 int32)
     // Step B: 再根据新的 Operand 类型，修复 Loop IV 的类型
@@ -7613,6 +7633,14 @@ struct EmitPTOManualPass
     // --- Step A: 清理 UnrealizedConversionCastOp ---
     // Prefer dropping redundant/unused casts; otherwise lower to emitc.cast
     // so the C++ emitter can print it.
+    auto isEmitCPointerLikeType = [](Type ty) {
+      if (isa<emitc::PointerType>(ty))
+        return true;
+      if (auto opaqueTy = dyn_cast<emitc::OpaqueType>(ty))
+        return opaqueTy.getValue().ends_with("*");
+      return false;
+    };
+
     llvm::SmallVector<UnrealizedConversionCastOp> castsToErase;
     bool castCleanupFailed = false;
     mop.walk([&](UnrealizedConversionCastOp cast) {
@@ -7636,6 +7664,15 @@ struct EmitPTOManualPass
       }
 
       if (inTy == outTy) {
+        output.replaceAllUsesWith(input);
+        castsToErase.push_back(cast);
+        return;
+      }
+
+      // SCF/CFG type conversion can transiently materialize pointer->memref
+      // bridge casts. At this stage, the producing value is already in the
+      // lowered EmitC pointer form; keep it and drop the bridge cast.
+      if (isEmitCPointerLikeType(inTy) && isa<BaseMemRefType>(outTy)) {
         output.replaceAllUsesWith(input);
         castsToErase.push_back(cast);
         return;

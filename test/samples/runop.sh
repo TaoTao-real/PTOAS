@@ -611,6 +611,16 @@ PY
         fi
       fi
 
+      # Regression guard: scf.if yielding tile result in loop should lower
+      # through memref + EmitC without type-mismatch failures.
+      if [[ "$base" == "test_if_else_tile_result" ]]; then
+        if ! grep -Fq "TADD(" "$cpp" || ! grep -Fq "TMUL(" "$cpp" || ! grep -Fq "TSTORE(" "$cpp"; then
+          echo -e "${A}(${base}.pto)\tFAIL\tmissing expected if-else tile result lowering"
+          overall=1
+          continue
+        fi
+      fi
+
       echo -e "${A}(${base}.pto)\tOK\tgenerated: $(basename "$cpp")"
     done
   fi
