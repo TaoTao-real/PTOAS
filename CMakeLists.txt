@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.20.0)
-project(ptoas)
+# PTOAS release version (bump by +0.1 per release).
+project(ptoas VERSION 0.7)
 
 # =========================================================
 # [新增] 强制设置 C++17 标准 (LLVM 19 必需)

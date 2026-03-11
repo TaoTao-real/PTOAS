@@ -199,7 +199,13 @@ ptoas tests/input.pto --pto-arch=a3 -o outputfile.cpp
 # 指定构建 Level（level3 会禁用 PlanMemory/InsertSync）
 ptoas tests/input.pto --pto-level=level3 -o outputfile.cpp
 
+# 查看当前 ptoas release 版本号
+ptoas --version
+
 ```
+
+> `ptoas --version` 的版本号来自项目根目录 `CMakeLists.txt` 的 `project(ptoas VERSION x.y)`；
+> 每次发布请按 `+0.1` 递增。
 
 ### 5.2 Python 接口 (Python API)
 
