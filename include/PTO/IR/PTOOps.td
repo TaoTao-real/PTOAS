@@ -2052,9 +2052,9 @@ def TInsertOp : PTO_TOp<"tinsert", [
   }];
 
   let extraClassDeclaration = [{
-    // TINSERT runs on different DMA pipes across targets.
-    // - A5 (Ascend950/910_95): UB->L1 path is MTE3 in pto-isa custom kernels.
-    // - Others: keep MTE1 for compatibility with existing data-movement sync.
+    // TINSERT runs on different pipes across targets.
+    // - A5 (Ascend950/910_95): UB->L1 path uses MTE3 in pto-isa custom kernels.
+    // - Others (e.g. A2/A3): TINSERT executes on FIX in pto-isa.
     ::mlir::pto::PIPE getPipe() {
       auto moduleOp = getOperation()->getParentOfType<::mlir::ModuleOp>();
       if (moduleOp) {
@@ -2065,7 +2065,7 @@ def TInsertOp : PTO_TOp<"tinsert", [
           }
         }
       }
-      return ::mlir::pto::PIPE::PIPE_MTE1;
+      return ::mlir::pto::PIPE::PIPE_FIX;
     }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
