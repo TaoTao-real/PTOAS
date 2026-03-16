@@ -2052,19 +2052,56 @@ def TInsertOp : PTO_TOp<"tinsert", [
   }];
 
   let extraClassDeclaration = [{
-    // TINSERT runs on different pipes across targets.
-    // - A5 (Ascend950/910_95): UB->L1 path uses MTE3 in pto-isa custom kernels.
-    // - Others (e.g. A2/A3): TINSERT executes on FIX in pto-isa.
+    // TINSERT runs on different pipes depending on target/path:
+    // - A5 Vec(UB)->Mat(L1): PIPE_MTE3 (custom UB->L1 copy path).
+    // - Acc->Mat (A2/A3/A5 regular path): PIPE_FIX.
     ::mlir::pto::PIPE getPipe() {
-      auto moduleOp = getOperation()->getParentOfType<::mlir::ModuleOp>();
-      if (moduleOp) {
-        if (auto spec = moduleOp->getAttrOfType<::mlir::StringAttr>("pto.device-spec")) {
-          auto s = spec.getValue();
-          if (s.starts_with("Ascend950") || s.starts_with("Ascend910_95")) {
-            return ::mlir::pto::PIPE::PIPE_MTE3;
-          }
+      auto isA5Target = [&]() -> bool {
+        auto moduleOp = getOperation()->getParentOfType<::mlir::ModuleOp>();
+        if (!moduleOp)
+          return false;
+
+        if (auto arch =
+                moduleOp->getAttrOfType<::mlir::StringAttr>("pto.target_arch")) {
+          if (arch.getValue().equals_insensitive("a5"))
+            return true;
         }
-      }
+
+        if (auto spec =
+                moduleOp->getAttrOfType<::mlir::StringAttr>("pto.device-spec")) {
+          auto s = spec.getValue();
+          if (s.starts_with("Ascend950") || s.starts_with("Ascend910_95"))
+            return true;
+        }
+        return false;
+      };
+
+      auto getASFromType = [](Type ty)
+          -> std::optional<::mlir::pto::AddressSpace> {
+        if (auto tb = ::mlir::dyn_cast<::mlir::pto::TileBufType>(ty)) {
+          if (auto as = ::mlir::dyn_cast_or_null<::mlir::pto::AddressSpaceAttr>(
+                  tb.getMemorySpace()))
+            return as.getAddressSpace();
+          return std::nullopt;
+        }
+        if (auto mr = ::mlir::dyn_cast<::mlir::MemRefType>(ty)) {
+          if (auto ms = mr.getMemorySpace()) {
+            if (auto as = ::mlir::dyn_cast<::mlir::pto::AddressSpaceAttr>(ms))
+              return as.getAddressSpace();
+          }
+          return std::nullopt;
+        }
+        return std::nullopt;
+      };
+
+      auto sOpt = getASFromType(getSrc().getType());
+      auto dOpt = getASFromType(getDst().getType());
+      if (isA5Target() && sOpt.has_value() && dOpt.has_value() &&
+          sOpt.value() == ::mlir::pto::AddressSpace::VEC &&
+          dOpt.value() == ::mlir::pto::AddressSpace::MAT)
+        return ::mlir::pto::PIPE::PIPE_MTE3;
+
+      // Default and Acc->Mat path.
       return ::mlir::pto::PIPE::PIPE_FIX;
     }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
