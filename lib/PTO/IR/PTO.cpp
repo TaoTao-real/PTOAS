@@ -1193,25 +1193,49 @@ LogicalResult pto::TColExpandOp::verify() {
     return emitOpError("expects src/dst to have same shape");
   return success();
 }
-LogicalResult pto::TColExpandMulOp::verify() {
-  Type t0 = getSrc0().getType();
-  Type t1 = getSrc1().getType();
-  Type td = getDst().getType();
+static LogicalResult verifyTColExpandBinaryLikeOp(Operation *op, Type t0, Type t1,
+                                                  Type td) {
   if (!isPTOShapedLike(t0) || !isPTOShapedLike(t1) || !isPTOShapedLike(td))
-    return emitOpError("expects src0/src1/dst to be PTO shaped-like types");
+    return op->emitOpError("expects src0/src1/dst to be PTO shaped-like types");
 
   Type e0 = getElemTy(t0);
   Type e1 = getElemTy(t1);
   Type ed = getElemTy(td);
   if (!e0 || !e1 || !ed)
-    return emitOpError("failed to get element type for src0/src1/dst");
+    return op->emitOpError("failed to get element type for src0/src1/dst");
 
-  auto ft1 = e1.dyn_cast<FloatType>();
-  auto ftd = ed.dyn_cast<FloatType>();
-  if (!ft1 || !ftd || (!ft1.isF16() && !ft1.isF32()) || (!ftd.isF16() && !ftd.isF32()))
-    return emitOpError("expects src1/dst element type to be f16 or f32");
+  auto isSupportedFloat = [](Type elemTy) {
+    auto ft = elemTy.dyn_cast<FloatType>();
+    return ft && (ft.isF16() || ft.isF32());
+  };
+  if (!isSupportedFloat(e0) || !isSupportedFloat(e1) || !isSupportedFloat(ed))
+    return op->emitOpError("expects src0/src1/dst element type to be f16 or f32");
+
+  if (getShapeVec(t0) != getShapeVec(td))
+    return op->emitOpError("expects src0/dst to have same shape");
+
+  if (auto src1TileTy = dyn_cast<TileBufType>(t1)) {
+    if (src1TileTy.getBLayoutValueI32() != 0)
+      return op->emitOpError("expects src1 to use row-major layout");
+  }
+  if (auto dstTileTy = dyn_cast<TileBufType>(td)) {
+    if (dstTileTy.getBLayoutValueI32() != 0)
+      return op->emitOpError("expects dst to use row-major layout");
+  }
 
   return success();
+}
+LogicalResult pto::TColExpandMulOp::verify() {
+  return verifyTColExpandBinaryLikeOp(getOperation(), getSrc0().getType(),
+                                      getSrc1().getType(), getDst().getType());
+}
+LogicalResult pto::TColExpandMaxOp::verify() {
+  return verifyTColExpandBinaryLikeOp(getOperation(), getSrc0().getType(),
+                                      getSrc1().getType(), getDst().getType());
+}
+LogicalResult pto::TColExpandMinOp::verify() {
+  return verifyTColExpandBinaryLikeOp(getOperation(), getSrc0().getType(),
+                                      getSrc1().getType(), getDst().getType());
 }
 LogicalResult pto::TColMaxOp::verify() {
   Type srcTy = getSrc().getType();
@@ -4333,6 +4357,8 @@ PTO_DEFINE_UNARY_EFFECTS(TCmpSOp, getSrcMutable(), getDstMutable())
 
 PTO_DEFINE_UNARY_EFFECTS(TColExpandOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TColExpandMulOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
+PTO_DEFINE_BINARY_EFFECTS(TColExpandMaxOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
+PTO_DEFINE_BINARY_EFFECTS(TColExpandMinOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TColMaxOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TColMinOp, getSrcMutable(), getDstMutable())
 

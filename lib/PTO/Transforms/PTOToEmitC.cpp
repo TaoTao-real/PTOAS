@@ -4492,6 +4492,50 @@ struct PTOColExpandMulToEmitC : public OpConversionPattern<pto::TColExpandMulOp>
   }
 };
 
+struct PTOColExpandMaxToEmitC : public OpConversionPattern<pto::TColExpandMaxOp> {
+  using OpConversionPattern<pto::TColExpandMaxOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(pto::TColExpandMaxOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+
+    Value src0 = peelUnrealized(adaptor.getSrc0());
+    Value src1 = peelUnrealized(adaptor.getSrc1());
+    Value dst = peelUnrealized(adaptor.getDst());
+
+    rewriter.create<emitc::CallOpaqueOp>(
+        loc, TypeRange{}, "TCOLEXPANDMAX",
+        /*args=*/ArrayAttr{},
+        /*templateArgs=*/ArrayAttr{},
+        /*operands=*/ValueRange{dst, src0, src1});
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct PTOColExpandMinToEmitC : public OpConversionPattern<pto::TColExpandMinOp> {
+  using OpConversionPattern<pto::TColExpandMinOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(pto::TColExpandMinOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+
+    Value src0 = peelUnrealized(adaptor.getSrc0());
+    Value src1 = peelUnrealized(adaptor.getSrc1());
+    Value dst = peelUnrealized(adaptor.getDst());
+
+    rewriter.create<emitc::CallOpaqueOp>(
+        loc, TypeRange{}, "TCOLEXPANDMIN",
+        /*args=*/ArrayAttr{},
+        /*templateArgs=*/ArrayAttr{},
+        /*operands=*/ValueRange{dst, src0, src1});
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct PTOCmpToEmitC : public OpConversionPattern<pto::TCmpOp> {
   using OpConversionPattern<pto::TCmpOp>::OpConversionPattern;
 
@@ -7441,6 +7485,8 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOTTransToEmitC>(typeConverter, ctx);
   patterns.add<PTOSelSToEmitC>(typeConverter, ctx);
   patterns.add<PTOColExpandMulToEmitC>(typeConverter, ctx);
+  patterns.add<PTOColExpandMaxToEmitC>(typeConverter, ctx);
+  patterns.add<PTOColExpandMinToEmitC>(typeConverter, ctx);
   patterns.add<PTOColMinToEmitC>(typeConverter, ctx);
   patterns.add<PTORowExpandSubToEmitC>(typeConverter, ctx);
   patterns.add<PTOShrSToEmitC>(typeConverter, ctx);
