@@ -549,13 +549,17 @@ void PTOIRTranslator::UpdateAliasBufferInfo(Value result, Value source) {
   
   for (auto &parentInfo : buffer2MemInfoMap_[source]) {
     auto newInfo = parentInfo->clone(result);
+    bool unknownRange = parentInfo->unknownRange || hasUnknownAliasRange;
 
-    if (hasUnknownAliasRange) {
+    if (unknownRange) {
       // Dynamic pointer arithmetic cannot be modeled precisely here.
-      // Keep root/scope aliasing, but drop concrete range info conservatively.
+      // Keep root/scope aliasing and preserve unknown-range state across
+      // descendant aliases to avoid dropping real dependencies.
+      newInfo->unknownRange = true;
       newInfo->baseAddresses.clear();
       newInfo->allocateSize = 0;
     } else {
+      newInfo->unknownRange = false;
       if (!newInfo->baseAddresses.empty()) {
         newInfo->baseAddresses[0] += deltaOffset;
       } else {
@@ -563,7 +567,7 @@ void PTOIRTranslator::UpdateAliasBufferInfo(Value result, Value source) {
       }
     }
 
-    if (!hasUnknownAliasRange && newSize > 0) {
+    if (!unknownRange && newSize > 0) {
         newInfo->allocateSize = newSize;
     }
  

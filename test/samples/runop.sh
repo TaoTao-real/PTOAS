@@ -352,6 +352,21 @@ process_one_dir() {
       fi
     fi
 
+    # Alias regression: dynamic local alias chains must stay conservative.
+    # Unknown-range local aliases should still preserve MTE2->MTE3 dependency.
+    if [[ "$base" == "test_inject_sync_unknown_alias_local_chain" ]]; then
+      if ! grep -Eq "set_flag\\(PIPE_MTE2,[[:space:]]*PIPE_MTE3,[[:space:]]*EVENT_ID[0-7]\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing set_flag PIPE_MTE2->PIPE_MTE3 for unknown local alias chain"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "wait_flag\\(PIPE_MTE2,[[:space:]]*PIPE_MTE3,[[:space:]]*EVENT_ID[0-7]\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing wait_flag PIPE_MTE2->PIPE_MTE3 for unknown local alias chain"
+        overall=1
+        continue
+      fi
+    fi
+
     # Regression guard for issue #185: barrier_sync must support op types
     # beyond TMATMUL/TVEC and lower to the expected per-pipe barrier.
     if [[ "$base" == "test_barrier_sync" ]]; then
