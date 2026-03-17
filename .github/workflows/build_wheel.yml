@@ -10,7 +10,7 @@ on:
     - cron: "10 17 * * *"
   workflow_dispatch:
   release:
-    types: [published]
+    types: [prereleased, released]
 
 permissions:
   contents: write
@@ -50,7 +50,11 @@ jobs:
       - name: Compute PTOAS CLI version
         run: |
           if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
-            PTOAS_VERSION="$(${PY_PATH}/bin/python .github/scripts/compute_ptoas_version.py --mode release --check-tag "${GITHUB_REF_NAME}")"
+            if [ "${{ github.event.action }}" = "released" ]; then
+              PTOAS_VERSION="$(${PY_PATH}/bin/python .github/scripts/compute_ptoas_version.py --mode release --check-tag "${GITHUB_REF_NAME}")"
+            else
+              PTOAS_VERSION="$(${PY_PATH}/bin/python .github/scripts/compute_ptoas_version.py --mode release)"
+            fi
           else
             PTOAS_VERSION="$(${PY_PATH}/bin/python .github/scripts/compute_ptoas_version.py --mode dev)"
           fi
