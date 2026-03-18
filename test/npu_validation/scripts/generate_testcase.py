@@ -1138,11 +1138,18 @@ def generate_testcase(
         runtime_host_include_dirs = "    ${ASCEND_HOME_PATH}/pkg_inc/runtime\n"
 
     param_decls = "\n".join(param_decls_lines)
+    runtime_rt_include = ""
+    if ffts_ptrs:
+        # `rtGetC2cCtrlAddr` is provided by CANN runtime. Use ccelib runtime
+        # header here instead of `runtime/rt.h` to avoid environment-specific
+        # include path issues on some board images.
+        runtime_rt_include = '#include <stdint.h>\n#include <ccelib/common/runtime.h>'
     main_cpp = (
         template
         .replace("@RUNTIME_RT_INCLUDE@", runtime_rt_include)
         .replace("@TEST_SUITE@", testcase.upper())
         .replace("@CASE_NAME@", case_name)
+        .replace("@RUNTIME_RT_INCLUDE@", runtime_rt_include)
         .replace(
             "@LAUNCH_DECL@",
             f"void {launch_name}({', '.join(launch_decl_params + ['void *stream'])});",
