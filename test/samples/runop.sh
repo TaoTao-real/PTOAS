@@ -371,7 +371,7 @@ process_one_dir() {
         overall=1
         continue
       fi
-      if ! grep -Fq "ffts_cross_core_sync(PIPE_FIX" "$cpp"; then
+      if ! grep -Fq "ffts_cross_core_sync(PIPE_MTE3" "$cpp"; then
         echo -e "${A}(${base}.py)\tFAIL\tmissing A3 sync.set lowering to ffts_cross_core_sync"
         overall=1
         continue
