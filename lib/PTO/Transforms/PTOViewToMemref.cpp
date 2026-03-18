@@ -1717,10 +1717,17 @@ struct PTOViewToMemrefPass
         Value dst = op.getDst();
 
         auto srcTy = dyn_cast<MemRefType>(src.getType());
-        auto scalarTy = dyn_cast<FloatType>(scalar.getType());
         auto dstTy = dyn_cast<MemRefType>(dst.getType());
-        if (!srcTy || !scalarTy || !dstTy) {
+        auto scalarTy = scalar.getType();
+        bool scalarOk =
+            isa<IntegerType, FloatType>(scalarTy); // ScalarType in ODS: int/float
+        if (!srcTy || !dstTy) {
           op.emitError("ins/outs are not memref yet");
+          signalPassFailure();
+          return;
+        }
+        if (!scalarOk) {
+          op.emitError("expects scalar to be an integer or float type");
           signalPassFailure();
           return;
         }

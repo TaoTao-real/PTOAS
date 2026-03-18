@@ -1772,8 +1772,7 @@ static LogicalResult verifyMatTileOperandsA2A3(Operation *op, Type lhsTy,
   auto lhsShape = getShapeVec(lhsTy);
   auto rhsShape = getShapeVec(rhsTy);
   auto dstShape = getShapeVec(dstTy);
-  if (lhsShape != dstShape && (lhsShape[0] != dstShape[0] || rhsShape[1] != dstShape[1] ||
-                               lhsShape[1] != rhsShape[0]))
+  if ((lhsShape[0] != dstShape[0] || rhsShape[1] != dstShape[1] || lhsShape[1] != rhsShape[0]))
     return op->emitOpError(
         "expects static matmul tile shapes lhs[M,K], rhs[K,N], and dst[M,N]");
   auto lhsValid = getValidShapeVec(lhsTy);
