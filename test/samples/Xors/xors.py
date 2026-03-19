@@ -45,13 +45,14 @@ def build():
                 # input subview
                 sv_src = pto.PartitionViewOp(tile_view_32, tv_src, offsets=[c0, c0], sizes=[c32, c32]).result
 
-                # alloc tiles: src, dst
+                # alloc tiles: src, tmp, dst
                 tb_src = pto.AllocTileOp(tile_buf_32).result
+                tb_tmp = pto.AllocTileOp(tile_buf_32).result
                 tb_dst = pto.AllocTileOp(tile_buf_32).result
 
                 pto.TLoadOp(None, sv_src, tb_src)  # result=None
 
-                pto.TXorSOp(tb_src, scale, tb_dst)
+                pto.TXorSOp(tb_src, scale, tb_tmp, tb_dst)
 
                 # output subview
                 sv_dst = pto.PartitionViewOp(tile_view_32, tv_dst, offsets=[c0, c0], sizes=[c32, c32]).result

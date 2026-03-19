@@ -4877,6 +4877,240 @@ mlir::LogicalResult mlir::pto::TRowExpandOp::verify() {
 }
 
 
+ParseResult mlir::pto::TSort32Op::parse(OpAsmParser &parser, OperationState &result) {
+  OpAsmParser::UnresolvedOperand src, dst, idx, tmp;
+  Type srcTy, dstTy, idxTy, tmpTy;
+  bool hasTmp = false;
+
+  if (parser.parseKeyword("ins") || parser.parseLParen() || parser.parseOperand(src))
+    return failure();
+  if (succeeded(parser.parseOptionalComma())) {
+    if (parser.parseOperand(tmp))
+      return failure();
+    hasTmp = true;
+  }
+  if (parser.parseColonType(srcTy))
+    return failure();
+  if (hasTmp) {
+    if (parser.parseComma() || parser.parseType(tmpTy))
+      return failure();
+  }
+  if (parser.parseRParen())
+    return failure();
+
+  if (parser.parseKeyword("outs") || parser.parseLParen() ||
+      parser.parseOperand(dst) || parser.parseComma() || parser.parseOperand(idx) ||
+      parser.parseColonType(dstTy) || parser.parseComma() || parser.parseType(idxTy) ||
+      parser.parseRParen())
+    return failure();
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+
+  if (parser.resolveOperand(src, srcTy, result.operands) ||
+      parser.resolveOperand(dst, dstTy, result.operands) ||
+      parser.resolveOperand(idx, idxTy, result.operands))
+    return failure();
+  if (hasTmp) {
+    if (parser.resolveOperand(tmp, tmpTy, result.operands))
+      return failure();
+  }
+
+  result.addAttribute(
+      "operandSegmentSizes",
+      parser.getBuilder().getDenseI32ArrayAttr({1, 1, 1, hasTmp ? 1 : 0}));
+  return success();
+}
+
+void mlir::pto::TSort32Op::print(OpAsmPrinter &p) {
+  p << " ins(" << getSrc();
+  if (getTmp()) {
+    p << ", " << getTmp();
+    p << " : " << getSrc().getType() << ", " << getTmp().getType() << ")";
+  } else {
+    p << " : " << getSrc().getType() << ")";
+  }
+  p << " outs(" << getDst() << ", " << getIdx()
+    << " : " << getDst().getType() << ", " << getIdx().getType() << ")";
+  p.printOptionalAttrDict((*this)->getAttrs(), /*elidedAttrs=*/{"operandSegmentSizes"});
+}
+
+ParseResult mlir::pto::TRowExpandDivOp::parse(OpAsmParser &parser, OperationState &result) {
+  OpAsmParser::UnresolvedOperand src0, src1, tmp, dst;
+  Type src0Ty, src1Ty, tmpTy, dstTy;
+  bool hasTmp = false;
+
+  if (parser.parseKeyword("ins") || parser.parseLParen() ||
+      parser.parseOperand(src0) || parser.parseComma() || parser.parseOperand(src1))
+    return failure();
+  if (succeeded(parser.parseOptionalComma())) {
+    if (parser.parseOperand(tmp))
+      return failure();
+    hasTmp = true;
+  }
+  if (parser.parseColon())
+    return failure();
+  if (parser.parseType(src0Ty) || parser.parseComma() || parser.parseType(src1Ty))
+    return failure();
+  if (hasTmp) {
+    if (parser.parseComma() || parser.parseType(tmpTy))
+      return failure();
+  }
+  if (parser.parseRParen())
+    return failure();
+  if (parser.parseKeyword("outs") || parser.parseLParen() ||
+      parser.parseOperand(dst) || parser.parseColonType(dstTy) ||
+      parser.parseRParen())
+    return failure();
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+
+  if (parser.resolveOperand(src0, src0Ty, result.operands) ||
+      parser.resolveOperand(src1, src1Ty, result.operands))
+    return failure();
+  if (hasTmp) {
+    if (parser.resolveOperand(tmp, tmpTy, result.operands))
+      return failure();
+  }
+  if (parser.resolveOperand(dst, dstTy, result.operands))
+    return failure();
+
+  result.addAttribute(
+      "operandSegmentSizes",
+      parser.getBuilder().getDenseI32ArrayAttr({1, 1, hasTmp ? 1 : 0, 1}));
+  return success();
+}
+
+void mlir::pto::TRowExpandDivOp::print(OpAsmPrinter &p) {
+  p << " ins(" << getSrc0() << ", " << getSrc1();
+  if (getTmp()) {
+    p << ", " << getTmp();
+    p << " : " << getSrc0().getType() << ", " << getSrc1().getType() << ", "
+      << getTmp().getType() << ")";
+  } else {
+    p << " : " << getSrc0().getType() << ", " << getSrc1().getType() << ")";
+  }
+  p << " outs(" << getDst() << " : " << getDst().getType() << ")";
+  p.printOptionalAttrDict((*this)->getAttrs(), /*elidedAttrs=*/{"operandSegmentSizes"});
+}
+
+ParseResult mlir::pto::TRowExpandMulOp::parse(OpAsmParser &parser, OperationState &result) {
+  OpAsmParser::UnresolvedOperand src0, src1, tmp, dst;
+  Type src0Ty, src1Ty, tmpTy, dstTy;
+  bool hasTmp = false;
+
+  if (parser.parseKeyword("ins") || parser.parseLParen() ||
+      parser.parseOperand(src0) || parser.parseComma() || parser.parseOperand(src1))
+    return failure();
+  if (succeeded(parser.parseOptionalComma())) {
+    if (parser.parseOperand(tmp))
+      return failure();
+    hasTmp = true;
+  }
+  if (parser.parseColon())
+    return failure();
+  if (parser.parseType(src0Ty) || parser.parseComma() || parser.parseType(src1Ty))
+    return failure();
+  if (hasTmp) {
+    if (parser.parseComma() || parser.parseType(tmpTy))
+      return failure();
+  }
+  if (parser.parseRParen())
+    return failure();
+  if (parser.parseKeyword("outs") || parser.parseLParen() ||
+      parser.parseOperand(dst) || parser.parseColonType(dstTy) ||
+      parser.parseRParen())
+    return failure();
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+
+  if (parser.resolveOperand(src0, src0Ty, result.operands) ||
+      parser.resolveOperand(src1, src1Ty, result.operands))
+    return failure();
+  if (hasTmp) {
+    if (parser.resolveOperand(tmp, tmpTy, result.operands))
+      return failure();
+  }
+  if (parser.resolveOperand(dst, dstTy, result.operands))
+    return failure();
+
+  result.addAttribute(
+      "operandSegmentSizes",
+      parser.getBuilder().getDenseI32ArrayAttr({1, 1, hasTmp ? 1 : 0, 1}));
+  return success();
+}
+
+void mlir::pto::TRowExpandMulOp::print(OpAsmPrinter &p) {
+  p << " ins(" << getSrc0() << ", " << getSrc1();
+  if (getTmp()) {
+    p << ", " << getTmp();
+    p << " : " << getSrc0().getType() << ", " << getSrc1().getType() << ", "
+      << getTmp().getType() << ")";
+  } else {
+    p << " : " << getSrc0().getType() << ", " << getSrc1().getType() << ")";
+  }
+  p << " outs(" << getDst() << " : " << getDst().getType() << ")";
+  p.printOptionalAttrDict((*this)->getAttrs(), /*elidedAttrs=*/{"operandSegmentSizes"});
+}
+
+ParseResult mlir::pto::TRowExpandSubOp::parse(OpAsmParser &parser, OperationState &result) {
+  OpAsmParser::UnresolvedOperand src0, src1, tmp, dst;
+  Type src0Ty, src1Ty, tmpTy, dstTy;
+  bool hasTmp = false;
+
+  if (parser.parseKeyword("ins") || parser.parseLParen() ||
+      parser.parseOperand(src0) || parser.parseComma() || parser.parseOperand(src1))
+    return failure();
+  if (succeeded(parser.parseOptionalComma())) {
+    if (parser.parseOperand(tmp))
+      return failure();
+    hasTmp = true;
+  }
+  if (parser.parseColon())
+    return failure();
+  if (parser.parseType(src0Ty) || parser.parseComma() || parser.parseType(src1Ty))
+    return failure();
+  if (hasTmp) {
+    if (parser.parseComma() || parser.parseType(tmpTy))
+      return failure();
+  }
+  if (parser.parseRParen())
+    return failure();
+  if (parser.parseKeyword("outs") || parser.parseLParen() ||
+      parser.parseOperand(dst) || parser.parseColonType(dstTy) ||
+      parser.parseRParen())
+    return failure();
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+
+  if (parser.resolveOperand(src0, src0Ty, result.operands) ||
+      parser.resolveOperand(src1, src1Ty, result.operands))
+    return failure();
+  if (hasTmp) {
+    if (parser.resolveOperand(tmp, tmpTy, result.operands))
+      return failure();
+  }
+  if (parser.resolveOperand(dst, dstTy, result.operands))
+    return failure();
+
+  result.addAttribute(
+      "operandSegmentSizes",
+      parser.getBuilder().getDenseI32ArrayAttr({1, 1, hasTmp ? 1 : 0, 1}));
+  return success();
+}
+
+void mlir::pto::TRowExpandSubOp::print(OpAsmPrinter &p) {
+  p << " ins(" << getSrc0() << ", " << getSrc1();
+  if (getTmp()) {
+    p << ", " << getTmp();
+    p << " : " << getSrc0().getType() << ", " << getSrc1().getType() << ", "
+      << getTmp().getType() << ")";
+  } else {
+    p << " : " << getSrc0().getType() << ", " << getSrc1().getType() << ")";
+  }
+  p << " outs(" << getDst() << " : " << getDst().getType() << ")";
+  p.printOptionalAttrDict((*this)->getAttrs(), /*elidedAttrs=*/{"operandSegmentSizes"});
+}
+
 mlir::LogicalResult mlir::pto::TRowExpandDivOp::verify() {
   auto verifyCommon = [&]() -> LogicalResult {
     Type src0Ty = getSrc0().getType();
@@ -4885,6 +5119,9 @@ mlir::LogicalResult mlir::pto::TRowExpandDivOp::verify() {
     if (failed(verifyTileBufCommon(*this, src0Ty, "src0")) ||
         failed(verifyTileBufCommon(*this, src1Ty, "src1")) ||
         failed(verifyTileBufCommon(*this, dstTy, "dst")))
+      return failure();
+    if (getTmp() &&
+        failed(verifyTileBufCommon(*this, getTmp().getType(), "tmp")))
       return failure();
     if (failed(verifyTileBufSameShapeAndElem(*this, src0Ty, dstTy, "src0", "dst")))
       return failure();
@@ -4914,6 +5151,9 @@ mlir::LogicalResult mlir::pto::TRowExpandMulOp::verify() {
         failed(verifyTileBufCommon(*this, src1Ty, "src1")) ||
         failed(verifyTileBufCommon(*this, dstTy, "dst")))
       return failure();
+    if (getTmp() &&
+        failed(verifyTileBufCommon(*this, getTmp().getType(), "tmp")))
+      return failure();
     if (failed(verifyTileBufSameShapeAndElem(*this, src0Ty, dstTy, "src0", "dst")))
       return failure();
     if (getElemTy(src0Ty) != getElemTy(src1Ty))
@@ -4941,6 +5181,9 @@ mlir::LogicalResult mlir::pto::TRowExpandSubOp::verify() {
     if (failed(verifyTileBufCommon(*this, src0Ty, "src0")) ||
         failed(verifyTileBufCommon(*this, src1Ty, "src1")) ||
         failed(verifyTileBufCommon(*this, dstTy, "dst")))
+      return failure();
+    if (getTmp() &&
+        failed(verifyTileBufCommon(*this, getTmp().getType(), "tmp")))
       return failure();
     if (failed(verifyTileBufSameShapeAndElem(*this, src0Ty, dstTy, "src0", "dst")))
       return failure();
@@ -5207,43 +5450,52 @@ mlir::LogicalResult mlir::pto::TSelOp::verify() {
 
 
 mlir::LogicalResult mlir::pto::TSelSOp::verify() {
+  // Constraints & Verification per PTO_IR_manual.md pto.tsels:
+  // - src and dst same element type; A2A3: i16/i32/f16/f32; A5: i8/i16/i32/f16/f32
+  // - src and dst row-major; src and dst same valid region
   auto verifyCommon = [&]() -> FailureOr<Type> {
-    Type t0 = getSrc0().getType();
-    Type t1 = getSrc1().getType();
-    Type td = getDst().getType();
-    if (failed(verifyTileBufCommon(*this, t0, "src0")) ||
-        failed(verifyTileBufCommon(*this, t1, "src1")) ||
-        failed(verifyTileBufCommon(*this, td, "dst")))
+    Type tMask = getMask().getType();
+    Type tSrc = getSrc().getType();
+    Type tTmp = getTmp().getType();
+    Type tDst = getDst().getType();
+    if (failed(verifyTileBufCommon(*this, tMask, "mask")) ||
+        failed(verifyTileBufCommon(*this, tSrc, "src")) ||
+        failed(verifyTileBufCommon(*this, tTmp, "tmp")) ||
+        failed(verifyTileBufCommon(*this, tDst, "dst")))
       return failure();
-    Type e0 = getElemTy(t0), e1 = getElemTy(t1), ed = getElemTy(td);
-    if (!e0 || !e1 || !ed) {
+    Type eMask = getElemTy(tMask), eSrc = getElemTy(tSrc);
+    Type eTmp = getElemTy(tTmp), eDst = getElemTy(tDst);
+    if (!eMask || !eSrc || !eTmp || !eDst) {
       emitOpError("failed to get element type for operands");
       return failure();
     }
-    if (e0 != e1 || e0 != ed) {
-      emitOpError("expects src0, src1, and dst to have the same element type");
+    if (eMask != eDst || eSrc != eDst || eTmp != eDst)
+      return emitOpError("expects mask, src, tmp, and dst to have the same element type");
+    if (failed(verifyTileBufSameValidShape(*this, tMask, tDst, "mask", "dst")) ||
+        failed(verifyTileBufSameValidShape(*this, tSrc, tDst, "src", "dst")) ||
+        failed(verifyTileBufSameValidShape(*this, tTmp, tDst, "tmp", "dst")))
       return failure();
-    }
-    if (failed(verifyTileBufSameValidShape(*this, t0, td, "src0", "dst")))
-      return failure();
-    return e0;
+    return eDst;
   };
 
   auto verifyA2A3 = [&]() -> LogicalResult {
     FailureOr<Type> elemOr = verifyCommon();
     if (failed(elemOr))
       return failure();
-    Type t0 = getSrc0().getType();
-    Type td = getDst().getType();
-    if (!isRowMajorTileBuf(t0) || !isRowMajorTileBuf(td))
-      return emitOpError("expects src0 and dst to use row-major layout");
+    Type tMask = getMask().getType();
+    Type tSrc = getSrc().getType();
+    Type tTmp = getTmp().getType();
+    Type tDst = getDst().getType();
+    if (!isRowMajorTileBuf(tMask) || !isRowMajorTileBuf(tSrc) ||
+        !isRowMajorTileBuf(tTmp) || !isRowMajorTileBuf(tDst))
+      return emitOpError("expects mask, src, tmp, and dst to use row-major layout");
     Type elem = *elemOr;
     bool ok = elem.isF16() || elem.isF32();
     if (auto it = mlir::dyn_cast<mlir::IntegerType>(elem))
-      ok = it.getWidth() == 16 || it.getWidth() == 32;
+      ok = it.isSignless() && (it.getWidth() == 16 || it.getWidth() == 32);
     if (!ok)
       return emitOpError(
-          "expects A2/A3 tsels src0, src1, and dst element type to be i16/u16/i32/u32/f16/f32");
+          "expects A2/A3 tsels mask, src, and dst element type to be i16, i32, f16, or f32");
     return success();
   };
 
@@ -5251,24 +5503,25 @@ mlir::LogicalResult mlir::pto::TSelSOp::verify() {
     FailureOr<Type> elemOr = verifyCommon();
     if (failed(elemOr))
       return failure();
-    Type t0 = getSrc0().getType();
-    Type t1 = getSrc1().getType();
-    Type td = getDst().getType();
-    if (!isRowMajorTileBuf(t0) || !isRowMajorTileBuf(t1) ||
-        !isRowMajorTileBuf(td))
-      return emitOpError("expects src0, src1, and dst to use row-major layout");
+    Type tMask = getMask().getType();
+    Type tSrc = getSrc().getType();
+    Type tTmp = getTmp().getType();
+    Type tDst = getDst().getType();
+    if (!isRowMajorTileBuf(tMask) || !isRowMajorTileBuf(tSrc) ||
+        !isRowMajorTileBuf(tTmp) || !isRowMajorTileBuf(tDst))
+      return emitOpError("expects mask, src, tmp, and dst to use row-major layout");
     Type elem = *elemOr;
     bool ok = elem.isF16() || elem.isF32();
     if (auto it = mlir::dyn_cast<mlir::IntegerType>(elem))
-      ok = it.getWidth() == 8 || it.getWidth() == 16 || it.getWidth() == 32;
+      ok = it.isSignless() && (it.getWidth() == 8 || it.getWidth() == 16 || it.getWidth() == 32);
     if (!ok)
       return emitOpError(
-          "expects A5 tsels src0, src1, and dst element type to be i8/u8/i16/u16/i32/u32/f16/f32");
+          "expects A5 tsels mask, src, and dst element type to be i8, i16, i32, f16, or f32");
     return success();
   };
 
-  if (!isa<IntegerType>(getSelectMode().getType()))
-    return emitOpError("expects selectMode to be an integer scalar");
+  if (!isa<IntegerType>(getScalar().getType()))
+    return emitOpError("expects scalar to be an integer type");
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 
@@ -5374,6 +5627,9 @@ mlir::LogicalResult mlir::pto::TSort32Op::verify() {
   if (failed(verifyVecTileCommon(*this, srcTy, "src")) ||
       failed(verifyVecTileCommon(*this, dstTy, "dst")) ||
       failed(verifyVecTileCommon(*this, idxTy, "idx")))
+    return failure();
+  if (getTmp() &&
+      failed(verifyVecTileCommon(*this, getTmp().getType(), "tmp")))
     return failure();
 
   auto srcElem = getElemTy(srcTy);
@@ -6834,9 +7090,36 @@ PTO_DEFINE_UNARY_EFFECTS(TReluOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TRemOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TRemSOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TRowExpandOp, getSrcMutable(), getDstMutable())
-PTO_DEFINE_BINARY_EFFECTS(TRowExpandDivOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
-PTO_DEFINE_BINARY_EFFECTS(TRowExpandMulOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
-PTO_DEFINE_BINARY_EFFECTS(TRowExpandSubOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
+
+void TRowExpandDivOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_READ(getSrc0Mutable());
+  PTO_ADD_READ(getSrc1Mutable());
+  auto tmp = getTmpMutable();
+  if (!tmp.empty())
+    PTO_ADD_WRITE(tmp[0]);
+  PTO_ADD_WRITE(getDstMutable());
+}
+
+void TRowExpandMulOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_READ(getSrc0Mutable());
+  PTO_ADD_READ(getSrc1Mutable());
+  auto tmp = getTmpMutable();
+  if (!tmp.empty())
+    PTO_ADD_WRITE(tmp[0]);
+  PTO_ADD_WRITE(getDstMutable());
+}
+
+void TRowExpandSubOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_READ(getSrc0Mutable());
+  PTO_ADD_READ(getSrc1Mutable());
+  auto tmp = getTmpMutable();
+  if (!tmp.empty())
+    PTO_ADD_WRITE(tmp[0]);
+  PTO_ADD_WRITE(getDstMutable());
+}
 
 // Row reductions use tmp scratch tile.
 void TRowMaxOp::getEffects(
@@ -6863,28 +7146,39 @@ void TRowSumOp::getEffects(
 PTO_DEFINE_UNARY_EFFECTS(TRsqrtOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TScatterOp, getSrcMutable(), getIndexesMutable(), getDstMutable())
 
-// Select: Read(mask, src0, src1) -> Write(dst)
+// Select: Read(mask, src0, src1) -> Write(tmp, dst)
 void TSelOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   PTO_ADD_READ(getMaskMutable());
   PTO_ADD_READ(getSrc0Mutable());
   PTO_ADD_READ(getSrc1Mutable());
+  PTO_ADD_WRITE(getTmpMutable());
   PTO_ADD_WRITE(getDstMutable());
 }
 
-PTO_DEFINE_BINARY_EFFECTS(TSelSOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
+// TSELS: Read(src0, src1) -> Write(tmp, dst)
+void TSelSOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_READ(getMaskMutable());
+  PTO_ADD_READ(getSrcMutable());
+  PTO_ADD_WRITE(getTmpMutable());
+  PTO_ADD_WRITE(getDstMutable());
+}
 
 PTO_DEFINE_BINARY_EFFECTS(TShlOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TShrOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TShlSOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TShrSOp, getSrcMutable(), getDstMutable())
 
-// TSORT32: Read(src) -> Write(dst, idx)
+// TSORT32: Read(src) -> Write(dst, idx [, tmp])
 void TSort32Op::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   PTO_ADD_READ(getSrcMutable());
   PTO_ADD_WRITE(getDstMutable());
   PTO_ADD_WRITE(getIdxMutable());
+  auto tmp = getTmpMutable();
+  if (!tmp.empty())
+    PTO_ADD_WRITE(tmp[0]);
 }
 
 PTO_DEFINE_UNARY_EFFECTS(TSqrtOp, getSrcMutable(), getDstMutable())
@@ -6893,7 +7187,13 @@ PTO_DEFINE_TERNARY_EFFECTS(TSubCOp, getSrc0Mutable(), getSrc1Mutable(), getSrc2M
 PTO_DEFINE_UNARY_EFFECTS(TSubSOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TSubSCOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 
-PTO_DEFINE_UNARY_EFFECTS(TXorSOp, getSrcMutable(), getDstMutable())
+// TXORS: Read(src) -> Write(tmp, dst)
+void TXorSOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_READ(getSrcMutable());
+  PTO_ADD_WRITE(getTmpMutable());
+  PTO_ADD_WRITE(getDstMutable());
+}
 
 // TXOR: Read(src0, src1) -> Write(tmp?, dst)
 void TXorOp::getEffects(

@@ -6008,8 +6008,13 @@ struct PTORowExpandDivToEmitC : public OpConversionPattern<pto::TRowExpandDivOp>
     Value src0 = peelUnrealized(adaptor.getSrc0());
     Value src1 = peelUnrealized(adaptor.getSrc1());
     Value dst  = peelUnrealized(adaptor.getDst());
+    Value tmp  = op.getTmp() ? peelUnrealized(adaptor.getTmp()) : Value();
 
-    SmallVector<Value, 3> operands{dst, src0, src1};
+    SmallVector<Value, 4> operands;
+    if (tmp)
+      operands.assign({dst, src0, src1, tmp});
+    else
+      operands.assign({dst, src0, src1});
     rewriter.create<emitc::CallOpaqueOp>(
         loc, TypeRange{}, "TROWEXPANDDIV",
         /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
@@ -6033,8 +6038,13 @@ struct PTORowExpandMulToEmitC : public OpConversionPattern<pto::TRowExpandMulOp>
     Value src0 = peelUnrealized(adaptor.getSrc0());
     Value src1 = peelUnrealized(adaptor.getSrc1());
     Value dst  = peelUnrealized(adaptor.getDst());
+    Value tmp  = op.getTmp() ? peelUnrealized(adaptor.getTmp()) : Value();
 
-    SmallVector<Value, 3> operands{dst, src0, src1};
+    SmallVector<Value, 4> operands;
+    if (tmp)
+      operands.assign({dst, src0, src1, tmp});
+    else
+      operands.assign({dst, src0, src1});
     rewriter.create<emitc::CallOpaqueOp>(
         loc, TypeRange{}, "TROWEXPANDMUL",
         /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
@@ -6059,8 +6069,13 @@ struct PTORowExpandSubToEmitC : public OpConversionPattern<pto::TRowExpandSubOp>
     Value src0 = peelUnrealized(adaptor.getSrc0());
     Value src1 = peelUnrealized(adaptor.getSrc1());
     Value dst  = peelUnrealized(adaptor.getDst());
+    Value tmp  = op.getTmp() ? peelUnrealized(adaptor.getTmp()) : Value();
 
-    SmallVector<Value, 3> operands{dst, src0, src1};
+    SmallVector<Value, 4> operands;
+    if (tmp)
+      operands.assign({dst, src0, src1, tmp});
+    else
+      operands.assign({dst, src0, src1});
     rewriter.create<emitc::CallOpaqueOp>(
         loc, TypeRange{}, "TROWEXPANDSUB",
         /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
@@ -6211,9 +6226,10 @@ struct PTOSelToEmitC : public OpConversionPattern<pto::TSelOp> {
     Value mask = peelUnrealized(adaptor.getMask());
     Value src0 = peelUnrealized(adaptor.getSrc0());
     Value src1 = peelUnrealized(adaptor.getSrc1());
+    Value tmp  = peelUnrealized(adaptor.getTmp());
     Value dst  = peelUnrealized(adaptor.getDst());
 
-    SmallVector<Value, 4> operands{dst, mask, src0, src1};
+    SmallVector<Value, 5> operands{dst, mask, src0, src1, tmp};
     rewriter.create<emitc::CallOpaqueOp>(
         loc, TypeRange{}, "TSEL",
         /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
@@ -6234,12 +6250,13 @@ struct PTOSelSToEmitC : public OpConversionPattern<pto::TSelSOp> {
                                 ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
 
-    Value src0 = peelUnrealized(adaptor.getSrc0());
-    Value src1 = peelUnrealized(adaptor.getSrc1());
-    Value selectMode = peelUnrealized(adaptor.getSelectMode());
+    Value mask = peelUnrealized(adaptor.getMask());
+    Value src  = peelUnrealized(adaptor.getSrc());
+    Value scalar = peelUnrealized(adaptor.getScalar());
+    Value tmp  = peelUnrealized(adaptor.getTmp());
     Value dst  = peelUnrealized(adaptor.getDst());
 
-    SmallVector<Value, 4> operands{dst, src0, src1, selectMode};
+    SmallVector<Value, 5> operands{dst, mask, src, tmp, scalar};
     rewriter.create<emitc::CallOpaqueOp>(
         loc, TypeRange{}, "TSELS",
         /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
@@ -6356,8 +6373,13 @@ struct PTOSORT32SToEmitC : public OpConversionPattern<pto::TSort32Op> {
     Value src = peelUnrealized(adaptor.getSrc());
     Value dst = peelUnrealized(adaptor.getDst());
     Value idx = peelUnrealized(adaptor.getIdx());
+    Value tmp = op.getTmp() ? peelUnrealized(adaptor.getTmp()) : Value();
 
-    SmallVector<Value, 4> operands{dst, src, idx};
+    SmallVector<Value, 4> operands;
+    if (tmp)
+      operands.assign({dst, src, idx, tmp});
+    else
+      operands.assign({dst, src, idx});
     rewriter.create<emitc::CallOpaqueOp>(
         loc, TypeRange{}, "TSORT32",
         /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
@@ -6591,11 +6613,10 @@ struct PTOXORSToEmitC : public OpConversionPattern<pto::TXorSOp> {
 
     Value src = peelUnrealized(adaptor.getSrc());
     Value scalar = peelUnrealized(adaptor.getScalar());
+    Value tmp  = peelUnrealized(adaptor.getTmp());
     Value dst = peelUnrealized(adaptor.getDst());
 
-    // pto-isa TXORS requires a tmp tile argument. Current NPU implementation
-    // does not use tmp, so we safely pass dst as tmp for compatibility.
-    SmallVector<Value, 4> operands{dst, src, scalar, dst};
+    SmallVector<Value, 4> operands{dst, src, scalar, tmp};
     rewriter.create<emitc::CallOpaqueOp>(
         loc, TypeRange{}, "TXORS",
         /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},

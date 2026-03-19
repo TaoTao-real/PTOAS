@@ -3103,10 +3103,14 @@ def TRowExpandDivOp: PTO_TOp<"trowexpanddiv", [
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TROWEXPANDDIV: Row-wise broadcast divide: divide each row of src0 by a per-row scalar vector src1.";
+  let description = [{
+    pto-isa has overloads with/without tmp; optional tmp for scratch.
+  }];
 
   let arguments = (ins
     PTODpsType:$src0,
     PTODpsType:$src1,
+    Optional<PTODpsType>:$tmp,
     PTODpsType:$dst
   );
 
@@ -3114,11 +3118,7 @@ def TRowExpandDivOp: PTO_TOp<"trowexpanddiv", [
 
   let hasVerifier = 1;
 
-  let assemblyFormat = [{
-    `ins` `(` $src0 `,` $src1 `:` qualified(type($src0)) `,` qualified(type($src1)) `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    attr-dict
-  }];
+  let hasCustomAssemblyFormat = 1;
 
   let extraClassDeclaration = [{
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
@@ -3134,11 +3134,15 @@ def TRowExpandMulOp: PTO_TOp<"trowexpandmul", [
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
-  let summary = "TROWEXPANDMUL: Row-wise broadcast divide: divide each row of src0 by a per-row scalar vector src1.";
+  let summary = "TROWEXPANDMUL: Row-wise broadcast multiply with per-row scalar vector.";
+  let description = [{
+    pto-isa has overloads with/without tmp; optional tmp for scratch.
+  }];
 
   let arguments = (ins
     PTODpsType:$src0,
     PTODpsType:$src1,
+    Optional<PTODpsType>:$tmp,
     PTODpsType:$dst
   );
 
@@ -3146,11 +3150,7 @@ def TRowExpandMulOp: PTO_TOp<"trowexpandmul", [
 
   let hasVerifier = 1;
 
-  let assemblyFormat = [{
-    `ins` `(` $src0 `,` $src1 `:` qualified(type($src0)) `,` qualified(type($src1)) `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    attr-dict
-  }];
+  let hasCustomAssemblyFormat = 1;
 
   let extraClassDeclaration = [{
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
@@ -3167,10 +3167,14 @@ def TRowExpandSubOp: PTO_TOp<"trowexpandsub", [
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TROWEXPANDSUB: Row-wise broadcast subtract: subtract a per-row scalar vector src1 from each row of src0.";
+  let description = [{
+    pto-isa has overloads with/without tmp; optional tmp for scratch.
+  }];
 
   let arguments = (ins
     PTODpsType:$src0,
     PTODpsType:$src1,
+    Optional<PTODpsType>:$tmp,
     PTODpsType:$dst
   );
 
@@ -3178,11 +3182,7 @@ def TRowExpandSubOp: PTO_TOp<"trowexpandsub", [
 
   let hasVerifier = 1;
 
-  let assemblyFormat = [{
-    `ins` `(` $src0 `,` $src1 `:` qualified(type($src0)) `,` qualified(type($src1)) `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    attr-dict
-  }];
+  let hasCustomAssemblyFormat = 1;
 
   let extraClassDeclaration = [{
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
@@ -3376,11 +3376,15 @@ def TSelOp: PTO_TOp<"tsel", [
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TSEL: Select between two tiles using a mask tile (per-element selection).";
+  let description = [{
+    DPS form (pto-isa TSEL requires tmp): ins(%mask, %src0, %src1, %tmp) outs(%dst)
+  }];
 
   let arguments = (ins
     PTODpsType:$mask,
     PTODpsType:$src0,
     PTODpsType:$src1,
+    PTODpsType:$tmp,
     PTODpsType:$dst
   );
 
@@ -3389,7 +3393,7 @@ def TSelOp: PTO_TOp<"tsel", [
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    `ins` `(` $mask `,` $src0 `,` $src1 `:` qualified(type($mask)) `,` qualified(type($src0)) `,` qualified(type($src1)) `)`
+    `ins` `(` $mask `,` $src0 `,` $src1 `,` $tmp `:` qualified(type($mask)) `,` qualified(type($src0)) `,` qualified(type($src1)) `,` qualified(type($tmp)) `)`
     `outs` `(` $dst `:` qualified(type($dst) ) `)`
     attr-dict
   }];
@@ -3409,11 +3413,15 @@ def TSelSOp: PTO_TOp<"tsels", [
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TSELS: Select one of two source tiles using a scalar selectMode (global select).";
+  let description = [{
+    DPS form (pto-isa TSELS requires tmp): ins(%mask, %src, %tmp, %scalar) outs(%dst)
+  }];
 
   let arguments = (ins
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    AnyInteger:$selectMode,
+    PTODpsType:$mask,
+    PTODpsType:$src,
+    PTODpsType:$tmp,
+    ScalarType:$scalar,
     PTODpsType:$dst
   );
 
@@ -3422,7 +3430,7 @@ def TSelSOp: PTO_TOp<"tsels", [
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    `ins` `(` $src0 `,` $src1 `,` $selectMode `:` qualified(type($src0)) `,` qualified(type($src1)) `,` type($selectMode) `)`
+    `ins` `(` $mask `,` $src `,` $tmp `,` $scalar `:` qualified(type($mask)) `,` qualified(type($src)) `,` qualified(type($tmp)) `,` type($scalar) `)`
     `outs` `(` $dst `:` qualified(type($dst) ) `)`
     attr-dict
   }];
@@ -3557,26 +3565,29 @@ def TSort32Op: PTO_TOp<"tsort32", [
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TSORT32: Sort a fixed-size 32-element block and produce an index mapping.";
+  let description = [{
+    DPS form. pto-isa has overloads: (dst, src, idx) or (dst, src, idx, tmp).
+    Optional tmp for scratch buffer when required by implementation.
+  }];
 
   let arguments = (ins
     PTODpsType:$src,
     PTODpsType:$dst,
-    PTODpsType:$idx
+    PTODpsType:$idx,
+    Optional<PTODpsType>:$tmp
   );
 
   let results = (outs);
 
   let hasVerifier = 1;
 
-  let assemblyFormat = [{
-    `ins` `(` $src `:` qualified(type($src)) `)`
-    `outs` `(` $dst `,` $idx `:` qualified(type($dst) ) `,` qualified(type($idx)) `)`
-    attr-dict
-  }];
+  let hasCustomAssemblyFormat = 1;
 
   let extraClassDeclaration = [{
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
-    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+    ::mlir::MutableOperandRange getDpsInitsMutable() {
+      return ::mlir::MutableOperandRange(getOperation(), 1, 2);
+    }
   }];
 }
 //===----------------------------------------------------------------------===//
@@ -3787,10 +3798,14 @@ def TXorSOp: PTO_TOp<"txors", [
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TXORS: Elementwise bitwise XOR of a tile and a scalar.";
+  let description = [{
+    DPS form (pto-isa TXORS requires tmp): ins(%src, %scalar, %tmp) outs(%dst)
+  }];
 
   let arguments = (ins
     PTODpsType:$src,
     AnyInteger:$scalar,
+    PTODpsType:$tmp,
     PTODpsType:$dst
   );
 
@@ -3799,7 +3814,7 @@ def TXorSOp: PTO_TOp<"txors", [
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    `ins` `(` $src `,` $scalar `:` qualified(type($src)) `,` type($scalar) `)`
+    `ins` `(` $src `,` $scalar `,` $tmp `:` qualified(type($src)) `,` type($scalar) `,` qualified(type($tmp)) `)`
     `outs` `(` $dst `:` qualified(type($dst) ) `)`
     attr-dict
   }];
