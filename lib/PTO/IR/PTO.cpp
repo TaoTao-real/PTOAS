@@ -628,6 +628,75 @@ LogicalResult mlir::pto::MakeTensorViewOp::verify() {
   return success();
 }
 
+LogicalResult mlir::pto::PartitionViewOp::verify() {
+  auto srcTy = dyn_cast<mlir::pto::TensorViewType>(getSource().getType());
+  auto resTy = dyn_cast<mlir::pto::PartitionTensorViewType>(getResult().getType());
+  if (!srcTy || !resTy)
+    return emitOpError("expects tensor_view source and partition_tensor_view result");
+
+  if (srcTy.getElementType() != resTy.getElementType())
+    return emitOpError() << "element type mismatch between source and result: src="
+                         << srcTy.getElementType() << " result="
+                         << resTy.getElementType();
+
+  int64_t srcRank = srcTy.getRank();
+  if ((int64_t)getOffsets().size() != srcRank)
+    return emitOpError() << "offset count (" << getOffsets().size()
+                         << ") must match source rank (" << srcRank << ")";
+
+  if ((int64_t)getSizes().size() != srcRank)
+    return emitOpError() << "size count (" << getSizes().size()
+                         << ") must match source rank (" << srcRank << ")";
+
+  if (resTy.getRank() != srcRank)
+    return emitOpError() << "result rank (" << resTy.getRank()
+                         << ") must match source rank (" << srcRank << ")";
+
+  ArrayRef<int64_t> srcShape = srcTy.getShape();
+  ArrayRef<int64_t> resShape = resTy.getShape();
+
+  for (int64_t i = 0; i < srcRank; ++i) {
+    auto offVal = getConstIndexValue(getOffsets()[i]);
+    auto sizeVal = getConstIndexValue(getSizes()[i]);
+
+    if (offVal && *offVal < 0)
+      return emitOpError() << "offset at dim " << i
+                           << " must be non-negative, got " << *offVal;
+
+    if (sizeVal && *sizeVal <= 0)
+      return emitOpError() << "size at dim " << i
+                           << " must be positive, got " << *sizeVal;
+
+    int64_t resDim = resShape[i];
+    if (sizeVal) {
+      if (resDim != ShapedType::kDynamic && *sizeVal != resDim)
+        return emitOpError() << "size/result mismatch at dim " << i
+                             << ": size operand=" << *sizeVal
+                             << " result type dim=" << resDim;
+    } else if (resDim != ShapedType::kDynamic) {
+      return emitOpError() << "size at dim " << i
+                           << " must be compile-time constant to match static "
+                              "result dim "
+                           << resDim;
+    }
+
+    int64_t srcDim = srcShape[i];
+    if (srcDim == ShapedType::kDynamic)
+      continue;
+
+    if (sizeVal && *sizeVal > srcDim)
+      return emitOpError() << "size at dim " << i << " (" << *sizeVal
+                           << ") exceeds static source dim (" << srcDim << ")";
+
+    if (offVal && sizeVal && (*offVal + *sizeVal > srcDim))
+      return emitOpError() << "offset+size at dim " << i << " ("
+                           << (*offVal + *sizeVal)
+                           << ") exceeds static source dim (" << srcDim << ")";
+  }
+
+  return success();
+}
+
 LogicalResult mlir::pto::AddPtrOp::verify() {
   auto ptrTy = dyn_cast<mlir::pto::PtrType>(getPtr().getType());
   if (!ptrTy)

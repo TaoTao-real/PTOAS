@@ -1,0 +1,21 @@
+// RUN: not ptoas %s 2>&1 | FileCheck %s
+
+module {
+  func.func @partition_view_verify_rank_mismatch(%ptr : !pto.ptr<f32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %c3 = arith.constant 3 : index
+    %c4 = arith.constant 4 : index
+    %c8 = arith.constant 8 : index
+    %c64 = arith.constant 64 : index
+    %c512 = arith.constant 512 : index
+    %c4096 = arith.constant 4096 : index
+
+    %tv = pto.make_tensor_view %ptr, shape = [%c8, %c8, %c8, %c64], strides = [%c4096, %c512, %c64, %c1] : !pto.tensor_view<8x8x8x64xf32>
+    %pv = pto.partition_view %tv, offsets = [%c2, %c0, %c0, %c0], sizes = [%c4, %c3, %c8, %c64] : !pto.tensor_view<8x8x8x64xf32> -> !pto.partition_tensor_view<48x64xf32>
+    return
+  }
+}
+
+// CHECK: error: 'pto.partition_view' op result rank (2) must match source rank (4)
