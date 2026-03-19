@@ -137,6 +137,25 @@ process_one_dir() {
     fi
     [[ $has_insync -eq 1 ]] || ptoas_flags+=(--enable-insert-sync)
   fi
+
+  local target_arch="a3"
+  if ((${#ptoas_flags[@]})); then
+    for ((idx=0; idx<${#ptoas_flags[@]}; ++idx)); do
+      if [[ "${ptoas_flags[idx]}" == "--pto-arch" && $((idx + 1)) -lt ${#ptoas_flags[@]} ]]; then
+        target_arch="${ptoas_flags[idx + 1]}"
+      elif [[ "${ptoas_flags[idx]}" == --pto-arch=* ]]; then
+        target_arch="${ptoas_flags[idx]#--pto-arch=}"
+      fi
+    done
+  fi
+  local target_arch_lc
+  target_arch_lc="$(printf '%s' "${target_arch}" | tr '[:upper:]' '[:lower:]')"
+  local expected_vec_barrier="pipe_barrier(PIPE_V)"
+  local skip_vec_barrier=0
+  if [[ "${target_arch_lc}" == "a5" ]]; then
+    skip_vec_barrier=1
+  fi
+
   local -a ptoas_cmd_base=("$ptoas")
   if (( ${#ptoas_flags[@]} )); then
     ptoas_cmd_base+=("${ptoas_flags[@]}")
@@ -181,6 +200,20 @@ process_one_dir() {
       fi
     fi
 
+    # Inter-core sync regression samples are arch-specific.
+    if [[ "$base" == "test_intercore_sync_a5" && "${target_arch_lc}" != "a5" ]]; then
+      echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a5"
+      continue
+    fi
+    if [[ "$base" == "test_intercore_sync_a3" && "${target_arch_lc}" != "a3" ]]; then
+      echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a3"
+      continue
+    fi
+    if [[ "$base" == "test_intercore_sync_a3_missing_setffts" && "${target_arch_lc}" != "a3" ]]; then
+      echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a3"
+      continue
+    fi
+
     # Some samples are expected to fail depending on the selected ptoas flags.
     #
     # alloc_tile_addr.py uses `pto.alloc_tile addr=...`, which is only accepted
@@ -202,6 +235,9 @@ process_one_dir() {
         done
       fi
       [[ $has_level3 -eq 1 ]] || expect_fail=1
+    fi
+    if [[ "$base" == "test_intercore_sync_a3_missing_setffts" && "${target_arch_lc}" == "a3" ]]; then
+      expect_fail=1
     fi
     mlir="${out_subdir}/${base}-pto-ir.pto"
     cpp="${out_subdir}/${base}-pto.cpp"
@@ -244,8 +280,16 @@ process_one_dir() {
 
     # Write output via -o to avoid mixing debug prints with generated C++.
     local -a ptoas_cmd=("${ptoas_cmd_base[@]}" "$pto_input" -o "$cpp")
-    if ! "${ptoas_cmd[@]}" >/dev/null 2>&1; then
+    local ptoas_log="${out_subdir}/${base}-ptoas.log"
+    if ! "${ptoas_cmd[@]}" >"${ptoas_log}" 2>&1; then
       if [[ $expect_fail -eq 1 ]]; then
+        if [[ "$base" == "test_intercore_sync_a3_missing_setffts" ]]; then
+          if ! grep -Eq "A3 inter-core sync requires explicit .*pto.set_ffts" "${ptoas_log}"; then
+            echo -e "${A}(${base}.py)\tFAIL\texpected missing-set_ffts diagnostic not found"
+            overall=1
+            continue
+          fi
+        fi
         echo -e "${A}(${base}.py)\tXFAIL\tptoas failed as expected"
         continue
       fi
@@ -332,6 +376,36 @@ process_one_dir() {
       fi
     fi
 
+    # Regression guard: Python unified low-level sync API should dispatch to
+    # both static and dynamic event-id forms.
+    if [[ "$base" == "test_set_wait_unified_api" ]]; then
+      if ! grep -Eq "set_flag\\(PIPE_MTE2,[[:space:]]*PIPE_MTE3,[[:space:]]*EVENT_ID2\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing static set_flag(..., EVENT_ID2) from unified API"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "wait_flag\\(PIPE_MTE2,[[:space:]]*PIPE_MTE3,[[:space:]]*EVENT_ID2\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing static wait_flag(..., EVENT_ID2) from unified API"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "static_cast<event_t>" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing dynamic event-id cast from unified API"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "set_flag\\(PIPE_MTE2,[[:space:]]*PIPE_MTE3,[[:space:]]*v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing dynamic set_flag(..., <var>) from unified API"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "wait_flag\\(PIPE_MTE2,[[:space:]]*PIPE_MTE3,[[:space:]]*v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing dynamic wait_flag(..., <var>) from unified API"
+        overall=1
+        continue
+      fi
+    fi
+
     # Regression guard: handwritten multibuffer (subset ping/pong) should keep
     # subset-based slot split and branch-local load/store structure.
     if [[ "$base" == "test_inject_sync_multibuf_subset_pingpong" ]]; then
@@ -365,8 +439,63 @@ process_one_dir() {
     # Regression guard: intra-pipe dependencies must be serialized by a
     # per-pipe barrier (PyPTO expects `bar_v` / `bar_m` behavior).
     if [[ "$base" == "test_inject_sync_intra_pipe_barrier" ]]; then
-      if ! grep -Fq "pipe_barrier(PIPE_V)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing pipe_barrier(PIPE_V) for intra-pipe dependency"
+      if [[ "${skip_vec_barrier}" == "1" ]]; then
+        if grep -Fq "pipe_barrier(PIPE_V)" "$cpp"; then
+          echo -e "${A}(${base}.py)\tFAIL\tunexpected pipe_barrier(PIPE_V) on A5"
+          overall=1
+          continue
+        fi
+      else
+        if ! grep -Fq "${expected_vec_barrier}" "$cpp"; then
+          echo -e "${A}(${base}.py)\tFAIL\tmissing ${expected_vec_barrier} for intra-pipe dependency"
+          overall=1
+          continue
+        fi
+      fi
+    fi
+
+    # Inter-core sync regression: A3/A5 must lower pto.sync.set/wait to
+    # architecture-specific ISA interfaces.
+    if [[ "$base" == "test_intercore_sync_a3" ]]; then
+      if ! grep -Fq "set_ffts_base_addr(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing set_ffts_base_addr() lowering"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "ffts_cross_core_sync(PIPE_FIX" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A3 sync.set lowering to ffts_cross_core_sync"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "getFFTSMsg(FFTS_MODE_VAL," "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A3 getFFTSMsg(FFTS_MODE_VAL, ...) encoding"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "wait_flag_dev(3)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A3 sync.wait lowering to wait_flag_dev(event_id)"
+        overall=1
+        continue
+      fi
+      if grep -Fq "wait_flag_dev(PIPE_" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tunexpected wait_flag_dev(pipe, event_id) lowering on A3"
+        overall=1
+        continue
+      fi
+    fi
+    if [[ "$base" == "test_intercore_sync_a5" ]]; then
+      if ! grep -Fq "set_intra_block(PIPE_FIX, 5)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 sync.set lowering to set_intra_block"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "wait_intra_block(PIPE_V, 5)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 sync.wait lowering to wait_intra_block"
+        overall=1
+        continue
+      fi
+      if grep -Fq "ffts_cross_core_sync(" "$cpp" || grep -Fq "wait_flag_dev(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tunexpected A3-style inter-core sync call in A5 output"
         overall=1
         continue
       fi
@@ -385,10 +514,18 @@ process_one_dir() {
         overall=1
         continue
       fi
-      if ! grep -Fq "pipe_barrier(PIPE_V)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing pipe_barrier(PIPE_V) lowering for barrier_sync[TVEC]"
-        overall=1
-        continue
+      if [[ "${skip_vec_barrier}" == "1" ]]; then
+        if grep -Fq "pipe_barrier(PIPE_V)" "$cpp"; then
+          echo -e "${A}(${base}.py)\tFAIL\tunexpected pipe_barrier(PIPE_V) lowering for barrier_sync[TVEC] on A5"
+          overall=1
+          continue
+        fi
+      else
+        if ! grep -Fq "${expected_vec_barrier}" "$cpp"; then
+          echo -e "${A}(${base}.py)\tFAIL\tmissing ${expected_vec_barrier} lowering for barrier_sync[TVEC]"
+          overall=1
+          continue
+        fi
       fi
     fi
 
@@ -604,10 +741,18 @@ PY
       # Regression guard: intra-pipe dependencies must be serialized by a
       # per-pipe barrier (PyPTO expects `bar_v` / `bar_m` behavior).
       if [[ "$base" == "test_inject_sync_intra_pipe_barrier" ]]; then
-        if ! grep -Fq "pipe_barrier(PIPE_V)" "$cpp"; then
-          echo -e "${A}(${base}.pto)\tFAIL\tmissing pipe_barrier(PIPE_V) for intra-pipe dependency"
-          overall=1
-          continue
+        if [[ "${skip_vec_barrier}" == "1" ]]; then
+          if grep -Fq "pipe_barrier(PIPE_V)" "$cpp"; then
+            echo -e "${A}(${base}.pto)\tFAIL\tunexpected pipe_barrier(PIPE_V) on A5"
+            overall=1
+            continue
+          fi
+        else
+          if ! grep -Fq "${expected_vec_barrier}" "$cpp"; then
+            echo -e "${A}(${base}.pto)\tFAIL\tmissing ${expected_vec_barrier} for intra-pipe dependency"
+            overall=1
+            continue
+          fi
         fi
       fi
 

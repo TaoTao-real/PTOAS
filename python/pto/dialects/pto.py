@@ -30,6 +30,7 @@ TensorViewType = _pto_mod.TensorViewType
 PartitionTensorViewType = _pto_mod.PartitionTensorViewType
 TileType = _pto_mod.TileType
 TileBufType = _pto_mod.TileBufType
+TileBufArrayType = _pto_mod.TileBufArrayType
 AddressSpace = _pto_mod.AddressSpace
 AddressSpaceAttr = _pto_mod.AddressSpaceAttr
 TileBufConfigAttr = _pto_mod.TileBufConfigAttr
@@ -64,6 +65,10 @@ __all__ = [
     "PartitionTensorViewType",
     "TileType",
     "TileBufType",
+    "TileBufArrayType",
+    "TileBufArray",
+    "make_tile_buf_array",
+    "tile_buf_array_get",
     "AddressSpace", "AddressSpaceAttr",
     "BLayout","BLayoutAttr",
     "SLayout","SLayoutAttr",
@@ -79,6 +84,10 @@ __all__ = [
     "TileConfig",
     # High-level sync helpers
     "record_event", "wait_event", "barrier",
+    # Low-level sync helpers (static/dynamic event id unified API)
+    "set_flag", "wait_flag", "set_flag_dyn", "wait_flag_dyn",
+    # Inter-core sync helpers
+    "sync_set", "sync_wait", "set_ffts",
     # Scalar pointer helpers
     "load_scalar", "store_scalar"
 
@@ -110,6 +119,15 @@ def _ensure_sync_attr(val, ctx):
 def _ensure_event_attr(val, ctx):
     if isinstance(val, EVENT):
         return EventAttr.get(val, ctx)
+    if isinstance(val, int):
+        if val < 0 or val > 7:
+            raise ValueError(f"event id out of range [0,7]: {val}")
+        enum_name = f"EVENT_ID{val}"
+        try:
+            enum_val = getattr(EVENT, enum_name)
+        except AttributeError:
+            raise ValueError(f"Unknown EVENT integer id: {val}")
+        return EventAttr.get(enum_val, ctx)
     if isinstance(val, str):
         name = val.upper()
         try:
@@ -117,6 +135,26 @@ def _ensure_event_attr(val, ctx):
         except AttributeError:
             raise ValueError(f"Unknown EVENT name: {val}")
         return EventAttr.get(enum_val, ctx)
+    return val
+
+def _ensure_pipe_attr(val, ctx):
+    if isinstance(val, PIPE):
+        return PipeAttr.get(val, ctx)
+    if isinstance(val, str):
+        name = val.upper()
+        try:
+            enum_val = getattr(PIPE, name)
+        except AttributeError:
+            raise ValueError(f"Unknown PIPE name: {val}")
+        return PipeAttr.get(enum_val, ctx)
+    return val
+
+def _ensure_i32_attr(val, ctx):
+    if isinstance(val, _ods_ir.IntegerAttr):
+        return val
+    if isinstance(val, int):
+        i32 = _ods_ir.IntegerType.get_signless(32, ctx)
+        return _ods_ir.IntegerAttr.get(i32, val)
     return val
 
 def record_event(src_op, dst_op, event_id, *, loc=None, ip=None):
@@ -143,6 +181,91 @@ def barrier(op, *, loc=None, ip=None):
         return _pto_ops_gen.barrier_sync(op_attr, loc=loc, ip=ip)
     # Otherwise fall back to low-level barrier expecting PipeAttr
     return _pto_ops_gen.barrier(op, loc=loc, ip=ip)
+
+
+def _is_static_event_id(event_id):
+    if isinstance(event_id, (EVENT, EventAttr, str, int)):
+        return True
+    return isinstance(event_id, _ods_ir.Attribute)
+
+
+def set_flag(src_pipe, dst_pipe, event_id, *, loc=None, ip=None):
+    """Unified low-level set_flag API.
+
+    - Static path: EVENT/EventAttr/str/int -> pto.set_flag
+    - Dynamic path: SSA value -> pto.set_flag_dyn
+    """
+    ctx = loc.context if loc else _ods_ir.Context.current
+    src_attr = _ensure_pipe_attr(src_pipe, ctx)
+    dst_attr = _ensure_pipe_attr(dst_pipe, ctx)
+    if _is_static_event_id(event_id):
+        return _pto_ops_gen.set_flag(
+            src_attr, dst_attr, _ensure_event_attr(event_id, ctx), loc=loc, ip=ip
+        )
+    return _pto_ops_gen.set_flag_dyn(
+        src_attr,
+        dst_attr,
+        _pto_ops_gen._get_op_result_or_value(event_id),
+        loc=loc,
+        ip=ip,
+    )
+
+
+def wait_flag(src_pipe, dst_pipe, event_id, *, loc=None, ip=None):
+    """Unified low-level wait_flag API.
+
+    - Static path: EVENT/EventAttr/str/int -> pto.wait_flag
+    - Dynamic path: SSA value -> pto.wait_flag_dyn
+    """
+    ctx = loc.context if loc else _ods_ir.Context.current
+    src_attr = _ensure_pipe_attr(src_pipe, ctx)
+    dst_attr = _ensure_pipe_attr(dst_pipe, ctx)
+    if _is_static_event_id(event_id):
+        return _pto_ops_gen.wait_flag(
+            src_attr, dst_attr, _ensure_event_attr(event_id, ctx), loc=loc, ip=ip
+        )
+    return _pto_ops_gen.wait_flag_dyn(
+        src_attr,
+        dst_attr,
+        _pto_ops_gen._get_op_result_or_value(event_id),
+        loc=loc,
+        ip=ip,
+    )
+
+# -----------------------------------------------------------------------------
+# Inter-core sync helpers (pto.sync.set / pto.sync.wait / pto.set_ffts)
+# -----------------------------------------------------------------------------
+def sync_set(pipe, event_id, *, loc=None, ip=None):
+    ctx = loc.context if loc else _ods_ir.Context.current
+    return _ods_ir.Operation.create(
+        "pto.sync.set",
+        attributes={
+            "pipe": _ensure_pipe_attr(pipe, ctx),
+            "event_id": _ensure_i32_attr(event_id, ctx),
+        },
+        loc=loc,
+        ip=ip,
+    )
+
+def sync_wait(pipe, event_id, *, loc=None, ip=None):
+    ctx = loc.context if loc else _ods_ir.Context.current
+    return _ods_ir.Operation.create(
+        "pto.sync.wait",
+        attributes={
+            "pipe": _ensure_pipe_attr(pipe, ctx),
+            "event_id": _ensure_i32_attr(event_id, ctx),
+        },
+        loc=loc,
+        ip=ip,
+    )
+
+def set_ffts(ffts, *, loc=None, ip=None):
+    return _ods_ir.Operation.create(
+        "pto.set_ffts",
+        operands=[_pto_ops_gen._get_op_result_or_value(ffts)],
+        loc=loc,
+        ip=ip,
+    )
 
 # -----------------------------------------------------------------------------
 # Scalar pointer helpers (manual wrappers until python ops are regenerated)
@@ -174,6 +297,105 @@ def store_scalar(ptr, offset, value, *, loc=None, ip=None):
         loc=loc,
         ip=ip,
     )
+
+
+# -----------------------------------------------------------------------------
+# TileBufArray helpers (array-like ergonomics)
+# -----------------------------------------------------------------------------
+def _to_index_value(index, *, loc=None, ip=None):
+    if isinstance(index, int):
+        idx_ty = _ods_ir.IndexType.get()
+        idx_attr = _ods_ir.IntegerAttr.get(idx_ty, index)
+        cst = _ods_ir.Operation.create(
+            "arith.constant",
+            results=[idx_ty],
+            attributes={"value": idx_attr},
+            loc=loc,
+            ip=ip,
+        )
+        return cst.results[0]
+    return _pto_ops_gen._get_op_result_or_value(index)
+
+
+def _to_tile_buf_array_value(array):
+    if isinstance(array, TileBufArray):
+        return array.value
+    return _pto_ops_gen._get_op_result_or_value(array)
+
+
+def make_tile_buf_array(elements, *, loc=None, ip=None):
+    if not elements:
+        raise ValueError("make_tile_buf_array expects at least one element")
+
+    ops = [_pto_ops_gen._get_op_result_or_value(v) for v in elements]
+    elem_ty = ops[0].type
+    for i, v in enumerate(ops[1:], start=1):
+        if v.type != elem_ty:
+            raise ValueError(
+                f"all elements must have the same type, got index 0={elem_ty} and index {i}={v.type}"
+            )
+
+    arr_ty = TileBufArrayType.get(len(ops), elem_ty, elem_ty.context)
+    op = _ods_ir.Operation.create(
+        "pto.make_tile_buf_array",
+        results=[arr_ty],
+        operands=ops,
+        loc=loc,
+        ip=ip,
+    )
+    return op.results[0]
+
+
+def tile_buf_array_get(array, index, *, loc=None, ip=None):
+    arr_val = _to_tile_buf_array_value(array)
+    arr_ty = TileBufArrayType(arr_val.type)
+
+    idx = index
+    if isinstance(index, int) and index < 0:
+        idx = int(arr_ty.size) + index
+    idx_val = _to_index_value(idx, loc=loc, ip=ip)
+
+    op = _ods_ir.Operation.create(
+        "pto.tile_buf_array_get",
+        results=[arr_ty.element_type],
+        operands=[arr_val, idx_val],
+        loc=loc,
+        ip=ip,
+    )
+    return op.results[0]
+
+
+class TileBufArray:
+    def __init__(self, value):
+        v = _pto_ops_gen._get_op_result_or_value(value)
+        self._value = v
+        self._type = TileBufArrayType(v.type)
+
+    @classmethod
+    def from_elements(cls, elements, *, loc=None, ip=None):
+        return cls(make_tile_buf_array(elements, loc=loc, ip=ip))
+
+    @property
+    def value(self):
+        return self._value
+
+    @property
+    def type(self):
+        return self._type
+
+    @property
+    def size(self):
+        return int(self._type.size)
+
+    @property
+    def element_type(self):
+        return self._type.element_type
+
+    def __len__(self):
+        return self.size
+
+    def __getitem__(self, index):
+        return tile_buf_array_get(self._value, index)
 
 # -----------------------------------------------------------------------------
 # Export enum aliases for terse calls: pto.record_event(TLOAD, TLOAD, EVENT_ID0)
