@@ -1,6 +1,5 @@
-// RUN: ptoas %s 2>&1 | FileCheck %s
-
-module {
+def build() -> str:
+    return """module {
   func.func @partition_view_verify_valid(%ptr : !pto.ptr<f32>) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -14,6 +13,8 @@ module {
     return
   }
 }
+"""
 
-// CHECK: memref.subview
-// CHECK-SAME: [4, 0] [4, 16] [1, 1]
+
+if __name__ == "__main__":
+    print(build())

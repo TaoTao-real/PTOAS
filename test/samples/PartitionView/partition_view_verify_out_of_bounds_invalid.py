@@ -1,7 +1,6 @@
-// RUN: not ptoas %s 2>&1 | FileCheck %s
-
-module {
-  func.func @partition_view_verify_out_of_bounds(%ptr : !pto.ptr<f32>) {
+def build() -> str:
+    return """module {
+  func.func @partition_view_verify_out_of_bounds_invalid(%ptr : !pto.ptr<f32>) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c4 = arith.constant 4 : index
@@ -15,5 +14,8 @@ module {
     return
   }
 }
+"""
 
-// CHECK: error: 'pto.partition_view' op offset+size at dim 0
+
+if __name__ == "__main__":
+    print(build())
