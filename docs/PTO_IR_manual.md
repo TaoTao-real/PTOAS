@@ -2103,7 +2103,7 @@ For each element (i, j):
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile buffer containing the input data |
-| `scalar` | `ScalarType` (`index` / integer / f32) | Scalar value to add to each element |
+| `scalar` | `ScalarType` (signless integer / float) | Scalar value to add to each element |
 | `dst` | `pto.tile_buf` | Destination tile buffer for the result |
 
 **Results:** None. The operation writes results into `dst` following the Destination-Passing Style (DPS) pattern.
@@ -2163,7 +2163,7 @@ For each element (i, j):
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile buffer |
-| `scalar` | `ScalarType`| Scalar value to subtract |
+| `scalar` | `ScalarType` (signless integer / float) | Scalar value to subtract |
 | `dst` | `pto.tile_buf` | Destination tile buffer for the result |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -2222,7 +2222,7 @@ For each element (i, j):
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile buffer |
-| `scalar` | `F32` | Scalar multiplier |
+| `scalar` | `ScalarType` (signless integer / float) | Scalar multiplier |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -2282,7 +2282,7 @@ For each element (i, j):
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `AnyType` | Source tile buffer |
-| `scalar` | `AnyType` | Scalar divisor (or dividend in reverse mode) |
+| `scalar` | `ScalarType` (signless integer / float) | Scalar divisor (or dividend in reverse mode) |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -2357,7 +2357,7 @@ For each element (i, j):
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile buffer |
-| `scalar` | `F32` | Scalar value |
+| `scalar` | `ScalarType` (signless integer / float) | Scalar value |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -2416,7 +2416,7 @@ For each element (i, j):
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile buffer |
-| `scalar` | `F32` | Scalar value |
+| `scalar` | `ScalarType` (signless integer / float) | Scalar value |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -2475,7 +2475,7 @@ For each element (i, j):
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile buffer |
-| `scalar` | `F32` | Scalar divisor |
+| `scalar` | `ScalarType` (signless integer / float) | Scalar divisor |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -2660,7 +2660,7 @@ For each element (i, j):
 | Name | Type | Description |
 |------|------|-------------|
 | `src0` | `pto.tile_buf` | First source tile buffer |
-| `scalar` | `AnyType` | Scalar value |
+| `scalar` | `ScalarType` (signless integer / float) | Scalar value |
 | `src1` | `pto.tile_buf` | Second source tile buffer |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
@@ -2714,7 +2714,7 @@ For each element (i, j):
 | Name | Type | Description |
 |------|------|-------------|
 | `src0` | `pto.tile_buf` | First source tile buffer |
-| `scalar` | `F32` | Scalar value |
+| `scalar` | `ScalarType` (signless integer / float) | Scalar value |
 | `src1` | `pto.tile_buf` | Second source tile buffer |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
@@ -3991,6 +3991,7 @@ For each element (i, j):
 |------|------|-------------|
 | `src0` | `pto.tile_buf` | Source tile buffer |
 | `src1` | `pto.tile_buf` | Per-row scalar vector |
+| `tmp` | `Optional<pto.tile_buf>` | Optional scratch tile used by the tmp-taking pto-isa overload |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -3998,7 +3999,7 @@ For each element (i, j):
 **Assembly Format:**
 
 ```
-pto.trowexpandmul ins(<src0>, <src1> : <src0_type>, <src1_type>)
+pto.trowexpandmul ins(<src0>, <src1>[, <tmp>] : <src0_type>, <src1_type>[, <tmp_type>])
                   outs(<dst> : <dst_type>)
 ```
 
@@ -4017,11 +4018,14 @@ pto.trowexpandmul ins(<src0>, <src1> : <src0_type>, <src1_type>)
 **Basic Example:**
 
 ```mlir
-pto.trowexpandmul ins(%src0, %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
+pto.trowexpandmul ins(%src0, %src1, %tmp : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
                       v_row=16, v_col=16, blayout=row_major, slayout=none_box,
                       fractal=512, pad=0>,
                       !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=1,
                       v_row=16, v_col=1, blayout=row_major, slayout=none_box,
+                      fractal=512, pad=0>,
+                      !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
+                      v_row=16, v_col=16, blayout=row_major, slayout=none_box,
                       fractal=512, pad=0>)
                   outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
                       v_row=16, v_col=16, blayout=row_major, slayout=none_box,
@@ -4047,6 +4051,7 @@ For each element (i, j):
 |------|------|-------------|
 | `src0` | `pto.tile_buf` | Source tile buffer |
 | `src1` | `pto.tile_buf` | Per-row scalar vector (divisor) |
+| `tmp` | `Optional<pto.tile_buf>` | Optional scratch tile used by the tmp-taking pto-isa overload |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -4054,7 +4059,7 @@ For each element (i, j):
 **Assembly Format:**
 
 ```
-pto.trowexpanddiv ins(<src0>, <src1> : <src0_type>, <src1_type>)
+pto.trowexpanddiv ins(<src0>, <src1>[, <tmp>] : <src0_type>, <src1_type>[, <tmp_type>])
                   outs(<dst> : <dst_type>)
 ```
 
@@ -4073,11 +4078,14 @@ pto.trowexpanddiv ins(<src0>, <src1> : <src0_type>, <src1_type>)
 **Basic Example:**
 
 ```mlir
-pto.trowexpanddiv ins(%src0, %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
+pto.trowexpanddiv ins(%src0, %src1, %tmp : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
                       v_row=16, v_col=16, blayout=row_major, slayout=none_box,
                       fractal=512, pad=0>,
                       !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=1,
                       v_row=16, v_col=1, blayout=row_major, slayout=none_box,
+                      fractal=512, pad=0>,
+                      !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
+                      v_row=16, v_col=16, blayout=row_major, slayout=none_box,
                       fractal=512, pad=0>)
                   outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
                       v_row=16, v_col=16, blayout=row_major, slayout=none_box,
@@ -4103,6 +4111,7 @@ For each element (i, j):
 |------|------|-------------|
 | `src0` | `pto.tile_buf` | Source tile buffer |
 | `src1` | `pto.tile_buf` | Per-row scalar vector (subtrahend) |
+| `tmp` | `Optional<pto.tile_buf>` | Optional scratch tile used by the tmp-taking pto-isa overload |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -4110,7 +4119,7 @@ For each element (i, j):
 **Assembly Format:**
 
 ```
-pto.trowexpandsub ins(<src0>, <src1> : <src0_type>, <src1_type>)
+pto.trowexpandsub ins(<src0>, <src1>[, <tmp>] : <src0_type>, <src1_type>[, <tmp_type>])
                   outs(<dst> : <dst_type>)
 ```
 
@@ -4129,11 +4138,14 @@ pto.trowexpandsub ins(<src0>, <src1> : <src0_type>, <src1_type>)
 **Basic Example:**
 
 ```mlir
-pto.trowexpandsub ins(%src0, %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
+pto.trowexpandsub ins(%src0, %src1, %tmp : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
                       v_row=16, v_col=16, blayout=row_major, slayout=none_box,
                       fractal=512, pad=0>,
                       !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=1,
                       v_row=16, v_col=1, blayout=row_major, slayout=none_box,
+                      fractal=512, pad=0>,
+                      !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
+                      v_row=16, v_col=16, blayout=row_major, slayout=none_box,
                       fractal=512, pad=0>)
                   outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
                       v_row=16, v_col=16, blayout=row_major, slayout=none_box,
@@ -4157,7 +4169,7 @@ For each element (i, j):
 
 | Name | Type | Description |
 |------|------|-------------|
-| `scalar` | `AnyTypeOf<[F16, F32, I16, I32, I8, UI8, UI16, UI32]>` | Scalar value to broadcast |
+| `scalar` | `ScalarType` (signless integer / float) | Scalar value to broadcast |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -4296,7 +4308,7 @@ For each element (i, j):
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Tile operand |
-| `scalar` | `AnyFloat/AnyInteger/Index` | Scalar value to compare against |
+| `scalar` | `ScalarType` (signless integer / float)| Scalar value to compare against |
 | `cmpMode` | `CmpModeAttr` (default: EQ) | Comparison mode |
 | `dst` | `pto.tile_buf` | Destination mask |
 
@@ -4352,6 +4364,7 @@ For each element (i, j):
 | `mask` | `pto.tile_buf` | Predicate mask |
 | `src0` | `pto.tile_buf` | Value when mask is true |
 | `src1` | `pto.tile_buf` | Value when mask is false |
+| `tmp` | `pto.tile_buf` | Temporary scratch tile required by the current DPS form |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -4359,7 +4372,7 @@ For each element (i, j):
 **Assembly Format:**
 
 ```
-pto.tsel ins(<mask>, <src0>, <src1> : <mask_type>, <type0>, <type1>)
+pto.tsel ins(<mask>, <src0>, <src1>, <tmp> : <mask_type>, <type0>, <type1>, <tmp_type>)
          outs(<dst> : <dst_type>)
 ```
 
@@ -4382,7 +4395,10 @@ pto.tsel ins(<mask>, <src0>, <src1> : <mask_type>, <type0>, <type1>)
 **Basic Example:**
 
 ```mlir
-pto.tsel ins(%mask, %a, %b : !pto.tile_buf<loc=vec, dtype=i8, rows=16, cols=16,
+pto.tsel ins(%mask, %a, %b, %tmp : !pto.tile_buf<loc=vec, dtype=i8, rows=16, cols=16,
+             v_row=16, v_col=16, blayout=row_major, slayout=none_box,
+             fractal=512, pad=0>,
+             !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16,
              v_row=16, v_col=16, blayout=row_major, slayout=none_box,
              fractal=512, pad=0>,
              !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16,
@@ -4400,37 +4416,46 @@ pto.tsel ins(%mask, %a, %b : !pto.tile_buf<loc=vec, dtype=i8, rows=16, cols=16,
 
 #### `pto.tsels`
 
-**Summary:** Selects one of two source tiles using a scalar selection mode (global select).
+**Summary:** Selects between a source tile and a scalar using a mask tile.
 
 **Semantics:**
 
 ```
-dst = (selectMode != 0) ? src0 : src1
+For each element (i, j):
+    dst[i, j] = mask[i, j] ? src[i, j] : scalar
 ```
 
 **Arguments:**
 
 | Name | Type | Description |
 |------|------|-------------|
-| `src0` | `pto.tile_buf` | First source tile |
-| `src1` | `pto.tile_buf` | Second source tile |
-| `selectMode` | `AnyInteger` | Selection mode (scalar) |
+| `mask` | `pto.tile_buf` | Mask tile (select predicate carrier) |
+| `src` | `pto.tile_buf` | Source tile |
+| `tmp` | `pto.tile_buf` | Temporary scratch tile required by the current DPS form |
+| `scalar` | `ScalarType` | Scalar value selected when the mask bit is false |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
 
+**Assembly Format:**
+
+```
+pto.tsels ins(<mask>, <src>, <tmp>, <scalar> : <mask_type>, <src_type>, <tmp_type>, <scalar_type>)
+          outs(<dst> : <dst_type>)
+```
+
 **Constraints & Verification:**
 
 - **Implementation checks (A2A3)**:
-  - `src0`, `src1`, and `dst` must have the same element type.
-  - The shared element type must be a 16-bit or 32-bit type supported by PTO IR: `i16`, `u16`, `i32`, `u32`, `f16`, or `f32`.
-  - `src0` and `dst` must use row-major layout (`blayout=row_major`).
-  - `src0` and `dst` must have the same valid region: `src0 valid row == dst valid row` and `src0 valid column == dst valid column`.
+  - `src` and `dst` must have the same element type.
+  - The shared element type must be a 16-bit or 32-bit type supported by PTO IR: `i16`, `i32`, `f16`, or `f32`.
+  - `src` and `dst` must use row-major layout (`blayout=row_major`).
+  - `src` and `dst` must have the same valid region: `src valid row == dst valid row` and `src valid column == dst valid column`.
 - **Implementation checks (A5)**:
-  - `src0`, `src1`, and `dst` must have the same element type.
-  - The shared element type must be an 8-bit, 16-bit, or 32-bit type supported by PTO IR: `i8`, `u8`, `i16`, `u16`, `i32`, `u32`, `f16`, or `f32`.
-  - `src0`, `src1`, and `dst` must use row-major layout (`blayout=row_major`).
-  - `src0` and `dst` must have the same valid region: `src0 valid row == dst valid row` and `src0 valid column == dst valid column`.
+  - `src` and `dst` must have the same element type.
+  - The shared element type must be an 8-bit, 16-bit, or 32-bit type supported by PTO IR: `i8`, `i16`, `i32`, `f16`, or `f32`.
+  - `src` and `dst` must use row-major layout (`blayout=row_major`).
+  - `src` and `dst` must have the same valid region: `src valid row == dst valid row` and `src valid column == dst valid column`.
 
 **Hardware Mapping:**
 
@@ -4440,7 +4465,10 @@ dst = (selectMode != 0) ? src0 : src1
 **Basic Example:**
 
 ```mlir
-pto.tsels ins(%a, %b, %mode : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16,
+pto.tsels ins(%mask, %src, %tmp, %scalar : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16,
+              v_row=16, v_col=16, blayout=row_major, slayout=none_box,
+              fractal=512, pad=0>,
+              !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16,
               v_row=16, v_col=16, blayout=row_major, slayout=none_box,
               fractal=512, pad=0>,
               !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16,
@@ -4872,7 +4900,7 @@ For each element (i, j):
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile buffer |
-| `scalar` | `AnyType` | Scalar value |
+| `scalar` | `AnySignlessInteger` | Scalar value |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
@@ -4980,10 +5008,18 @@ For each element (i, j):
 | Name | Type | Description |
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source tile buffer |
-| `scalar` | `AnyInteger` | Scalar value |
+| `scalar` | `AnySignlessInteger` | Scalar value |
+| `tmp` | `pto.tile_buf` | Temporary scratch tile; required by the PTO IR DPS form |
 | `dst` | `pto.tile_buf` | Destination tile buffer |
 
 **Results:** None. Writes into `dst` via DPS pattern.
+
+**Assembly Format:**
+
+```
+pto.txors ins(<src>, <scalar>, <tmp> : <src_type>, <scalar_type>, <tmp_type>)
+          outs(<dst> : <dst_type>)
+```
 
 **Constraints & Verification:**
 
@@ -4993,7 +5029,7 @@ For each element (i, j):
   - The shared element type must be an 8-bit or 16-bit integral type supported by PTO IR: `i8`, `u8`, `i16`, or `u16`.
   - `src` and `dst` must use row-major layout (`blayout=row_major`).
   - `src` and `dst` must have the same valid region: `src valid row == dst valid row` and `src valid column == dst valid column`.
-   - Individual temporary space is required by A3 for calculation, while not used by A5. Do not set temporary space to the same memory as source Tile or destination Tile.
+  - The DPS form takes a `tmp` scratch tile. On A2/A3 it is used for calculation; on A5 codegen may ignore it, but the PTO IR operand is still required.
 - **Implementation checks (A5)**:
   - `sr0`and `dst` must have the same element type.
   - The shared element type must be an 8-bit, 16-bit, or 32-bit integral type supported by PTO IR: `i8`, `u8`, `i16`, `u16`, `i32`, or `u32`.
@@ -5008,9 +5044,12 @@ For each element (i, j):
 **Basic Example:**
 
 ```mlir
-pto.txors ins(%a, %s : !pto.tile_buf<loc=vec, dtype=i32, rows=16, cols=16,
+pto.txors ins(%a, %s, %tmp : !pto.tile_buf<loc=vec, dtype=i32, rows=16, cols=16,
               v_row=16, v_col=16, blayout=row_major, slayout=none_box,
-              fractal=512, pad=0>, i32)
+              fractal=512, pad=0>, i32,
+              !pto.tile_buf<loc=vec, dtype=i32, rows=16, cols=16,
+              v_row=16, v_col=16, blayout=row_major, slayout=none_box,
+              fractal=512, pad=0>)
          outs(%c : !pto.tile_buf<loc=vec, dtype=i32, rows=16, cols=16,
               v_row=16, v_col=16, blayout=row_major, slayout=none_box,
               fractal=512, pad=0>)
@@ -5139,6 +5178,67 @@ Predefined mask patterns for gather operations.
 | `P0110` | 2 | 0-1-1-0 |
 | `P0001` | 3 | 0-0-0-1 |
 | `P1111` | 4 | All ones |
+
+---
+
+##### `pto.tconcat` - Concatenate Tiles (Column-wise)
+
+**Summary:** Concatenates two source tiles along the column dimension into a destination tile.
+
+**Semantics:**
+
+Let \(R\) be `dst` valid rows, \(C_0\) be `src0` valid columns, and \(C_1\) be `src1` valid columns. For each row \(i\):
+
+\[
+dst[i, 0:C_0) = src0[i, 0:C_0)
+\]
+\[
+dst[i, C_0:C_0+C_1) = src1[i, 0:C_1)
+\]
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `src0` | `pto.tile_buf` | First source tile (first segment) |
+| `src1` | `pto.tile_buf` | Second tile (second segment) |
+| `dst` | `pto.tile_buf` | Destination tile |
+
+**Results:** None. Writes into `dst` via DPS pattern.
+
+**Assembly Format:**
+
+```
+pto.tconcat ins(<src0>, <src1> : <src0_type>, <src1_type>)
+           outs(<dst> : <dst_type>)
+```
+
+**Constraints & Verification:**
+
+- **Implementation checks (A2A3)**:
+- `src0`, `src1`, and `dst` must have the same element type, and must be one of : `i8/i16/i32/f16/f32/bf16`
+- TileType of src and dst tiles must be `loc=vec`
+- The total concatenated valid columns must fit in `dst` capacity:
+  - `src0.valid_col + src1.valid_col <= dst.cols` (checked when these values are statically known).
+- `dst valid row = src0/src1 valid row`, 
+- **Implementation checks (A5)**:
+- `src0`, `src1`, and `dst` must have the same element type, and must be one of : `i8/i16/i32/f16/f32/bf16`.
+- All tiles must `blayout=row_major`
+- TileType of src and dst tiles must be `loc=vec`
+- The total concatenated valid columns must fit in `dst` capacity:
+  - `src0.valid_col + src1.valid_col <= dst.cols` (checked when these values are statically known).
+
+**Hardware Mapping:**
+
+- Executes on the **Vector pipeline** (`PIPE_V`)
+- Operates on data in the **VEC (UB)** memory space
+
+**Basic Example:**
+
+```mlir
+pto.tconcat ins(%a, %b : !pto.tile_buf<...>, !pto.tile_buf<...>)
+           outs(%dst : !pto.tile_buf<...>)
+```
 
 ---
 
@@ -5601,8 +5701,16 @@ idx = permutation indices for the sort
 | `src` | `pto.tile_buf` | Input tile |
 | `dst` | `pto.tile_buf` | Sorted output |
 | `idx` | `pto.tile_buf` | Index mapping output |
+| `tmp` | `Optional<pto.tile_buf>` | Optional scratch tile for the tmp-taking DPS overload |
 
 **Results:** None. Writes into `dst`/`idx` via DPS pattern.
+
+**Assembly Format:**
+
+```
+pto.tsort32 ins(<src>[, <tmp>] : <src_type>[, <tmp_type>])
+           outs(<dst>, <idx> : <dst_type>, <idx_type>)
+```
 
 **Constraints & Verification:**
 
@@ -5620,6 +5728,10 @@ idx = permutation indices for the sort
 
 ```mlir
 pto.tsort32 ins(%src : !pto.tile_buf<...>)
+           outs(%dst, %idx : !pto.tile_buf<...>, !pto.tile_buf<...>)
+
+# Optional scratch form:
+pto.tsort32 ins(%src, %tmp : !pto.tile_buf<...>, !pto.tile_buf<...>)
            outs(%dst, %idx : !pto.tile_buf<...>, !pto.tile_buf<...>)
 ```
 
@@ -5789,7 +5901,7 @@ result = src[offset]
 | `src` | `pto.tile_buf` | Source tile |
 | `offset` | `Index` | Linear element offset |
 
-**Results:** Scalar value (`AnyType`)
+**Results:** Scalar value (`ScalarType`)
 
 **Constraints & Verification:**
 
@@ -5826,7 +5938,7 @@ dst[offset] = val
 |------|------|-------------|
 | `dst` | `pto.tile_buf` | Destination tile |
 | `offset` | `Index` | Linear element offset |
-| `val` | `AnyType` | Scalar value to write |
+| `val` | `ScalarType` (signless integer / float) | Scalar value to write |
 
 **Results:** None. Writes into `dst` via DPS pattern.
 
@@ -5913,7 +6025,7 @@ dst[...] = Convert(src[i, j]; fp)
 |------|------|-------------|
 | `src` | `pto.tile_buf` | Source accumulator tile |
 | `fp` | `pto.tile_buf` | Scaling tile |
-| `dst` | `AnyMemRef` | Destination memory |
+| `dst` | `PartitionTensorViewType` | Destination memory |
 
 **Results:** None. Writes into `dst` via DPS pattern.
 
@@ -6740,7 +6852,7 @@ printf(format, scalar);
 | Name | Type | Description |
 |------|------|-------------|
 | `format` | `StrAttr` | Compile-time format string (e.g. `"%+08.3f"`); must be a literal attribute |
-| `scalar` | `index` / integer / f32 | Numeric value to print |
+| `ScalarType` (signless integer / float) | Numeric value to print |
 
 **Results:** None.
 

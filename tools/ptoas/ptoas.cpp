@@ -301,11 +301,10 @@ static bool parseAutoSyncTailHint(llvm::StringRef hintStr, std::string &normaliz
 // first-class op for member-function invocation. After translation, we rewrite:
 //   PTOAS__TILE_SET_VALUE(dst, offset, val) -> dst.SetValue(offset, val)
 //   PTOAS__TILE_GET_VALUE(src, offset)      -> src.GetValue(offset)
-//   PTOAS__TILE_DATA(obj)                  -> obj.data()
-//   PTOAS__TILE_SET_VALID_ROW(obj, row)    -> obj.RowMaskInternal = row
-//   PTOAS__TILE_SET_VALID_COL(obj, col)    -> obj.ColMaskInternal = col
-//   PTOAS__PTR_LOAD(ptr, offset)           -> ptr[offset]
-//   PTOAS__PTR_STORE(ptr, offset, val)     -> ptr[offset] = val
+//   PTOAS__TILE_DATA(obj)                   -> obj.data()
+//   PTOAS__TILE_SET_VALIDSHAPE(obj, r, c)   -> obj.SetValidShape(r, c)
+//   PTOAS__PTR_LOAD(ptr, offset)            -> ptr[offset]
+//   PTOAS__PTR_STORE(ptr, offset, val)      -> ptr[offset] = val
 // --------------------------------------------------------------------------
 static bool rewriteMarkerCallToMember(std::string &cpp, llvm::StringRef marker,
                                       llvm::StringRef memberName,
@@ -403,82 +402,9 @@ static void rewriteTileGetSetValueMarkers(std::string &cpp) {
         cpp, "PTOAS__TILE_GET_VALUE", "GetValue", /*expectedNumArgs=*/2);
     changed |= rewriteMarkerCallToMember(
         cpp, "PTOAS__TILE_DATA", "data", /*expectedNumArgs=*/1);
-  }
-}
-
-static bool rewriteMarkerCallToFieldStore(std::string &cpp, llvm::StringRef marker,
-                                          llvm::StringRef fieldName) {
-  size_t searchPos = 0;
-  bool changed = false;
-  while (true) {
-    size_t markerPos = cpp.find(marker.str(), searchPos);
-    if (markerPos == std::string::npos)
-      break;
-
-    size_t lparenPos = markerPos + marker.size();
-    if (lparenPos >= cpp.size() || cpp[lparenPos] != '(') {
-      searchPos = markerPos + marker.size();
-      continue;
-    }
-
-    size_t argsBegin = lparenPos + 1;
-    int parenDepth = 0;
-    size_t rparenPos = std::string::npos;
-    for (size_t i = argsBegin; i < cpp.size(); ++i) {
-      char c = cpp[i];
-      if (c == '(') {
-        ++parenDepth;
-      } else if (c == ')') {
-        if (parenDepth == 0) {
-          rparenPos = i;
-          break;
-        }
-        --parenDepth;
-      }
-    }
-    if (rparenPos == std::string::npos)
-      break;
-
-    llvm::StringRef argsRef(cpp.data() + argsBegin, rparenPos - argsBegin);
-    llvm::SmallVector<llvm::StringRef, 2> args;
-    size_t partBegin = 0;
-    parenDepth = 0;
-    for (size_t i = 0; i < argsRef.size(); ++i) {
-      char c = argsRef[i];
-      if (c == '(') {
-        ++parenDepth;
-      } else if (c == ')') {
-        if (parenDepth > 0)
-          --parenDepth;
-      } else if (c == ',' && parenDepth == 0) {
-        args.push_back(argsRef.slice(partBegin, i).trim());
-        partBegin = i + 1;
-      }
-    }
-    if (partBegin <= argsRef.size())
-      args.push_back(argsRef.drop_front(partBegin).trim());
-
-    if (args.size() != 2) {
-      searchPos = rparenPos + 1;
-      continue;
-    }
-
-    std::string replacement = (args[0] + "." + fieldName + " = " + args[1]).str();
-    cpp.replace(markerPos, (rparenPos - markerPos) + 1, replacement);
-    changed = true;
-    searchPos = markerPos + replacement.size();
-  }
-  return changed;
-}
-
-static void rewriteTileValidShapeMarkers(std::string &cpp) {
-  bool changed = true;
-  while (changed) {
-    changed = false;
-    changed |= rewriteMarkerCallToFieldStore(
-        cpp, "PTOAS__TILE_SET_VALID_ROW", "RowMaskInternal");
-    changed |= rewriteMarkerCallToFieldStore(
-        cpp, "PTOAS__TILE_SET_VALID_COL", "ColMaskInternal");
+    changed |= rewriteMarkerCallToMember(
+        cpp, "PTOAS__TILE_SET_VALIDSHAPE", "SetValidShape",
+        /*expectedNumArgs=*/3);
   }
 }
 
@@ -835,6 +761,15 @@ int main(int argc, char **argv) {
   context.getOrLoadDialect<affine::AffineDialect>();
   context.getOrLoadDialect<mlir::LLVM::LLVMDialect>();
 
+  std::string arch = ptoTargetArch;
+  for (char &c : arch)
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (arch != "a3" && arch != "a5") {
+    llvm::errs() << "Error: invalid --pto-arch='" << ptoTargetArch
+                 << "'. Expected 'a3' or 'a5'.\n";
+    return 1;
+  }
+
   OwningOpRef<ModuleOp> module;
   llvm::StringRef buf = (*fileOrErr)->getBuffer();
   const bool isPTOBC = (buf.size() >= 6 && std::memcmp(buf.data(), "PTOBC\0", 6) == 0);
@@ -860,6 +795,9 @@ int main(int argc, char **argv) {
     // Parse textual MLIR (.pto).
     llvm::SourceMgr sourceMgr;
     sourceMgr.AddNewSourceBuffer(std::move(*fileOrErr), llvm::SMLoc());
+    pto::ScopedPTOParserTargetArch scopedParserArch(
+        arch == "a5" ? pto::PTOParserTargetArch::A5
+                     : pto::PTOParserTargetArch::A3);
     module = parseSourceFile<ModuleOp>(sourceMgr, &context);
     if (!module) {
       llvm::errs() << "Error: Failed to parse MLIR.\n";
@@ -964,14 +902,6 @@ int main(int argc, char **argv) {
   // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOVFloopGatherPass());
 
   pm.addPass(createCSEPass());
-  std::string arch = ptoTargetArch;
-  for (char &c : arch)
-    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  if (arch != "a3" && arch != "a5") {
-    llvm::errs() << "Error: invalid --pto-arch='" << ptoTargetArch
-                 << "'. Expected 'a3' or 'a5'.\n";
-    return 1;
-  }
   module->getOperation()->setAttr("pto.target_arch",
                                   mlir::StringAttr::get(&context, arch));
   if (arch == "a3") {
@@ -1022,7 +952,6 @@ int main(int argc, char **argv) {
   }
   cppOS.flush();
   rewriteTileGetSetValueMarkers(cppOutput);
-  rewriteTileValidShapeMarkers(cppOutput);
   rewritePtrScalarMarkers(cppOutput);
   rewriteAddPtrTraceMarkers(cppOutput, emitAddPtrTrace);
   rewriteHoistedGlobalTensorDecls(cppOutput);

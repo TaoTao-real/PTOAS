@@ -190,11 +190,85 @@ def _detect_set_ffts_pointer_params(text: str, pointer_param_names):
     if not pointer_param_names:
         return set()
 
+    def _is_fully_wrapped_by_parentheses(expr: str) -> bool:
+        if not (expr.startswith("(") and expr.endswith(")")):
+            return False
+        depth = 0
+        for i, ch in enumerate(expr):
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0 and i != len(expr) - 1:
+                    return False
+        return depth == 0
+
+    def _extract_identifier(expr: str) -> Optional[str]:
+        cur = expr.strip()
+        for _ in range(8):
+            prev = cur
+            while _is_fully_wrapped_by_parentheses(cur):
+                cur = cur[1:-1].strip()
+
+            m = re.match(r"^(?:reinterpret_cast|static_cast|const_cast|dynamic_cast)\s*<[^>]+>\s*\((.*)\)$", cur, re.S)
+            if m:
+                cur = m.group(1).strip()
+                continue
+
+            # C-style cast: (uint64_t) v1 / (__gm__ int64_t*) v1
+            m = re.match(r"^\(\s*[^()]+\s*\)\s*(.+)$", cur, re.S)
+            if m:
+                cur = m.group(1).strip()
+                continue
+
+            if cur == prev:
+                break
+
+        return cur if re.fullmatch(r"[A-Za-z_]\w*", cur) else None
+
+    pointer_set = set(pointer_param_names)
+    alias = {}
+    # Track simple alias chains introduced by casted assignments, e.g.:
+    #   uint64_t v6 = (uint64_t)v1;
+    #   auto v7 = reinterpret_cast<uint64_t>(v6);
+    for m in re.finditer(r"\b([A-Za-z_]\w*)\s*=\s*([^;]+);", text):
+        lhs = m.group(1)
+        rhs = m.group(2).strip()
+        src = _extract_identifier(rhs)
+        if src:
+            alias[lhs] = src
+
+    def _resolve_pointer_param(name: str) -> Optional[str]:
+        cur = name
+        seen = set()
+        for _ in range(12):
+            if cur in seen:
+                break
+            seen.add(cur)
+            if cur in pointer_set:
+                return cur
+            nxt = alias.get(cur)
+            if not nxt:
+                return None
+            cur = nxt
+        return None
+
     hits = set()
-    for name in pointer_param_names:
-        pat = rf"\bset_ffts_base_addr\b[^\n;]*\b{re.escape(name)}\b"
-        if re.search(pat, text):
-            hits.add(name)
+    for m in re.finditer(r"\bset_ffts_base_addr\s*\(([^)]*)\)", text, re.S):
+        raw_arg = m.group(1).strip()
+        arg_name = _extract_identifier(raw_arg)
+        if not arg_name:
+            continue
+        resolved = _resolve_pointer_param(arg_name)
+        if resolved:
+            hits.add(resolved)
+
+    # Compatibility fallback for unusual formatting.
+    if not hits:
+        for name in pointer_param_names:
+            pat = rf"\bset_ffts_base_addr\b[^\n;]*\b{re.escape(name)}\b"
+            if re.search(pat, text):
+                hits.add(name)
     return hits
 
 
@@ -1064,11 +1138,18 @@ def generate_testcase(
         runtime_host_include_dirs = "    ${ASCEND_HOME_PATH}/pkg_inc/runtime\n"
 
     param_decls = "\n".join(param_decls_lines)
+    runtime_rt_include = ""
+    if ffts_ptrs:
+        # `rtGetC2cCtrlAddr` is provided by CANN runtime. Use ccelib runtime
+        # header here instead of `runtime/rt.h` to avoid environment-specific
+        # include path issues on some board images.
+        runtime_rt_include = '#include <stdint.h>\n#include <ccelib/common/runtime.h>'
     main_cpp = (
         template
         .replace("@RUNTIME_RT_INCLUDE@", runtime_rt_include)
         .replace("@TEST_SUITE@", testcase.upper())
         .replace("@CASE_NAME@", case_name)
+        .replace("@RUNTIME_RT_INCLUDE@", runtime_rt_include)
         .replace(
             "@LAUNCH_DECL@",
             f"void {launch_name}({', '.join(launch_decl_params + ['void *stream'])});",

@@ -957,20 +957,62 @@ LogicalResult mlir::pto::MakeTensorViewOp::verify() {
 }
 
 LogicalResult mlir::pto::PartitionViewOp::verify() {
-  auto sourceTy = dyn_cast<mlir::pto::TensorViewType>(getSource().getType());
-  if (!sourceTy)
-    return emitOpError("source must be !pto.tensor_view<...>");
-  auto resultTy = dyn_cast<mlir::pto::PartitionTensorViewType>(getResult().getType());
-  if (!resultTy)
-    return emitOpError("result must be !pto.partition_tensor_view<...>");
+  auto srcTy = dyn_cast<mlir::pto::TensorViewType>(getSource().getType());
+  auto resTy = dyn_cast<mlir::pto::PartitionTensorViewType>(getResult().getType());
+  if (!srcTy || !resTy)
+    return emitOpError("expects tensor_view source and partition_tensor_view result");
 
-  int64_t rank = sourceTy.getRank();
-  if (static_cast<int64_t>(getOffsets().size()) != rank ||
-      static_cast<int64_t>(getSizes().size()) != rank)
-    return emitOpError() << "offsets and sizes must match source rank " << rank;
+  if (srcTy.getElementType() != resTy.getElementType())
+    return emitOpError() << "element type mismatch between source and result: src="
+                         << srcTy.getElementType() << " result="
+                         << resTy.getElementType();
 
-  if (resultTy.getElementType() != sourceTy.getElementType())
-    return emitOpError("result element type must match source element type");
+  int64_t srcRank = srcTy.getRank();
+  if ((int64_t)getOffsets().size() != srcRank)
+    return emitOpError() << "offset count (" << getOffsets().size()
+                         << ") must match source rank (" << srcRank << ")";
+
+  if ((int64_t)getSizes().size() != srcRank)
+    return emitOpError() << "size count (" << getSizes().size()
+                         << ") must match source rank (" << srcRank << ")";
+
+  ArrayRef<int64_t> srcShape = srcTy.getShape();
+  ArrayRef<int64_t> resShape = resTy.getShape();
+  bool sameRank = resTy.getRank() == srcRank;
+
+  for (int64_t i = 0; i < srcRank; ++i) {
+    auto offVal = getConstIndexValue(getOffsets()[i]);
+    auto sizeVal = getConstIndexValue(getSizes()[i]);
+
+    if (offVal && *offVal < 0)
+      return emitOpError() << "offset at dim " << i
+                           << " must be non-negative, got " << *offVal;
+
+    if (sizeVal && *sizeVal <= 0)
+      return emitOpError() << "size at dim " << i
+                           << " must be positive, got " << *sizeVal;
+
+    if (sameRank && sizeVal) {
+      int64_t resDim = resShape[i];
+      if (resDim != ShapedType::kDynamic && *sizeVal != resDim)
+        return emitOpError() << "size/result mismatch at dim " << i
+                             << ": size operand=" << *sizeVal
+                             << " result type dim=" << resDim;
+    }
+
+    int64_t srcDim = srcShape[i];
+    if (srcDim == ShapedType::kDynamic)
+      continue;
+
+    if (sizeVal && *sizeVal > srcDim)
+      return emitOpError() << "size at dim " << i << " (" << *sizeVal
+                           << ") exceeds static source dim (" << srcDim << ")";
+
+    if (offVal && sizeVal && (*offVal + *sizeVal > srcDim))
+      return emitOpError() << "offset+size at dim " << i << " ("
+                           << (*offVal + *sizeVal)
+                           << ") exceeds static source dim (" << srcDim << ")";
+  }
 
   return success();
 }
@@ -1773,8 +1815,7 @@ static LogicalResult verifyMatTileOperandsA2A3(Operation *op, Type lhsTy,
   auto lhsShape = getShapeVec(lhsTy);
   auto rhsShape = getShapeVec(rhsTy);
   auto dstShape = getShapeVec(dstTy);
-  if (lhsShape != dstShape && (lhsShape[0] != dstShape[0] || rhsShape[1] != dstShape[1] ||
-                               lhsShape[1] != rhsShape[0]))
+  if ((lhsShape[0] != dstShape[0] || rhsShape[1] != dstShape[1] || lhsShape[1] != rhsShape[0]))
     return op->emitOpError(
         "expects static matmul tile shapes lhs[M,K], rhs[K,N], and dst[M,N]");
   auto lhsValid = getValidShapeVec(lhsTy);
@@ -2118,6 +2159,96 @@ LogicalResult pto::TAndOp::verify() {
       return emitOpError(
           "expects A5 tand src0, src1, and dst element type to be i8/u8/i16/u16/i32/u32");
     return success();
+  };
+
+  return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
+}
+
+mlir::LogicalResult mlir::pto::TConcatOp::verify() {
+  auto verifyCommon = [&]() -> FailureOr<Type> {
+    Type t0 = getSrc0().getType();
+    Type t1 = getSrc1().getType();
+    Type td = getDst().getType();
+    if (failed(verifyTileBufCommon(*this, t0, "src0")) ||
+        failed(verifyTileBufCommon(*this, t1, "src1")) ||
+        failed(verifyTileBufCommon(*this, td, "dst")))
+      return failure();
+
+    Type e0 = getElemTy(t0);
+    Type e1 = getElemTy(t1);
+    Type ed = getElemTy(td);
+    if (!e0 || !e1 || !ed) {
+      emitOpError("failed to get element type for operands");
+      return failure();
+    }
+    if (e0 != e1 || e0 != ed) {
+      emitOpError("expects src0, src1, and dst to have the same element type");
+      return failure();
+    }
+
+    auto v0 = getValidShapeVec(getSrc0());
+    auto v1 = getValidShapeVec(getSrc1());
+    auto vd = getValidShapeVec(getDst());
+    if (v0.size() != 2 || v1.size() != 2 || vd.size() != 2)
+      return emitOpError("expects src0, src1, and dst to have rank-2 valid_shape");
+
+    // validRow must match dst (when known).
+    if (v0[0] != ShapedType::kDynamic && vd[0] != ShapedType::kDynamic && v0[0] != vd[0])
+      return emitOpError("expects src0 valid row to match dst valid row");
+    if (v1[0] != ShapedType::kDynamic && vd[0] != ShapedType::kDynamic && v1[0] != vd[0])
+      return emitOpError("expects src1 valid row to match dst valid row");
+
+    // Total valid columns must fit within dst static cols (when known).
+    auto sd = getShapeVec(td);
+    if (sd.size() == 2 && sd[1] != ShapedType::kDynamic &&
+        v0[1] != ShapedType::kDynamic && v1[1] != ShapedType::kDynamic) {
+      if (v0[1] + v1[1] > sd[1])
+        return emitOpError("expects src0.valid_col + src1.valid_col <= dst.cols");
+    }
+
+    return e0;
+  };
+
+  auto verifyElemType = [&](Type elem) -> LogicalResult {
+    if (elem.isF16() || elem.isF32() || elem.isBF16())
+      return success();
+    auto it = mlir::dyn_cast<IntegerType>(elem);
+    if (!it || !it.isSignless() ||
+        (it.getWidth() != 8 && it.getWidth() != 16 && it.getWidth() != 32))
+      return emitOpError("expects element type to be i8, i16, i32, f16, f32, or bf16");
+    return success();
+  };
+
+  auto verifyLocVec = [&](Type ty, StringRef name) -> LogicalResult {
+    auto as = getPTOMemorySpaceEnum(ty);
+    if (!as || *as != pto::AddressSpace::VEC)
+      return emitOpError() << "expects " << name << " to use loc=vec";
+    return success();
+  };
+
+  auto verifyA2A3 = [&]() -> LogicalResult {
+    FailureOr<Type> elemOr = verifyCommon();
+    if (failed(elemOr))
+      return failure();
+    if (failed(verifyLocVec(getSrc0().getType(), "src0")) ||
+        failed(verifyLocVec(getSrc1().getType(), "src1")) ||
+        failed(verifyLocVec(getDst().getType(), "dst")))
+      return failure();
+    return verifyElemType(*elemOr);
+  };
+
+  auto verifyA5 = [&]() -> LogicalResult {
+    FailureOr<Type> elemOr = verifyCommon();
+    if (failed(elemOr))
+      return failure();
+    if (failed(verifyLocVec(getSrc0().getType(), "src0")) ||
+        failed(verifyLocVec(getSrc1().getType(), "src1")) ||
+        failed(verifyLocVec(getDst().getType(), "dst")))
+      return failure();
+    if (!isRowMajorTileBuf(getSrc0().getType()) || !isRowMajorTileBuf(getSrc1().getType()) ||
+        !isRowMajorTileBuf(getDst().getType()))
+      return emitOpError("expects src0, src1, and dst to use row-major layout");
+    return verifyElemType(*elemOr);
   };
 
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
@@ -2933,9 +3064,9 @@ mlir::LogicalResult mlir::pto::TExtractOp::verify() {
       if (!hasMatExtractSourceLayoutA5(srcTb, *dstSpace))
         return emitOpError("expects A5 textract src to use a supported mat blayout/slayout combination");
       if (*dstSpace == pto::AddressSpace::LEFT) {
-        if (dstTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor) ||
+        if (dstTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::ColMajor) ||
             dstTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::RowMajor))
-          return emitOpError("expects A5 left dst to use row_major blayout and row_major slayout");
+          return emitOpError("expects A5 left dst to use col_major blayout and row_major slayout");
       } else if (*dstSpace == pto::AddressSpace::RIGHT) {
         if (dstTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor) ||
             dstTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::ColMajor))
@@ -4658,6 +4789,21 @@ static bool isTileBufOrMemref(Type ty) {
 static constexpr llvm::StringLiteral kLoweredSetValidShapeAttrName =
     "__pto.lowered_set_validshape";
 
+static bool isLocallyBoundTileSource(Value value) {
+  if (!value || isa<BlockArgument>(value))
+    return false;
+
+  if (isa<AllocTileOp, BindTileOp, PointerCastOp>(value.getDefiningOp()))
+    return true;
+
+  if (auto bitcast = value.getDefiningOp<BitcastOp>())
+    return isLocallyBoundTileSource(bitcast.getSrc());
+  if (auto reshape = value.getDefiningOp<TReshapeOp>())
+    return isLocallyBoundTileSource(reshape.getSrc());
+
+  return false;
+}
+
 static std::optional<int64_t> getConstIndexLike(Value v) {
   if (auto cOp = v.getDefiningOp<arith::ConstantIndexOp>())
     return cOp.value();
@@ -4691,6 +4837,11 @@ mlir::LogicalResult mlir::pto::SetValidShapeOp::verify() {
       return emitOpError("expects source tile_buf to have dynamic validShape (?, ?)");
 
     shape.assign(srcTy.getShape().begin(), srcTy.getShape().end());
+
+    if (!isLocallyBoundTileSource(getSource()))
+      return emitOpError(
+          "requires a locally bound tile source; function arguments/results "
+          "are unsupported");
   } else if (auto srcTy = llvm::dyn_cast<MemRefType>(getSource().getType())) {
     if (!(*this)->hasAttr(kLoweredSetValidShapeAttrName))
       return emitOpError(
@@ -4861,6 +5012,240 @@ mlir::LogicalResult mlir::pto::TRowExpandOp::verify() {
 }
 
 
+ParseResult mlir::pto::TSort32Op::parse(OpAsmParser &parser, OperationState &result) {
+  OpAsmParser::UnresolvedOperand src, dst, idx, tmp;
+  Type srcTy, dstTy, idxTy, tmpTy;
+  bool hasTmp = false;
+
+  if (parser.parseKeyword("ins") || parser.parseLParen() || parser.parseOperand(src))
+    return failure();
+  if (succeeded(parser.parseOptionalComma())) {
+    if (parser.parseOperand(tmp))
+      return failure();
+    hasTmp = true;
+  }
+  if (parser.parseColonType(srcTy))
+    return failure();
+  if (hasTmp) {
+    if (parser.parseComma() || parser.parseType(tmpTy))
+      return failure();
+  }
+  if (parser.parseRParen())
+    return failure();
+
+  if (parser.parseKeyword("outs") || parser.parseLParen() ||
+      parser.parseOperand(dst) || parser.parseComma() || parser.parseOperand(idx) ||
+      parser.parseColonType(dstTy) || parser.parseComma() || parser.parseType(idxTy) ||
+      parser.parseRParen())
+    return failure();
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+
+  if (parser.resolveOperand(src, srcTy, result.operands) ||
+      parser.resolveOperand(dst, dstTy, result.operands) ||
+      parser.resolveOperand(idx, idxTy, result.operands))
+    return failure();
+  if (hasTmp) {
+    if (parser.resolveOperand(tmp, tmpTy, result.operands))
+      return failure();
+  }
+
+  result.addAttribute(
+      "operandSegmentSizes",
+      parser.getBuilder().getDenseI32ArrayAttr({1, 1, 1, hasTmp ? 1 : 0}));
+  return success();
+}
+
+void mlir::pto::TSort32Op::print(OpAsmPrinter &p) {
+  p << " ins(" << getSrc();
+  if (getTmp()) {
+    p << ", " << getTmp();
+    p << " : " << getSrc().getType() << ", " << getTmp().getType() << ")";
+  } else {
+    p << " : " << getSrc().getType() << ")";
+  }
+  p << " outs(" << getDst() << ", " << getIdx()
+    << " : " << getDst().getType() << ", " << getIdx().getType() << ")";
+  p.printOptionalAttrDict((*this)->getAttrs(), /*elidedAttrs=*/{"operandSegmentSizes"});
+}
+
+ParseResult mlir::pto::TRowExpandDivOp::parse(OpAsmParser &parser, OperationState &result) {
+  OpAsmParser::UnresolvedOperand src0, src1, tmp, dst;
+  Type src0Ty, src1Ty, tmpTy, dstTy;
+  bool hasTmp = false;
+
+  if (parser.parseKeyword("ins") || parser.parseLParen() ||
+      parser.parseOperand(src0) || parser.parseComma() || parser.parseOperand(src1))
+    return failure();
+  if (succeeded(parser.parseOptionalComma())) {
+    if (parser.parseOperand(tmp))
+      return failure();
+    hasTmp = true;
+  }
+  if (parser.parseColon())
+    return failure();
+  if (parser.parseType(src0Ty) || parser.parseComma() || parser.parseType(src1Ty))
+    return failure();
+  if (hasTmp) {
+    if (parser.parseComma() || parser.parseType(tmpTy))
+      return failure();
+  }
+  if (parser.parseRParen())
+    return failure();
+  if (parser.parseKeyword("outs") || parser.parseLParen() ||
+      parser.parseOperand(dst) || parser.parseColonType(dstTy) ||
+      parser.parseRParen())
+    return failure();
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+
+  if (parser.resolveOperand(src0, src0Ty, result.operands) ||
+      parser.resolveOperand(src1, src1Ty, result.operands))
+    return failure();
+  if (hasTmp) {
+    if (parser.resolveOperand(tmp, tmpTy, result.operands))
+      return failure();
+  }
+  if (parser.resolveOperand(dst, dstTy, result.operands))
+    return failure();
+
+  result.addAttribute(
+      "operandSegmentSizes",
+      parser.getBuilder().getDenseI32ArrayAttr({1, 1, hasTmp ? 1 : 0, 1}));
+  return success();
+}
+
+void mlir::pto::TRowExpandDivOp::print(OpAsmPrinter &p) {
+  p << " ins(" << getSrc0() << ", " << getSrc1();
+  if (getTmp()) {
+    p << ", " << getTmp();
+    p << " : " << getSrc0().getType() << ", " << getSrc1().getType() << ", "
+      << getTmp().getType() << ")";
+  } else {
+    p << " : " << getSrc0().getType() << ", " << getSrc1().getType() << ")";
+  }
+  p << " outs(" << getDst() << " : " << getDst().getType() << ")";
+  p.printOptionalAttrDict((*this)->getAttrs(), /*elidedAttrs=*/{"operandSegmentSizes"});
+}
+
+ParseResult mlir::pto::TRowExpandMulOp::parse(OpAsmParser &parser, OperationState &result) {
+  OpAsmParser::UnresolvedOperand src0, src1, tmp, dst;
+  Type src0Ty, src1Ty, tmpTy, dstTy;
+  bool hasTmp = false;
+
+  if (parser.parseKeyword("ins") || parser.parseLParen() ||
+      parser.parseOperand(src0) || parser.parseComma() || parser.parseOperand(src1))
+    return failure();
+  if (succeeded(parser.parseOptionalComma())) {
+    if (parser.parseOperand(tmp))
+      return failure();
+    hasTmp = true;
+  }
+  if (parser.parseColon())
+    return failure();
+  if (parser.parseType(src0Ty) || parser.parseComma() || parser.parseType(src1Ty))
+    return failure();
+  if (hasTmp) {
+    if (parser.parseComma() || parser.parseType(tmpTy))
+      return failure();
+  }
+  if (parser.parseRParen())
+    return failure();
+  if (parser.parseKeyword("outs") || parser.parseLParen() ||
+      parser.parseOperand(dst) || parser.parseColonType(dstTy) ||
+      parser.parseRParen())
+    return failure();
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+
+  if (parser.resolveOperand(src0, src0Ty, result.operands) ||
+      parser.resolveOperand(src1, src1Ty, result.operands))
+    return failure();
+  if (hasTmp) {
+    if (parser.resolveOperand(tmp, tmpTy, result.operands))
+      return failure();
+  }
+  if (parser.resolveOperand(dst, dstTy, result.operands))
+    return failure();
+
+  result.addAttribute(
+      "operandSegmentSizes",
+      parser.getBuilder().getDenseI32ArrayAttr({1, 1, hasTmp ? 1 : 0, 1}));
+  return success();
+}
+
+void mlir::pto::TRowExpandMulOp::print(OpAsmPrinter &p) {
+  p << " ins(" << getSrc0() << ", " << getSrc1();
+  if (getTmp()) {
+    p << ", " << getTmp();
+    p << " : " << getSrc0().getType() << ", " << getSrc1().getType() << ", "
+      << getTmp().getType() << ")";
+  } else {
+    p << " : " << getSrc0().getType() << ", " << getSrc1().getType() << ")";
+  }
+  p << " outs(" << getDst() << " : " << getDst().getType() << ")";
+  p.printOptionalAttrDict((*this)->getAttrs(), /*elidedAttrs=*/{"operandSegmentSizes"});
+}
+
+ParseResult mlir::pto::TRowExpandSubOp::parse(OpAsmParser &parser, OperationState &result) {
+  OpAsmParser::UnresolvedOperand src0, src1, tmp, dst;
+  Type src0Ty, src1Ty, tmpTy, dstTy;
+  bool hasTmp = false;
+
+  if (parser.parseKeyword("ins") || parser.parseLParen() ||
+      parser.parseOperand(src0) || parser.parseComma() || parser.parseOperand(src1))
+    return failure();
+  if (succeeded(parser.parseOptionalComma())) {
+    if (parser.parseOperand(tmp))
+      return failure();
+    hasTmp = true;
+  }
+  if (parser.parseColon())
+    return failure();
+  if (parser.parseType(src0Ty) || parser.parseComma() || parser.parseType(src1Ty))
+    return failure();
+  if (hasTmp) {
+    if (parser.parseComma() || parser.parseType(tmpTy))
+      return failure();
+  }
+  if (parser.parseRParen())
+    return failure();
+  if (parser.parseKeyword("outs") || parser.parseLParen() ||
+      parser.parseOperand(dst) || parser.parseColonType(dstTy) ||
+      parser.parseRParen())
+    return failure();
+  if (parser.parseOptionalAttrDict(result.attributes))
+    return failure();
+
+  if (parser.resolveOperand(src0, src0Ty, result.operands) ||
+      parser.resolveOperand(src1, src1Ty, result.operands))
+    return failure();
+  if (hasTmp) {
+    if (parser.resolveOperand(tmp, tmpTy, result.operands))
+      return failure();
+  }
+  if (parser.resolveOperand(dst, dstTy, result.operands))
+    return failure();
+
+  result.addAttribute(
+      "operandSegmentSizes",
+      parser.getBuilder().getDenseI32ArrayAttr({1, 1, hasTmp ? 1 : 0, 1}));
+  return success();
+}
+
+void mlir::pto::TRowExpandSubOp::print(OpAsmPrinter &p) {
+  p << " ins(" << getSrc0() << ", " << getSrc1();
+  if (getTmp()) {
+    p << ", " << getTmp();
+    p << " : " << getSrc0().getType() << ", " << getSrc1().getType() << ", "
+      << getTmp().getType() << ")";
+  } else {
+    p << " : " << getSrc0().getType() << ", " << getSrc1().getType() << ")";
+  }
+  p << " outs(" << getDst() << " : " << getDst().getType() << ")";
+  p.printOptionalAttrDict((*this)->getAttrs(), /*elidedAttrs=*/{"operandSegmentSizes"});
+}
+
 mlir::LogicalResult mlir::pto::TRowExpandDivOp::verify() {
   auto verifyCommon = [&]() -> LogicalResult {
     Type src0Ty = getSrc0().getType();
@@ -4869,6 +5254,9 @@ mlir::LogicalResult mlir::pto::TRowExpandDivOp::verify() {
     if (failed(verifyTileBufCommon(*this, src0Ty, "src0")) ||
         failed(verifyTileBufCommon(*this, src1Ty, "src1")) ||
         failed(verifyTileBufCommon(*this, dstTy, "dst")))
+      return failure();
+    if (getTmp() &&
+        failed(verifyTileBufCommon(*this, getTmp().getType(), "tmp")))
       return failure();
     if (failed(verifyTileBufSameShapeAndElem(*this, src0Ty, dstTy, "src0", "dst")))
       return failure();
@@ -4898,6 +5286,9 @@ mlir::LogicalResult mlir::pto::TRowExpandMulOp::verify() {
         failed(verifyTileBufCommon(*this, src1Ty, "src1")) ||
         failed(verifyTileBufCommon(*this, dstTy, "dst")))
       return failure();
+    if (getTmp() &&
+        failed(verifyTileBufCommon(*this, getTmp().getType(), "tmp")))
+      return failure();
     if (failed(verifyTileBufSameShapeAndElem(*this, src0Ty, dstTy, "src0", "dst")))
       return failure();
     if (getElemTy(src0Ty) != getElemTy(src1Ty))
@@ -4925,6 +5316,9 @@ mlir::LogicalResult mlir::pto::TRowExpandSubOp::verify() {
     if (failed(verifyTileBufCommon(*this, src0Ty, "src0")) ||
         failed(verifyTileBufCommon(*this, src1Ty, "src1")) ||
         failed(verifyTileBufCommon(*this, dstTy, "dst")))
+      return failure();
+    if (getTmp() &&
+        failed(verifyTileBufCommon(*this, getTmp().getType(), "tmp")))
       return failure();
     if (failed(verifyTileBufSameShapeAndElem(*this, src0Ty, dstTy, "src0", "dst")))
       return failure();
@@ -5191,43 +5585,52 @@ mlir::LogicalResult mlir::pto::TSelOp::verify() {
 
 
 mlir::LogicalResult mlir::pto::TSelSOp::verify() {
+  // Constraints & Verification per PTO_IR_manual.md pto.tsels:
+  // - src and dst same element type; A2A3: i16/i32/f16/f32; A5: i8/i16/i32/f16/f32
+  // - src and dst row-major; src and dst same valid region
   auto verifyCommon = [&]() -> FailureOr<Type> {
-    Type t0 = getSrc0().getType();
-    Type t1 = getSrc1().getType();
-    Type td = getDst().getType();
-    if (failed(verifyTileBufCommon(*this, t0, "src0")) ||
-        failed(verifyTileBufCommon(*this, t1, "src1")) ||
-        failed(verifyTileBufCommon(*this, td, "dst")))
+    Type tMask = getMask().getType();
+    Type tSrc = getSrc().getType();
+    Type tTmp = getTmp().getType();
+    Type tDst = getDst().getType();
+    if (failed(verifyTileBufCommon(*this, tMask, "mask")) ||
+        failed(verifyTileBufCommon(*this, tSrc, "src")) ||
+        failed(verifyTileBufCommon(*this, tTmp, "tmp")) ||
+        failed(verifyTileBufCommon(*this, tDst, "dst")))
       return failure();
-    Type e0 = getElemTy(t0), e1 = getElemTy(t1), ed = getElemTy(td);
-    if (!e0 || !e1 || !ed) {
+    Type eMask = getElemTy(tMask), eSrc = getElemTy(tSrc);
+    Type eTmp = getElemTy(tTmp), eDst = getElemTy(tDst);
+    if (!eMask || !eSrc || !eTmp || !eDst) {
       emitOpError("failed to get element type for operands");
       return failure();
     }
-    if (e0 != e1 || e0 != ed) {
-      emitOpError("expects src0, src1, and dst to have the same element type");
+    if (eMask != eDst || eSrc != eDst || eTmp != eDst)
+      return emitOpError("expects mask, src, tmp, and dst to have the same element type");
+    if (failed(verifyTileBufSameValidShape(*this, tMask, tDst, "mask", "dst")) ||
+        failed(verifyTileBufSameValidShape(*this, tSrc, tDst, "src", "dst")) ||
+        failed(verifyTileBufSameValidShape(*this, tTmp, tDst, "tmp", "dst")))
       return failure();
-    }
-    if (failed(verifyTileBufSameValidShape(*this, t0, td, "src0", "dst")))
-      return failure();
-    return e0;
+    return eDst;
   };
 
   auto verifyA2A3 = [&]() -> LogicalResult {
     FailureOr<Type> elemOr = verifyCommon();
     if (failed(elemOr))
       return failure();
-    Type t0 = getSrc0().getType();
-    Type td = getDst().getType();
-    if (!isRowMajorTileBuf(t0) || !isRowMajorTileBuf(td))
-      return emitOpError("expects src0 and dst to use row-major layout");
+    Type tMask = getMask().getType();
+    Type tSrc = getSrc().getType();
+    Type tTmp = getTmp().getType();
+    Type tDst = getDst().getType();
+    if (!isRowMajorTileBuf(tMask) || !isRowMajorTileBuf(tSrc) ||
+        !isRowMajorTileBuf(tTmp) || !isRowMajorTileBuf(tDst))
+      return emitOpError("expects mask, src, tmp, and dst to use row-major layout");
     Type elem = *elemOr;
     bool ok = elem.isF16() || elem.isF32();
     if (auto it = mlir::dyn_cast<mlir::IntegerType>(elem))
-      ok = it.getWidth() == 16 || it.getWidth() == 32;
+      ok = it.isSignless() && (it.getWidth() == 16 || it.getWidth() == 32);
     if (!ok)
       return emitOpError(
-          "expects A2/A3 tsels src0, src1, and dst element type to be i16/u16/i32/u32/f16/f32");
+          "expects A2/A3 tsels mask, src, and dst element type to be i16, i32, f16, or f32");
     return success();
   };
 
@@ -5235,24 +5638,25 @@ mlir::LogicalResult mlir::pto::TSelSOp::verify() {
     FailureOr<Type> elemOr = verifyCommon();
     if (failed(elemOr))
       return failure();
-    Type t0 = getSrc0().getType();
-    Type t1 = getSrc1().getType();
-    Type td = getDst().getType();
-    if (!isRowMajorTileBuf(t0) || !isRowMajorTileBuf(t1) ||
-        !isRowMajorTileBuf(td))
-      return emitOpError("expects src0, src1, and dst to use row-major layout");
+    Type tMask = getMask().getType();
+    Type tSrc = getSrc().getType();
+    Type tTmp = getTmp().getType();
+    Type tDst = getDst().getType();
+    if (!isRowMajorTileBuf(tMask) || !isRowMajorTileBuf(tSrc) ||
+        !isRowMajorTileBuf(tTmp) || !isRowMajorTileBuf(tDst))
+      return emitOpError("expects mask, src, tmp, and dst to use row-major layout");
     Type elem = *elemOr;
     bool ok = elem.isF16() || elem.isF32();
     if (auto it = mlir::dyn_cast<mlir::IntegerType>(elem))
-      ok = it.getWidth() == 8 || it.getWidth() == 16 || it.getWidth() == 32;
+      ok = it.isSignless() && (it.getWidth() == 8 || it.getWidth() == 16 || it.getWidth() == 32);
     if (!ok)
       return emitOpError(
-          "expects A5 tsels src0, src1, and dst element type to be i8/u8/i16/u16/i32/u32/f16/f32");
+          "expects A5 tsels mask, src, and dst element type to be i8, i16, i32, f16, or f32");
     return success();
   };
 
-  if (!isa<IntegerType>(getSelectMode().getType()))
-    return emitOpError("expects selectMode to be an integer scalar");
+  if (!isa<IntegerType>(getScalar().getType()))
+    return emitOpError("expects scalar to be an integer type");
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 
@@ -5359,6 +5763,9 @@ mlir::LogicalResult mlir::pto::TSort32Op::verify() {
       failed(verifyVecTileCommon(*this, dstTy, "dst")) ||
       failed(verifyVecTileCommon(*this, idxTy, "idx")))
     return failure();
+  if (getTmp() &&
+      failed(verifyVecTileCommon(*this, getTmp().getType(), "tmp")))
+    return failure();
 
   auto srcElem = getElemTy(srcTy);
   auto dstElem = getElemTy(dstTy);
@@ -5396,18 +5803,40 @@ mlir::LogicalResult mlir::pto::TSqrtOp::verify() {
 
 
 mlir::LogicalResult mlir::pto::TStoreFPOp::verify() {
+  auto shouldBypassDecoded = [&]() -> bool {
+    Value src = getSrc();
+    Value fp = getFp();
+    return isa<MemRefType>(src.getType()) || isa<MemRefType>(fp.getType()) ||
+           src.getDefiningOp<pto::BindTileOp>() ||
+           fp.getDefiningOp<pto::BindTileOp>();
+  };
+
+  auto verifyDstType = [&]() -> LogicalResult {
+    Type dstTy = getDst().getType();
+    if (!isa<MemRefType, pto::PartitionTensorViewType>(dstTy))
+      return emitOpError()
+             << "expects dst to be a memref or !pto.partition_tensor_view";
+    if (auto dstPart = dyn_cast<pto::PartitionTensorViewType>(dstTy)) {
+      for (auto [idx, dim] : llvm::enumerate(dstPart.getShape())) {
+        if (dim != ShapedType::kDynamic && dim <= 0)
+          return emitOpError()
+                 << "expects dst shape[" << idx << "] to be positive";
+      }
+    }
+    return success();
+  };
+
   auto verifyA2A3 = [&]() -> LogicalResult {
     Type srcTy = getSrc().getType();
     Type fpTy = getFp().getType();
-    Type dstTy = getDst().getType();
     if (!isa<pto::TileBufType>(srcTy))
       return emitOpError() << "expects src to be a !pto.tile_buf";
     if (!isa<pto::TileBufType>(fpTy))
       return emitOpError() << "expects fp to be a !pto.tile_buf";
-    if (!isa<MemRefType>(dstTy))
-      return emitOpError() << "expects dst to be a memref";
     if (failed(verifyTileBufCommon(*this, srcTy, "src")) ||
         failed(verifyTileBufCommon(*this, fpTy, "fp")))
+      return failure();
+    if (failed(verifyDstType()))
       return failure();
     auto srcSpace = getPTOMemorySpaceEnum(srcTy);
     if (!srcSpace || *srcSpace != pto::AddressSpace::ACC)
@@ -5437,22 +5866,28 @@ mlir::LogicalResult mlir::pto::TStoreFPOp::verify() {
   auto verifyA5 = [&]() -> LogicalResult {
     Type srcTy = getSrc().getType();
     Type fpTy = getFp().getType();
-    Type dstTy = getDst().getType();
     if (!isa<pto::TileBufType>(srcTy))
       return emitOpError() << "expects src to be a !pto.tile_buf";
     if (!isa<pto::TileBufType>(fpTy))
       return emitOpError() << "expects fp to be a !pto.tile_buf";
-    if (!isa<MemRefType>(dstTy))
-      return emitOpError() << "expects dst to be a memref";
     if (failed(verifyTileBufCommon(*this, srcTy, "src")) ||
         failed(verifyTileBufCommon(*this, fpTy, "fp")))
+      return failure();
+    if (failed(verifyDstType()))
       return failure();
     auto srcSpace = getPTOMemorySpaceEnum(srcTy);
     if (!srcSpace || *srcSpace != pto::AddressSpace::ACC)
       return emitOpError() << "expects src to be in the acc address space";
     return mlir::success();
   };
-  return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
+  if (shouldBypassDecoded())
+    return success();
+  switch (getVerifierTargetArch(getOperation())) {
+  case VerifierTargetArch::A2A3:
+    return verifyA2A3();
+  case VerifierTargetArch::A5:
+    return verifyA5();
+  }
 }
 
 
@@ -6685,6 +7120,7 @@ PTO_DEFINE_UNARY_EFFECTS(TAddSOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TAddSCOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 
 PTO_DEFINE_BINARY_EFFECTS(TAndOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
+PTO_DEFINE_BINARY_EFFECTS(TConcatOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TAndSOp, getSrcMutable(), getDstMutable())
 
 // TCI: Write(dst) (generates sequence)
@@ -6808,9 +7244,36 @@ PTO_DEFINE_UNARY_EFFECTS(TReluOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TRemOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TRemSOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TRowExpandOp, getSrcMutable(), getDstMutable())
-PTO_DEFINE_BINARY_EFFECTS(TRowExpandDivOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
-PTO_DEFINE_BINARY_EFFECTS(TRowExpandMulOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
-PTO_DEFINE_BINARY_EFFECTS(TRowExpandSubOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
+
+void TRowExpandDivOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_READ(getSrc0Mutable());
+  PTO_ADD_READ(getSrc1Mutable());
+  auto tmp = getTmpMutable();
+  if (!tmp.empty())
+    PTO_ADD_WRITE(tmp[0]);
+  PTO_ADD_WRITE(getDstMutable());
+}
+
+void TRowExpandMulOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_READ(getSrc0Mutable());
+  PTO_ADD_READ(getSrc1Mutable());
+  auto tmp = getTmpMutable();
+  if (!tmp.empty())
+    PTO_ADD_WRITE(tmp[0]);
+  PTO_ADD_WRITE(getDstMutable());
+}
+
+void TRowExpandSubOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_READ(getSrc0Mutable());
+  PTO_ADD_READ(getSrc1Mutable());
+  auto tmp = getTmpMutable();
+  if (!tmp.empty())
+    PTO_ADD_WRITE(tmp[0]);
+  PTO_ADD_WRITE(getDstMutable());
+}
 
 // Row reductions use tmp scratch tile.
 void TRowMaxOp::getEffects(
@@ -6837,28 +7300,39 @@ void TRowSumOp::getEffects(
 PTO_DEFINE_UNARY_EFFECTS(TRsqrtOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TScatterOp, getSrcMutable(), getIndexesMutable(), getDstMutable())
 
-// Select: Read(mask, src0, src1) -> Write(dst)
+// Select: Read(mask, src0, src1) -> Write(tmp, dst)
 void TSelOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   PTO_ADD_READ(getMaskMutable());
   PTO_ADD_READ(getSrc0Mutable());
   PTO_ADD_READ(getSrc1Mutable());
+  PTO_ADD_WRITE(getTmpMutable());
   PTO_ADD_WRITE(getDstMutable());
 }
 
-PTO_DEFINE_BINARY_EFFECTS(TSelSOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
+// TSELS: Read(src0, src1) -> Write(tmp, dst)
+void TSelSOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_READ(getMaskMutable());
+  PTO_ADD_READ(getSrcMutable());
+  PTO_ADD_WRITE(getTmpMutable());
+  PTO_ADD_WRITE(getDstMutable());
+}
 
 PTO_DEFINE_BINARY_EFFECTS(TShlOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TShrOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TShlSOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TShrSOp, getSrcMutable(), getDstMutable())
 
-// TSORT32: Read(src) -> Write(dst, idx)
+// TSORT32: Read(src) -> Write(dst, idx [, tmp])
 void TSort32Op::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   PTO_ADD_READ(getSrcMutable());
   PTO_ADD_WRITE(getDstMutable());
   PTO_ADD_WRITE(getIdxMutable());
+  auto tmp = getTmpMutable();
+  if (!tmp.empty())
+    PTO_ADD_WRITE(tmp[0]);
 }
 
 PTO_DEFINE_UNARY_EFFECTS(TSqrtOp, getSrcMutable(), getDstMutable())
@@ -6867,7 +7341,13 @@ PTO_DEFINE_TERNARY_EFFECTS(TSubCOp, getSrc0Mutable(), getSrc1Mutable(), getSrc2M
 PTO_DEFINE_UNARY_EFFECTS(TSubSOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_BINARY_EFFECTS(TSubSCOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())
 
-PTO_DEFINE_UNARY_EFFECTS(TXorSOp, getSrcMutable(), getDstMutable())
+// TXORS: Read(src) -> Write(tmp, dst)
+void TXorSOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
+  PTO_ADD_READ(getSrcMutable());
+  PTO_ADD_WRITE(getTmpMutable());
+  PTO_ADD_WRITE(getDstMutable());
+}
 
 // TXOR: Read(src0, src1) -> Write(tmp?, dst)
 void TXorOp::getEffects(

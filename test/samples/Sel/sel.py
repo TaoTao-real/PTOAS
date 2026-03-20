@@ -59,6 +59,7 @@ def build():
                 tb0 = pto.AllocTileOp(tile_buf_i8).result
                 tb1 = pto.AllocTileOp(tile_buf_f32).result
                 tb2 = pto.AllocTileOp(tile_buf_f32).result
+                tb_tmp = pto.AllocTileOp(tile_buf_f32).result
                 tb3 = pto.AllocTileOp(tile_buf_f32).result
 
                 # pto.load_dps_tb ins(%sv) outs(%tb)
@@ -66,8 +67,8 @@ def build():
                 pto.TLoadOp(None, sv1, tb1)  # result=None
                 pto.TLoadOp(None, sv2, tb2)  # result=None
 
-                # pto.addf_dps_tb ins(%tb0,%tb1) outs(%tb2)
-                pto.TSelOp(tb0, tb1, tb2, tb3)
+                # pto.tsel ins(%mask,%src0,%src1,%tmp) outs(%dst)
+                pto.TSelOp(tb0, tb1, tb2, tb_tmp, tb3)
 
                 # %8 = subview on output tensor_view
                 sv3 = pto.PartitionViewOp(tile_view_f32, tv3, offsets=[c0, c0], sizes=[c32, c32]).result

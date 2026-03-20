@@ -49,7 +49,7 @@ def ScalarPtrOrMemRef :
     "Ptr or MemRef in GM">;
 
 def ScalarType :
-  AnyTypeOf<[Index, AnySignlessInteger, AnyFloat], "numeric (index/integer/float)">;
+  AnyTypeOf<[AnySignlessInteger, AnyFloat], "numeric (integer/float)">;
 
 //===----------------------------------------------------------------------===//
 // Op Class
@@ -319,7 +319,9 @@ def SetValidShapeOp : PTO_Op<"set_validshape", [
     tile_buf handle in place.
 
     This op does not allocate or alias a new tile handle. It is only valid for
-    tile_buf types whose valid_row and valid_col are both dynamic (`?`).
+    tile_buf types whose valid_row and valid_col are both dynamic (`?`), and
+    the source must be a locally bound tile handle (for example `alloc_tile`
+    or a view derived from it). Function arguments/results are not supported.
   }];
 
   let arguments = (ins
@@ -1754,7 +1756,7 @@ def TSetValOp : PTO_TOp<"tsetval", [
   let arguments = (ins
     PTODpsType:$dst,
     Index:$offset,
-    AnyType:$val
+    ScalarType:$val
   );
 
   let results = (outs);
@@ -1787,7 +1789,7 @@ def TGetValOp : PTO_TOp<"tgetval", [
     Index:$offset
   );
 
-  let results = (outs AnyType:$dst);
+  let results = (outs ScalarType:$dst);
 
   let hasVerifier = 1;
 
@@ -1984,7 +1986,7 @@ def TAddSCOp : PTO_TOp<"taddsc", [
   let summary = "dst = src0 + scalar + src1 ";
   let arguments = (ins
     PTODpsType:$src0,
-    AnyType:$scalar,
+    ScalarType:$scalar,
     PTODpsType:$src1,
     PTODpsType:$dst
   );
@@ -2028,13 +2030,49 @@ def TAndOp : PTO_TOp<"tand", [
   }];
 }
 
+def TConcatOp: PTO_TOp<"tconcat", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "TCONCAT: Concatenate two tiles along the column dimension.";
+  let description = [{
+    Semantics (per row):
+      dst[:, 0:validCol0] = src0
+      dst[:, validCol0:validCol0+validCol1] = src1
+
+    Constraints are implementation-defined; see verifier for current checks.
+  }];
+
+  let arguments = (ins
+    PTODpsType:$src0,
+    PTODpsType:$src1,
+    PTODpsType:$dst
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `ins` `(` $src0 `,` $src1 `:` qualified(type($src0)) `,` qualified(type($src1)) `)`
+    `outs` `(` $dst `:` qualified(type($dst) ) `)`
+    attr-dict
+  }];
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+  }];
+}
+
 def TAndSOp : PTO_TOp<"tands", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TANDS(dst, src, scalar) bitwise-and tile with scalar";
-  let arguments = (ins PTODpsType:$src, AnyType:$scalar, PTODpsType:$dst);
+  let arguments = (ins PTODpsType:$src, AnySignlessInteger:$scalar, PTODpsType:$dst);
   let results = (outs);
 
   let assemblyFormat = [{
@@ -2125,7 +2163,7 @@ def TCmpSOp : PTO_TOp<"tcmps", [
 
   let arguments = (ins
     PTODpsType:$src,
-    AnyTypeOf<[AnyFloat, AnySignlessInteger, Index]>:$scalar,
+    ScalarType:$scalar,
     DefaultValuedAttr<PTO_CmpModeAttr, "::mlir::pto::CmpMode::EQ">:$cmpMode,
     PTODpsType:$dst
   );
@@ -2418,7 +2456,7 @@ def TDivSOp : PTO_TOp<"tdivs", [
 
   let arguments = (ins
     AnyType:$src,
-    AnyType:$scalar,
+    ScalarType:$scalar,
     PTODpsType:$dst
   );
 
@@ -2471,7 +2509,7 @@ def TExpandsOp : PTO_TOp<"texpands", [
   let summary = "Broadcast scalar into dst (tilebuf, DPS)";
 
   let arguments = (ins
-    AnyTypeOf<[F16, F32, I16, I32, I8, UI8, UI16, UI32]>:$scalar,
+    ScalarType:$scalar,
     PTODpsType:$dst
   );
 
@@ -2811,7 +2849,7 @@ def TMaxSOp : PTO_TOp<"tmaxs", [
 
   let arguments = (ins
     PTODpsType:$src,
-    F32:$scalar,
+    ScalarType:$scalar,
     PTODpsType:$dst
   );
 
@@ -2869,7 +2907,7 @@ def TMinSOp : PTO_TOp<"tmins", [
 
   let arguments = (ins
     PTODpsType:$src,
-    F32:$scalar,
+    ScalarType:$scalar,
     PTODpsType:$dst
   );
 
@@ -2995,7 +3033,7 @@ def TMulSOp: PTO_TOp<"tmuls", [
 
   let arguments = (ins
     PTODpsType:$src0,
-    F32:$scalar,
+    ScalarType:$scalar,
     PTODpsType:$dst
   );
 
@@ -3380,7 +3418,7 @@ def TRemSOp: PTO_TOp<"trems", [
 
   let arguments = (ins
     PTODpsType:$src,
-    F32:$scalar,
+    ScalarType:$scalar,
     PTODpsType:$dst
   );
 
@@ -3468,10 +3506,14 @@ def TRowExpandDivOp: PTO_TOp<"trowexpanddiv", [
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TROWEXPANDDIV: Row-wise broadcast divide: divide each row of src0 by a per-row scalar vector src1.";
+  let description = [{
+    pto-isa has overloads with/without tmp; optional tmp for scratch.
+  }];
 
   let arguments = (ins
     PTODpsType:$src0,
     PTODpsType:$src1,
+    Optional<PTODpsType>:$tmp,
     PTODpsType:$dst
   );
 
@@ -3479,11 +3521,7 @@ def TRowExpandDivOp: PTO_TOp<"trowexpanddiv", [
 
   let hasVerifier = 1;
 
-  let assemblyFormat = [{
-    `ins` `(` $src0 `,` $src1 `:` qualified(type($src0)) `,` qualified(type($src1)) `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    attr-dict
-  }];
+  let hasCustomAssemblyFormat = 1;
 
   let extraClassDeclaration = [{
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
@@ -3499,11 +3537,15 @@ def TRowExpandMulOp: PTO_TOp<"trowexpandmul", [
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
-  let summary = "TROWEXPANDMUL: Row-wise broadcast divide: divide each row of src0 by a per-row scalar vector src1.";
+  let summary = "TROWEXPANDMUL: Row-wise broadcast multiply with per-row scalar vector.";
+  let description = [{
+    pto-isa has overloads with/without tmp; optional tmp for scratch.
+  }];
 
   let arguments = (ins
     PTODpsType:$src0,
     PTODpsType:$src1,
+    Optional<PTODpsType>:$tmp,
     PTODpsType:$dst
   );
 
@@ -3511,11 +3553,7 @@ def TRowExpandMulOp: PTO_TOp<"trowexpandmul", [
 
   let hasVerifier = 1;
 
-  let assemblyFormat = [{
-    `ins` `(` $src0 `,` $src1 `:` qualified(type($src0)) `,` qualified(type($src1)) `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    attr-dict
-  }];
+  let hasCustomAssemblyFormat = 1;
 
   let extraClassDeclaration = [{
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
@@ -3532,10 +3570,14 @@ def TRowExpandSubOp: PTO_TOp<"trowexpandsub", [
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TROWEXPANDSUB: Row-wise broadcast subtract: subtract a per-row scalar vector src1 from each row of src0.";
+  let description = [{
+    pto-isa has overloads with/without tmp; optional tmp for scratch.
+  }];
 
   let arguments = (ins
     PTODpsType:$src0,
     PTODpsType:$src1,
+    Optional<PTODpsType>:$tmp,
     PTODpsType:$dst
   );
 
@@ -3543,11 +3585,7 @@ def TRowExpandSubOp: PTO_TOp<"trowexpandsub", [
 
   let hasVerifier = 1;
 
-  let assemblyFormat = [{
-    `ins` `(` $src0 `,` $src1 `:` qualified(type($src0)) `,` qualified(type($src1)) `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    attr-dict
-  }];
+  let hasCustomAssemblyFormat = 1;
 
   let extraClassDeclaration = [{
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
@@ -3741,11 +3779,15 @@ def TSelOp: PTO_TOp<"tsel", [
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TSEL: Select between two tiles using a mask tile (per-element selection).";
+  let description = [{
+    DPS form (pto-isa TSEL requires tmp): ins(%mask, %src0, %src1, %tmp) outs(%dst)
+  }];
 
   let arguments = (ins
     PTODpsType:$mask,
     PTODpsType:$src0,
     PTODpsType:$src1,
+    PTODpsType:$tmp,
     PTODpsType:$dst
   );
 
@@ -3754,7 +3796,7 @@ def TSelOp: PTO_TOp<"tsel", [
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    `ins` `(` $mask `,` $src0 `,` $src1 `:` qualified(type($mask)) `,` qualified(type($src0)) `,` qualified(type($src1)) `)`
+    `ins` `(` $mask `,` $src0 `,` $src1 `,` $tmp `:` qualified(type($mask)) `,` qualified(type($src0)) `,` qualified(type($src1)) `,` qualified(type($tmp)) `)`
     `outs` `(` $dst `:` qualified(type($dst) ) `)`
     attr-dict
   }];
@@ -3774,11 +3816,15 @@ def TSelSOp: PTO_TOp<"tsels", [
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TSELS: Select one of two source tiles using a scalar selectMode (global select).";
+  let description = [{
+    DPS form (pto-isa TSELS requires tmp): ins(%mask, %src, %tmp, %scalar) outs(%dst)
+  }];
 
   let arguments = (ins
-    PTODpsType:$src0,
-    PTODpsType:$src1,
-    AnyInteger:$selectMode,
+    PTODpsType:$mask,
+    PTODpsType:$src,
+    PTODpsType:$tmp,
+    ScalarType:$scalar,
     PTODpsType:$dst
   );
 
@@ -3787,7 +3833,7 @@ def TSelSOp: PTO_TOp<"tsels", [
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    `ins` `(` $src0 `,` $src1 `,` $selectMode `:` qualified(type($src0)) `,` qualified(type($src1)) `,` type($selectMode) `)`
+    `ins` `(` $mask `,` $src `,` $tmp `,` $scalar `:` qualified(type($mask)) `,` qualified(type($src)) `,` qualified(type($tmp)) `,` type($scalar) `)`
     `outs` `(` $dst `:` qualified(type($dst) ) `)`
     attr-dict
   }];
@@ -3873,7 +3919,7 @@ def TShlSOp : PTO_TOp<"tshls", [
   let summary = "TSHLS: Elementwise shift-left of a tile by a scalar (shift count).";
   let arguments = (ins
     PTODpsType:$src,
-    AnyTypeOf<[AnyFloat, AnySignlessInteger, Index]>:$scalar,
+    AnySignlessInteger:$scalar,
     PTODpsType:$dst
   );
   let results = (outs);
@@ -3897,7 +3943,7 @@ def TShrSOp : PTO_TOp<"tshrs", [
   let summary = "TSHRS: Elementwise shift-right of a tile by a scalar (shift count).";
   let arguments = (ins
     PTODpsType:$src,
-    AnyTypeOf<[AnyFloat, AnySignlessInteger, Index]>:$scalar,
+    AnySignlessInteger:$scalar,
     PTODpsType:$dst
   );
   let results = (outs);
@@ -3922,26 +3968,29 @@ def TSort32Op: PTO_TOp<"tsort32", [
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TSORT32: Sort a fixed-size 32-element block and produce an index mapping.";
+  let description = [{
+    DPS form. pto-isa has overloads: (dst, src, idx) or (dst, src, idx, tmp).
+    Optional tmp for scratch buffer when required by implementation.
+  }];
 
   let arguments = (ins
     PTODpsType:$src,
     PTODpsType:$dst,
-    PTODpsType:$idx
+    PTODpsType:$idx,
+    Optional<PTODpsType>:$tmp
   );
 
   let results = (outs);
 
   let hasVerifier = 1;
 
-  let assemblyFormat = [{
-    `ins` `(` $src `:` qualified(type($src)) `)`
-    `outs` `(` $dst `,` $idx `:` qualified(type($dst) ) `,` qualified(type($idx)) `)`
-    attr-dict
-  }];
+  let hasCustomAssemblyFormat = 1;
 
   let extraClassDeclaration = [{
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
-    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+    ::mlir::MutableOperandRange getDpsInitsMutable() {
+      return ::mlir::MutableOperandRange(getOperation(), 1, 2);
+    }
   }];
 }
 //===----------------------------------------------------------------------===//
@@ -4119,7 +4168,7 @@ def TSubSCOp: PTO_TOp<"tsubsc", [
 
   let arguments = (ins
     PTODpsType:$src0,
-    F32:$scalar,
+    ScalarType:$scalar,
     PTODpsType:$src1,
     PTODpsType:$dst
   );
@@ -4152,10 +4201,14 @@ def TXorSOp: PTO_TOp<"txors", [
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
   let summary = "TXORS: Elementwise bitwise XOR of a tile and a scalar.";
+  let description = [{
+    DPS form (pto-isa TXORS requires tmp): ins(%src, %scalar, %tmp) outs(%dst)
+  }];
 
   let arguments = (ins
     PTODpsType:$src,
-    AnyInteger:$scalar,
+    AnySignlessInteger:$scalar,
+    PTODpsType:$tmp,
     PTODpsType:$dst
   );
 
@@ -4164,7 +4217,7 @@ def TXorSOp: PTO_TOp<"txors", [
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    `ins` `(` $src `,` $scalar `:` qualified(type($src)) `,` type($scalar) `)`
+    `ins` `(` $src `,` $scalar `,` $tmp `:` qualified(type($src)) `,` type($scalar) `,` qualified(type($tmp)) `)`
     `outs` `(` $dst `:` qualified(type($dst) ) `)`
     attr-dict
   }];
