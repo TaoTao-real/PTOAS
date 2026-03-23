@@ -211,6 +211,10 @@ static bool isGmAddressSpaceAttr(Attribute memorySpace) {
   return false;
 }
 
+static bool isA5DeviceSpec(StringRef spec) {
+  return spec.starts_with("Ascend950") || spec.starts_with("Ascend910_95");
+}
+
 static VerifierTargetArch getVerifierTargetArch(Operation *op) {
   auto module = op ? op->getParentOfType<ModuleOp>() : ModuleOp();
   if (!module)
@@ -218,6 +222,10 @@ static VerifierTargetArch getVerifierTargetArch(Operation *op) {
   auto arch = module->getAttrOfType<StringAttr>("pto.target_arch");
   if (arch && arch.getValue().equals_insensitive("a5"))
     return VerifierTargetArch::A5;
+  if (auto spec = module->getAttrOfType<StringAttr>("pto.device-spec")) {
+    if (isA5DeviceSpec(spec.getValue()))
+      return VerifierTargetArch::A5;
+  }
   return VerifierTargetArch::A2A3;
 }
 

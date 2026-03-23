@@ -5728,39 +5728,116 @@ static bool isA5TargetForTInsert(pto::TInsertOp op) {
   return false;
 }
 
-static std::optional<StringRef> getA5TInsertModeToken(pto::TInsertOp op) {
-  if (!isA5TargetForTInsert(op))
+static std::optional<pto::Layout>
+getNearestTLoadLayoutForBuffer(pto::TInsertOp op, Value buffer) {
+  Block *block = op->getBlock();
+  if (!block)
     return std::nullopt;
+  pto::TLoadOp nearestWriter = nullptr;
+  for (Operation &candidate : *block) {
+    if (&candidate == op.getOperation())
+      break;
+    auto tload = dyn_cast<pto::TLoadOp>(&candidate);
+    if (!tload || tload.getDst() != buffer)
+      continue;
+    nearestWriter = tload;
+  }
+  if (!nearestWriter)
+    return std::nullopt;
+  auto layoutAttr = nearestWriter->getAttrOfType<pto::LayoutAttr>("layout");
+  if (!layoutAttr)
+    return std::nullopt;
+  auto layout = layoutAttr.getLayout();
+  if (layout != pto::Layout::ND && layout != pto::Layout::NZ)
+    return std::nullopt;
+  return layout;
+}
+
+static std::optional<pto::Layout> getLayoutFromTileConfigAttr(pto::TileBufConfigAttr cfg) {
+  if (!cfg)
+    return std::nullopt;
+  auto bl = cfg.getBLayout().getValue();
+  auto sl = cfg.getSLayout().getValue();
+  if (sl != pto::SLayout::NoneBox)
+    return pto::Layout::NZ;
+  if (bl == pto::BLayout::RowMajor)
+    return pto::Layout::ND;
+  if (bl == pto::BLayout::ColMajor)
+    return pto::Layout::DN;
+  return std::nullopt;
+}
+
+static std::optional<pto::Layout> getLayoutFromDefConfig(Value value) {
+  Operation *def = value.getDefiningOp();
+  if (!def)
+    return std::nullopt;
+  auto cfg = def->getAttrOfType<pto::TileBufConfigAttr>("config");
+  return getLayoutFromTileConfigAttr(cfg);
+}
+
+static FailureOr<std::optional<StringRef>> getA5TInsertModeToken(pto::TInsertOp op) {
+  if (!isA5TargetForTInsert(op))
+    return std::optional<StringRef>{};
   auto srcAs = getAddressSpaceFromType(op.getSrc().getType());
   auto dstAs = getAddressSpaceFromType(op.getDst().getType());
   if (!srcAs || !dstAs)
+    return failure();
+
+  auto asNDMode = [](std::optional<pto::Layout> l) -> std::optional<StringRef> {
+    if (!l)
+      return std::nullopt;
+    if (*l == pto::Layout::ND)
+      return StringRef("TInsertMode::ND");
+    if (*l == pto::Layout::NZ)
+      return StringRef("TInsertMode::NZ");
     return std::nullopt;
-  if (*srcAs == pto::AddressSpace::VEC && *dstAs == pto::AddressSpace::VEC)
-    return StringRef("TInsertMode::ND_VEC");
+  };
+
+  if (*srcAs == pto::AddressSpace::VEC && *dstAs == pto::AddressSpace::VEC) {
+    // vec->vec must be ND_VEC; only enable when ND is provable.
+    if (auto srcTb = dyn_cast<pto::TileBufType>(op.getSrc().getType())) {
+      int32_t bl = srcTb.getBLayoutValueI32();
+      int32_t sl = srcTb.getSLayoutValueI32();
+      bool srcIsND = bl == static_cast<int32_t>(pto::BLayout::RowMajor) &&
+                     sl == static_cast<int32_t>(pto::SLayout::NoneBox);
+      if (!srcIsND)
+        return failure();
+      return std::optional<StringRef>{StringRef("TInsertMode::ND_VEC")};
+    }
+    auto srcCfgLayout = getLayoutFromDefConfig(op.getSrc());
+    if (srcCfgLayout && *srcCfgLayout == pto::Layout::ND)
+      return std::optional<StringRef>{StringRef("TInsertMode::ND_VEC")};
+    auto srcLayout = getNearestTLoadLayoutForBuffer(op, op.getSrc());
+    if (srcLayout && *srcLayout == pto::Layout::ND)
+      return std::optional<StringRef>{StringRef("TInsertMode::ND_VEC")};
+    // Avoid mis-lowering unknown/non-ND memref vec->vec to ND_VEC.
+    return failure();
+  }
+
   if (*srcAs == pto::AddressSpace::VEC && *dstAs == pto::AddressSpace::MAT) {
     if (auto srcTb = dyn_cast<pto::TileBufType>(op.getSrc().getType())) {
       int32_t bl = srcTb.getBLayoutValueI32();
       int32_t sl = srcTb.getSLayoutValueI32();
       bool srcIsND = bl == static_cast<int32_t>(pto::BLayout::RowMajor) &&
                      sl == static_cast<int32_t>(pto::SLayout::NoneBox);
-      return srcIsND ? StringRef("TInsertMode::ND") : StringRef("TInsertMode::NZ");
+      bool srcIsNZ = bl != static_cast<int32_t>(pto::BLayout::RowMajor) &&
+                     sl == static_cast<int32_t>(pto::SLayout::RowMajor);
+      if (srcIsND)
+        return std::optional<StringRef>{StringRef("TInsertMode::ND")};
+      if (srcIsNZ)
+        return std::optional<StringRef>{StringRef("TInsertMode::NZ")};
+      return failure();
     }
-    // Best effort for memref path: recover from paired tload's layout attr.
-    for (Operation *user : op.getSrc().getUsers()) {
-      auto tload = dyn_cast<pto::TLoadOp>(user);
-      if (!tload || tload.getDst() != op.getSrc())
-        continue;
-      auto layoutAttr = tload->getAttrOfType<pto::LayoutAttr>("layout");
-      if (!layoutAttr)
-        continue;
-      return layoutAttr.getLayout() == pto::Layout::ND
-                 ? StringRef("TInsertMode::ND")
-                 : StringRef("TInsertMode::NZ");
-    }
-    // MemRef source loses explicit tile layout metadata; keep legacy default.
-    return StringRef("TInsertMode::NZ");
+    auto modeFromCfg = asNDMode(getLayoutFromDefConfig(op.getSrc()));
+    if (modeFromCfg)
+      return modeFromCfg;
+    auto mode = asNDMode(getNearestTLoadLayoutForBuffer(op, op.getSrc()));
+    if (mode)
+      return mode;
+    // Avoid forcing wrong default mode for unknown memref source layout.
+    return failure();
   }
-  return std::nullopt;
+  return std::optional<StringRef>{};
 }
 
 struct PTOInsertToEmitC : public OpConversionPattern<pto::TInsertOp> {
@@ -5777,9 +5854,14 @@ struct PTOInsertToEmitC : public OpConversionPattern<pto::TInsertOp> {
     Value c0  = peelUnrealized(adaptor.getIndexCol());
 
     ArrayAttr templateArgs = ArrayAttr{};
-    if (auto modeTok = getA5TInsertModeToken(op)) {
+    auto modeTokOr = getA5TInsertModeToken(op);
+    if (failed(modeTokOr))
+      return op.emitOpError(
+          "cannot safely infer A5 tinsert mode for current src/dst; "
+          "use tile_buf ND/NZ layout or make nearest preceding tload set explicit layout");
+    if (modeTokOr->has_value()) {
       templateArgs = rewriter.getArrayAttr(
-          {emitc::OpaqueAttr::get(ctx, modeTok->str())});
+          {emitc::OpaqueAttr::get(ctx, modeTokOr->value().str())});
     }
 
     rewriter.create<emitc::CallOpaqueOp>(
