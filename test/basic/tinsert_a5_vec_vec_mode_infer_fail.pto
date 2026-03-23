@@ -1,0 +1,17 @@
+// RUN: not ptoas --pto-arch=a5 %s 2>&1 | FileCheck %s
+
+module attributes {"pto.target_arch" = "a5"} {
+  // vec->vec with memref source written as NZ is not legal ND_VEC input.
+  func.func @tinsert_a5_vec_vec_mode_infer_fail(%src_gm: memref<32x32xf16, #pto.address_space<gm>>) {
+    %c0 = arith.constant 0 : index
+    %src = memref.alloc() : memref<32x32xf16, #pto.address_space<vec>>
+    %dst = memref.alloc() : memref<32x32xf16, #pto.address_space<vec>>
+    pto.tload ins(%src_gm : memref<32x32xf16, #pto.address_space<gm>>)
+              outs(%src : memref<32x32xf16, #pto.address_space<vec>>) {layout = #pto.layout<nz>}
+    pto.tinsert ins(%src, %c0, %c0 : memref<32x32xf16, #pto.address_space<vec>>, index, index)
+               outs(%dst : memref<32x32xf16, #pto.address_space<vec>>)
+    return
+  }
+}
+
+// CHECK: error: 'pto.tinsert' op cannot safely infer A5 tinsert mode for current src/dst
