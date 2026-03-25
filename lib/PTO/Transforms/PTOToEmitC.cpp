@@ -3764,11 +3764,27 @@ struct PTOTMatmulAccToTMATMULACC : public OpConversionPattern<pto::TMatmulAccOp>
 // Return lowering
 //===----------------------------------------------------------------------===
 
+static constexpr llvm::StringLiteral kAutoSyncTailPendingModeAttr =
+    "__pto.auto_sync_tail_mode";
+
 struct ReturnToEmitC : public OpConversionPattern<func::ReturnOp> {
   using OpConversionPattern<func::ReturnOp>::OpConversionPattern;
 
   LogicalResult matchAndRewrite(func::ReturnOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
+    if (auto emitcFunc = op->getParentOfType<emitc::FuncOp>()) {
+      if (auto modeAttr =
+              emitcFunc->getAttrOfType<StringAttr>(kAutoSyncTailPendingModeAttr)) {
+        auto *ctx = rewriter.getContext();
+        rewriter.setInsertionPoint(op);
+        auto args = rewriter.getArrayAttr(
+            {emitc::OpaqueAttr::get(ctx, modeAttr.getValue())});
+        rewriter.create<emitc::CallOpaqueOp>(
+            op.getLoc(), TypeRange{}, "ptoas_auto_sync_tail",
+            args, ArrayAttr{}, ValueRange{});
+      }
+    }
+
     auto vals = adaptor.getOperands();
     if (vals.empty()) {
       rewriter.replaceOpWithNewOp<emitc::ReturnOp>(op, Value{});
@@ -3876,14 +3892,14 @@ struct PTOBarrierToEmitC : public OpConversionPattern<pto::BarrierOp> {
 
   LogicalResult matchAndRewrite(pto::BarrierOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
-    auto *ctx = rewriter.getContext();
-
     if (op->hasAttr(kAutoSyncTailBarrierAttr)) {
-      auto args = rewriter.getArrayAttr(
-          {emitc::OpaqueAttr::get(ctx, getAutoSyncTailModeToken(op))});
-      rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
-          op, TypeRange{}, "ptoas_auto_sync_tail",
-          args, ArrayAttr{}, ValueRange{});
+      auto modeAttr = rewriter.getStringAttr(getAutoSyncTailModeToken(op));
+      if (auto emitcFunc = op->getParentOfType<emitc::FuncOp>()) {
+        emitcFunc->setAttr(kAutoSyncTailPendingModeAttr, modeAttr);
+      } else if (auto funcOp = op->getParentOfType<func::FuncOp>()) {
+        funcOp->setAttr(kAutoSyncTailPendingModeAttr, modeAttr);
+      }
+      rewriter.eraseOp(op);
       return success();
     }
 
@@ -3893,6 +3909,7 @@ struct PTOBarrierToEmitC : public OpConversionPattern<pto::BarrierOp> {
 
     // Convert Enum to String (e.g., PIPE_ALL -> "PIPE_ALL")
     std::string pipeStr = pto::stringifyPIPE(pipeEnum).str();
+    auto *ctx = rewriter.getContext();
 
     auto args = rewriter.getArrayAttr({
         emitc::OpaqueAttr::get(ctx, pipeStr)

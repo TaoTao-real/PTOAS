@@ -71,6 +71,10 @@ void SyncCodegen::Run() {
       }
     }
   });
+
+  // Ensure the tail clean barrier is emitted at function tail, right before
+  // return, instead of being interleaved with other trailing sync ops.
+  AppendAutoSyncTailBarrierIfNeeded(rewriter);
 }
  
 void SyncCodegen::UpdateOpInsertSync(IRRewriter &rewriter) {
@@ -224,6 +228,13 @@ void SyncCodegen::CreateBarrierOp(IRRewriter &rewriter, Operation *op,
     return;
   }
 
+  // Compiler-inserted tail clean barrier must be anchored at function tail.
+  if (sync->GetActualSrcPipe() == PipelineType::PIPE_ALL &&
+      sync->GetActualDstPipe() == PipelineType::PIPE_ALL) {
+    pendingAutoSyncTailBarrier_ = true;
+    return;
+  }
+
   // [Fix] 判定是否需要前置插入：如果是显式 Before，或者 Op 是 Terminator (如 Yield)
   bool insertAtPos = beforeInsert || op->hasTrait<OpTrait::IsTerminator>();
  
@@ -261,17 +272,30 @@ void SyncCodegen::CreateBarrierOp(IRRewriter &rewriter, Operation *op,
   auto barrier =
       rewriter.create<pto::BarrierOp>(op->getLoc(), currentPipeAttr);
 
-  // Mark the compiler-inserted function-tail PIPE_ALL barrier. EmitC lowering
-  // routes this to a dedicated inline epilogue helper to enable future,
-  // policy-driven lightweight tails without changing sync analysis.
-  if (sync->GetActualSrcPipe() == PipelineType::PIPE_ALL &&
-      sync->GetActualDstPipe() == PipelineType::PIPE_ALL) {
+  (void)barrier;
+}
+
+void SyncCodegen::AppendAutoSyncTailBarrierIfNeeded(IRRewriter &rewriter) {
+  if (!pendingAutoSyncTailBarrier_)
+    return;
+
+  SmallVector<func::ReturnOp, 4> returns;
+  func_.walk([&](func::ReturnOp ret) { returns.push_back(ret); });
+  if (returns.empty())
+    return;
+
+  auto pipeAllAttr = getPipeAttr(rewriter, PipelineType::PIPE_ALL);
+  for (auto ret : returns) {
+    rewriter.setInsertionPoint(ret);
+    auto barrier = rewriter.create<pto::BarrierOp>(ret.getLoc(), pipeAllAttr);
     barrier->setAttr("pto.auto_sync_tail_barrier", rewriter.getUnitAttr());
     if (auto hintAttr =
             func_->getAttrOfType<mlir::StringAttr>("pto.auto_sync_tail_hint")) {
       barrier->setAttr("pto.auto_sync_tail_hint", hintAttr);
     }
   }
+
+  pendingAutoSyncTailBarrier_ = false;
 }
  
 void SyncCodegen::CreateSetWaitOpForSingleBuffer(IRRewriter &rewriter,

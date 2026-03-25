@@ -343,6 +343,14 @@ process_one_dir() {
         overall=1
         continue
       fi
+
+      tail_line=$(grep -n "ptoas_auto_sync_tail(PTOAutoSyncTailMode::kSetWaitMte3ToSEvent0);" "$cpp" | tail -n1 | cut -d: -f1)
+      next_return_line=$(awk -v l="$tail_line" 'NR>l && /^[[:space:]]*return;[[:space:]]*$/ {print NR; exit}' "$cpp")
+      if [[ -z "${tail_line}" || -z "${next_return_line}" || $((next_return_line - tail_line)) -gt 6 ]]; then
+        echo -e "${A}(${base}.py)\tFAIL\ttail call is not placed at function tail (before return)"
+        overall=1
+        continue
+      fi
     fi
 
     # Regression guard: Python unified low-level sync API should dispatch to
