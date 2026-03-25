@@ -167,6 +167,9 @@ cmake --build build --parallel
 
 ```bash
 export PAYLOAD_ROOT=/tmp/ptoas_payload
+export TARGET_SOC_VERSION=Ascend910
+export PTO_ISA_COMMIT=893e4b00a826231e776539512b5b17f82fc11838
+
 rm -rf "$PAYLOAD_ROOT"
 mkdir -p "$PAYLOAD_ROOT/test/samples"
 mkdir -p "$PAYLOAD_ROOT/test/npu_validation/scripts"
@@ -186,16 +189,23 @@ export PYTHON_BIN=/usr/bin/python3
 export PTOAS_OUT_DIR="$PAYLOAD_ROOT/test/samples"
 export PYTHONPATH="$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core:$PTO_INSTALL_DIR:${PYTHONPATH:-}"
 export LD_LIBRARY_PATH="$LLVM_BUILD_DIR/lib:$PTO_INSTALL_DIR/lib:${LD_LIBRARY_PATH:-}"
+export SOC_VERSION="$TARGET_SOC_VERSION"
 
 bash test/samples/runop.sh --enablebc all
 
 # `runop.sh` 对 Sync 目录下 direct `.pto` regression case 的输出命名为 `*.cpp`，
-# 但批量验证脚本只扫描 `*-pto.cpp`。这里额外复制一份带 `-pto` 后缀的文件，
-# 以便后续 compile-only 流程覆盖这些 direct `.pto` 用例。
+# 但批量验证脚本只扫描 `*-pto.cpp`。这里额外生成一份带唯一后缀的
+# `*-pto.cpp`，以便后续 compile-only 流程覆盖这些 direct `.pto` 用例，
+# 同时避免覆盖 Python 样例已经生成的同名 `*-pto.cpp`。
+sv_lc="$(printf '%s' "$TARGET_SOC_VERSION" | tr '[:upper:]' '[:lower:]')"
 for f in "$PAYLOAD_ROOT"/test/samples/Sync/*.cpp; do
   [[ -f "$f" ]] || continue
   [[ "$f" == *-pto.cpp ]] && continue
-  cp "$f" "${f%.cpp}-pto.cpp"
+  base="$(basename "$f" .cpp)"
+  if [[ "$base" == "test_a5_buf_sync" && "$sv_lc" != *"950"* && "$sv_lc" != *"a5"* ]]; then
+    continue
+  fi
+  cp "$f" "$PAYLOAD_ROOT/test/samples/Sync/${base}_direct_pto-pto.cpp"
 done
 ```
 
@@ -208,16 +218,25 @@ done
 cd "$PAYLOAD_ROOT"
 export STAGE=build
 export RUN_MODE=npu
-export GOLDEN_MODE=skip
-export SOC_VERSION=Ascend910
+export SOC_VERSION="$TARGET_SOC_VERSION"
 export PTO_ISA_REPO=https://gitcode.com/cann/pto-isa.git
-export PTO_ISA_COMMIT=<与 CI 对齐的 commit>
+export PTO_ISA_COMMIT=893e4b00a826231e776539512b5b17f82fc11838
+
+# 参照 CI 的做法，按目标 SoC 排除非匹配的 A3/A5 变体。
+A3_ONLY_CASES="partition5d,partition5d_dynamic,mrgsort,tmatmulk_autosync"
+A5_ONLY_CASES="partition5d_a5,partition5d_dynamic_a5,mrgsort_a5,tmatmulk_autosync_a5,test_a5_buf_sync_direct_pto"
+sv_lc="$(printf '%s' "$SOC_VERSION" | tr '[:upper:]' '[:lower:]')"
+if [[ "$sv_lc" == *"950"* || "$sv_lc" == *"a5"* ]]; then
+  export SKIP_CASES="$A3_ONLY_CASES"
+else
+  export SKIP_CASES="$A5_ONLY_CASES"
+fi
 
 bash ./test/npu_validation/scripts/run_remote_npu_validation.sh
 ```
 
-这里显式设置 `GOLDEN_MODE=skip`，脚本会向 CMake 传递
-`-DENABLE_SIM_GOLDEN=OFF`，因此不会构建 `_sim` 目标，也不依赖 simulator 组件。
+在 `STAGE=build` 下，脚本会向 CMake 传递 `-DENABLE_SIM_GOLDEN=OFF`，
+因此不会构建 `_sim` 目标，也不依赖 simulator 组件。
 
 如果本地已经有 vendored 的 `pto-isa/` 目录，也可以不走网络 clone，脚本会优先使用本地目录。
 
