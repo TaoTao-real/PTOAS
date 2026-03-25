@@ -157,6 +157,7 @@ PYBIND11_MODULE(_pto, m) {
       .value("P1000", mlir::pto::MaskPattern::P1000)
       .value("P1111", mlir::pto::MaskPattern::P1111)
       .export_values();
+    py::object maskPatternEnumType = m.attr("MaskPattern");
 
     mlir_attribute_subclass(m, "BLayoutAttr",
                         [](MlirAttribute a) -> bool {
@@ -369,19 +370,20 @@ PYBIND11_MODULE(_pto, m) {
         [](MlirAttribute a) { return mlirPTOAttrIsAMaskPatternAttr(a); })
       .def_classmethod(
           "get",
-          [](py::object cls, py::object value, MlirContext ctx) -> py::object {
+          [maskPatternEnumType](py::object cls, py::object value,
+                                MlirContext ctx) -> py::object {
             MlirAttribute a{nullptr};
-            if (py::isinstance<py::int_>(value)) {
+            if (py::isinstance(value, maskPatternEnumType)) {
+              auto v =
+                  static_cast<MlirPTOMaskPattern>(value.attr("value").cast<int32_t>());
+              a = mlirPTOMaskPatternAttrGetEnum(ctx, v);
+            } else if (py::isinstance<py::int_>(value)) {
               int32_t v = py::cast<int32_t>(value);
               a = mlirPTOMaskPatternAttrGet(ctx, v);
               if (mlirAttributeIsNull(a))
                 throw std::runtime_error(
-                    "MaskPatternAttr.get(int, ...) expects ISA-aligned values {1,2,3,4,5,6,7}; "
-                    "use get_legacy_raw(...) only for historical raw encodings");
-            } else if (py::hasattr(value, "value")) {
-              auto v =
-                  static_cast<MlirPTOMaskPattern>(value.attr("value").cast<int32_t>());
-              a = mlirPTOMaskPatternAttrGetEnum(ctx, v);
+                    "MaskPatternAttr.get(int, ...) only accepts unambiguous values {0,3,6,7}; "
+                    "use MaskPattern enum for ISA values and get_legacy_raw(...) for historical raw encodings");
             } else {
               throw std::runtime_error("MaskPatternAttr.get expects int or MaskPattern enum");
             }
@@ -401,6 +403,12 @@ PYBIND11_MODULE(_pto, m) {
           py::arg("cls"), py::arg("value"), py::arg("context") = py::none())
       .def_property_readonly(
           "value",
+          [](MlirAttribute self) -> mlir::pto::MaskPattern {
+            return static_cast<mlir::pto::MaskPattern>(
+                mlirPTOMaskPatternAttrGetEnumValue(self));
+          })
+      .def_property_readonly(
+          "int_value",
           [](MlirAttribute self) -> int32_t {
             return mlirPTOMaskPatternAttrGetValue(self);
           });
