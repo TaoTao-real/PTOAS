@@ -2640,7 +2640,7 @@ def TExtractOp : PTO_TOp<"textract", [
   let extraClassDeclaration = [{
     ::mlir::pto::PIPE getPipe() {
       // Align with pto-isa TEXTRACT op classes:
-      //   - TEXTRACT_M2LR : MAT -> LEFT/RIGHT (MTE1)
+      //   - TEXTRACT_M2LR : MAT -> LEFT/RIGHT (and scaling-like targets) (MTE1)
       //   - TEXTRACT_V2M  : VEC -> MAT       (FIX)
       //   - TEXTRACT_A2M  : ACC -> MAT       (FIX)
       // For pure UB slices (VEC -> VEC), treat as vector pipe.
@@ -2674,7 +2674,8 @@ def TExtractOp : PTO_TOp<"textract", [
       if (s == ::mlir::pto::AddressSpace::MAT &&
           (d == ::mlir::pto::AddressSpace::LEFT ||
            d == ::mlir::pto::AddressSpace::RIGHT ||
-           d == ::mlir::pto::AddressSpace::BIAS)) {
+           d == ::mlir::pto::AddressSpace::BIAS ||
+           d == ::mlir::pto::AddressSpace::SCALING)) {
         return ::mlir::pto::PIPE::PIPE_MTE1;
       }
 
