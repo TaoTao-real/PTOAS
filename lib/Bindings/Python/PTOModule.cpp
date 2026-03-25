@@ -376,8 +376,8 @@ PYBIND11_MODULE(_pto, m) {
               a = mlirPTOMaskPatternAttrGet(ctx, v);
               if (mlirAttributeIsNull(a))
                 throw std::runtime_error(
-                    "MaskPatternAttr.get(int, ...) only accepts legacy raw values {0,3,4,5}; "
-                    "pass pto.MaskPattern enum members for ISA-aligned values");
+                    "MaskPatternAttr.get(int, ...) expects ISA-aligned values {1,2,3,4,5,6,7}; "
+                    "use get_legacy_raw(...) only for historical raw encodings");
             } else if (py::hasattr(value, "value")) {
               auto v =
                   static_cast<MlirPTOMaskPattern>(value.attr("value").cast<int32_t>());
@@ -386,6 +386,16 @@ PYBIND11_MODULE(_pto, m) {
               throw std::runtime_error("MaskPatternAttr.get expects int or MaskPattern enum");
             }
             if (mlirAttributeIsNull(a)) return py::none();
+            return cls.attr("__call__")(a);
+          },
+          py::arg("cls"), py::arg("value"), py::arg("context") = py::none())
+      .def_classmethod(
+          "get_legacy_raw",
+          [](py::object cls, int32_t value, MlirContext ctx) -> py::object {
+            MlirAttribute a = mlirPTOMaskPatternAttrGetLegacyRaw(ctx, value);
+            if (mlirAttributeIsNull(a))
+              throw std::runtime_error(
+                  "MaskPatternAttr.get_legacy_raw(...) only accepts historical raw values {0,3,4,5}");
             return cls.attr("__call__")(a);
           },
           py::arg("cls"), py::arg("value"), py::arg("context") = py::none())

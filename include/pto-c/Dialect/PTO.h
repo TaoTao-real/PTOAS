@@ -104,6 +104,10 @@ typedef enum MlirPTOMaskPattern {
 } MlirPTOMaskPattern;
 MLIR_CAPI_EXPORTED MlirAttribute mlirPTOMaskPatternAttrGetEnum(MlirContext ctx, MlirPTOMaskPattern value);
 MLIR_CAPI_EXPORTED MlirPTOMaskPattern mlirPTOMaskPatternAttrGetEnumValue(MlirAttribute attr);
+// Legacy raw-int compatibility path for historical PTOAS encodings:
+//   0 -> P0101, 3 -> P0001, 4 -> P1111, 5 -> P1010.
+// Removed legacy-only patterns 1/2 are rejected and return null.
+MLIR_CAPI_EXPORTED MlirAttribute mlirPTOMaskPatternAttrGetLegacyRaw(MlirContext ctx, int32_t value);
 
 // ---- CmpMode (compare mode for cmp/cvt) ----
 typedef enum MlirPTOCmpMode {

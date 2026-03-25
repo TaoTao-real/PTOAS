@@ -356,6 +356,23 @@ int32_t mlirPTOEventAttrGetValue(MlirAttribute attr) {
 
 MlirAttribute mlirPTOMaskPatternAttrGet(MlirContext ctx, int32_t value) {
   auto *c = unwrap(ctx);
+  switch (value) {
+  case static_cast<int32_t>(mlir::pto::MaskPattern::P0101):
+  case static_cast<int32_t>(mlir::pto::MaskPattern::P1010):
+  case static_cast<int32_t>(mlir::pto::MaskPattern::P0001):
+  case static_cast<int32_t>(mlir::pto::MaskPattern::P0010):
+  case static_cast<int32_t>(mlir::pto::MaskPattern::P0100):
+  case static_cast<int32_t>(mlir::pto::MaskPattern::P1000):
+  case static_cast<int32_t>(mlir::pto::MaskPattern::P1111):
+    return wrap(mlir::pto::MaskPatternAttr::get(
+        c, static_cast<mlir::pto::MaskPattern>(value)));
+  default:
+    return MlirAttribute{nullptr};
+  }
+}
+
+MlirAttribute mlirPTOMaskPatternAttrGetLegacyRaw(MlirContext ctx, int32_t value) {
+  auto *c = unwrap(ctx);
   std::optional<mlir::pto::MaskPattern> v;
   switch (value) {
   case 0:
@@ -389,9 +406,7 @@ int32_t mlirPTOMaskPatternAttrGetValue(MlirAttribute attr) {
 
 MlirAttribute mlirPTOMaskPatternAttrGetEnum(MlirContext ctx,
                                             MlirPTOMaskPattern value) {
-  auto *c = unwrap(ctx);
-  auto v = static_cast<mlir::pto::MaskPattern>(static_cast<int32_t>(value));
-  return wrap(mlir::pto::MaskPatternAttr::get(c, v));
+  return mlirPTOMaskPatternAttrGet(ctx, static_cast<int32_t>(value));
 }
 
 MlirPTOMaskPattern mlirPTOMaskPatternAttrGetEnumValue(MlirAttribute attr) {
