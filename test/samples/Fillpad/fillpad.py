@@ -18,11 +18,14 @@ def build():
             vec = pto.AddressSpaceAttr.get(pto.AddressSpace.VEC, ctx)
             bl = pto.BLayoutAttr.get(pto.BLayout.RowMajor, ctx)
             sl = pto.SLayoutAttr.get(pto.SLayout.NoneBox, ctx)
-            pd = pto.PadValueAttr.get(pto.PadValue.Zero, ctx)
+            src_pd = pto.PadValueAttr.get(pto.PadValue.Null, ctx)
+            dst_pd = pto.PadValueAttr.get(pto.PadValue.Zero, ctx)
 
             fractal_ab_size = pto.TileConfig.fractalABSize
-            cfg = pto.TileBufConfigAttr.get(bl, sl, fractal_ab_size, pd, ctx)
-            tile_buf_32 = pto.TileBufType.get([32, 32], f32, vec, [32, 32], cfg, ctx)
+            src_cfg = pto.TileBufConfigAttr.get(bl, sl, fractal_ab_size, src_pd, ctx)
+            dst_cfg = pto.TileBufConfigAttr.get(bl, sl, fractal_ab_size, dst_pd, ctx)
+            src_tile_buf_32 = pto.TileBufType.get([32, 32], f32, vec, [32, 32], src_cfg, ctx)
+            dst_tile_buf_32 = pto.TileBufType.get([32, 32], f32, vec, [32, 32], dst_cfg, ctx)
 
             fn_ty = func.FunctionType.get([ptr_f32, ptr_f32], [])
             with InsertionPoint(m.body):
@@ -42,8 +45,8 @@ def build():
                 # Modify SubviewOp to use constant c32 instead of direct numbers
                 sv0 = pto.PartitionViewOp(tile_view_32, tv0, offsets=[c0, c0], sizes=[c32, c32]).result
 
-                tb0 = pto.AllocTileOp(tile_buf_32).result
-                tb1 = pto.AllocTileOp(tile_buf_32).result
+                tb0 = pto.AllocTileOp(src_tile_buf_32).result
+                tb1 = pto.AllocTileOp(dst_tile_buf_32).result
 
                 pto.TLoadOp(None, sv0, tb0)  # result=None
 

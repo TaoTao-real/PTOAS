@@ -82,9 +82,9 @@ def build(
         )
 
 
-        # LEFT tile：TileLeft ... BLayout RowMajor, SLayout RowMajor, fractalAB
+        # LEFT tile：A5 pto-isa requires Left tiles to be ColMajor.
         cfg_left = pto.TileBufConfigAttr.get(
-            pto.BLayoutAttr.get(pto.BLayout.RowMajor),
+            pto.BLayoutAttr.get(pto.BLayout.ColMajor),
             pto.SLayoutAttr.get(pto.SLayout.RowMajor),
             s_fractal_ab,
             pto.PadValueAttr.get(pto.PadValue.Null)

@@ -5,6 +5,14 @@
 using namespace mlir;
 using namespace mlir::pto;
 
+static SmallVector<int64_t, 4> canonicalizeTileBufValidShape(ArrayRef<int64_t> validShape) {
+  SmallVector<int64_t, 4> canonical;
+  canonical.reserve(validShape.size());
+  for (int64_t dim : validShape)
+    canonical.push_back(dim < 0 ? ShapedType::kDynamic : dim);
+  return canonical;
+}
+
 TileBufConfigAttr TileBufType::getConfigAttr() const {
   // 情况 A：getConfig() 已经是 TileBufConfigAttr
   if constexpr (std::is_same_v<decltype(getConfig()), TileBufConfigAttr>) {
@@ -213,8 +221,10 @@ Type TileBufType::parse(AsmParser &parser) {
 
   SmallVector<int64_t, 2> shape{rows, cols};
   SmallVector<int64_t, 2> validShape{vrow, vcol};
+  auto canonicalValidShape = canonicalizeTileBufValidShape(validShape);
 
-  return TileBufType::get(ctx, shape, dtype, memorySpaceAttr, llvm::ArrayRef<int64_t>(validShape), cfg);
+  return TileBufType::get(ctx, shape, dtype, memorySpaceAttr,
+                          llvm::ArrayRef<int64_t>(canonicalValidShape), cfg);
 }
 
 static llvm::StringRef stringifyLocFromMemorySpace(mlir::Attribute memorySpace) {

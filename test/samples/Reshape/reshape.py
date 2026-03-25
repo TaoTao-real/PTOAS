@@ -16,6 +16,7 @@ def build():
             tv2_f32 = pto.TensorViewType.get(2, f32, ctx)
             tile_view_32 = pto.PartitionTensorViewType.get([32, 32], f32, ctx)
             vec = pto.AddressSpaceAttr.get(pto.AddressSpace.VEC, ctx)
+            layout_dn = pto.LayoutAttr.get(pto.Layout.DN, ctx)
             bl_row = pto.BLayoutAttr.get(pto.BLayout.RowMajor, ctx)
             bl_col = pto.BLayoutAttr.get(pto.BLayout.ColMajor, ctx)
             sl = pto.SLayoutAttr.get(pto.SLayout.NoneBox, ctx)
@@ -43,7 +44,9 @@ def build():
                 # %0/%1/%2 = pto.make_tensor_view %arg?, shape=[%c32,%c32] strides=[%c32,%c1]
                 # 这里用原生 builder：通常签名会是 (result_type, ptr, shape, strides)
                 tv0 = pto.MakeTensorViewOp(tv2_f32, arg0, [c32, c32], [c32, c1]).result
-                tv1 = pto.MakeTensorViewOp(tv2_f32, arg1, [c32, c32], [c32, c1]).result
+                tv1 = pto.MakeTensorViewOp(
+                    tv2_f32, arg1, [c32, c32], [c1, c32], layout=layout_dn
+                ).result
 
                 # Replaced immediate numbers with constants c0 and c32
                 sv0 = pto.PartitionViewOp(tile_view_32, tv0, offsets=[c0, c0], sizes=[c32, c32]).result

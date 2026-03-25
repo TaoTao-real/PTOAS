@@ -19,6 +19,7 @@ from mlir.ir import (
     Module,
     F32Type,
     IndexType,
+    UnitAttr,
 )
 from mlir.dialects import func, arith, pto
 from typing import Optional
@@ -70,6 +71,9 @@ def build_case(
             name,
             func.FunctionType.get([pto.PtrType.get(elem_ty)], []),
         )
+    # Multi-function modules require explicit entry markers after pto.entry
+    # enforcement; mark each generated function as an entry kernel.
+    f.operation.attributes["pto.entry"] = UnitAttr.get(ctx)
     entry = f.add_entry_block()
     with InsertionPoint(entry):
         shape_vals = [cidx(ctx, s) for s in shape]

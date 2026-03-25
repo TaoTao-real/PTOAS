@@ -132,6 +132,9 @@ def TileBufType : TypeDef<PTO_Dialect, "TileBuf"> {
 
       // ✅ 默认 validShape = shape（你要求的语义）
       SmallVector<int64_t, 2> vs(shape.begin(), shape.end());
+      for (int64_t &dim : vs)
+        if (dim < 0)
+          dim = mlir::ShapedType::kDynamic;
 
       return Base::get($_ctxt, shape, elementType, memorySpace, vs, cfg);
     }]>,
@@ -145,6 +148,9 @@ def TileBufType : TypeDef<PTO_Dialect, "TileBuf"> {
     ), [{
       // ✅ 默认 validShape = shape
       SmallVector<int64_t, 2> vs(shape.begin(), shape.end());
+      for (int64_t &dim : vs)
+        if (dim < 0)
+          dim = mlir::ShapedType::kDynamic;
       return Base::get($_ctxt, shape, elementType, memorySpace, vs, config);
     }]>,
 
@@ -156,7 +162,11 @@ def TileBufType : TypeDef<PTO_Dialect, "TileBuf"> {
       "ArrayRef<int64_t>":$validShape
     ), [{
       auto cfg = mlir::pto::TileBufConfigAttr::getDefault($_ctxt);
-      return Base::get($_ctxt, shape, elementType, memorySpace, validShape, cfg);
+      SmallVector<int64_t, 4> vs(validShape.begin(), validShape.end());
+      for (int64_t &dim : vs)
+        if (dim < 0)
+          dim = mlir::ShapedType::kDynamic;
+      return Base::get($_ctxt, shape, elementType, memorySpace, vs, cfg);
     }]>
   ];
 

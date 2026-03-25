@@ -28,7 +28,16 @@ if [[ -z "${PTO_ISA_ROOT:-}" ]]; then
 fi
 
 # Best-effort load Ascend/CANN environment (toolchains + runtime). Be careful with set -euo pipefail.
-if [[ -z "${ASCEND_HOME_PATH:-}" && -f "/usr/local/Ascend/ascend-toolkit/latest/set_env.sh" ]]; then
+if [[ -z "${ASCEND_HOME_PATH:-}" && -f "/usr/local/Ascend/cann/set_env.sh" ]]; then
+  echo "[INFO] Sourcing /usr/local/Ascend/cann/set_env.sh"
+  set +e
+  set +u
+  set +o pipefail
+  source "/usr/local/Ascend/cann/set_env.sh" || true
+  set -o pipefail
+  set -u
+  set -e
+elif [[ -z "${ASCEND_HOME_PATH:-}" && -f "/usr/local/Ascend/ascend-toolkit/latest/set_env.sh" ]]; then
   echo "[INFO] Sourcing /usr/local/Ascend/ascend-toolkit/latest/set_env.sh"
   set +e
   set +u

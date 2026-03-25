@@ -1,0 +1,42 @@
+module attributes {"pto.device-spec" = "Ascend910B1"} {
+  func.func @test_if_else_tile_result(%arg0: !pto.ptr<f32>, %arg1: !pto.ptr<f32>, %arg2: i32, %arg3: !pto.ptr<f32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %c64 = arith.constant 64 : index
+    %c256 = arith.constant 256 : index
+
+    %tv0 = pto.make_tensor_view %arg0, shape = [%c256, %c64], strides = [%c64, %c1] : !pto.tensor_view<?x?xf32>
+    %tv1 = pto.make_tensor_view %arg1, shape = [%c256, %c64], strides = [%c64, %c1] : !pto.tensor_view<?x?xf32>
+    %tv2 = pto.make_tensor_view %arg3, shape = [%c256, %c64], strides = [%c64, %c1] : !pto.tensor_view<?x?xf32>
+
+    %tb0 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=64, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %tb1 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=64, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %tb2 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=64, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    scf.for %i = %c0 to %c4 step %c1 {
+      %off = arith.muli %i, %c64 : index
+
+      %pt0 = pto.partition_view %tv0, offsets = [%off, %c0], sizes = [%c64, %c64] : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<64x64xf32>
+      %pt1 = pto.partition_view %tv1, offsets = [%off, %c0], sizes = [%c64, %c64] : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<64x64xf32>
+      %pt2 = pto.partition_view %tv2, offsets = [%off, %c0], sizes = [%c64, %c64] : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<64x64xf32>
+
+      pto.tload ins(%pt0 : !pto.partition_tensor_view<64x64xf32>) outs(%tb0 : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=64, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+      pto.tload ins(%pt1 : !pto.partition_tensor_view<64x64xf32>) outs(%tb0 : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=64, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+
+      %iv = arith.index_cast %arg2 : i32 to index
+      %cond = arith.cmpi eq, %iv, %c1 : index
+      %sel = scf.if %cond -> (!pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=64, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>) {
+        pto.tadd ins(%tb0, %tb0 : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=64, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=64, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%tb1 : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=64, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+        scf.yield %tb1 : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=64, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      } else {
+        pto.tmul ins(%tb0, %tb0 : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=64, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=64, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%tb2 : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=64, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+        scf.yield %tb2 : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=64, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      }
+
+      pto.tstore ins(%sel : !pto.tile_buf<loc=vec, dtype=f32, rows=64, cols=64, v_row=64, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%pt2 : !pto.partition_tensor_view<64x64xf32>)
+    }
+
+    return
+  }
+}

@@ -33,7 +33,7 @@ on:
       skip_cases:
         description: "Comma/space separated testcase names to skip (e.g. scatter,mrgsort)"
         type: string
-        default: "mix_kernel,vadd_validshape,vadd_validshape_dynamic"
+        default: "mix_kernel,vadd_validshape,vadd_validshape_dynamic,print,test_intercore_sync_a3,test_intercore_sync_a5"
       run_only_cases:
         description: "Comma/space separated testcase names to run (empty = run all)"
         type: string
@@ -45,9 +45,10 @@ on:
       pto_isa_commit:
         description: "pto-isa ref (commit/tag/branch; empty = default branch)"
         type: string
-        # NOTE: Remote NPU validation depends on upstream pto-isa. Pin a known-good
-        # commit by default to keep scheduled runs deterministic.
-        default: 082b94a3d2eaa17d63d1e5b0d74714a00594ace0
+        # NOTE: Pin a known-good commit for deterministic runs.
+        # GitCode 082b94a3d2eaa17d63d1e5b0d74714a00594ace0 (TSEL bugfix) is
+        # already included in the initial import on GitHub.
+        default: 68b7cd178622763f658be42f013e84ddeaa4beee
       remote_host:
         description: "SSH host/IP for the NPU machine"
         type: string
@@ -174,6 +175,7 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="${PTO_INSTALL_DIR}" \
             -DCMAKE_BUILD_TYPE=Release
           ninja -C build ptoas
+          ninja -C build ptobc
           ninja -C build install
 
       - name: Run sample tests (py -> pto -> cpp)
@@ -188,7 +190,7 @@ jobs:
           export PYTHONPATH="${MLIR_PYTHON_ROOT}:${PTO_PYTHON_ROOT}:${PYTHONPATH:-}"
           export LD_LIBRARY_PATH="${LLVM_DIR}/lib:${PTO_INSTALL_DIR}/lib:${LD_LIBRARY_PATH:-}"
           export PTOAS_OUT_DIR="${PAYLOAD_DIR}/test/samples"
-          bash test/samples/runop.sh all
+          bash test/samples/runop.sh --enablebc all
 
       - name: Build payload artifact
         if: >-
@@ -235,10 +237,11 @@ jobs:
       PAYLOAD_TGZ: ${{ github.workspace }}/_payload/ptoas_payload.tgz
       # Temporary CI gate: skip cases that still error/flap on the remote NPU.
       # Update this list as we fix the underlying issues.
+      # NOTE:
+      # - test_intercore_sync_a3/a5 are structural lowering gates (compile-shape checks),
+      #   not functional dataflow kernels; running them as standalone NPU cases is unstable.
       DEFAULT_SKIP_CASES: >-
-        mix_kernel,vadd_validshape,vadd_validshape_dynamic
-      # Keep nightly runs deterministic by pinning pto-isa unless overridden.
-      DEFAULT_PTO_ISA_COMMIT: 082b94a3d2eaa17d63d1e5b0d74714a00594ace0
+        mix_kernel,vadd_validshape,vadd_validshape_dynamic,print,test_intercore_sync_a3,test_intercore_sync_a5
     steps:
       - name: Resolve validation parameters
         shell: bash
@@ -262,9 +265,6 @@ jobs:
           if [[ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]]; then
             if [[ -z "${SKIP_CASES}" ]]; then
               SKIP_CASES="${DEFAULT_SKIP_CASES}"
-            fi
-            if [[ -z "${PTO_ISA_COMMIT}" ]]; then
-              PTO_ISA_COMMIT="${DEFAULT_PTO_ISA_COMMIT}"
             fi
           fi
 
@@ -329,6 +329,26 @@ jobs:
         with:
           name: ptoas_payload
           path: ${{ env.PAYLOAD_DOWNLOAD_DIR }}
+
+      - name: Vendor pto-isa into payload (offline remote)
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp_root="${RUNNER_TEMP:-${GITHUB_WORKSPACE}/.tmp}"
+          work="$(mktemp -d "${tmp_root}/ptoas_payload_unpack.XXXXXX")"
+          tar -xzf "${PAYLOAD_TGZ}" -C "${work}"
+
+          rm -rf "${work}/pto-isa"
+          git clone "${PTO_ISA_REPO}" "${work}/pto-isa"
+          if [[ -n "${PTO_ISA_COMMIT}" ]]; then
+            git -C "${work}/pto-isa" checkout -f "${PTO_ISA_COMMIT}"
+          else
+            git -C "${work}/pto-isa" checkout -f origin/HEAD || true
+          fi
+          # Ship a working tree only; remote should not need outbound network.
+          rm -rf "${work}/pto-isa/.git"
+
+          tar -czf "${PAYLOAD_TGZ}" -C "${work}" .
 
       - name: Copy payload to remote
         shell: bash

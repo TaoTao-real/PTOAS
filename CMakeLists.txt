@@ -1,5 +1,13 @@
 cmake_minimum_required(VERSION 3.20.0)
-project(ptoas)
+project(ptoas VERSION 0.9)
+
+set(PTOAS_RELEASE_VERSION_OVERRIDE ""
+    CACHE STRING "Override the version printed by ptoas --version")
+set(PTOAS_CLI_VERSION "${PROJECT_VERSION}")
+if(PTOAS_RELEASE_VERSION_OVERRIDE)
+  set(PTOAS_CLI_VERSION "${PTOAS_RELEASE_VERSION_OVERRIDE}")
+endif()
+message(STATUS "PTOAS CLI version: ${PTOAS_CLI_VERSION}")
 
 # =========================================================
 # [新增] 强制设置 C++17 标准 (LLVM 19 必需)
@@ -53,6 +61,19 @@ include_directories(${PROJECT_BINARY_DIR}/include)
 link_directories(${LLVM_BUILD_LIBRARY_DIR})
 add_definitions(${LLVM_DEFINITIONS})
 
+# 开启 Python 绑定选项
+option(PTO_ENABLE_PYTHON_BINDING "Enable Python bindings" ON)
+
+if(PTO_ENABLE_PYTHON_BINDING)
+  find_package(Python3 COMPONENTS Interpreter Development.Module REQUIRED)
+  find_package(pybind11 CONFIG REQUIRED)
+
+  # 设置 Python 扩展的输出目录，方便调试
+  set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/python/pto)
+
+  add_subdirectory(python)
+endif()
+
 # =========================================================
 # 4. 添加子目录
 # =========================================================
@@ -67,19 +88,6 @@ include(CTest)
 if(BUILD_TESTING)
   enable_testing()
   add_subdirectory(tools/ptobc/tests)
-endif()
-
-# 开启 Python 绑定选项
-option(PTO_ENABLE_PYTHON_BINDING "Enable Python bindings" ON)
-
-if(PTO_ENABLE_PYTHON_BINDING)
-  find_package(Python3 COMPONENTS Interpreter Development.Module REQUIRED)
-  find_package(pybind11 CONFIG REQUIRED)
-
-  # 设置 Python 扩展的输出目录，方便调试
-  set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/python/pto)
-
-  add_subdirectory(python)
 endif()
 
 # =========================================================

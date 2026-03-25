@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -26,6 +27,7 @@
 #include "Utils.h" // 假设包含一些通用的工具函数
 
 #include <algorithm>
+#include <functional>
 
 using namespace mlir;
 
@@ -33,6 +35,11 @@ namespace mlir {
 namespace pto {
 
 #define GEN_PASS_DEF_PTOVIEWTOMEMREF
+
+static constexpr llvm::StringLiteral kLoweredSetValidShapeAttrName =
+    "__pto.lowered_set_validshape";
+static constexpr llvm::StringLiteral kLoweredSetValidShapeConfigAttrName =
+    "__pto.lowered_set_validshape_config";
 
 namespace {
 
@@ -405,6 +412,109 @@ static Type convertPTOTypeToMemRef(Type t) {
   return t;
 }
 
+static void materializeFunctionTileArguments(func::FuncOp func, Block &entry,
+                                             ArrayRef<Type> originalInputs,
+                                             ArrayRef<Type> loweredInputs,
+                                             MLIRContext *ctx) {
+  IRRewriter rewriter(ctx);
+  rewriter.setInsertionPointToStart(&entry);
+
+  for (unsigned i = 0; i < entry.getNumArguments(); ++i) {
+    auto tbTy = dyn_cast<mlir::pto::TileBufType>(originalInputs[i]);
+    if (!tbTy)
+      continue;
+
+    auto loweredTy = dyn_cast<MemRefType>(loweredInputs[i]);
+    if (!loweredTy)
+      continue;
+
+    Value arg = entry.getArgument(i);
+    Location loc = func.getLoc();
+
+    auto makeConstIndex = [&](int64_t value) -> Value {
+      return rewriter.create<arith::ConstantOp>(loc, rewriter.getIndexType(),
+                                                rewriter.getIndexAttr(value));
+    };
+
+    Value vRow;
+    Value vCol;
+    ArrayRef<int64_t> shape = tbTy.getShape();
+    ArrayRef<int64_t> validShape = tbTy.getValidShape();
+
+    if (!tbTy.hasDynamicValid()) {
+      if (validShape.size() >= 1 && validShape[0] >= 0)
+        vRow = makeConstIndex(validShape[0]);
+      if (validShape.size() >= 2 && validShape[1] >= 0)
+        vCol = makeConstIndex(validShape[1]);
+    } else {
+      // Function arguments lose dynamic valid-shape operands at the ABI
+      // boundary. Start from the full static tile shape so a later
+      // pto.set_validshape can mutate a shared tile handle in place.
+      if (shape.size() >= 1 && shape[0] != ShapedType::kDynamic)
+        vRow = makeConstIndex(shape[0]);
+      if (shape.size() >= 2 && shape[1] != ShapedType::kDynamic)
+        vCol = makeConstIndex(shape[1]);
+    }
+
+    auto configAttr = tbTy.getConfigAttr();
+    if (!configAttr)
+      configAttr = pto::TileBufConfigAttr::getDefault(ctx);
+
+    auto bindOp =
+        rewriter.create<pto::BindTileOp>(loc, loweredTy, arg, vRow, vCol, configAttr);
+
+    SmallVector<OpOperand *, 8> uses;
+    for (OpOperand &use : arg.getUses()) {
+      if (use.getOwner() != bindOp.getOperation())
+        uses.push_back(&use);
+    }
+    for (OpOperand *use : uses)
+      use->set(bindOp.getResult());
+  }
+}
+
+// Ensure scf.if result types follow the rewritten yield operand types.
+// PTOViewToMemref rewrites tile values to memref in branch bodies, but scf.if
+// result types are not auto-updated by those op-local rewrites.
+static LogicalResult reconcileSCFIfResultTypes(func::FuncOp func) {
+  SmallVector<scf::IfOp, 8> ifOps;
+  func.walk([&](scf::IfOp ifOp) { ifOps.push_back(ifOp); });
+
+  for (scf::IfOp ifOp : ifOps) {
+    if (ifOp.getNumResults() == 0)
+      continue;
+
+    auto thenYield = dyn_cast<scf::YieldOp>(ifOp.thenBlock()->getTerminator());
+    auto elseYield = dyn_cast<scf::YieldOp>(ifOp.elseBlock()->getTerminator());
+    if (!thenYield || !elseYield) {
+      ifOp.emitError("result-bearing scf.if must end with scf.yield in both "
+                     "then/else regions");
+      return failure();
+    }
+
+    if (thenYield.getNumOperands() != ifOp.getNumResults() ||
+        elseYield.getNumOperands() != ifOp.getNumResults()) {
+      ifOp.emitError("scf.if result count does not match yielded values");
+      return failure();
+    }
+
+    for (unsigned i = 0; i < ifOp.getNumResults(); ++i) {
+      Type thenTy = thenYield.getOperand(i).getType();
+      Type elseTy = elseYield.getOperand(i).getType();
+      if (thenTy != elseTy) {
+        ifOp.emitError() << "scf.if branch yield type mismatch at result #" << i
+                         << ": then=" << thenTy << ", else=" << elseTy;
+        return failure();
+      }
+
+      if (ifOp.getResult(i).getType() != thenTy)
+        ifOp.getResult(i).setType(thenTy);
+    }
+  }
+
+  return success();
+}
+
 // =============================================================================
 // The Pass Implementation
 // =============================================================================
@@ -437,6 +547,19 @@ struct PTOViewToMemrefPass
 
       Block &entry = func.front();
       auto fnTy = func.getFunctionType();
+      SmallVector<Type> originalInputs(fnTy.getInputs().begin(), fnTy.getInputs().end());
+
+      SmallVector<mlir::pto::SetValidShapeOp, 8> setValidShapes;
+      func.walk([&](mlir::pto::SetValidShapeOp op) {
+        setValidShapes.push_back(op);
+        auto tbTy = dyn_cast<mlir::pto::TileBufType>(op.getSource().getType());
+        if (!tbTy)
+          return;
+        auto configAttr = tbTy.getConfigAttr();
+        if (!configAttr)
+          configAttr = pto::TileBufConfigAttr::getDefault(ctx);
+        op->setAttr(kLoweredSetValidShapeConfigAttrName, configAttr);
+      });
 
       // ------------------------------------------------------------------
       // Stage 0: Rewrite Function Signature
@@ -456,6 +579,12 @@ struct PTOViewToMemrefPass
 
       // Update function type
       func.setFunctionType(FunctionType::get(ctx, newInputs, newResults));
+
+      // Reintroduce a shared tile handle for lowered tile_buf function
+      // arguments so in-place metadata ops like pto.set_validshape remain
+      // observable by later PTO ops.
+      materializeFunctionTileArguments(func, entry, originalInputs, newInputs,
+                                       ctx);
 
       // ------------------------------------------------------------------
       // Stage 0.5: lower pto.alloc_tile -> memref.alloc + pto.bind_tile
@@ -845,7 +974,7 @@ struct PTOViewToMemrefPass
       }
 
       // ------------------------------------------------------------------
-      // Stage 2.5: lower pto.subset -> memref.subview + bind_tile
+      // Stage 2.4: lower pto.subset -> memref.subview + bind_tile
       // ------------------------------------------------------------------
       SmallVector<mlir::pto::SubsetOp, 8> subsets;
       func.walk([&](mlir::pto::SubsetOp op) { subsets.push_back(op); });
@@ -1032,7 +1161,8 @@ struct PTOViewToMemrefPass
       // Stage 2.75: Lower SSA tile_buf view ops (pto.treshape / pto.bitcast)
       // ------------------------------------------------------------------
       auto lowerTileBufViewLike = [&](Operation *anchorOp, Value src,
-                                      mlir::pto::TileBufType tbTy) -> Value {
+                                      mlir::pto::TileBufType tbTy,
+                                      StringRef viewSemantics) -> Value {
         Location loc = anchorOp->getLoc();
         IRRewriter rewriter(ctx);
         rewriter.setInsertionPoint(anchorOp);
@@ -1089,6 +1219,9 @@ struct PTOViewToMemrefPass
         auto bindOp = rewriter.create<pto::BindTileOp>(
             loc, targetType, src,
             vRow ? vRow : Value(), vCol ? vCol : Value(), configAttr);
+        if (!viewSemantics.empty())
+          bindOp->setAttr("pto.view_semantics",
+                          rewriter.getStringAttr(viewSemantics));
         return bindOp.getResult();
       };
 
@@ -1096,14 +1229,14 @@ struct PTOViewToMemrefPass
       func.walk([&](mlir::pto::TReshapeOp op) { reshapes.push_back(op); });
 
       for (auto op : reshapes) {
-        Value src = op.getSrc();
-        auto tbTy = dyn_cast<mlir::pto::TileBufType>(op.getResult().getType());
+        Value src = op->getOperand(0);
+        auto tbTy = dyn_cast<mlir::pto::TileBufType>(op->getResult(0).getType());
         if (!tbTy) {
           op.emitError("treshape result must be tile_buf type");
           signalPassFailure();
           return;
         }
-        Value lowered = lowerTileBufViewLike(op, src, tbTy);
+        Value lowered = lowerTileBufViewLike(op, src, tbTy, "treshape");
         if (!lowered)
           return;
         IRRewriter rewriter(ctx);
@@ -1114,18 +1247,23 @@ struct PTOViewToMemrefPass
       func.walk([&](mlir::pto::BitcastOp op) { bitcasts.push_back(op); });
 
       for (auto op : bitcasts) {
-        Value src = op.getSrc();
-        auto tbTy = dyn_cast<mlir::pto::TileBufType>(op.getResult().getType());
+        Value src = op->getOperand(0);
+        auto tbTy = dyn_cast<mlir::pto::TileBufType>(op->getResult(0).getType());
         if (!tbTy) {
           op.emitError("bitcast result must be tile_buf type");
           signalPassFailure();
           return;
         }
-        Value lowered = lowerTileBufViewLike(op, src, tbTy);
+        Value lowered = lowerTileBufViewLike(op, src, tbTy, "bitcast");
         if (!lowered)
           return;
         IRRewriter rewriter(ctx);
         rewriter.replaceOp(op, lowered);
+      }
+
+      for (auto op : setValidShapes) {
+        if (isa<MemRefType>(op.getSource().getType()))
+          op->setAttr(kLoweredSetValidShapeAttrName, UnitAttr::get(ctx));
       }
 
       // ------------------------------------------------------------------
@@ -1142,10 +1280,11 @@ struct PTOViewToMemrefPass
           
           Value src = op->getOperand(0); 
           Value dst = op->getOperand(1);
-          
-          auto config = lookupConfig(dst); // Config on Tile
 
-          rewriter.replaceOpWithNewOp<pto::TLoadOp>(op, TypeRange{}, src, dst);
+          auto newOp =
+              rewriter.create<pto::TLoadOp>(op.getLoc(), TypeRange{}, src, dst);
+          newOp->setAttrs(op->getAttrs());
+          rewriter.replaceOp(op, newOp->getResults());
       }
 
       // --- TStoreOp [Src, Dst] ---
@@ -1158,9 +1297,10 @@ struct PTOViewToMemrefPass
         Value src = op->getOperand(0); 
         Value dst = op->getOperand(1);
 
-        auto config = lookupConfig(src); // Config on Tile
-
-        rewriter.replaceOpWithNewOp<pto::TStoreOp>(op, TypeRange{}, src, dst);
+        auto newOp = rewriter.create<pto::TStoreOp>(op.getLoc(), TypeRange{},
+                                                    src, dst);
+        newOp->setAttrs(op->getAttrs());
+        rewriter.replaceOp(op, newOp->getResults());
       }
 
        // --- TTransOp [Src, Tmp, Dst] ---
@@ -1672,6 +1812,96 @@ struct PTOViewToMemrefPass
             dst);
       }
 
+      SmallVector<mlir::pto::TColExpandMulOp, 8> colexpandmulops;
+      func.walk([&](mlir::pto::TColExpandMulOp op) {
+        colexpandmulops.push_back(op);
+      });
+
+      for (auto op : colexpandmulops) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+
+        Value src0 = op.getSrc0();
+        Value src1 = op.getSrc1();
+        Value dst = op.getDst();
+
+        auto src0Ty = dyn_cast<MemRefType>(src0.getType());
+        auto src1Ty = dyn_cast<MemRefType>(src1.getType());
+        auto dstTy = dyn_cast<MemRefType>(dst.getType());
+        if (!src0Ty || !src1Ty || !dstTy) {
+          op.emitError("ins/outs are not memref yet");
+          signalPassFailure();
+          return;
+        }
+
+        rewriter.replaceOpWithNewOp<pto::TColExpandMulOp>(
+            op,
+            TypeRange{},
+            src0,
+            src1,
+            dst);
+      }
+
+      SmallVector<mlir::pto::TColExpandMaxOp, 8> colexpandmaxops;
+      func.walk([&](mlir::pto::TColExpandMaxOp op) {
+        colexpandmaxops.push_back(op);
+      });
+
+      for (auto op : colexpandmaxops) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+
+        Value src0 = op.getSrc0();
+        Value src1 = op.getSrc1();
+        Value dst = op.getDst();
+
+        auto src0Ty = dyn_cast<MemRefType>(src0.getType());
+        auto src1Ty = dyn_cast<MemRefType>(src1.getType());
+        auto dstTy = dyn_cast<MemRefType>(dst.getType());
+        if (!src0Ty || !src1Ty || !dstTy) {
+          op.emitError("ins/outs are not memref yet");
+          signalPassFailure();
+          return;
+        }
+
+        rewriter.replaceOpWithNewOp<pto::TColExpandMaxOp>(
+            op,
+            TypeRange{},
+            src0,
+            src1,
+            dst);
+      }
+
+      SmallVector<mlir::pto::TColExpandMinOp, 8> colexpandminops;
+      func.walk([&](mlir::pto::TColExpandMinOp op) {
+        colexpandminops.push_back(op);
+      });
+
+      for (auto op : colexpandminops) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+
+        Value src0 = op.getSrc0();
+        Value src1 = op.getSrc1();
+        Value dst = op.getDst();
+
+        auto src0Ty = dyn_cast<MemRefType>(src0.getType());
+        auto src1Ty = dyn_cast<MemRefType>(src1.getType());
+        auto dstTy = dyn_cast<MemRefType>(dst.getType());
+        if (!src0Ty || !src1Ty || !dstTy) {
+          op.emitError("ins/outs are not memref yet");
+          signalPassFailure();
+          return;
+        }
+
+        rewriter.replaceOpWithNewOp<pto::TColExpandMinOp>(
+            op,
+            TypeRange{},
+            src0,
+            src1,
+            dst);
+      }
+
       SmallVector<mlir::pto::TColSumOp, 8> colsumops;
       func.walk([&](mlir::pto::TColSumOp op) { colsumops.push_back(op); });
 
@@ -1988,7 +2218,7 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        auto newOp = rewriter.create<pto::GetValDpsOp>(
+        auto newOp = rewriter.create<pto::TGetValOp>(
             op.getLoc(),
             dstType,
             src,
@@ -2549,6 +2779,14 @@ struct PTOViewToMemrefPass
             op,
             TypeRange{},
             src);
+      }
+
+      // ------------------------------------------------------------------
+      // Stage 4: Reconcile control-flow result types
+      // ------------------------------------------------------------------
+      if (failed(reconcileSCFIfResultTypes(func))) {
+        signalPassFailure();
+        return;
       }
     }
     

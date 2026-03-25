@@ -4,9 +4,12 @@ on:
   push:
     tags-ignore:
       - '**'
+  # Nightly build & publish (UTC time, offset from Linux workflow).
+  schedule:
+    - cron: "40 17 * * *"
   workflow_dispatch:
   release:
-    types: [published]
+    types: [prereleased, released]
 
 permissions:
   contents: write
@@ -40,6 +43,20 @@ jobs:
       - name: Set Python path
         run: |
           echo "PY_PATH=$(python -c 'import sys; print(sys.prefix)')" >> $GITHUB_ENV
+
+      - name: Compute PTOAS CLI version
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
+            if [ "${{ github.event.action }}" = "released" ]; then
+              PTOAS_VERSION="$(python .github/scripts/compute_ptoas_version.py --mode release --check-tag "${GITHUB_REF_NAME}")"
+            else
+              PTOAS_VERSION="$(python .github/scripts/compute_ptoas_version.py --mode release)"
+            fi
+          else
+            PTOAS_VERSION="$(python .github/scripts/compute_ptoas_version.py --mode dev)"
+          fi
+          echo "PTOAS_VERSION=${PTOAS_VERSION}" >> "$GITHUB_ENV"
+          echo "Using PTOAS CLI version: ${PTOAS_VERSION}"
 
       - name: Install system dependencies
         run: |
@@ -120,6 +137,7 @@ jobs:
             -DPython3_FIND_STRATEGY=LOCATION \
             -Dpybind11_DIR=$(python -m pybind11 --cmakedir) \
             -DMLIR_PYTHON_PACKAGE_DIR=${LLVM_BUILD_DIR}/tools/mlir/python_packages/mlir_core \
+            -DPTOAS_RELEASE_VERSION_OVERRIDE=${PTOAS_VERSION} \
             -DCMAKE_INSTALL_PREFIX=${PTO_INSTALL_DIR}
           ninja -C build
           ninja -C build install
@@ -127,6 +145,7 @@ jobs:
       - name: Create Python wheel
         run: |
           export PY_PACKAGE_DIR=$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core
+          export PTOAS_PYTHON_PACKAGE_VERSION="${PTOAS_VERSION}"
           if [ "${{ matrix.arch }}" = "x86_64" ]; then
             TARGET_ARCH="x86_64"
           else
@@ -237,11 +256,39 @@ jobs:
 
   upload_release_assets:
     name: Upload release assets
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || github.event_name == 'schedule'
     needs: build_wheel
     runs-on: ubuntu-latest
 
     steps:
+      - name: Compute release metadata
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
+            echo "RELEASE_TAG=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+            echo "RELEASE_NAME=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+            echo "RELEASE_PRERELEASE=false" >> "$GITHUB_ENV"
+            echo "RELEASE_MAKE_LATEST=true" >> "$GITHUB_ENV"
+            {
+              echo "RELEASE_BODY<<EOF"
+              echo "Published release assets for ${GITHUB_REF_NAME}."
+              echo "EOF"
+            } >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_TAG=nightly" >> "$GITHUB_ENV"
+            echo "RELEASE_NAME=Nightly Build" >> "$GITHUB_ENV"
+            echo "RELEASE_PRERELEASE=true" >> "$GITHUB_ENV"
+            echo "RELEASE_MAKE_LATEST=false" >> "$GITHUB_ENV"
+            {
+              echo "RELEASE_BODY<<EOF"
+              echo "Automated nightly build."
+              echo ""
+              echo "- Commit: ${GITHUB_SHA}"
+              echo "- Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+              echo "- Date (UTC): $(date -u +'%Y-%m-%d %H:%M:%S')"
+              echo "EOF"
+            } >> "$GITHUB_ENV"
+          fi
+
       - name: Download all wheel artifacts
         uses: actions/download-artifact@v4
         with:
@@ -272,6 +319,13 @@ jobs:
       - name: Upload assets to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_NAME }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ env.RELEASE_PRERELEASE }}
+          make_latest: ${{ env.RELEASE_MAKE_LATEST }}
+          body: ${{ env.RELEASE_BODY }}
+          overwrite_files: true
           files: |
             release-artifacts/*.whl
             release-artifacts/*.tar.gz

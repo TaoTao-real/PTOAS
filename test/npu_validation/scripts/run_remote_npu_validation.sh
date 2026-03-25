@@ -74,7 +74,14 @@ for f in "$HOME/.bash_profile" "$HOME/.bashrc"; do
   source_rc "$f"
 done
 
-if [[ -f "/usr/local/Ascend/ascend-toolkit/latest/set_env.sh" ]]; then
+if [[ -f "/usr/local/Ascend/cann/set_env.sh" ]]; then
+  log "Sourcing /usr/local/Ascend/cann/set_env.sh"
+  set +e +u +o pipefail
+  # shellcheck disable=SC1091
+  source "/usr/local/Ascend/cann/set_env.sh" || true
+  set -euo pipefail
+  set -o pipefail
+elif [[ -f "/usr/local/Ascend/ascend-toolkit/latest/set_env.sh" ]]; then
   log "Sourcing /usr/local/Ascend/ascend-toolkit/latest/set_env.sh"
   set +e +u +o pipefail
   # shellcheck disable=SC1091
@@ -94,7 +101,7 @@ command -v bisheng || true
 bisheng --version || true
 
 if [[ -z "${ASCEND_HOME_PATH:-}" ]]; then
-  for d in /usr/local/Ascend/ascend-toolkit/latest /usr/local/Ascend/cann-*; do
+  for d in /usr/local/Ascend/cann /usr/local/Ascend/cann-* /usr/local/Ascend/ascend-toolkit/latest; do
     [[ -d "$d" ]] || continue
     export ASCEND_HOME_PATH="$d"
     break
@@ -149,14 +156,24 @@ if [[ "${STAGE}" == "run" ]]; then
 fi
 
 PTO_ISA_ROOT="${ROOT_DIR}/pto-isa"
-if [[ ! -d "${PTO_ISA_ROOT}/.git" ]]; then
-  log "Cloning pto-isa into ${PTO_ISA_ROOT} ..."
-  git clone "${PTO_ISA_REPO}" "${PTO_ISA_ROOT}"
-fi
-if [[ -n "${PTO_ISA_COMMIT}" ]]; then
-  log "Checking out pto-isa ${PTO_ISA_COMMIT} ..."
+# Allow CI to vendor a pto-isa working tree into the payload (no `.git`).
+# This avoids requiring outbound GitHub connectivity on the remote NPU host.
+if [[ -d "${PTO_ISA_ROOT}" && ! -d "${PTO_ISA_ROOT}/.git" ]]; then
+  log "Using vendored pto-isa tree at ${PTO_ISA_ROOT} (no .git); skipping clone/fetch/checkout."
+else
+  if [[ ! -d "${PTO_ISA_ROOT}/.git" ]]; then
+    log "Cloning pto-isa into ${PTO_ISA_ROOT} ..."
+    git clone "${PTO_ISA_REPO}" "${PTO_ISA_ROOT}"
+  fi
+  log "Fetching pto-isa updates ..."
   git -C "${PTO_ISA_ROOT}" fetch --all --prune
-  git -C "${PTO_ISA_ROOT}" checkout "${PTO_ISA_COMMIT}"
+  if [[ -n "${PTO_ISA_COMMIT}" ]]; then
+    log "Checking out pto-isa ${PTO_ISA_COMMIT} ..."
+    git -C "${PTO_ISA_ROOT}" checkout -f "${PTO_ISA_COMMIT}"
+  else
+    log "Checking out pto-isa origin/HEAD (remote default branch) ..."
+    git -C "${PTO_ISA_ROOT}" checkout -f origin/HEAD
+  fi
 fi
 
 status=0
