@@ -211,6 +211,10 @@ process_one_dir() {
       echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a5"
       continue
     fi
+    if [[ "$base" == "test_intercore_sync_a5_ptoisa_vec" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a5" ]]; then
+      echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a5"
+      continue
+    fi
     if [[ "$base" == "test_intercore_sync_a3" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a3" ]]; then
       echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a3"
       continue
@@ -448,8 +452,8 @@ process_one_dir() {
         overall=1
         continue
       fi
-      if ! grep -Fq "set_intra_block(PIPE_MTE3, 21)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 sync.set mirrored lowering to set_intra_block(PIPE_MTE3, 21)"
+      if grep -Fq "set_intra_block(PIPE_MTE3, 21)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tunexpected mirrored +16 set_intra_block for PIPE_MTE3"
         overall=1
         continue
       fi
@@ -475,13 +479,40 @@ process_one_dir() {
         overall=1
         continue
       fi
-      if ! grep -Fq "set_intra_block(PIPE_MTE3, 21)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 sync.set mirrored lowering to set_intra_block(PIPE_MTE3, 21)"
+      if grep -Fq "set_intra_block(PIPE_MTE3, 21)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tunexpected mirrored +16 set_intra_block for PIPE_MTE3"
         overall=1
         continue
       fi
       if ! grep -Fq "wait_intra_block(PIPE_MTE3, 5)" "$cpp"; then
         echo -e "${A}(${base}.py)\tFAIL\tmissing A5 sync.wait lowering to wait_intra_block(PIPE_MTE3, 5)"
+        overall=1
+        continue
+      fi
+      if grep -Fq "ffts_cross_core_sync(" "$cpp" || grep -Fq "wait_flag_dev(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tunexpected A3-style inter-core sync call in A5 output"
+        overall=1
+        continue
+      fi
+    fi
+    if [[ "$base" == "test_intercore_sync_a5_ptoisa_vec" ]]; then
+      if ! grep -Fq "get_block_idx()" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing block-role dispatch (get_block_idx)"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "set_intra_block(PIPE_MTE3, 0)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing PTO-ISA-style vec-side set_intra_block(PIPE_MTE3, 0)"
+        overall=1
+        continue
+      fi
+      if grep -Fq "set_intra_block(PIPE_MTE3, 16)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tunexpected mirrored +16 set for PIPE_MTE3 in PTO-ISA vec-side style"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "wait_intra_block(PIPE_MTE3, 0)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing PTO-ISA-style vec-side wait_intra_block(PIPE_MTE3, 0)"
         overall=1
         continue
       fi
@@ -525,8 +556,8 @@ process_one_dir() {
         overall=1
         continue
       fi
-      if [[ "$set_count" -lt 2 ]]; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 dynamic mirrored sync.set lowering to event_id+16"
+      if [[ "$set_count" -ne 1 ]]; then
+        echo -e "${A}(${base}.py)\tFAIL\tunexpected number of PIPE_MTE3 dynamic sync.set calls (expect 1)"
         overall=1
         continue
       fi

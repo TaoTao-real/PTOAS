@@ -1519,7 +1519,7 @@ endif()
                 compare_lines.append(
                     f"    ok = compare_bin(\"golden_{name}.bin\", \"{name}.bin\", {np_dtype}, {eps}) and ok"
                 )
-    if testcase == "test_intercore_sync_a5_functional":
+    if testcase in {"test_intercore_sync_a5_functional", "test_intercore_sync_a5_ptoisa_vec"}:
         # Extra functional check (not just run-to-run determinism):
         # core0 writes 2.0 to output[0], core1 waits then mirrors to output[1].
         out_name = output_ptrs[0]["name"] if output_ptrs else "v1"
