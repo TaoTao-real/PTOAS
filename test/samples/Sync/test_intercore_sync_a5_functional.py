@@ -27,6 +27,9 @@ def build():
                 c0_i64 = arith.ConstantOp(i64, 0).result
                 c1_i64 = arith.ConstantOp(i64, 1).result
                 c2 = arith.ConstantOp(f32, 2.0).result
+                # A5 dual-slot mapping: base id and base+16.
+                evt0 = 5
+                evt1 = 21
 
                 bid = pto.GetBlockIdxOp().result
                 pipe_mte3 = pto.PipeAttr.get(pto.PIPE.PIPE_MTE3, ctx)
@@ -37,14 +40,16 @@ def build():
                 with InsertionPoint(producer_if.then_block):
                     # producer core: publish data then signal event 5.
                     pto.store_scalar(out, c0_idx, c2)
-                    pto.sync_set(pipe_mte3, 5)
+                    pto.sync_set(pipe_mte3, evt0)
+                    pto.sync_set(pipe_mte3, evt1)
                     scf.YieldOp([])
 
                 is_consumer = arith.CmpIOp(arith.CmpIPredicate.eq, bid, c1_i64).result
                 consumer_if = scf.IfOp(is_consumer, [], hasElse=False)
                 with InsertionPoint(consumer_if.then_block):
                     # consumer core: wait event 5 then observe producer write.
-                    pto.sync_wait(pipe_v, 5)
+                    pto.sync_wait(pipe_v, evt0)
+                    pto.sync_wait(pipe_v, evt1)
                     loaded = pto.load_scalar(f32, out, c0_idx)
                     pto.store_scalar(out, c1_idx, loaded)
                     scf.YieldOp([])

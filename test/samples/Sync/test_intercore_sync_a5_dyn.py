@@ -20,12 +20,16 @@ def build():
             with InsertionPoint(entry):
                 c0 = arith.ConstantOp(idx, 0).result
                 c5 = arith.ConstantOp(idx, 5).result
+                c16 = arith.ConstantOp(idx, 16).result
+                c21 = arith.AddIOp(c5, c16).result
                 two = arith.ConstantOp(f32, 2.0).result
                 pipe_mte3 = pto.PipeAttr.get(pto.PIPE.PIPE_MTE3, ctx)
                 pipe_v = pto.PipeAttr.get(pto.PIPE.PIPE_V, ctx)
 
                 pto.sync_set(pipe_mte3, c5)
+                pto.sync_set(pipe_mte3, c21)
                 pto.sync_wait(pipe_v, c5)
+                pto.sync_wait(pipe_v, c21)
                 pto.store_scalar(entry.arguments[0], c0, two)
                 func.ReturnOp([])
 
