@@ -443,13 +443,18 @@ process_one_dir() {
       fi
     fi
     if [[ "$base" == "test_intercore_sync_a5" ]]; then
-      if ! grep -Fq "set_intra_block(PIPE_S, 5)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 sync.set lowering to set_intra_block"
+      if ! grep -Fq "set_intra_block(PIPE_MTE3, 5)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 sync.set lowering to set_intra_block(PIPE_MTE3, 5)"
         overall=1
         continue
       fi
-      if ! grep -Fq "wait_intra_block(PIPE_S, 5)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 sync.wait lowering to wait_intra_block"
+      if ! grep -Fq "set_intra_block(PIPE_MTE3, 21)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 sync.set mirrored lowering to set_intra_block(PIPE_MTE3, 21)"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "wait_intra_block(PIPE_MTE3, 5)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 sync.wait lowering to wait_intra_block(PIPE_MTE3, 5)"
         overall=1
         continue
       fi
@@ -465,13 +470,18 @@ process_one_dir() {
         overall=1
         continue
       fi
-      if ! grep -Fq "set_intra_block(PIPE_S, 5)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 sync.set lowering to set_intra_block"
+      if ! grep -Fq "set_intra_block(PIPE_MTE3, 5)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 sync.set lowering to set_intra_block(PIPE_MTE3, 5)"
         overall=1
         continue
       fi
-      if ! grep -Fq "wait_intra_block(PIPE_S, 5)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 sync.wait lowering to wait_intra_block"
+      if ! grep -Fq "set_intra_block(PIPE_MTE3, 21)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 sync.set mirrored lowering to set_intra_block(PIPE_MTE3, 21)"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "wait_intra_block(PIPE_MTE3, 5)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 sync.wait lowering to wait_intra_block(PIPE_MTE3, 5)"
         overall=1
         continue
       fi
@@ -509,17 +519,23 @@ process_one_dir() {
       fi
     fi
     if [[ "$base" == "test_intercore_sync_a5_dyn" ]]; then
-      if ! grep -Eq "set_intra_block\\(PIPE_S,[[:space:]]*v[0-9]+\\)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 dynamic sync.set lowering to set_intra_block(..., <var>)"
+      set_count=$(grep -Ec "set_intra_block\\(PIPE_MTE3,[[:space:]]*v[0-9]+\\)" "$cpp" || true)
+      if ! grep -Eq "set_intra_block\\(PIPE_MTE3,[[:space:]]*v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 dynamic sync.set lowering to set_intra_block(PIPE_MTE3, <var>)"
         overall=1
         continue
       fi
-      if ! grep -Eq "wait_intra_block\\(PIPE_S,[[:space:]]*v[0-9]+\\)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 dynamic sync.wait lowering to wait_intra_block(..., <var>)"
+      if [[ "$set_count" -lt 2 ]]; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 dynamic mirrored sync.set lowering to event_id+16"
         overall=1
         continue
       fi
-      if grep -Fq "set_intra_block(PIPE_S, 5)" "$cpp" || grep -Fq "wait_intra_block(PIPE_S, 5)" "$cpp"; then
+      if ! grep -Eq "wait_intra_block\\(PIPE_MTE3,[[:space:]]*v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 dynamic sync.wait lowering to wait_intra_block(PIPE_MTE3, <var>)"
+        overall=1
+        continue
+      fi
+      if grep -Fq "set_intra_block(PIPE_MTE3, 5)" "$cpp" || grep -Fq "wait_intra_block(PIPE_MTE3, 5)" "$cpp"; then
         echo -e "${A}(${base}.py)\tFAIL\tunexpected static literal event-id in dynamic A5 test"
         overall=1
         continue

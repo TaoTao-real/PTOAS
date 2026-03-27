@@ -4244,12 +4244,58 @@ struct PTOSyncSetToEmitC : public OpConversionPattern<mlir::pto::SyncSetOp> {
   matchAndRewrite(mlir::pto::SyncSetOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op->getLoc();
+    auto *ctx = rewriter.getContext();
     IntegerAttr eventIdAttr = op.getEventIdAttr();
     Value eventIdDyn = adaptor.getEventIdDyn();
 
     if ((eventIdAttr != nullptr) == static_cast<bool>(eventIdDyn))
       return rewriter.notifyMatchFailure(
           op, "expects exactly one of static event_id attr or dynamic event_id operand");
+
+    // A5 must mirror sync.set to both event_id and event_id + 16.
+    if (targetArch == PTOArch::A5) {
+      std::string pipeTok = pipeTokFromPipeAttr(op.getPipe());
+      auto emitSet = [&](Value eventOperand, IntegerAttr eventLiteral,
+                         bool isDynamic) {
+        if (isDynamic) {
+          auto args = rewriter.getArrayAttr({
+              emitc::OpaqueAttr::get(ctx, pipeTok),
+              IntegerAttr::get(IndexType::get(ctx), 0),
+          });
+          rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{}, "set_intra_block",
+                                               /*args=*/args,
+                                               /*templateArgs=*/ArrayAttr{},
+                                               /*operands=*/ValueRange{eventOperand});
+          return;
+        }
+        auto args = rewriter.getArrayAttr({
+            emitc::OpaqueAttr::get(ctx, pipeTok),
+            eventLiteral,
+        });
+        rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{}, "set_intra_block",
+                                             /*args=*/args,
+                                             /*templateArgs=*/ArrayAttr{},
+                                             /*operands=*/ValueRange{});
+      };
+
+      if (eventIdAttr) {
+        emitSet(Value{}, eventIdAttr, /*isDynamic=*/false);
+        auto plus16 = IntegerAttr::get(eventIdAttr.getType(),
+                                       eventIdAttr.getInt() + 16);
+        emitSet(Value{}, plus16, /*isDynamic=*/false);
+      } else {
+        auto i32Ty = emitc::OpaqueType::get(ctx, "int32_t");
+        Value eventI32 = castInterCoreEventIdToI32(rewriter, loc, eventIdDyn);
+        Value c16 = makeEmitCIntConstant(rewriter, loc, i32Ty, 16);
+        Value eventI32Plus16 =
+            rewriter.create<emitc::AddOp>(loc, i32Ty, eventI32, c16).getResult();
+        emitSet(eventI32, IntegerAttr{}, /*isDynamic=*/true);
+        emitSet(eventI32Plus16, IntegerAttr{}, /*isDynamic=*/true);
+      }
+
+      rewriter.eraseOp(op);
+      return success();
+    }
 
     InterCoreSyncCallDesc desc;
     if (eventIdAttr) {

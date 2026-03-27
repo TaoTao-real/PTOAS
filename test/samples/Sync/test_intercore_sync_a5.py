@@ -30,10 +30,11 @@ def build():
                 c0 = arith.ConstantOp(idx, 0).result
                 c0_i32 = arith.ConstantOp(i32, 0).result
                 two = arith.ConstantOp(f32, 2.0).result
-                # Scalar producer/consumer path uses PIPE_S on A5.
                 evt = 5
-                pipe_s = pto.PipeAttr.get(pto.PIPE.PIPE_S, ctx)
-                pto.sync_set(pipe_s, evt)
+                # Align with PTO-ISA A5 vector-side inter-core usage (e.g.
+                # tmov_ub2l1): vector side uses PIPE_MTE3 for set/wait.
+                pipe_mte3 = pto.PipeAttr.get(pto.PIPE.PIPE_MTE3, ctx)
+                pto.sync_set(pipe_mte3, evt)
                 # Keep sync.wait in generated code shape checks, but avoid
                 # unconditional wait deadlock in single-core functional runs.
                 should_wait = arith.CmpIOp(
@@ -41,7 +42,7 @@ def build():
                 ).result
                 if_op = scf.IfOp(should_wait, [], hasElse=False)
                 with InsertionPoint(if_op.then_block):
-                    pto.sync_wait(pipe_s, evt)
+                    pto.sync_wait(pipe_mte3, evt)
                     scf.YieldOp([])
                 pto.store_scalar(entry.arguments[0], c0, two)
                 func.ReturnOp([])

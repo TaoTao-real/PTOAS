@@ -30,21 +30,23 @@ def build():
                 evt = 5
 
                 bid = pto.GetBlockIdxOp().result
-                pipe_s = pto.PipeAttr.get(pto.PIPE.PIPE_S, ctx)
+                # Reference PTO-ISA A5 vec-side inter-core samples:
+                # producer/consumer on vector side use PIPE_MTE3.
+                pipe_mte3 = pto.PipeAttr.get(pto.PIPE.PIPE_MTE3, ctx)
 
                 is_producer = arith.CmpIOp(arith.CmpIPredicate.eq, bid, c0_i64).result
                 producer_if = scf.IfOp(is_producer, [], hasElse=False)
                 with InsertionPoint(producer_if.then_block):
                     # producer core: publish data then signal event 5.
                     pto.store_scalar(out, c0_idx, c2)
-                    pto.sync_set(pipe_s, evt)
+                    pto.sync_set(pipe_mte3, evt)
                     scf.YieldOp([])
 
                 is_consumer = arith.CmpIOp(arith.CmpIPredicate.eq, bid, c1_i64).result
                 consumer_if = scf.IfOp(is_consumer, [], hasElse=False)
                 with InsertionPoint(consumer_if.then_block):
                     # consumer core: wait event 5 then observe producer write.
-                    pto.sync_wait(pipe_s, evt)
+                    pto.sync_wait(pipe_mte3, evt)
                     loaded = pto.load_scalar(f32, out, c0_idx)
                     pto.store_scalar(out, c1_idx, loaded)
                     scf.YieldOp([])

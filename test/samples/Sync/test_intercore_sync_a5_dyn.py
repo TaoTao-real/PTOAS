@@ -21,10 +21,10 @@ def build():
                 c0 = arith.ConstantOp(idx, 0).result
                 c5 = arith.ConstantOp(idx, 5).result
                 two = arith.ConstantOp(f32, 2.0).result
-                pipe_s = pto.PipeAttr.get(pto.PIPE.PIPE_S, ctx)
+                pipe_mte3 = pto.PipeAttr.get(pto.PIPE.PIPE_MTE3, ctx)
 
-                pto.sync_set(pipe_s, c5)
-                pto.sync_wait(pipe_s, c5)
+                pto.sync_set(pipe_mte3, c5)
+                pto.sync_wait(pipe_mte3, c5)
                 pto.store_scalar(entry.arguments[0], c0, two)
                 func.ReturnOp([])
 
