@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-from mlir.ir import Context, F32Type, IndexType, InsertionPoint, IntegerType, Location, Module
-from mlir.dialects import arith, func, pto, scf
+from mlir.ir import Context, F32Type, IndexType, InsertionPoint, Location, Module
+from mlir.dialects import arith, func, pto
 
 
 def build():
@@ -10,7 +10,6 @@ def build():
             module = Module.create()
 
             f32 = F32Type.get(ctx)
-            i64 = IntegerType.get_signless(64, ctx)
             idx = IndexType.get(ctx)
             ptr_f32 = pto.PtrType.get(f32, ctx)
             fn_ty = func.FunctionType.get([ptr_f32], [])
@@ -24,32 +23,23 @@ def build():
 
                 c0_idx = arith.ConstantOp(idx, 0).result
                 c1_idx = arith.ConstantOp(idx, 1).result
-                c0_i64 = arith.ConstantOp(i64, 0).result
-                c1_i64 = arith.ConstantOp(i64, 1).result
                 c2 = arith.ConstantOp(f32, 2.0).result
-                evt = 5
+                evt = 0
 
-                bid = pto.GetBlockIdxOp().result
-                # Reference PTO-ISA A5 vec-side inter-core samples:
-                # producer/consumer on vector side use PIPE_MTE3.
+                # Reference PTO-ISA A5 mix-kernel style:
+                # cube producer (PIPE_FIX) -> vec consumer (PIPE_MTE3).
+                pipe_fix = pto.PipeAttr.get(pto.PIPE.PIPE_FIX, ctx)
                 pipe_mte3 = pto.PipeAttr.get(pto.PIPE.PIPE_MTE3, ctx)
 
-                is_producer = arith.CmpIOp(arith.CmpIPredicate.eq, bid, c0_i64).result
-                producer_if = scf.IfOp(is_producer, [], hasElse=False)
-                with InsertionPoint(producer_if.then_block):
-                    # producer core: publish data then signal event 5.
-                    pto.store_scalar(out, c0_idx, c2)
-                    pto.sync_set(pipe_mte3, evt)
-                    scf.YieldOp([])
+                sec_cube = pto.SectionCubeOp()
+                with InsertionPoint(sec_cube.body.blocks.append()):
+                    pto.sync_set(pipe_fix, evt)
 
-                is_consumer = arith.CmpIOp(arith.CmpIPredicate.eq, bid, c1_i64).result
-                consumer_if = scf.IfOp(is_consumer, [], hasElse=False)
-                with InsertionPoint(consumer_if.then_block):
-                    # consumer core: wait event 5 then observe producer write.
+                sec_vec = pto.SectionVectorOp()
+                with InsertionPoint(sec_vec.body.blocks.append()):
                     pto.sync_wait(pipe_mte3, evt)
-                    loaded = pto.load_scalar(f32, out, c0_idx)
-                    pto.store_scalar(out, c1_idx, loaded)
-                    scf.YieldOp([])
+                    pto.store_scalar(out, c0_idx, c2)
+                    pto.store_scalar(out, c1_idx, c2)
 
                 func.ReturnOp([])
 

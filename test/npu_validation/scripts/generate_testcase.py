@@ -423,6 +423,7 @@ def _infer_aicore_arch(kernel_text: str, soc_version: str) -> str:
     # the "cube" arch; pure vector kernels can use the vector arch.
     #
     # IMPORTANT: the default arch depends on the Ascend SoC.
+    has_mix_macros = "__DAV_CUBE__" in kernel_text and "__DAV_VEC__" in kernel_text
     cube_markers = (
         "TileType::Mat",
         "TileType::Left",
@@ -442,10 +443,16 @@ def _infer_aicore_arch(kernel_text: str, soc_version: str) -> str:
 
     sv = (soc_version or "").lower()
     if "950" in sv or "a5" in sv:
+        # Mix kernels intentionally contain both __DAV_CUBE__/__DAV_VEC__ code
+        # regions and must be compiled with dav-c310 (not vec-only/cube-only).
+        if has_mix_macros:
+            return "dav-c310"
         # Ascend950 (A5) uses A5 instruction set. pto-isa examples build A5
         # kernels with dav-c310-{vec|cube}.
         return "dav-c310-cube" if needs_cube else "dav-c310-vec"
     if "910b" in sv:
+        if has_mix_macros:
+            return "dav-c310"
         # Ascend910B* (e.g. Ascend910B1) uses dav-c310 toolchain arch.
         return "dav-c310-cube" if needs_cube else "dav-c310-vec"
 
@@ -925,12 +932,19 @@ def generate_testcase(
 
     if aicore_arch is None:
         # Sectioned kernels contain `#if defined(__DAV_CUBE__)` / `__DAV_VEC__`
-        # blocks. They frequently rely on cross-section synchronization (e.g.
-        # set_flag in cube section + wait_flag in vector section). If we build
-        # with a cube-only arch, common vector intrinsics (vabs/set_vector_mask)
-        # may be unavailable; build with a vector arch and explicitly enable the
-        # section macros instead.
-        if has_dav_cube or has_dav_vec:
+        # blocks. When BOTH are present, align to PTO-ISA mix-kernel compile
+        # mode (`dav-c310`) so the toolchain owns DAV macro definition.
+        if has_dav_cube and has_dav_vec:
+            sv = (soc_version or "").lower()
+            if "950" in sv or "a5" in sv:
+                aicore_arch = "dav-c310"
+            elif "910b" in sv:
+                aicore_arch = "dav-c310"
+            else:
+                aicore_arch = "dav-c220"
+        elif has_dav_cube or has_dav_vec:
+            # Single-section kernels can still be built with vec arch while
+            # forcing the needed DAV macro.
             sv = (soc_version or "").lower()
             if "950" in sv or "a5" in sv:
                 aicore_arch = "dav-c310-vec"
@@ -941,14 +955,16 @@ def generate_testcase(
         else:
             aicore_arch = _infer_aicore_arch(raw_kernel, soc_version)
 
-    # Force-define DAV section macros so both sections are compiled into the
-    # same binary. This keeps the generated validation executable self-contained
-    # and avoids deadlocks when one side of a set/wait pair is compiled out.
+    # For single-section kernels, force-define DAV macro(s) to keep section
+    # bodies visible to the selected compile arch.
+    # For mix-kernel arch (dav-c310/dav-c220), do not force-define macros.
     dav_defines = ""
-    if has_dav_cube:
-        dav_defines += " -D__DAV_CUBE__"
-    if has_dav_vec:
-        dav_defines += " -D__DAV_VEC__"
+    is_mix_arch = aicore_arch in {"dav-c310", "dav-c220"}
+    if not (is_mix_arch and has_dav_cube and has_dav_vec):
+        if has_dav_cube:
+            dav_defines += " -D__DAV_CUBE__"
+        if has_dav_vec:
+            dav_defines += " -D__DAV_VEC__"
 
     rows, cols = _parse_shape(raw_kernel_for_analysis)
     logical_elem_count = rows * cols
