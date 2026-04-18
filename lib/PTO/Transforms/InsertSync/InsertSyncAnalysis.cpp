@@ -285,7 +285,7 @@ void InsertSyncAnalysis::MemAnalyze(
   }
 
   DepBaseMemInfoPairVec depVec;
-  if (!IsMemInfoHasDependency(nowCompound, frontCompound, depVec)) {
+  if (!IsMemInfoHasDependency(nowCompound, frontCompound, depVec, forEndIndex)) {
     return;
   }
 
@@ -306,14 +306,35 @@ void InsertSyncAnalysis::MemAnalyze(
 bool InsertSyncAnalysis::IsMemInfoHasDependency(
     CompoundInstanceElement *nowCompound,
     CompoundInstanceElement *frontCompound,
-    DepBaseMemInfoPairVec &depBaseMemInfosVec) {
-  bool hasDependency = false;
-  hasDependency |= memAnalyzer_.DepBetween(nowCompound->useVec, frontCompound->defVec,
-                                          depBaseMemInfosVec);
-  hasDependency |= memAnalyzer_.DepBetween(nowCompound->defVec, frontCompound->useVec,
-                                          depBaseMemInfosVec);
-  hasDependency |= memAnalyzer_.DepBetween(nowCompound->defVec, frontCompound->defVec,
-                                          depBaseMemInfosVec);
+    DepBaseMemInfoPairVec &depBaseMemInfosVec,
+    const std::optional<unsigned> &forEndIndex) {
+  auto appendDepPairs = [&](const DepBaseMemInfoPairVec &src) {
+    depBaseMemInfosVec.append(src.begin(), src.end());
+  };
+
+  DepBaseMemInfoPairVec rawDepVec;
+  DepBaseMemInfoPairVec warDepVec;
+  DepBaseMemInfoPairVec wawDepVec;
+  memAnalyzer_.DepBetween(nowCompound->useVec, frontCompound->defVec, rawDepVec);
+  memAnalyzer_.DepBetween(nowCompound->defVec, frontCompound->useVec, warDepVec);
+  memAnalyzer_.DepBetween(nowCompound->defVec, frontCompound->defVec, wawDepVec);
+
+  appendDepPairs(rawDepVec);
+
+  // Back-edge same-pipe optimization:
+  // Keep same-pipe barriers driven by true producer->consumer RAW only.
+  // Loop-carried WAR/WAW on the same pipe are usually over-conservative
+  // duplicates because execution is already serialized per pipe queue.
+  //
+  // We keep cross-pipe WAR/WAW unchanged (correctness-first), and only trim
+  // same-pipe WAR/WAW on loop back-edge.
+  bool dropBackEdgeSamePipeWarWaw =
+      forEndIndex.has_value() &&
+      nowCompound->kPipeValue == frontCompound->kPipeValue;
+  if (!dropBackEdgeSamePipeWarWaw) {
+    appendDepPairs(warDepVec);
+    appendDepPairs(wawDepVec);
+  }
 
   // Special hazard: ACC (L0C) read/read cross-pipe ordering.
   //
@@ -327,12 +348,12 @@ bool InsertSyncAnalysis::IsMemInfoHasDependency(
         if (!pair.first) continue;
         if (pair.first->scope != pto::AddressSpace::ACC) continue;
         depBaseMemInfosVec.push_back(pair);
-        hasDependency = true;
+        // ACC R/R hazard is an extra dependence beyond RAW/WAR/WAW lists.
       }
     }
   }
 
-  return hasDependency;
+  return !depBaseMemInfosVec.empty();
 }
 
 void InsertSyncAnalysis::InsertSyncOperation(
@@ -532,12 +553,12 @@ SmallVector<Value> InsertSyncAnalysis::GetMemInfoBuffers(
 int InsertSyncAnalysis::GetEventIdNum(
     const DepBaseMemInfoPairVec &depBaseMemInfosVec) {
   for (const auto &pair : depBaseMemInfosVec) {
-    bool isLocalA =
-        pair.first && (pair.first->scope == pto::AddressSpace::MAT ||
-                       pair.first->scope == pto::AddressSpace::VEC);
+    // Keep back-edge multi-buffer strict and predictable:
+    // only MAT dependencies request 2 event IDs. Pure VEC loop-carried chains
+    // stay single-ID to avoid unnecessary head/tail fan-out during allocation.
+    bool isLocalA = pair.first && (pair.first->scope == pto::AddressSpace::MAT);
     bool isLocalB =
-        pair.second && (pair.second->scope == pto::AddressSpace::MAT ||
-                        pair.second->scope == pto::AddressSpace::VEC);
+        pair.second && (pair.second->scope == pto::AddressSpace::MAT);
     if (isLocalA || isLocalB) return 2;
   }
   return 1;
