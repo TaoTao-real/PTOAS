@@ -547,6 +547,12 @@ int InsertSyncAnalysis::GetEventIdNum(
   if (depBaseMemInfosVec.empty())
     return 1;
 
+  if (auto factor = GetSharedMultibufferFactor(depBaseMemInfosVec)) {
+    if (AreSlotwiseNonOverlapping(depBaseMemInfosVec, *factor)) {
+      return *factor;
+    }
+  }
+
   auto isOverlap = [](const BaseMemInfo *a, const BaseMemInfo *b, int i,
                       int j) -> bool {
     uint64_t aStart = a->baseAddresses[static_cast<size_t>(i)];
@@ -565,6 +571,9 @@ int InsertSyncAnalysis::GetEventIdNum(
       return 1;
     }
     if (a->scope == pto::AddressSpace::GM || b->scope == pto::AddressSpace::GM) {
+      return 1;
+    }
+    if (a->suppressLegacyMultibuffer || b->suppressLegacyMultibuffer) {
       return 1;
     }
 
@@ -595,6 +604,73 @@ int InsertSyncAnalysis::GetEventIdNum(
   }
 
   return 2;
+}
+
+std::optional<int> InsertSyncAnalysis::GetSharedMultibufferFactor(
+    const DepBaseMemInfoPairVec &depBaseMemInfosVec) const {
+  std::optional<int> factor;
+  for (const auto &pair : depBaseMemInfosVec) {
+    const BaseMemInfo *a = pair.first;
+    const BaseMemInfo *b = pair.second;
+    if (!a || !b) return std::nullopt;
+    if (!a->isMultibufferSlotValid || !b->isMultibufferSlotValid)
+      return std::nullopt;
+    if (a->multibufferFactor != b->multibufferFactor)
+      return std::nullopt;
+    if (a->multibufferFactor <= 1) return std::nullopt;
+    if (!factor) {
+      factor = a->multibufferFactor;
+    } else if (*factor != a->multibufferFactor) {
+      return std::nullopt;
+    }
+  }
+  return factor;
+}
+
+bool InsertSyncAnalysis::AreSlotwiseNonOverlapping(
+    const DepBaseMemInfoPairVec &depBaseMemInfosVec, int factor) const {
+  (void)factor;
+  for (const auto &pair : depBaseMemInfosVec) {
+    if (!IsSlotAwareMultibufferPair(pair.first, pair.second, factor)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool InsertSyncAnalysis::IsSlotAwareMultibufferPair(const BaseMemInfo *a,
+                                                    const BaseMemInfo *b,
+                                                    int factor) const {
+  if (!a || !b) return false;
+  if (a->scope == pto::AddressSpace::GM || b->scope == pto::AddressSpace::GM)
+    return false;
+  if (!a->isMultibufferSlotValid || !b->isMultibufferSlotValid)
+    return false;
+  if (a->multibufferRoot != b->multibufferRoot)
+    return false;
+  if (a->multibufferFactor != factor || b->multibufferFactor != factor)
+    return false;
+  if (a->multibufferSlot < 0 || b->multibufferSlot < 0)
+    return false;
+  if (a->multibufferSlot >= factor || b->multibufferSlot >= factor)
+    return false;
+  if (a->allocateSize == 0 || b->allocateSize == 0)
+    return false;
+
+  auto overlaps = [](const BaseMemInfo *lhs, const BaseMemInfo *rhs) -> bool {
+    if (lhs->baseAddresses.empty() || rhs->baseAddresses.empty()) return false;
+    uint64_t lhsStart = lhs->baseAddresses.front();
+    uint64_t rhsStart = rhs->baseAddresses.front();
+    uint64_t lhsEnd = lhsStart + lhs->allocateSize;
+    uint64_t rhsEnd = rhsStart + rhs->allocateSize;
+    return std::max(lhsStart, rhsStart) < std::min(lhsEnd, rhsEnd);
+  };
+
+  bool overlap = overlaps(a, b);
+  if (a->multibufferSlot == b->multibufferSlot) {
+    return overlap;
+  }
+  return !overlap;
 }
 
 bool InsertSyncAnalysis::IsGMHazard(

@@ -19,6 +19,7 @@
 #include "mlir/IR/AsmState.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/MemRef/Utils/MemRefUtils.h"
 #include "mlir/IR/Matchers.h"
 // [P0 新增] 引入副作用接口和 PTO 接口
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -27,7 +28,64 @@
  
 using namespace mlir;
 using namespace mlir::pto;
- 
+
+namespace {
+
+static std::optional<int64_t> getConstantIntValue(Value v) {
+  llvm::APInt apIntValue;
+  if (matchPattern(v, m_ConstantInt(&apIntValue))) {
+    return apIntValue.getSExtValue();
+  }
+  return std::nullopt;
+}
+
+static bool isSubsetLikeOp(Operation *op) {
+  return isa<pto::SubsetOp, memref::SubViewOp>(op);
+}
+
+static bool isLegacyDoubleBufferRoot(const BaseMemInfo &info) {
+  return info.baseAddresses.size() == 2 && info.allocateSize != 0 &&
+         info.scope != pto::AddressSpace::GM;
+}
+
+static std::optional<int64_t> getStaticRootSizeInBytes(Value root) {
+  Type type = root.getType();
+  auto getElementBytes = [](Type elementType) -> std::optional<uint64_t> {
+    if (auto intType = dyn_cast<IntegerType>(elementType)) {
+      uint64_t width = static_cast<uint64_t>((intType.getWidth() + 7) / 8);
+      return width == 0 ? 1 : width;
+    }
+    if (auto floatType = dyn_cast<FloatType>(elementType)) {
+      uint64_t width = static_cast<uint64_t>((floatType.getWidth() + 7) / 8);
+      return width == 0 ? 1 : width;
+    }
+    return std::nullopt;
+  };
+
+  auto accumulateShape = [&](ArrayRef<int64_t> shape,
+                             Type elementType) -> std::optional<int64_t> {
+    auto elemBytes = getElementBytes(elementType);
+    if (!elemBytes) return std::nullopt;
+    uint64_t numElems = 1;
+    for (int64_t dim : shape) {
+      if (dim == ShapedType::kDynamic || dim <= 0) return std::nullopt;
+      numElems *= static_cast<uint64_t>(dim);
+    }
+    return static_cast<int64_t>(numElems * *elemBytes);
+  };
+
+  if (auto tileType = dyn_cast<pto::TileBufType>(type)) {
+    return accumulateShape(tileType.getShape(), tileType.getElementType());
+  }
+  if (auto memrefType = dyn_cast<MemRefType>(type)) {
+    if (!memrefType.hasStaticShape()) return std::nullopt;
+    return accumulateShape(memrefType.getShape(), memrefType.getElementType());
+  }
+  return std::nullopt;
+}
+
+} // namespace
+
 // [辅助函数] 尝试从 Operation 中计算相对于 Source 的字节偏移量和新大小
 // 返回值: pair<offsetInBytes, sizeInBytes>
 // 如果无法计算静态值，返回 {-1, -1} 表示这是动态的
@@ -629,9 +687,152 @@ void PTOIRTranslator::UpdateAliasBufferInfo(Value result, Value source) {
     if (newSize > 0) {
         newInfo->allocateSize = newSize;
     }
- 
+
+    TryMarkSubsetMultibufferSlot(result, source, *newInfo);
+
     resultMemInfoVec.emplace_back(std::move(newInfo));
   }
+}
+
+void PTOIRTranslator::TryMarkSubsetMultibufferSlot(Value result, Value source,
+                                                   BaseMemInfo &newInfo) const {
+  Value multibufferRoot;
+  int multibufferSlot = -1;
+  int multibufferFactor = 1;
+  if (!TryComputeSubsetSlotInfo(result.getDefiningOp(), source, newInfo,
+                                multibufferRoot, multibufferSlot,
+                                multibufferFactor)) {
+    if (isSubsetLikeOp(result.getDefiningOp()) &&
+        (IsRootMarkedAsPingpong(newInfo.rootBuffer) ||
+         isLegacyDoubleBufferRoot(newInfo))) {
+      newInfo.suppressLegacyMultibuffer = true;
+    }
+    return;
+  }
+
+  newInfo.multibufferRoot = multibufferRoot;
+  newInfo.multibufferSlot = multibufferSlot;
+  newInfo.multibufferFactor = multibufferFactor;
+  newInfo.isMultibufferSlotValid = true;
+  newInfo.suppressLegacyMultibuffer = false;
+}
+
+bool PTOIRTranslator::TryComputeSubsetSlotInfo(Operation *op, Value source,
+                                               const BaseMemInfo &parentInfo,
+                                               Value &multibufferRoot,
+                                               int &multibufferSlot,
+                                               int &multibufferFactor) const {
+  if (!op) return false;
+
+  SmallVector<int64_t> offsets;
+  SmallVector<int64_t> sizes;
+  SmallVector<int64_t> sourceShape;
+
+  auto fillForSubset = [&](pto::SubsetOp subsetOp) -> bool {
+    auto rootType = dyn_cast<pto::TileBufType>(subsetOp.getSource().getType());
+    if (!rootType) return false;
+    if (subsetOp.getOffsets().size() != subsetOp.getSizes().size()) return false;
+    if (rootType.getShape().size() != subsetOp.getSizes().size()) return false;
+
+    sourceShape.assign(rootType.getShape().begin(), rootType.getShape().end());
+    offsets.reserve(subsetOp.getOffsets().size());
+    sizes.reserve(subsetOp.getSizes().size());
+    for (Value off : subsetOp.getOffsets()) {
+      auto c = getConstantIntValue(off);
+      if (!c || *c < 0) return false;
+      offsets.push_back(*c);
+    }
+    for (Attribute sizeAttr : subsetOp.getSizes()) {
+      int64_t size = cast<IntegerAttr>(sizeAttr).getInt();
+      if (size == ShapedType::kDynamic || size <= 0) return false;
+      sizes.push_back(size);
+    }
+    return true;
+  };
+
+  auto fillForSubView = [&](memref::SubViewOp subView) -> bool {
+    auto memrefType = dyn_cast<MemRefType>(subView.getSource().getType());
+    if (!memrefType || !memrefType.hasStaticShape()) return false;
+    sourceShape.assign(memrefType.getShape().begin(), memrefType.getShape().end());
+    offsets.reserve(subView.getStaticOffsets().size());
+    sizes.reserve(subView.getStaticSizes().size());
+    for (int64_t off : subView.getStaticOffsets()) {
+      if (off == ShapedType::kDynamic || off < 0) return false;
+      offsets.push_back(off);
+    }
+    for (int64_t size : subView.getStaticSizes()) {
+      if (size == ShapedType::kDynamic || size <= 0) return false;
+      sizes.push_back(size);
+    }
+    for (int64_t stride : subView.getStaticStrides()) {
+      if (stride == ShapedType::kDynamic || stride != 1) return false;
+    }
+    return true;
+  };
+
+  bool matched = false;
+  if (auto subsetOp = dyn_cast<pto::SubsetOp>(op)) {
+    matched = fillForSubset(subsetOp);
+  } else if (auto subView = dyn_cast<memref::SubViewOp>(op)) {
+    matched = fillForSubView(subView);
+  }
+  if (!matched) return false;
+
+  if (!IsRootMarkedAsPingpong(parentInfo.rootBuffer) &&
+      !isLegacyDoubleBufferRoot(parentInfo))
+    return false;
+  if (offsets.size() != sizes.size() || offsets.size() != sourceShape.size())
+    return false;
+
+  int partitionDim = -1;
+  int64_t partitionExtent = 0;
+  for (size_t i = 0; i < offsets.size(); ++i) {
+    int64_t rootDim = sourceShape[i];
+    int64_t offset = offsets[i];
+    int64_t size = sizes[i];
+    if (rootDim == ShapedType::kDynamic || rootDim <= 0) return false;
+    if (offset + size > rootDim) return false;
+
+    if (size == rootDim) {
+      if (offset != 0) return false;
+      continue;
+    }
+
+    if (partitionDim != -1) return false;
+    partitionDim = static_cast<int>(i);
+    partitionExtent = rootDim;
+  }
+
+  if (partitionDim < 0 || partitionExtent <= 0) return false;
+  if (partitionExtent % 2 != 0) return false;
+  if (sizes[static_cast<size_t>(partitionDim)] * 2 != partitionExtent)
+    return false;
+  if (offsets[static_cast<size_t>(partitionDim)] % sizes[static_cast<size_t>(partitionDim)] != 0)
+    return false;
+
+  int64_t slot = offsets[static_cast<size_t>(partitionDim)] /
+                 sizes[static_cast<size_t>(partitionDim)];
+  if (slot < 0 || slot >= 2) return false;
+
+  auto rootAllocBytes = getStaticRootSizeInBytes(parentInfo.rootBuffer);
+  if (!rootAllocBytes || *rootAllocBytes <= 0 || parentInfo.allocateSize == 0)
+    return false;
+  if (static_cast<uint64_t>(*rootAllocBytes) != parentInfo.allocateSize * 2)
+    return false;
+
+  multibufferRoot = parentInfo.rootBuffer;
+  multibufferSlot = static_cast<int>(slot);
+  multibufferFactor = 2;
+  return true;
+}
+
+bool PTOIRTranslator::IsRootMarkedAsPingpong(Value root) const {
+  if (!root) return false;
+  if (Operation *defOp = root.getDefiningOp()) {
+    auto attr = defOp->getAttrOfType<IntegerAttr>("pto.multi_buffer");
+    return attr && attr.getInt() == 2;
+  }
+  return false;
 }
  
 // ============================================================================

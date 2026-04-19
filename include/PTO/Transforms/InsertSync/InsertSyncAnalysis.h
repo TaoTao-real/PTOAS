@@ -18,6 +18,7 @@
 #include "PTO/Transforms/InsertSync/MemoryDependentAnalyzer.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include <array>
+#include <optional>
  
 namespace mlir {
 namespace pto {
@@ -161,7 +162,13 @@ private:
  
   /// 获取依赖对涉及的 Event ID 数量 (用于 Multi-Buffer 分析)
   int GetEventIdNum(const DepBaseMemInfoPairVec &depBaseMemInfosVec);
- 
+  std::optional<int> GetSharedMultibufferFactor(
+      const DepBaseMemInfoPairVec &depBaseMemInfosVec) const;
+  bool AreSlotwiseNonOverlapping(const DepBaseMemInfoPairVec &depBaseMemInfosVec,
+                                 int factor) const;
+  bool IsSlotAwareMultibufferPair(const BaseMemInfo *a, const BaseMemInfo *b,
+                                  int factor) const;
+
   /// 辅助函数：获取所有涉及的 Buffer (用于 LCA 计算，虽然现在简化了，保留接口)
   SmallVector<Value> GetMemInfoBuffers(const DepBaseMemInfoPairVec &depBaseMemInfosVec);
  

@@ -632,6 +632,85 @@ process_one_dir() {
         overall=1
         continue
       fi
+      if ! grep -Fq "static_cast<event_t>" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing slot-aware dynamic event-id lowering"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "wait_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing dynamic wait_flag for subset ping/pong back-edge"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "set_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing dynamic set_flag for subset ping/pong back-edge"
+        overall=1
+        continue
+      fi
+    fi
+
+    if [[ "$base" == "test_inject_sync_multibuf_subset_overlap" ]]; then
+      if ! grep -Fq "pto.multi_buffer = 2 : i32" "$pto_input"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing pto.multi_buffer=2 annotation for overlap negative case"
+        overall=1
+        continue
+      fi
+      if grep -Fq "static_cast<event_t>" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\toverlap case unexpectedly used slot-aware dynamic event-id"
+        overall=1
+        continue
+      fi
+      if grep -Eq "wait_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\toverlap case unexpectedly emitted dynamic wait_flag"
+        overall=1
+        continue
+      fi
+      if grep -Eq "set_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\toverlap case unexpectedly emitted dynamic set_flag"
+        overall=1
+        continue
+      fi
+    fi
+
+    if [[ "$base" == "test_inject_sync_multibuf_subset_no_attr" ]]; then
+      if grep -Fq "pto.multi_buffer = 2 : i32" "$pto_input"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing-attr negative case unexpectedly carries pto.multi_buffer=2"
+        overall=1
+        continue
+      fi
+      if grep -Fq "static_cast<event_t>" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing-attr case unexpectedly used slot-aware dynamic event-id"
+        overall=1
+        continue
+      fi
+      if grep -Eq "wait_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing-attr case unexpectedly emitted dynamic wait_flag"
+        overall=1
+        continue
+      fi
+      if grep -Eq "set_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing-attr case unexpectedly emitted dynamic set_flag"
+        overall=1
+        continue
+      fi
+    fi
+
+    if [[ "$base" == "multibuffer_subset_pingpong_a3" ]]; then
+      if ! grep -Fq "static_cast<event_t>" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tA3 sample missing dynamic event-id lowering"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "wait_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tA3 sample missing dynamic wait_flag"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "set_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tA3 sample missing dynamic set_flag"
+        overall=1
+        continue
+      fi
     fi
 
     # Regression guard: intra-pipe dependencies must be serialized by a

@@ -18,6 +18,7 @@
 #include "PTO/Transforms/InsertSync/SyncCommon.h"
 #include "PTO/Transforms/InsertSync/MemoryDependentAnalyzer.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/Support/raw_ostream.h"
@@ -73,6 +74,13 @@ private:
   
   // 处理 View/Alias (MakeTensorView, Subview, Mov)
   void UpdateAliasBufferInfo(Value result, Value source);
+  void TryMarkSubsetMultibufferSlot(Value result, Value source,
+                                    BaseMemInfo &newInfo) const;
+  bool TryComputeSubsetSlotInfo(Operation *op, Value source,
+                                const BaseMemInfo &parentInfo,
+                                Value &multibufferRoot, int &multibufferSlot,
+                                int &multibufferFactor) const;
+  bool IsRootMarkedAsPingpong(Value root) const;
  
   // --- 控制流处理 (SCF) ---
   void UpdateForOpInfo(scf::ForOp forOp);
