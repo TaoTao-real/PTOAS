@@ -1314,9 +1314,16 @@ struct PTOViewToMemrefPass
 
         Value src = op->getOperand(0); 
         Value dst = op->getOperand(1);
+        Value preQuant = op.getPreQuantScalar();
 
-        auto newOp = rewriter.create<pto::TStoreOp>(op.getLoc(), TypeRange{},
-                                                    src, dst);
+        pto::TStoreOp newOp;
+        if (preQuant) {
+          newOp = rewriter.create<pto::TStoreOp>(op.getLoc(), TypeRange{},
+                                                 src, dst, preQuant);
+        } else {
+          newOp = rewriter.create<pto::TStoreOp>(op.getLoc(), TypeRange{},
+                                                 src, dst, Value{});
+        }
         newOp->setAttrs(op->getAttrs());
         rewriter.replaceOp(op, newOp->getResults());
       }
@@ -1492,7 +1499,9 @@ struct PTOViewToMemrefPass
         IRRewriter rewriter(ctx);
         rewriter.setInsertionPoint(op);
         rewriter.replaceOpWithNewOp<pto::TMovOp>(
-            op, TypeRange{}, op->getOperand(0), op->getOperand(1));
+            op, TypeRange{}, op.getSrc(), op.getDst(), op.getFp(),
+            op.getPreQuantScalar(), op.getAccToVecModeAttr(),
+            op.getReluPreModeAttr());
       }
 
       SmallVector<mlir::pto::TAbsOp, 8> abseops;
@@ -2024,6 +2033,7 @@ struct PTOViewToMemrefPass
 
         Value src = op.getSrc();
         Value dst = op.getDst();
+        Value tmp = op.getTmp();
 
         auto srcTy = dyn_cast<MemRefType>(src.getType());
         auto dstTy = dyn_cast<MemRefType>(dst.getType());
@@ -2033,18 +2043,16 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        auto rmodeAttr = op.getRmodeAttr(); // PTO_RoundModeAttr
-
         auto newOp = rewriter.create<pto::TCvtOp>(
             op.getLoc(),
             TypeRange{},
             src,
-            dst);
+            dst,
+            tmp,
+            op.getRmodeAttr(),
+            op.getSatModeAttr());
 
-       if (rmodeAttr)
-         newOp->setAttr("rmode", rmodeAttr);
- 
-         rewriter.replaceOp(op, newOp->getResults());
+        rewriter.replaceOp(op, newOp->getResults());
       }
 
       SmallVector<mlir::pto::TDivOp, 8> divops;
@@ -2657,6 +2665,7 @@ struct PTOViewToMemrefPass
               ValueRange{src},
               blockLenVal,
               ValueRange{dst},
+              Value() /*tmp*/,
               Value() /*excuted*/,
               op.getExhaustedAttr());
         } else if (op.isFormat2()) {
@@ -2668,8 +2677,8 @@ struct PTOViewToMemrefPass
             signalPassFailure();
             return;
           }
-          if (op.getDsts().size() != 2u) {
-            op.emitError("format2 expects outs(dst, tmp) tile buffers");
+          if (op.getDsts().size() != 1u || !op.getTmp()) {
+            op.emitError("format2 expects outs(dst) and ins(tmp)");
             signalPassFailure();
             return;
           }
@@ -2678,7 +2687,7 @@ struct PTOViewToMemrefPass
           Value tmp = op.getTmp();
           Value excuted = op.getExcuted();
           if (!dyn_cast<MemRefType>(dst.getType()) || !dyn_cast<MemRefType>(tmp.getType())) {
-            op.emitError("format2 outs(dst/tmp) must be memref");
+            op.emitError("format2 dst/tmp must be memref");
             signalPassFailure();
             return;
           }
@@ -2693,7 +2702,8 @@ struct PTOViewToMemrefPass
               TypeRange{},
               op.getSrcs(),
               Value() /*blockLen*/,
-              ValueRange{dst, tmp},
+              ValueRange{dst},
+              tmp,
               excuted,
               op.getExhaustedAttr());
         } else {

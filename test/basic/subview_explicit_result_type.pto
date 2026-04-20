@@ -21,4 +21,4 @@ module {
   }
 }
 
-// CHECK: Tile<TileType::Vec, float, 16, 16, BLayout::ColMajor, 8, 8, SLayout::NoneBox, 512, PadValue::Null>
+// CHECK: Tile<TileType::Vec, float, 16, 16, BLayout::ColMajor, 8, 8, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>

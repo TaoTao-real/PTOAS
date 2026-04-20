@@ -14,5 +14,5 @@ module {
   }
 }
 
-// CHECK: Tile<TileType::Vec, float, 4, 4, BLayout::RowMajor, 2, 2, SLayout::NoneBox, 512, PadValue::Null>
+// CHECK: Tile<TileType::Vec, float, 4, 4, BLayout::RowMajor, 2, 2, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>
 // CHECK-NOT: error:
