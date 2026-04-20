@@ -169,6 +169,18 @@ static bool readSLayoutI32(Attribute attr, int32_t &out) {
   return false;
 }
 
+static bool readCompactModeI32(Attribute attr, int32_t &out) {
+  if (auto a = dyn_cast<CompactModeAttr>(attr)) {
+    out = (int32_t)a.getValue();
+    return true;
+  }
+  if (auto a = dyn_cast<IntegerAttr>(attr)) {
+    out = (int32_t)a.getInt();
+    return true;
+  }
+  return false;
+}
+
 static bool getConstIndexValue(Value v, int64_t &out) {
   if (auto cOp = v.getDefiningOp<arith::ConstantIndexOp>()) {
     out = cOp.value();
@@ -208,9 +220,11 @@ static bool computeTileLayoutInfo(mlir::pto::TileBufConfigAttr cfg, Type elemTy,
   int32_t bl = 0; // RowMajor
   int32_t sl = 0; // NoneBox
   int32_t fr = 512;
+  int32_t cm = 0; // CompactMode::Null
   (void)readBLayoutI32(cfg.getBLayout(), bl);
   (void)readSLayoutI32(cfg.getSLayout(), sl);
   if (auto attr = dyn_cast<IntegerAttr>(cfg.getSFractalSize())) fr = (int32_t)attr.getInt();
+  (void)readCompactModeI32(cfg.getCompactMode(), cm);
 
   // Inner shape
   if (sl == 0) {
@@ -262,6 +276,15 @@ static bool computeTileLayoutInfo(mlir::pto::TileBufConfigAttr cfg, Type elemTy,
       info.rowStride = cols;
       info.colStride = info.innerRows;
     }
+  }
+
+  // CompactMode::RowPlusOne keeps one extra slot on the major stride.
+  // This stride participates in memref.subview address derivation in EmitC.
+  if (cm == 2) {
+    if (bl == 1)
+      ++info.colStride; // ColMajor major stride.
+    else
+      ++info.rowStride; // RowMajor major stride.
   }
 
   return true;
