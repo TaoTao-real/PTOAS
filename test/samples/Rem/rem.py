@@ -55,12 +55,13 @@ def build():
 
                 tb0 = pto.AllocTileOp(tile_buf_32).result
                 tb1 = pto.AllocTileOp(tile_buf_32).result
+                tmp = pto.AllocTileOp(tile_buf_32).result
                 tb2 = pto.AllocTileOp(tile_buf_32).result
 
                 pto.TLoadOp(None, sv0, tb0)  # result=None
                 pto.TLoadOp(None, sv1, tb1)  # result=None
 
-                pto.TRemOp(tb0, tb1, tb2)
+                pto.TRemOp(tb0, tb1, tmp, tb2)
 
                 # Replaced immediate numbers with constants c0 and c32
                 sv2 = pto.PartitionViewOp(tile_view_32, tv2, offsets=[c0, c0], sizes=[c32, c32]).result

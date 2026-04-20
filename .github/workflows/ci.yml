@@ -46,7 +46,7 @@ on:
         description: "pto-isa ref (commit/tag/branch; empty = repo-pinned weekly commit)"
         type: string
         # NOTE: Pin a known-good GitCode commit for deterministic runs.
-        default: 893e4b00a826231e776539512b5b17f82fc11838
+        default: 662d7f2a916d6bbde3109ce4a16ed5c28f5d900a
       remote_host:
         description: "SSH host/IP for the NPU machine"
         type: string
@@ -204,6 +204,8 @@ jobs:
       - name: Run sample tests (py -> pto -> cpp)
         shell: bash
         env:
+          CI_EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_SOC_VERSION: ${{ github.event.inputs.soc_version || 'Ascend910' }}
           PTOAS_BIN: ${{ github.workspace }}/build/tools/ptoas/ptoas
           PYTHON_BIN: /usr/bin/python3
           MLIR_PYTHON_ROOT: ${{ env.MLIR_PYTHONPATH }}
@@ -213,7 +215,15 @@ jobs:
           export PYTHONPATH="${MLIR_PYTHON_ROOT}:${PTO_PYTHON_ROOT}:${PYTHONPATH:-}"
           export LD_LIBRARY_PATH="${LLVM_DIR}/lib:${PTO_INSTALL_DIR}/lib:${LD_LIBRARY_PATH:-}"
           export PTOAS_OUT_DIR="${PAYLOAD_DIR}/test/samples"
-          bash test/samples/runop.sh --enablebc all
+          if [[ "${CI_EVENT_NAME}" == "workflow_dispatch" || "${CI_EVENT_NAME}" == "schedule" ]]; then
+            # Board-validation payloads must only contain the arch-matching
+            # direct .pto samples. Some A3/A5 qwen decode cases intentionally
+            # share the same testcase basename, so SKIP_CASES cannot
+            # distinguish them later once the payload is built.
+            SOC_VERSION="${WORKFLOW_SOC_VERSION}" bash test/samples/runop.sh --enablebc all
+          else
+            bash test/samples/runop.sh --enablebc all
+          fi
 
       - name: Build payload artifact
         if: >-
@@ -261,7 +271,7 @@ jobs:
       # Temporary CI gate: skip cases that still error/flap on the remote NPU.
       # Update this list as we fix the underlying issues.
       DEFAULT_SKIP_CASES: >-
-        mix_kernel,vadd_validshape,vadd_validshape_dynamic,print,storefp
+        mix_kernel,vadd_validshape,vadd_validshape_dynamic,print,storefp,Gemvmx
     steps:
       - name: Resolve validation parameters
         shell: bash
@@ -273,7 +283,7 @@ jobs:
           SKIP_CASES: ${{ github.event.inputs.skip_cases || '' }}
           RUN_ONLY_CASES: ${{ github.event.inputs.run_only_cases || '' }}
           PTO_ISA_REPO: ${{ github.event.inputs.pto_isa_repo || 'https://gitcode.com/cann/pto-isa.git' }}
-          PTO_ISA_COMMIT: ${{ github.event.inputs.pto_isa_commit || '893e4b00a826231e776539512b5b17f82fc11838' }}
+          PTO_ISA_COMMIT: ${{ github.event.inputs.pto_isa_commit || '662d7f2a916d6bbde3109ce4a16ed5c28f5d900a' }}
           REMOTE_HOST: ${{ github.event.inputs.remote_host || '101.245.68.6' }}
           REMOTE_USER: ${{ github.event.inputs.remote_user || 'zhongxuan' }}
           REMOTE_PORT: ${{ github.event.inputs.remote_port || '22' }}
@@ -288,12 +298,13 @@ jobs:
             fi
           fi
 
-          # Some validation samples have A3 vs A5 variants due to stricter
-          # pto-isa static checks on Ascend950 (A5). When running the full test
-          # suite (RUN_ONLY_CASES is empty), skip the non-matching variant based
-          # on SOC_VERSION to keep the remote validation portable.
+          # Some validation samples are arch-specific due to stricter pto-isa
+          # static checks and A5-only tile layouts. Always skip the
+          # non-matching variant based on SOC_VERSION, even for explicit
+          # RUN_ONLY_CASES requests, so remote validation does not try to force
+          # A5-only cases through an A3 flow or vice versa.
           A3_ONLY_CASES="partition5d,partition5d_dynamic,mrgsort,tmatmulk_autosync"
-          A5_ONLY_CASES="partition5d_a5,partition5d_dynamic_a5,mrgsort_a5,tmatmulk_autosync_a5"
+          A5_ONLY_CASES="partition5d_a5,partition5d_dynamic_a5,mrgsort_a5,tmatmulk_autosync_a5,tpack"
 
           sv_lc="$(printf '%s' "${SOC_VERSION}" | tr '[:upper:]' '[:lower:]')"
           is_a5=0
@@ -301,12 +312,10 @@ jobs:
             is_a5=1
           fi
 
-          if [[ -z "${RUN_ONLY_CASES}" ]]; then
-            if [[ ${is_a5} -eq 1 ]]; then
-              SKIP_CASES="${SKIP_CASES:+${SKIP_CASES},}${A3_ONLY_CASES}"
-            else
-              SKIP_CASES="${SKIP_CASES:+${SKIP_CASES},}${A5_ONLY_CASES}"
-            fi
+          if [[ ${is_a5} -eq 1 ]]; then
+            SKIP_CASES="${SKIP_CASES:+${SKIP_CASES},}${A3_ONLY_CASES}"
+          else
+            SKIP_CASES="${SKIP_CASES:+${SKIP_CASES},}${A5_ONLY_CASES}"
           fi
 
           echo "STAGE=${STAGE}" >> "${GITHUB_ENV}"

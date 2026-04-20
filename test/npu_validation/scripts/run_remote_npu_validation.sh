@@ -142,46 +142,62 @@ export LD_LIBRARY_PATH="${ASCEND_HOME_PATH}/lib64:${LD_LIBRARY_PATH:-}"
 
 # Some CANN installs do not provide a simulator directory named exactly
 # "Ascend910". Map it to a real directory so we can link/run camodel.
-SIM_SOC_VERSION="${SOC_VERSION}"
-if [[ "${SOC_VERSION}" == "Ascend910" ]]; then
-  if [[ -d "${ASCEND_HOME_PATH}/aarch64-linux/simulator/Ascend910A/lib" ]]; then
+SIM_SOC_VERSION="${SIM_SOC_VERSION_OVERRIDE:-${SOC_VERSION}}"
+if [[ "${SIM_SOC_VERSION}" == "Ascend910" ]]; then
+  if [[ -d "${ASCEND_HOME_PATH}/aarch64-linux/simulator/Ascend910A/lib" \
+     || -d "${ASCEND_HOME_PATH}/x86_64-linux/simulator/Ascend910A/lib" \
+     || -d "${ASCEND_HOME_PATH}/simulator/Ascend910A/lib" \
+     || -d "${ASCEND_HOME_PATH}/tools/simulator/Ascend910A/lib" ]]; then
     SIM_SOC_VERSION="Ascend910A"
-  elif [[ -d "${ASCEND_HOME_PATH}/aarch64-linux/simulator/Ascend910ProA/lib" ]]; then
+  elif [[ -d "${ASCEND_HOME_PATH}/aarch64-linux/simulator/Ascend910ProA/lib" \
+       || -d "${ASCEND_HOME_PATH}/x86_64-linux/simulator/Ascend910ProA/lib" \
+       || -d "${ASCEND_HOME_PATH}/simulator/Ascend910ProA/lib" \
+       || -d "${ASCEND_HOME_PATH}/tools/simulator/Ascend910ProA/lib" ]]; then
     SIM_SOC_VERSION="Ascend910ProA"
   fi
 fi
 
-# Detect A3 (Ascend910B) board for golden-script gating.
+# Detect A3 (Ascend910B) target for golden-script gating.
 # This is separate from SOC_VERSION/SIM_SOC_VERSION used for compilation
-# to avoid changing the compiler arch (dav-c220 vs dav-c310).
+# to avoid changing the compiler arch (dav-c220 vs dav-c310). Simulator runs
+# must key off the selected SIM target, not the mere presence of 910B sim libs.
 export PTOAS_BOARD_IS_A3=0
-if [[ "$(printf '%s' "${_board_chip}" | tr '[:upper:]' '[:lower:]')" == *910b* ]]; then
+if [[ "${RUN_MODE}" == "sim" ]]; then
+  if [[ "$(printf '%s' "${SIM_SOC_VERSION}" | tr '[:upper:]' '[:lower:]')" == *910b* ]]; then
+    export PTOAS_BOARD_IS_A3=1
+    log "Detected A3 target from SIM_SOC_VERSION=${SIM_SOC_VERSION}"
+  fi
+elif [[ "$(printf '%s' "${_board_chip}" | tr '[:upper:]' '[:lower:]')" == *910b* ]]; then
   export PTOAS_BOARD_IS_A3=1
   log "Detected A3 board from npu-smi chip name: ${_board_chip}"
-fi
-for _sim_dir in "${ASCEND_HOME_PATH}/aarch64-linux/simulator" \
-                "${ASCEND_HOME_PATH}/simulator" \
-                "${ASCEND_HOME_PATH}/tools/simulator"; do
-  for _d in "${_sim_dir}"/Ascend910B*/lib; do
-    if [[ -d "$_d" ]]; then
-      export PTOAS_BOARD_IS_A3=1
-      log "Detected A3 board (Ascend910B) from simulator dir: $_d"
-      break 2
-    fi
+else
+  for _sim_dir in "${ASCEND_HOME_PATH}/aarch64-linux/simulator" \
+                  "${ASCEND_HOME_PATH}/x86_64-linux/simulator" \
+                  "${ASCEND_HOME_PATH}/simulator" \
+                  "${ASCEND_HOME_PATH}/tools/simulator"; do
+    for _d in "${_sim_dir}"/Ascend910B*/lib; do
+      if [[ -d "$_d" ]]; then
+        export PTOAS_BOARD_IS_A3=1
+        log "Detected A3 board from simulator dir fallback: $_d"
+        break 2
+      fi
+    done
   done
-done
+fi
 log "SIM_SOC_VERSION=${SIM_SOC_VERSION}"
+log "PTOAS_BOARD_IS_A3=${PTOAS_BOARD_IS_A3}"
 
 LD_LIBRARY_PATH_NPU="${LD_LIBRARY_PATH}"
 LD_LIBRARY_PATH_SIM="${LD_LIBRARY_PATH}"
 for d in \
   "${ASCEND_HOME_PATH}/aarch64-linux/simulator/${SIM_SOC_VERSION}/lib" \
+  "${ASCEND_HOME_PATH}/x86_64-linux/simulator/${SIM_SOC_VERSION}/lib" \
   "${ASCEND_HOME_PATH}/simulator/${SIM_SOC_VERSION}/lib" \
   "${ASCEND_HOME_PATH}/tools/simulator/${SIM_SOC_VERSION}/lib"; do
   [[ -d "$d" ]] && LD_LIBRARY_PATH_SIM="$d:${LD_LIBRARY_PATH_SIM}"
 done
 
-if [[ "${STAGE}" == "run" ]]; then
+if [[ "${STAGE}" == "run" && "${RUN_MODE}" == "npu" ]]; then
   log "=== NPU Device Check ==="
   id || true
   ls -l /dev/davinci* 2>/dev/null || true
@@ -232,6 +248,16 @@ while IFS= read -r -d '' cpp; do
   testcase="${testcase%-pto}"
   testcase="${testcase%_pto}"
 
+  # AsyncComm smoke sample issues async remote DMA against plain local buffers.
+  # In board-runtime STAGE=run this can trigger invalid MPU access on single-rank
+  # execution, so skip it in runtime stage.
+  if [[ "${STAGE}" == "run" && "${testcase}" == "async_comm" ]]; then
+    skip_count=$((skip_count + 1))
+    printf "%s\tSKIP\t%s\truntime skip: async_comm\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
+    log "SKIP: ${testcase} (runtime skip)"
+    continue
+  fi
+
   if [[ -n "${RUN_ONLY_CASES_NORM}" ]] && ! list_contains "${RUN_ONLY_CASES_NORM}" "${testcase}"; then
     continue
   fi
@@ -240,6 +266,21 @@ while IFS= read -r -d '' cpp; do
     printf "%s\tSKIP\t%s\tlisted in SKIP_CASES\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
     log "SKIP: ${testcase} (SKIP_CASES)"
     continue
+  fi
+  if [[ "${testcase}" == "gemvmx" ]]; then
+    soc_lc="$(printf '%s' "${SOC_VERSION:-}" | tr '[:upper:]' '[:lower:]')"
+    if [[ "$soc_lc" != *"a5"* && "$soc_lc" != *"950"* ]]; then
+      skip_count=$((skip_count + 1))
+      printf "%s\tSKIP\t%s\trequires A5 (set SOC_VERSION to A5/950)\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
+      log "SKIP: ${testcase} (requires A5 SOC_VERSION)"
+      continue
+    fi
+    if [[ "${PTOAS_BOARD_IS_A3:-0}" == "1" ]]; then
+      skip_count=$((skip_count + 1))
+      printf "%s\tSKIP\t%s\trequires A5 board\n" "${testcase}" "${STAGE}" >> "${RESULTS_TSV}"
+      log "SKIP: ${testcase} (requires A5 board)"
+      continue
+    fi
   fi
 
   echo

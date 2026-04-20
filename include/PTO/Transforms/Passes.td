@@ -57,6 +57,19 @@ def InferPTOLayout : Pass<"pto-infer-layout", "func::FuncOp"> {
   let dependentDialects = ["pto::PTODialect", "arith::ArithDialect"];
 }
 
+def PTOA5NormalizeTMov : Pass<"pto-a5-normalize-tmov", "func::FuncOp"> {
+  let summary = "Normalize risky A5 vec->vec col_major TMOV into row-major reinterpret + TMOV";
+  let description = [{
+    Rewrites A5 `pto.tmov` patterns that use vec->vec col_major/none_box tiles:
+      src(col_major) -> pto.treshape(row_major) -> pto.tmov(row_major->row_major)
+      dst(col_major) -> pto.treshape(row_major)
+    This avoids unsupported A5 PTO-ISA vec->vec col_major TMOV paths while
+    preserving alias semantics via SSA treshape (no real data movement).
+  }];
+  let constructor = "mlir::pto::createPTOA5NormalizeTMovPass()";
+  let dependentDialects = ["pto::PTODialect", "func::FuncDialect"];
+}
+
 
 def InferPTOMemScope : Pass<"pto-infer-mem-scope"> {
   let summary = "Infer memory scope for PTO Ops";
@@ -132,6 +145,29 @@ def PTOLowerFrontendPipeOps : Pass<"pto-lower-frontend-pipe-ops", "func::FuncOp"
   }];
 
   let constructor = "mlir::pto::createPTOLowerFrontendPipeOpsPass()";
+
+  let dependentDialects = [
+    "mlir::pto::PTODialect",
+    "mlir::func::FuncDialect"
+  ];
+}
+
+def PTOInferValidatePipeInit : Pass<"pto-infer-validate-pipe-init", "ModuleOp"> {
+  let summary = "Infer and validate internal pipe init nosplit configuration";
+  let description = [{
+    Runs after frontend pipe lowering and before memory planning. For each
+    logical pipe, this pass:
+    - validates that downstream `pto.tpush` / `pto.tpop` / `pto.tfree` users
+      do not mix `split = 0` with `split = 1/2`
+    - preserves explicit `nosplit` attrs on internal pipe init ops and rejects
+      conflicts across peer pipe init pairs
+    - infers missing `nosplit` attrs from downstream split usage for backward
+      compatibility with older IR that omitted init-level `nosplit`
+    - propagates the resolved `nosplit` value across peer pipe init pairs so
+      both ends of one logical pipe agree before EmitC lowering
+  }];
+
+  let constructor = "mlir::pto::createPTOInferValidatePipeInitPass()";
 
   let dependentDialects = [
     "mlir::pto::PTODialect",

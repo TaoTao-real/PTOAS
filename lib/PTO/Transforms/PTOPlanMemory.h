@@ -283,6 +283,9 @@ public:
   /// record inplace pair list.
   SmallVector<ValuePair> inplacePairList;
 
+  /// record semantic conflict pair list.
+  SmallVector<ValuePair> semanticConflictPairs;
+
   /// now plan mode is LOCAL_MEM_PLAN.
   bool isLocalMemPlan() const;
 
@@ -379,6 +382,10 @@ private:
   /// e.g. for iter arg and for yield.
   void InitializeInplacePairList();
 
+  /// Record semantic non-reuse pairs for buffers that may be used
+  /// simultaneously inside one instruction, such as scratch and dst.
+  void RecordSemanticConflict(Value lhs, Value rhs);
+
   func::FuncOp func_;
 
   /// different mode for mem plan.
@@ -436,6 +443,10 @@ public:
 
   inline void SetInplacePairList(SmallVector<ValuePair> inplaceList) {
     inplacePairList = inplaceList;
+  }
+
+  inline void SetSemanticConflictPairs(SmallVector<ValuePair> conflictPairs) {
+    semanticConflictPairs = std::move(conflictPairs);
   }
 
   /// Setup the device's storage specs
@@ -607,6 +618,9 @@ private:
   DenseMap<ValuePair, BufferLife>
   GetOverlapBufferLife(const BufferLifeVec &b1, const BufferLifeVec &b2) const;
 
+  bool HasSemanticConflict(const StorageEntry *entry,
+                           const BufferLifeVec &bufferLives) const;
+
   /// Reorder and make the storage entries of ping and pong continuous.
   void
   ReorderContinuousPingPongEntry(SmallVector<StorageEntry *> &storageEntryVec);
@@ -701,6 +715,9 @@ private:
 
   /// record inplace pair list.
   SmallVector<ValuePair> inplacePairList;
+
+  /// record semantic conflict pair list.
+  SmallVector<ValuePair> semanticConflictPairs;
 
   /// inplace-reuse info for the vf call.
   //VFCallInplaceReuseInfo *vfInplaceReuseInfo;

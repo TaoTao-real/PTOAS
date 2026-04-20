@@ -64,6 +64,7 @@ def build():
                 pto.TLoadOp(None, sv0, tb0)  # result=None
                 pto.TLoadOp(None, sv1, tb1)  # result=None
 
+                # tile/scalar form: src_tile / scalar
                 pto.TDivSOp(tb0, scale, tb1)
 
                 # %8 = subview on output tensor_view

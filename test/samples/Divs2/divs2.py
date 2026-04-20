@@ -8,7 +8,7 @@
 
 from mlir.ir import Context, Location, Module, InsertionPoint
 from mlir.dialects import func, arith, pto
-from mlir.ir import F32Type, IndexType, BoolAttr
+from mlir.ir import F32Type, IndexType
 
 
 def build():
@@ -58,7 +58,8 @@ def build():
                 pto.TLoadOp(None, sv0, tb0)
                 pto.TLoadOp(None, sv1, tb1)
 
-                op = pto.TDivSOp(tb0, scale, tb_out)
+                # scalar/tile form: scalar / src_tile
+                pto.TDivSOp(scale, tb0, tb_out)
 
                 sv2 = pto.PartitionViewOp(tile_view_32, tv1, offsets=[c0, c0], sizes=[c32, c32]).result
                 pto.TStoreOp(None, tb_out, sv2)

@@ -65,6 +65,22 @@ MlirType mlirPTOPtrTypeGetElementType(MlirType type) {
   return wrap(t.getElementType());
 }
 
+bool mlirPTOTypeIsAAsyncSessionType(MlirType type) {
+  return isa<mlir::pto::AsyncSessionType>(unwrap(type));
+}
+
+MlirType mlirPTOAsyncSessionTypeGet(MlirContext ctx) {
+  return wrap(mlir::pto::AsyncSessionType::get(unwrap(ctx)));
+}
+
+bool mlirPTOTypeIsAAsyncEventType(MlirType type) {
+  return isa<mlir::pto::AsyncEventType>(unwrap(type));
+}
+
+MlirType mlirPTOAsyncEventTypeGet(MlirContext ctx) {
+  return wrap(mlir::pto::AsyncEventType::get(unwrap(ctx)));
+}
+
 bool mlirPTOAttrIsAAddressSpaceAttr(MlirAttribute attr) {
   return mlir::isa<mlir::pto::AddressSpaceAttr>(unwrap(attr));
 }
@@ -307,6 +323,21 @@ int32_t mlirPTORoundModeAttrGetValue(MlirAttribute attr) {
   return static_cast<int32_t>(a.getValue());
 }
 
+MlirAttribute mlirPTOSaturationModeAttrGet(MlirContext ctx, int32_t value) {
+  auto *c = unwrap(ctx);
+  auto mode = static_cast<mlir::pto::SaturationMode>(value);
+  return wrap(mlir::pto::SaturationModeAttr::get(c, mode));
+}
+
+bool mlirPTOAttrIsASaturationModeAttr(MlirAttribute attr) {
+  return mlir::isa<mlir::pto::SaturationModeAttr>(unwrap(attr));
+}
+
+int32_t mlirPTOSaturationModeAttrGetValue(MlirAttribute attr) {
+  auto a = mlir::cast<mlir::pto::SaturationModeAttr>(unwrap(attr));
+  return static_cast<int32_t>(a.getValue());
+}
+
 MlirAttribute mlirPTOPipeAttrGet(MlirContext ctx, int32_t value) {
   auto *c = unwrap(ctx);
   auto v = static_cast<mlir::pto::PIPE>(value);
@@ -356,6 +387,21 @@ MlirAttribute mlirPTOEventAttrGet(MlirContext ctx, int32_t value) {
   auto *c = unwrap(ctx);
   auto v = static_cast<mlir::pto::EVENT>(value);
   return wrap(mlir::pto::EventAttr::get(c, v));
+}
+
+MlirAttribute mlirPTOQuantTypeAttrGet(MlirContext ctx, int32_t value) {
+  auto *c = unwrap(ctx);
+  auto v = static_cast<mlir::pto::QuantType>(value);
+  return wrap(mlir::pto::QuantTypeAttr::get(c, v));
+}
+
+bool mlirPTOAttrIsAQuantTypeAttr(MlirAttribute attr) {
+  return mlir::isa<mlir::pto::QuantTypeAttr>(unwrap(attr));
+}
+
+int32_t mlirPTOQuantTypeAttrGetValue(MlirAttribute attr) {
+  auto a = mlir::cast<mlir::pto::QuantTypeAttr>(unwrap(attr));
+  return static_cast<int32_t>(a.getValue());
 }
 
 bool mlirPTOAttrIsAEventAttr(MlirAttribute attr) {
@@ -499,6 +545,60 @@ static mlir::pto::PadValueAttr toPadValueAttr(mlir::MLIRContext *c, mlir::Attrib
     return mlir::pto::PadValueAttr::get(c, static_cast<mlir::pto::PadValue>(ia.getInt()));
   return {};
 }
+static mlir::pto::CompactModeAttr toCompactModeAttr(mlir::MLIRContext *c,
+                                                    mlir::Attribute a) {
+  if (auto cm = mlir::dyn_cast<mlir::pto::CompactModeAttr>(a))
+    return cm;
+  if (auto ia = mlir::dyn_cast<mlir::IntegerAttr>(a))
+    return mlir::pto::CompactModeAttr::get(
+        c, static_cast<mlir::pto::CompactMode>(ia.getInt()));
+  return {};
+}
+
+bool mlirPTOAttrIsACompactModeAttr(MlirAttribute attr) {
+  return unwrap(attr).isa<mlir::pto::CompactModeAttr>();
+}
+
+MlirAttribute mlirPTOCompactModeAttrGet(MlirContext ctx, int32_t value) {
+  auto *c = unwrap(ctx);
+  return wrap(mlir::pto::CompactModeAttr::get(
+      c, static_cast<mlir::pto::CompactMode>(value)));
+}
+
+int32_t mlirPTOCompactModeAttrGetValue(MlirAttribute attr) {
+  auto a = mlir::cast<mlir::pto::CompactModeAttr>(unwrap(attr));
+  return static_cast<int32_t>(a.getValue());
+}
+
+bool mlirPTOAttrIsAAccToVecModeAttr(MlirAttribute attr) {
+  return unwrap(attr).isa<mlir::pto::AccToVecModeAttr>();
+}
+
+MlirAttribute mlirPTOAccToVecModeAttrGet(MlirContext ctx, int32_t value) {
+  auto *c = unwrap(ctx);
+  return wrap(mlir::pto::AccToVecModeAttr::get(
+      c, static_cast<mlir::pto::AccToVecMode>(value)));
+}
+
+int32_t mlirPTOAccToVecModeAttrGetValue(MlirAttribute attr) {
+  auto a = mlir::cast<mlir::pto::AccToVecModeAttr>(unwrap(attr));
+  return static_cast<int32_t>(a.getValue());
+}
+
+bool mlirPTOAttrIsAReluPreModeAttr(MlirAttribute attr) {
+  return unwrap(attr).isa<mlir::pto::ReluPreModeAttr>();
+}
+
+MlirAttribute mlirPTOReluPreModeAttrGet(MlirContext ctx, int32_t value) {
+  auto *c = unwrap(ctx);
+  return wrap(mlir::pto::ReluPreModeAttr::get(
+      c, static_cast<mlir::pto::ReluPreMode>(value)));
+}
+
+int32_t mlirPTOReluPreModeAttrGetValue(MlirAttribute attr) {
+  auto a = mlir::cast<mlir::pto::ReluPreModeAttr>(unwrap(attr));
+  return static_cast<int32_t>(a.getValue());
+}
 
 MlirAttribute mlirPTOTileBufConfigAttrGet(MlirContext ctx,
                                           MlirAttribute bLayout,
@@ -506,17 +606,28 @@ MlirAttribute mlirPTOTileBufConfigAttrGet(MlirContext ctx,
                                           MlirAttribute sFractalSize,
                                           MlirAttribute pad) {
   auto *c = unwrap(ctx);
+  auto compactMode =
+      wrap(mlir::pto::CompactModeAttr::get(c, mlir::pto::CompactMode::Null));
+  return mlirPTOTileBufConfigAttrGetWithCompactMode(
+      ctx, bLayout, sLayout, sFractalSize, pad, compactMode);
+}
+
+MlirAttribute mlirPTOTileBufConfigAttrGetWithCompactMode(
+    MlirContext ctx, MlirAttribute bLayout, MlirAttribute sLayout,
+    MlirAttribute sFractalSize, MlirAttribute pad, MlirAttribute compactMode) {
+  auto *c = unwrap(ctx);
   auto blA = toBLayoutAttr(c, unwrap(bLayout));
   auto slA = toSLayoutAttr(c, unwrap(sLayout));
   auto pvA = toPadValueAttr(c, unwrap(pad));
-  if (!blA || !slA || !pvA)
+  auto cmA = toCompactModeAttr(c, unwrap(compactMode));
+  if (!blA || !slA || !pvA || !cmA)
     return MlirAttribute{nullptr};
 
   auto sz = mlir::dyn_cast<mlir::IntegerAttr>(unwrap(sFractalSize));
   if (!sz || !sz.getType().isInteger(32))
     return MlirAttribute{nullptr};
 
-  return wrap(mlir::pto::TileBufConfigAttr::get(c, blA, slA, sz, pvA));
+  return wrap(mlir::pto::TileBufConfigAttr::get(c, blA, slA, sz, pvA, cmA));
 }
 
 MlirType mlirPTOGMTypeGet(MlirContext ctx, intptr_t rank, const int64_t *shape,

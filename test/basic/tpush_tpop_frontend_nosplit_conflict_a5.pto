@@ -1,0 +1,36 @@
+// RUN: not ptoas --pto-arch=a5 %s 2>&1 | FileCheck %s
+
+module {
+  func.func @cube_kernel() attributes {pto.kernel_kind = #pto.kernel_kind<cube>} {
+    %c2v_import = pto.import_reserved_buffer {
+      name = "c2v_fifo",
+      peer_func = @vector_kernel
+    } -> i32
+    pto.aic_initialize_pipe {dir_mask = 1, slot_size = 1024, nosplit = false}
+      (c2v_consumer_buf = %c2v_import : i32,
+       v2c_consumer_buf = %c2v_import : i32)
+
+    %acc_tile = pto.alloc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>
+    pto.tpush_to_aiv(%acc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>) {split = 0}
+    return
+  }
+
+  func.func @vector_kernel() attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c2v_local = pto.reserve_buffer {
+      name = "c2v_fifo",
+      size = 4096,
+      location = #pto.address_space<vec>,
+      auto = true
+    } -> i32
+    pto.aiv_initialize_pipe {dir_mask = 1, slot_size = 1024, nosplit = false}
+      (c2v_consumer_buf = %c2v_local : i32,
+       v2c_consumer_buf = %c2v_local : i32)
+
+    %recv_tile = pto.tpop_from_aic {split = 0}
+      -> !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    pto.tfree_from_aic {split = 0}
+    return
+  }
+}
+
+// CHECK: error: 'pto.initialize_l2l_pipe' op explicit 'nosplit = false' conflicts with downstream users that require split = 0

@@ -56,11 +56,12 @@ def build():
 
                 # %5/%6/%7 = pto.alloc_tile : <32x32xf32>
                 tb0 = pto.AllocTileOp(tile_buf_32).result
+                tmp = pto.AllocTileOp(tile_buf_32).result
                 tb1 = pto.AllocTileOp(tile_buf_32).result
 
                 pto.TLoadOp(None, sv0, tb0)  # result=None
 
-                pto.TRemSOp(tb0, scale, tb1)
+                pto.TRemSOp(tb0, scale, tmp, tb1)
 
                 # %8 = subview on output tensor_view
                 sv1 = pto.PartitionViewOp(tile_view_32, tv1, offsets=[c0, c0], sizes=[c32, c32]).result

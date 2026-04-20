@@ -35,6 +35,7 @@ namespace pto {
 
 std::unique_ptr<Pass> createLoweringSyncToPipePass();
 std::unique_ptr<Pass> createPTOLowerFrontendPipeOpsPass();
+std::unique_ptr<Pass> createPTOInferValidatePipeInitPass();
 std::unique_ptr<Pass> createPTOResolveReservedBuffersPass();
 std::unique_ptr<Pass> createPTOWrapFunctionsInSectionsPass();
 std::unique_ptr<Pass> createPTOVerifyTFreePass();
@@ -61,6 +62,7 @@ createPlanMemoryPass(const PlanMemoryOptions &planMemoryOption = {});
 std::unique_ptr<Pass> createPTORemoveRedundantBarrierPass();
 std::unique_ptr<Pass> createPTOViewToMemrefPass();
 std::unique_ptr<Pass> createInferPTOLayoutPass();
+std::unique_ptr<Pass> createPTOA5NormalizeTMovPass();
 // Declare register function
 void registerPTOPasses();
 

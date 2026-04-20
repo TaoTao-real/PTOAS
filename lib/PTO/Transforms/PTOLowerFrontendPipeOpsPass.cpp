@@ -6,11 +6,6 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// Please refer to the License for details. You may not use this file except in compliance with the License.
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
-// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
-// See LICENSE in the root of the software repository for the full text of the License.
-
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -38,155 +33,185 @@ struct FrontendPipeHandles {
 };
 
 template <typename InitOpT>
+static LogicalResult requireFrontendGmSlotBuffer(InitOpT initOp) {
+  if (initOp.getGmSlotBuffer())
+    return success();
+  return initOp.emitOpError("requires 'gm_slot_buffer' when lowering to a2/a3");
+}
+
+template <typename InitOpT>
+static FailureOr<Value> createFrontendPipe(InitOpT initOp, IRRewriter &rewriter,
+                                           PTOArch arch, Type pipeTy,
+                                           int8_t dirMask, int32_t slotNum,
+                                           Value localAddr,
+                                           Value peerLocalAddr = Value{}) {
+  Location loc = initOp.getLoc();
+  auto dirAttr = rewriter.getI8IntegerAttr(dirMask);
+  auto slotSizeAttr = rewriter.getI32IntegerAttr(initOp.getSlotSize());
+  auto slotNumAttr = rewriter.getI32IntegerAttr(slotNum);
+  auto noSplitAttr = initOp.getNosplitAttr();
+
+  if (arch == PTOArch::A5) {
+    auto pipe = rewriter.create<InitializeL2LPipeOp>(
+        loc, pipeTy, dirAttr, slotSizeAttr, slotNumAttr, IntegerAttr{},
+        noSplitAttr, localAddr, peerLocalAddr);
+    return pipe.getPipe();
+  }
+
+  if (failed(requireFrontendGmSlotBuffer(initOp)))
+    return failure();
+
+  auto localSlotNumAttr = rewriter.getI32IntegerAttr(slotNum);
+  auto pipe = rewriter.create<InitializeL2G2LPipeOp>(
+      loc, pipeTy, dirAttr, slotSizeAttr, slotNumAttr, localSlotNumAttr,
+      IntegerAttr{}, noSplitAttr, initOp.getGmSlotBuffer(), localAddr,
+      peerLocalAddr);
+  return pipe.getPipe();
+}
+
+template <typename InitOpT>
+static FailureOr<FrontendPipeHandles>
+lowerSingleDirectionFrontendInit(InitOpT initOp, IRRewriter &rewriter,
+                                 PTOArch arch, Type pipeTy, int8_t dirMask,
+                                 Value localAddr) {
+  auto pipeOr =
+      createFrontendPipe(initOp, rewriter, arch, pipeTy, dirMask, /*slotNum=*/8,
+                         localAddr);
+  if (failed(pipeOr))
+    return failure();
+
+  FrontendPipeHandles handles;
+  if (dirMask == 1)
+    handles.c2vPipe = *pipeOr;
+  else
+    handles.v2cPipe = *pipeOr;
+  handles.anchorOp = pipeOr->getDefiningOp();
+  return handles;
+}
+
+template <typename InitOpT>
+static FailureOr<FrontendPipeHandles>
+lowerBidirectionalFrontendInit(InitOpT initOp, IRRewriter &rewriter,
+                               PTOArch arch, Type pipeTy) {
+  auto pipeOr = createFrontendPipe(initOp, rewriter, arch, pipeTy,
+                                   /*dirMask=*/3, /*slotNum=*/4,
+                                   initOp.getC2vConsumerBuf(),
+                                   initOp.getV2cConsumerBuf());
+  if (failed(pipeOr))
+    return failure();
+
+  FrontendPipeHandles handles;
+  handles.c2vPipe = *pipeOr;
+  handles.v2cPipe = *pipeOr;
+  handles.anchorOp = pipeOr->getDefiningOp();
+  return handles;
+}
+
+template <typename InitOpT>
 static FailureOr<FrontendPipeHandles> lowerFrontendInitOp(InitOpT initOp,
                                                           IRRewriter &rewriter) {
-  FrontendPipeHandles handles;
-  Location loc = initOp.getLoc();
   MLIRContext *ctx = initOp.getContext();
   auto pipeTy = PipeType::get(ctx);
   PTOArch arch = getTargetArch(initOp.getOperation());
 
-  auto createPipe = [&](int8_t dirMask, int32_t slotNum,
-                        Value localAddr) -> FailureOr<Value> {
-    auto dirAttr = rewriter.getI8IntegerAttr(dirMask);
-    auto slotSizeAttr = rewriter.getI32IntegerAttr(initOp.getSlotSize());
-    auto slotNumAttr = rewriter.getI32IntegerAttr(slotNum);
-
-    if (arch == PTOArch::A5) {
-      auto pipe = rewriter.create<InitializeL2LPipeOp>(
-          loc, pipeTy, dirAttr, slotSizeAttr, slotNumAttr, IntegerAttr{},
-          localAddr, /*peer_local_addr=*/Value{});
-      return pipe.getPipe();
-    }
-
-    if (!initOp.getGmSlotBuffer()) {
-      initOp.emitOpError("requires 'gm_slot_buffer' when lowering to a2/a3");
-      return failure();
-    }
-
-    auto localSlotNumAttr = rewriter.getI32IntegerAttr(slotNum);
-    auto pipe = rewriter.create<InitializeL2G2LPipeOp>(
-        loc, pipeTy, dirAttr, slotSizeAttr, slotNumAttr, localSlotNumAttr,
-        IntegerAttr{}, initOp.getGmSlotBuffer(), localAddr,
-        /*peer_local_addr=*/Value{});
-    return pipe.getPipe();
-  };
-
   switch (initOp.getDirMask()) {
-  case 1: {
-    auto pipeOr =
-        createPipe(/*dirMask=*/1, /*slotNum=*/8, initOp.getC2vConsumerBuf());
-    if (failed(pipeOr))
-      return failure();
-    handles.c2vPipe = *pipeOr;
-    handles.anchorOp = handles.c2vPipe.getDefiningOp();
-    break;
-  }
-  case 2: {
-    auto pipeOr =
-        createPipe(/*dirMask=*/2, /*slotNum=*/8, initOp.getV2cConsumerBuf());
-    if (failed(pipeOr))
-      return failure();
-    handles.v2cPipe = *pipeOr;
-    handles.anchorOp = handles.v2cPipe.getDefiningOp();
-    break;
-  }
-  case 3: {
-    auto dirAttr = rewriter.getI8IntegerAttr(3);
-    auto slotSizeAttr = rewriter.getI32IntegerAttr(initOp.getSlotSize());
-    auto slotNumAttr = rewriter.getI32IntegerAttr(4);
-    Value c2vAddr = initOp.getC2vConsumerBuf();
-    Value v2cAddr = initOp.getV2cConsumerBuf();
-
-    if (arch == PTOArch::A5) {
-      auto pipe = rewriter.create<InitializeL2LPipeOp>(
-          loc, pipeTy, dirAttr, slotSizeAttr, slotNumAttr, IntegerAttr{},
-          c2vAddr, v2cAddr);
-      handles.c2vPipe = pipe.getPipe();
-      handles.v2cPipe = pipe.getPipe();
-      handles.anchorOp = pipe.getOperation();
-    } else {
-      if (!initOp.getGmSlotBuffer()) {
-        initOp.emitOpError("requires 'gm_slot_buffer' when lowering to a2/a3");
-        return failure();
-      }
-      auto localSlotNumAttr = rewriter.getI32IntegerAttr(4);
-      auto pipe = rewriter.create<InitializeL2G2LPipeOp>(
-          loc, pipeTy, dirAttr, slotSizeAttr, slotNumAttr, localSlotNumAttr,
-          IntegerAttr{}, initOp.getGmSlotBuffer(), c2vAddr, v2cAddr);
-      handles.c2vPipe = pipe.getPipe();
-      handles.v2cPipe = pipe.getPipe();
-      handles.anchorOp = pipe.getOperation();
-    }
-    break;
-  }
+  case 1:
+    return lowerSingleDirectionFrontendInit(initOp, rewriter, arch, pipeTy,
+                                            /*dirMask=*/1,
+                                            initOp.getC2vConsumerBuf());
+  case 2:
+    return lowerSingleDirectionFrontendInit(initOp, rewriter, arch, pipeTy,
+                                            /*dirMask=*/2,
+                                            initOp.getV2cConsumerBuf());
+  case 3:
+    return lowerBidirectionalFrontendInit(initOp, rewriter, arch, pipeTy);
   default:
-    break;
+    return FrontendPipeHandles{};
   }
-
-  return handles;
 }
 
-static FailureOr<FrontendPipeHandles> lowerInitIfPresent(func::FuncOp funcOp,
-                                                         IRRewriter &rewriter) {
-  FrontendPipeHandles handles;
+struct FrontendInitOps {
   AicInitializePipeOp aicInit;
   AivInitializePipeOp aivInit;
   unsigned aicInitCount = 0;
   unsigned aivInitCount = 0;
+};
 
+static FrontendInitOps collectFrontendInitOps(func::FuncOp funcOp) {
+  FrontendInitOps initOps;
   funcOp.walk([&](Operation *op) {
     if (auto init = dyn_cast<AicInitializePipeOp>(op)) {
-      ++aicInitCount;
-      if (!aicInit)
-        aicInit = init;
+      ++initOps.aicInitCount;
+      if (!initOps.aicInit)
+        initOps.aicInit = init;
       return WalkResult::advance();
     }
     if (auto init = dyn_cast<AivInitializePipeOp>(op)) {
-      ++aivInitCount;
-      if (!aivInit)
-        aivInit = init;
-      return WalkResult::advance();
+      ++initOps.aivInitCount;
+      if (!initOps.aivInit)
+        initOps.aivInit = init;
     }
     return WalkResult::advance();
   });
+  return initOps;
+}
 
-  if (aicInitCount > 1) {
-    funcOp.emitOpError("requires at most one pto.aic_initialize_pipe");
+static LogicalResult validateFrontendInitOps(func::FuncOp funcOp,
+                                             const FrontendInitOps &initOps) {
+  if (initOps.aicInitCount > 1)
+    return funcOp.emitOpError("requires at most one pto.aic_initialize_pipe");
+  if (initOps.aivInitCount > 1)
+    return funcOp.emitOpError("requires at most one pto.aiv_initialize_pipe");
+  if (initOps.aicInit && initOps.aivInit) {
+    return funcOp.emitOpError("cannot mix pto.aic_initialize_pipe and "
+                              "pto.aiv_initialize_pipe in one function");
+  }
+  return success();
+}
+
+template <typename InitOpT>
+static void propagateFrontendNoSplitAttr(InitOpT initOp,
+                                         const FrontendPipeHandles &handles) {
+  auto noSplitAttr = initOp.getNosplitAttr();
+  if (!noSplitAttr)
+    return;
+
+  if (handles.anchorOp)
+    handles.anchorOp->setAttr("nosplit", noSplitAttr);
+
+  Operation *c2vOp =
+      handles.c2vPipe ? handles.c2vPipe.getDefiningOp() : nullptr;
+  Operation *v2cOp =
+      handles.v2cPipe ? handles.v2cPipe.getDefiningOp() : nullptr;
+
+  if (c2vOp && c2vOp != handles.anchorOp)
+    c2vOp->setAttr("nosplit", noSplitAttr);
+  if (v2cOp && v2cOp != handles.anchorOp && v2cOp != c2vOp)
+    v2cOp->setAttr("nosplit", noSplitAttr);
+}
+
+template <typename InitOpT>
+static FailureOr<FrontendPipeHandles> lowerAndEraseFrontendInit(InitOpT initOp,
+                                                                IRRewriter &rewriter) {
+  rewriter.setInsertionPoint(initOp);
+  auto loweredOr = lowerFrontendInitOp(initOp, rewriter);
+  if (failed(loweredOr))
     return failure();
-  }
+  propagateFrontendNoSplitAttr(initOp, *loweredOr);
+  rewriter.eraseOp(initOp);
+  return *loweredOr;
+}
 
-  if (aivInitCount > 1) {
-    funcOp.emitOpError("requires at most one pto.aiv_initialize_pipe");
+static FailureOr<FrontendPipeHandles> lowerInitIfPresent(func::FuncOp funcOp,
+                                                         IRRewriter &rewriter) {
+  FrontendInitOps initOps = collectFrontendInitOps(funcOp);
+  if (failed(validateFrontendInitOps(funcOp, initOps)))
     return failure();
-  }
-
-  if (aicInit && aivInit) {
-    funcOp.emitOpError(
-        "cannot mix pto.aic_initialize_pipe and pto.aiv_initialize_pipe in one function");
-    return failure();
-  }
-
-  if (!aicInit && !aivInit)
-    return handles;
-
-  if (aicInit) {
-    rewriter.setInsertionPoint(aicInit);
-    auto loweredOr = lowerFrontendInitOp(aicInit, rewriter);
-    if (failed(loweredOr))
-      return failure();
-    handles = *loweredOr;
-    rewriter.eraseOp(aicInit);
-  } else {
-    rewriter.setInsertionPoint(aivInit);
-    auto loweredOr = lowerFrontendInitOp(aivInit, rewriter);
-    if (failed(loweredOr))
-      return failure();
-    handles = *loweredOr;
-    rewriter.eraseOp(aivInit);
-  }
-
-  return handles;
+  if (initOps.aicInit)
+    return lowerAndEraseFrontendInit(initOps.aicInit, rewriter);
+  if (initOps.aivInit)
+    return lowerAndEraseFrontendInit(initOps.aivInit, rewriter);
+  return FrontendPipeHandles{};
 }
 
 static bool hasFrontendPipeOps(func::FuncOp funcOp) {
@@ -256,6 +281,10 @@ static LogicalResult lowerFrontendDataOps(func::FuncOp funcOp,
       }
       auto decl = rewriter.create<DeclareTileOp>(pop.getLoc(),
                                                  pop.getTile().getType());
+      if (pop.getValidRow() && pop.getValidCol()) {
+        rewriter.create<SetValidShapeOp>(pop.getLoc(), decl.getTile(),
+                                         pop.getValidRow(), pop.getValidCol());
+      }
       rewriter.create<TPopOp>(pop.getLoc(), decl.getTile(), handles.c2vPipe,
                               pop.getSplitAttr());
       rewriter.replaceOp(pop, decl.getTile());
@@ -270,6 +299,10 @@ static LogicalResult lowerFrontendDataOps(func::FuncOp funcOp,
       }
       auto decl = rewriter.create<DeclareTileOp>(pop.getLoc(),
                                                  pop.getTile().getType());
+      if (pop.getValidRow() && pop.getValidCol()) {
+        rewriter.create<SetValidShapeOp>(pop.getLoc(), decl.getTile(),
+                                         pop.getValidRow(), pop.getValidCol());
+      }
       rewriter.create<TPopOp>(pop.getLoc(), decl.getTile(), handles.v2cPipe,
                               pop.getSplitAttr());
       rewriter.replaceOp(pop, decl.getTile());

@@ -6,39 +6,54 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// Please refer to the License for details. You may not use this file except in compliance with the License.
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
-// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
-// See LICENSE in the root of the software repository for the full text of the License.
-
 //===- PTOTypeDefs.cpp --------------------------------------------*- C++ -*-===//
 #include "PTO/IR/PTO.h"
 #include "mlir/IR/DialectImplementation.h"
+#include <limits>
+#include <mutex>
+#include <unordered_map>
 
 using namespace mlir;
 using namespace mlir::pto;
 
 namespace {
-thread_local PTOParserTargetArch currentParserTargetArch =
-    PTOParserTargetArch::Unspecified;
+std::mutex parserTargetArchMutex;
+std::unordered_map<const MLIRContext *, PTOParserTargetArch>
+    parserTargetArchByContext;
 }
 
-void mlir::pto::setPTOParserTargetArch(PTOParserTargetArch arch) {
-  currentParserTargetArch = arch;
+void mlir::pto::setPTOParserTargetArch(MLIRContext *context,
+                                       PTOParserTargetArch arch) {
+  if (!context)
+    return;
+
+  std::lock_guard<std::mutex> lock(parserTargetArchMutex);
+  if (arch == PTOParserTargetArch::Unspecified) {
+    parserTargetArchByContext.erase(context);
+    return;
+  }
+  parserTargetArchByContext[context] = arch;
 }
 
-PTOParserTargetArch mlir::pto::getPTOParserTargetArch() {
-  return currentParserTargetArch;
+PTOParserTargetArch mlir::pto::getPTOParserTargetArch(MLIRContext *context) {
+  if (!context)
+    return PTOParserTargetArch::Unspecified;
+
+  std::lock_guard<std::mutex> lock(parserTargetArchMutex);
+  auto it = parserTargetArchByContext.find(context);
+  if (it == parserTargetArchByContext.end())
+    return PTOParserTargetArch::Unspecified;
+  return it->second;
 }
 
 mlir::pto::ScopedPTOParserTargetArch::ScopedPTOParserTargetArch(
-    PTOParserTargetArch arch)
-    : previousArch(getPTOParserTargetArch()) {
-  setPTOParserTargetArch(arch);
+    MLIRContext *context, PTOParserTargetArch arch)
+    : context(context), previousArch(getPTOParserTargetArch(context)) {
+  setPTOParserTargetArch(context, arch);
 }
 
 mlir::pto::ScopedPTOParserTargetArch::~ScopedPTOParserTargetArch() {
-  setPTOParserTargetArch(previousArch);
+  setPTOParserTargetArch(context, previousArch);
 }
 
 static SmallVector<int64_t, 4> canonicalizeTileBufValidShape(ArrayRef<int64_t> validShape) {
@@ -47,6 +62,120 @@ static SmallVector<int64_t, 4> canonicalizeTileBufValidShape(ArrayRef<int64_t> v
   for (int64_t dim : validShape)
     canonical.push_back(dim < 0 ? ShapedType::kDynamic : dim);
   return canonical;
+}
+
+static LogicalResult parseTileBufKeyEq(AsmParser &parser,
+                                       StringRef expectedKey) {
+  if (failed(parser.parseKeyword(expectedKey)))
+    return failure();
+  return parser.parseEqual();
+}
+
+static LogicalResult parseTileBufComma(AsmParser &parser) {
+  return parser.parseComma();
+}
+
+static LogicalResult parseTileBufKeywordField(AsmParser &parser, StringRef key,
+                                              std::string &value) {
+  if (failed(parseTileBufKeyEq(parser, key)))
+    return failure();
+  if (failed(parser.parseKeywordOrString(&value)))
+    return failure();
+  return parseTileBufComma(parser);
+}
+
+static LogicalResult parseTileBufTypeField(AsmParser &parser, StringRef key,
+                                           Type &value) {
+  if (failed(parseTileBufKeyEq(parser, key)))
+    return failure();
+  if (failed(parser.parseType(value)))
+    return failure();
+  return parseTileBufComma(parser);
+}
+
+static LogicalResult parseTileBufIntegerField(AsmParser &parser, StringRef key,
+                                              int64_t &value) {
+  if (failed(parseTileBufKeyEq(parser, key)))
+    return failure();
+  if (failed(parser.parseInteger(value)))
+    return failure();
+  return parseTileBufComma(parser);
+}
+
+static LogicalResult parseTileBufValidDim(AsmParser &parser, StringRef key,
+                                          int64_t &value) {
+  if (failed(parseTileBufKeyEq(parser, key)))
+    return failure();
+
+  if (succeeded(parser.parseOptionalQuestion())) {
+    value = -1;
+    return success();
+  }
+
+  if (failed(parser.parseInteger(value)))
+    return failure();
+  if (value < -1) {
+    parser.emitError(parser.getCurrentLocation(),
+                     key + " must be '?', -1, or a non-negative integer");
+    return failure();
+  }
+  return success();
+}
+
+static LogicalResult parseTileBufValidShapeFields(AsmParser &parser,
+                                                  int64_t &vrow,
+                                                  int64_t &vcol) {
+  if (failed(parseTileBufValidDim(parser, "v_row", vrow)))
+    return failure();
+  if (failed(parseTileBufComma(parser)))
+    return failure();
+  if (failed(parseTileBufValidDim(parser, "v_col", vcol)))
+    return failure();
+  return parseTileBufComma(parser);
+}
+
+static LogicalResult parseTileBufPadField(AsmParser &parser, uint32_t &padInt) {
+  int64_t parsedPad = 0;
+  if (failed(parseTileBufKeyEq(parser, "pad")))
+    return failure();
+  if (failed(parser.parseInteger(parsedPad)))
+    return failure();
+  if (parsedPad < 0 || parsedPad > std::numeric_limits<uint32_t>::max()) {
+    parser.emitError(parser.getCurrentLocation(),
+                     "pad must be a non-negative 32-bit integer");
+    return failure();
+  }
+  padInt = static_cast<uint32_t>(parsedPad);
+  return success();
+}
+
+static std::optional<AddressSpace> resolveTileBufMemorySpace(StringRef locStr) {
+  return ::llvm::StringSwitch<::std::optional<AddressSpace>>(locStr)
+      .Case("mat", AddressSpace::MAT)
+      .Case("left", AddressSpace::LEFT)
+      .Case("right", AddressSpace::RIGHT)
+      .Case("acc", AddressSpace::ACC)
+      .Case("vec", AddressSpace::VEC)
+      .Case("bias", AddressSpace::BIAS)
+      .Case("scaling", AddressSpace::SCALING)
+      .Default(::std::nullopt);
+}
+
+static BLayout resolveTileBufBLayout(MLIRContext *context,
+                                     AddressSpace memorySpace,
+                                     BLayout parsedLayout) {
+  if (memorySpace != AddressSpace::LEFT)
+    return parsedLayout;
+
+  switch (getPTOParserTargetArch(context)) {
+  case PTOParserTargetArch::A3:
+    return BLayout::RowMajor;
+  case PTOParserTargetArch::A5:
+    return BLayout::ColMajor;
+  case PTOParserTargetArch::Unspecified:
+    return parsedLayout;
+  }
+  return parsedLayout;
 }
 
 TileBufConfigAttr TileBufType::getConfigAttr() const {
@@ -69,6 +198,9 @@ bool TileBufType::hasNonDefaultConfig() const {
 mlir::Attribute TileBufType::getBLayoutAttr() const { return getConfigAttr().getBLayout(); }
 mlir::Attribute TileBufType::getSLayoutAttr() const { return getConfigAttr().getSLayout(); }
 mlir::Attribute TileBufType::getPadValueAttr() const { return getConfigAttr().getPad(); }
+mlir::Attribute TileBufType::getCompactModeAttr() const {
+  return getConfigAttr().getCompactMode();
+}
 
 // ✅ numeric getters（可选）
 int32_t TileBufType::getSFractalSizeI32() const {
@@ -93,188 +225,306 @@ int32_t TileBufType::getPadValueI32() const {
   return 0;
 }
 
-// ---- TileBufType custom asm ----
-// !pto.tile_buf<<loc=.., dtype=.., rows=.., cols=.., blayout=.., valid=..x.., slayout=.., fractal=.., pad=..>>
-Type TileBufType::parse(AsmParser &parser) {
+int32_t TileBufType::getCompactModeI32() const {
+  if (auto a = llvm::dyn_cast<CompactModeAttr>(getCompactModeAttr()))
+    return static_cast<int32_t>(a.getValue());
+  return 0;
+}
+
+namespace {
+
+struct ParsedTileBufFields {
+  std::string locStr;
+  Type dtype;
+  int64_t rows = 0;
+  int64_t cols = 0;
+  int64_t vrow = -1;
+  int64_t vcol = -1;
+  std::string blayoutStr;
+  std::string slayoutStr;
+  int64_t fractal = 0;
+  uint32_t padInt = 0;
+  uint32_t compactInt = 0;
+};
+
+static LogicalResult parseTileBufUInt32Value(AsmParser &parser, StringRef key,
+                                             uint32_t &value) {
+  int64_t parsedValue = 0;
+  if (failed(parser.parseInteger(parsedValue)))
+    return failure();
+  if (parsedValue < 0 ||
+      parsedValue > std::numeric_limits<uint32_t>::max()) {
+    parser.emitError(parser.getCurrentLocation())
+        << key << " must be a non-negative 32-bit integer";
+    return failure();
+  }
+  value = static_cast<uint32_t>(parsedValue);
+  return success();
+}
+
+static LogicalResult parseLegacyTileBufFields(AsmParser &parser,
+                                              ParsedTileBufFields &fields) {
+  if (failed(parser.parseEqual()))
+    return failure();
+  if (failed(parser.parseKeywordOrString(&fields.locStr)))
+    return failure();
+  if (failed(parser.parseComma()))
+    return failure();
+
+  if (failed(parseTileBufTypeField(parser, "dtype", fields.dtype)) ||
+      failed(parseTileBufIntegerField(parser, "rows", fields.rows)) ||
+      failed(parseTileBufIntegerField(parser, "cols", fields.cols)) ||
+      failed(parseTileBufValidShapeFields(parser, fields.vrow, fields.vcol)) ||
+      failed(parseTileBufKeywordField(parser, "blayout", fields.blayoutStr)) ||
+      failed(parseTileBufKeywordField(parser, "slayout", fields.slayoutStr)) ||
+      failed(parseTileBufIntegerField(parser, "fractal", fields.fractal)) ||
+      failed(parseTileBufPadField(parser, fields.padInt))) {
+    return failure();
+  }
+
+  return success();
+}
+
+static LogicalResult parseCompactTileBufFields(AsmParser &parser,
+                                               StringRef firstToken,
+                                               ParsedTileBufFields &fields) {
+  fields.locStr = firstToken.str();
+
+  if (failed(parser.parseComma()))
+    return failure();
+
+  SmallVector<int64_t, 2> shape;
+  if (failed(parser.parseDimensionList(shape, /*allowDynamic=*/false)))
+    return failure();
+  if (failed(parser.parseType(fields.dtype)))
+    return failure();
+  if (shape.size() != 2) {
+    parser.emitError(parser.getCurrentLocation(),
+                     "tile_buf compact syntax expects exactly two shape dims");
+    return failure();
+  }
+
+  fields.rows = shape[0];
+  fields.cols = shape[1];
+  fields.vrow = fields.rows;
+  fields.vcol = fields.cols;
+
+  auto defaultConfig = TileBufConfigAttr::getDefault(parser.getContext());
+  auto defaultBLayout = llvm::dyn_cast<BLayoutAttr>(defaultConfig.getBLayout());
+  auto defaultSLayout = llvm::dyn_cast<SLayoutAttr>(defaultConfig.getSLayout());
+  auto defaultPad = llvm::dyn_cast<PadValueAttr>(defaultConfig.getPad());
+  auto defaultCompact =
+      llvm::dyn_cast<CompactModeAttr>(defaultConfig.getCompactMode());
+  if (!defaultBLayout || !defaultSLayout || !defaultPad || !defaultCompact) {
+    parser.emitError(parser.getCurrentLocation(),
+                     "failed to load default tile_buf config");
+    return failure();
+  }
+  fields.blayoutStr = stringifyBLayout(defaultBLayout.getValue()).str();
+  fields.slayoutStr = stringifySLayout(defaultSLayout.getValue()).str();
+  fields.fractal = defaultConfig.getSFractalSize().getInt();
+  fields.padInt = static_cast<uint32_t>(defaultPad.getValue());
+  fields.compactInt = static_cast<uint32_t>(defaultCompact.getValue());
+
+  bool seenValid = false;
+  bool seenBLayout = false;
+  bool seenSLayout = false;
+  bool seenFractal = false;
+  bool seenPad = false;
+  bool seenCompact = false;
+
+  while (succeeded(parser.parseOptionalComma())) {
+    StringRef key;
+    if (failed(parser.parseKeyword(&key)) || failed(parser.parseEqual()))
+      return failure();
+
+    if (key == "valid") {
+      if (seenValid) {
+        parser.emitError(parser.getCurrentLocation(),
+                         "duplicate valid in tile_buf compact syntax");
+        return failure();
+      }
+      seenValid = true;
+
+      SmallVector<int64_t, 2> validShape;
+      if (failed(parser.parseDimensionList(validShape, /*allowDynamic=*/true,
+                                           /*withTrailingX=*/false))) {
+        return failure();
+      }
+      if (validShape.size() != 2) {
+        parser.emitError(parser.getCurrentLocation(),
+                         "tile_buf valid must have exactly two dims");
+        return failure();
+      }
+      fields.vrow = validShape[0];
+      fields.vcol = validShape[1];
+      continue;
+    }
+
+    if (key == "blayout") {
+      if (seenBLayout) {
+        parser.emitError(parser.getCurrentLocation(),
+                         "duplicate blayout in tile_buf compact syntax");
+        return failure();
+      }
+      seenBLayout = true;
+      if (failed(parser.parseKeywordOrString(&fields.blayoutStr)))
+        return failure();
+      continue;
+    }
+
+    if (key == "slayout") {
+      if (seenSLayout) {
+        parser.emitError(parser.getCurrentLocation(),
+                         "duplicate slayout in tile_buf compact syntax");
+        return failure();
+      }
+      seenSLayout = true;
+      if (failed(parser.parseKeywordOrString(&fields.slayoutStr)))
+        return failure();
+      continue;
+    }
+
+    if (key == "fractal") {
+      if (seenFractal) {
+        parser.emitError(parser.getCurrentLocation(),
+                         "duplicate fractal in tile_buf compact syntax");
+        return failure();
+      }
+      seenFractal = true;
+      if (failed(parser.parseInteger(fields.fractal)))
+        return failure();
+      continue;
+    }
+
+    if (key == "pad") {
+      if (seenPad) {
+        parser.emitError(parser.getCurrentLocation(),
+                         "duplicate pad in tile_buf compact syntax");
+        return failure();
+      }
+      seenPad = true;
+      if (failed(parseTileBufUInt32Value(parser, key, fields.padInt)))
+        return failure();
+      continue;
+    }
+
+    if (key == "compact") {
+      if (seenCompact) {
+        parser.emitError(parser.getCurrentLocation(),
+                         "duplicate compact in tile_buf compact syntax");
+        return failure();
+      }
+      seenCompact = true;
+      if (failed(parseTileBufUInt32Value(parser, key, fields.compactInt)))
+        return failure();
+      continue;
+    }
+
+    parser.emitError(parser.getCurrentLocation(),
+                     "unknown key in tile_buf compact syntax: ")
+        << key;
+    return failure();
+  }
+
+  return success();
+}
+
+static Type buildTileBufType(AsmParser &parser,
+                             const ParsedTileBufFields &fields) {
   MLIRContext *ctx = parser.getContext();
 
+  if (fields.rows < 0 || fields.cols < 0) {
+    parser.emitError(parser.getNameLoc(), "rows/cols must be non-negative");
+    return Type();
+  }
+
+  auto memorySpace = resolveTileBufMemorySpace(fields.locStr);
+  if (!memorySpace.has_value()) {
+    parser.emitError(parser.getNameLoc(), "unknown loc: ") << fields.locStr;
+    return Type();
+  }
+
+  auto bl = symbolizeBLayout(fields.blayoutStr);
+  auto sl = symbolizeSLayout(fields.slayoutStr);
+  auto pv = symbolizePadValue(fields.padInt);
+  auto compact = symbolizeCompactMode(fields.compactInt);
+  if (!bl.has_value()) {
+    parser.emitError(parser.getNameLoc(), "unknown blayout: ")
+        << fields.blayoutStr;
+    return Type();
+  }
+  if (!sl.has_value()) {
+    parser.emitError(parser.getNameLoc(), "unknown slayout: ")
+        << fields.slayoutStr;
+    return Type();
+  }
+  if (!pv.has_value()) {
+    parser.emitError(parser.getNameLoc(), "unknown pad: ") << fields.padInt;
+    return Type();
+  }
+  if (!compact.has_value()) {
+    parser.emitError(parser.getNameLoc(), "unknown compact: ")
+        << fields.compactInt;
+    return Type();
+  }
+
+  BLayout effectiveBLayout =
+      resolveTileBufBLayout(parser.getContext(), memorySpace.value(),
+                            bl.value());
+
+  auto blAttr = BLayoutAttr::get(ctx, effectiveBLayout);
+  auto slAttr = SLayoutAttr::get(ctx, sl.value());
+  auto fractalAttr =
+      IntegerAttr::get(IntegerType::get(ctx, 32), fields.fractal);
+  auto padAttr = PadValueAttr::get(ctx, pv.value());
+  auto compactAttr = CompactModeAttr::get(ctx, compact.value());
+  auto memorySpaceAttr = AddressSpaceAttr::get(ctx, memorySpace.value());
+  auto cfg = TileBufConfigAttr::get(ctx, blAttr, slAttr, fractalAttr, padAttr,
+                                    compactAttr);
+
+  SmallVector<int64_t, 2> shape{fields.rows, fields.cols};
+  SmallVector<int64_t, 2> validShape{fields.vrow, fields.vcol};
+  auto canonicalValidShape = canonicalizeTileBufValidShape(validShape);
+
+  return TileBufType::get(ctx, shape, fields.dtype, memorySpaceAttr,
+                          llvm::ArrayRef<int64_t>(canonicalValidShape), cfg);
+}
+
+} // namespace
+
+// ---- TileBufType custom asm ----
+// !pto.tile_buf<<loc=.., dtype=.., rows=.., cols=.., blayout=.., valid=..x..,
+//                slayout=.., fractal=.., pad=.., compact=..>>
+Type TileBufType::parse(AsmParser &parser) {
   if (failed(parser.parseLess()))
     return Type();
 
-  std::string locStr;
-  Type dtype;
-  int64_t rows = 0, cols = 0;
-  int64_t vrow = -1, vcol = -1;
-  std::string blayoutStr, slayoutStr;
-  int64_t fractal = 0;
-  uint32_t padInt;
+  std::string firstToken;
+  if (failed(parser.parseKeywordOrString(&firstToken)))
+    return Type();
 
-  auto parseKeyEq = [&](StringRef expectedKey) -> LogicalResult {
-    if (failed(parser.parseKeyword(expectedKey)))
-      return failure();
-    if (failed(parser.parseEqual()))
-      return failure();
-    return success();
-  };
-
-  // loc=Vec
-  {
-    if (failed(parseKeyEq("loc"))) return Type();
-    // Vec/Mat/Acc 不是类型/属性，直接当 keyword/string 读
-    if (failed(parser.parseKeywordOrString(&locStr))) return Type();
-    if (failed(parser.parseComma())) return Type();
+  ParsedTileBufFields fields;
+  const bool isLegacySyntax = firstToken == "loc";
+  if (isLegacySyntax) {
+    if (failed(parseLegacyTileBufFields(parser, fields)))
+      return Type();
+  } else {
+    if (failed(parseCompactTileBufFields(parser, firstToken, fields)))
+      return Type();
   }
 
-  // dtype=f16
-  {
-    if (failed(parseKeyEq("dtype"))) return Type();
-    if (failed(parser.parseType(dtype))) return Type();
-    if (failed(parser.parseComma())) return Type();
-  }
-
-  // rows=16
-  {
-    if (failed(parseKeyEq("rows"))) return Type();
-    if (failed(parser.parseInteger(rows))) return Type();
-    if (failed(parser.parseComma())) return Type();
-  }
-
-  // cols=16
-  {
-    if (failed(parseKeyEq("cols"))) return Type();
-    if (failed(parser.parseInteger(cols))) return Type();
-    if (failed(parser.parseComma())) return Type();
-  }
-   
-  {
-    // v_row=?/-1/16 , v_col=?/-1/8   （支持半动态）
-    if (failed(parseKeyEq("v_row"))) return Type();
-
-    // 解析 v_row：'?' -> -1，否则整数（允许 -1 兼容）
-    if (succeeded(parser.parseOptionalQuestion())) {
-        vrow = -1;
-    } else {
-        if (failed(parser.parseInteger(vrow))) return Type();
-        if (vrow < -1) {
-            parser.emitError(parser.getCurrentLocation(),
-                            "v_row must be '?', -1, or a non-negative integer");
-            return Type();
-        }
+  if (isLegacySyntax && succeeded(parser.parseOptionalComma())) {
+    if (failed(parseTileBufKeyEq(parser, "compact")) ||
+        failed(parseTileBufUInt32Value(parser, "compact", fields.compactInt))) {
+      return Type();
     }
-
-    if (failed(parser.parseComma())) return Type();
-
-    if (failed(parseKeyEq("v_col"))) return Type();
-
-    // 解析 v_col：'?' -> -1，否则整数（允许 -1 兼容）
-    if (succeeded(parser.parseOptionalQuestion())) {
-        vcol = -1;
-    } else {
-        if (failed(parser.parseInteger(vcol))) return Type();
-        if (vcol < -1) {
-            parser.emitError(parser.getCurrentLocation(),
-                            "v_col must be '?', -1, or a non-negative integer");
-            return Type();
-        }
-    }
-    if (failed(parser.parseComma())) return Type();
-  }
-
-  // blayout=RowMajor
-  {
-    if (failed(parseKeyEq("blayout"))) return Type();
-    if (failed(parser.parseKeywordOrString(&blayoutStr))) return Type();
-    if (failed(parser.parseComma())) return Type();
-  }
-
-
-  // slayout=NoneBox
-  {
-    if (failed(parseKeyEq("slayout"))) return Type();
-    if (failed(parser.parseKeywordOrString(&slayoutStr))) return Type();
-    if (failed(parser.parseComma())) return Type();
-  }
-
-  // fractal=512
-  {
-    if (failed(parseKeyEq("fractal"))) return Type();
-    if (failed(parser.parseInteger(fractal))) return Type();
-    if (failed(parser.parseComma())) return Type();
-  }
-
-  // pad=Null
-  {
-    if (failed(parseKeyEq("pad"))) return Type();
-    if (failed(parser.parseInteger(padInt))) return Type();
   }
 
   if (failed(parser.parseGreater()))
     return Type();
 
-  // -------- 语义校验/构造 --------
-  if (rows < 0 || cols < 0) {
-    parser.emitError(parser.getNameLoc(), "rows/cols must be non-negative");
-    return Type();
-  }
-
-  auto memorySpace = ::llvm::StringSwitch<::std::optional<AddressSpace>>(locStr)
-        .Case("mat", AddressSpace::MAT)
-        .Case("left", AddressSpace::LEFT)
-        .Case("right", AddressSpace::RIGHT)
-        .Case("acc", AddressSpace::ACC)
-        .Case("vec", AddressSpace::VEC)
-        .Case("bias", AddressSpace::BIAS)
-        .Case("scaling", AddressSpace::SCALING)
-        .Default(::std::nullopt);
-  if (!memorySpace.has_value()) {
-    parser.emitError(parser.getNameLoc(), "unknown loc: ") << locStr;
-    return Type();
-  }
-
-  auto bl = symbolizeBLayout(blayoutStr);
-  auto sl = symbolizeSLayout(slayoutStr);
-  auto pv = symbolizePadValue(padInt);
-  if (!bl.has_value()) {
-    parser.emitError(parser.getNameLoc(), "unknown blayout: ") << blayoutStr;
-    return Type();
-  }
-  if (!sl.has_value()) {
-    parser.emitError(parser.getNameLoc(), "unknown slayout: ") << slayoutStr;
-    return Type();
-  }
-  if (!pv.has_value()) {
-    parser.emitError(parser.getNameLoc(), "unknown pad: ") << padInt;
-    return Type();
-  }
-
-  BLayout effectiveBLayout = bl.value();
-  if (memorySpace.value() == AddressSpace::LEFT) {
-    switch (getPTOParserTargetArch()) {
-    case PTOParserTargetArch::A3:
-      effectiveBLayout = BLayout::RowMajor;
-      break;
-    case PTOParserTargetArch::A5:
-      effectiveBLayout = BLayout::ColMajor;
-      break;
-    case PTOParserTargetArch::Unspecified:
-      break;
-    }
-  }
-
-  auto blAttr = BLayoutAttr::get(ctx, effectiveBLayout);
-  auto slAttr = SLayoutAttr::get(ctx, sl.value());
-  auto fractalAttr =
-      IntegerAttr::get(IntegerType::get(ctx, 32), fractal);
-  auto padAttr = PadValueAttr::get(ctx, pv.value());
-  auto memorySpaceAttr = AddressSpaceAttr::get(ctx, memorySpace.value());
-  auto cfg = TileBufConfigAttr::get(ctx, blAttr, slAttr, fractalAttr, padAttr);
-
-  SmallVector<int64_t, 2> shape{rows, cols};
-  SmallVector<int64_t, 2> validShape{vrow, vcol};
-  auto canonicalValidShape = canonicalizeTileBufValidShape(validShape);
-
-  return TileBufType::get(ctx, shape, dtype, memorySpaceAttr,
-                          llvm::ArrayRef<int64_t>(canonicalValidShape), cfg);
+  return buildTileBufType(parser, fields);
 }
 
 static llvm::StringRef stringifyLocFromMemorySpace(mlir::Attribute memorySpace) {
@@ -305,45 +555,95 @@ static llvm::StringRef stringifyLocFromPad(mlir::Attribute pad) {
   }
 }
 
+static llvm::StringRef stringifyCompactModeInt(mlir::Attribute compactMode) {
+  auto compactAttr = llvm::dyn_cast_or_null<CompactModeAttr>(compactMode);
+  if (!compactAttr)
+    return "9999";
+
+  switch (compactAttr.getValue()) {
+  case CompactMode::Null:
+    return "0";
+  case CompactMode::Normal:
+    return "1";
+  case CompactMode::RowPlusOne:
+    return "2";
+  default:
+    return "9999";
+  }
+}
+
+static void printTileBufDim(AsmPrinter &printer, int64_t dim) {
+  if (dim == ShapedType::kDynamic)
+    printer << "?";
+  else
+    printer << dim;
+}
+
 void mlir::pto::TileBufType::print(mlir::AsmPrinter &printer) const {
-    auto shape = getShape();
-    int64_t rows = shape.size() > 0 ? shape[0] : 0;
-    int64_t cols = shape.size() > 1 ? shape[1] : 0;
+  auto shape = getShape();
+  int64_t rows = shape.size() > 0 ? shape[0] : ShapedType::kDynamic;
+  int64_t cols = shape.size() > 1 ? shape[1] : ShapedType::kDynamic;
 
-    auto cfg = getConfigAttr();
-    if (!cfg) cfg = mlir::pto::TileBufConfigAttr::getDefault(getContext());
+  auto cfg = getConfigAttr();
+  if (!cfg)
+    cfg = mlir::pto::TileBufConfigAttr::getDefault(getContext());
+  auto defaultCfg = TileBufConfigAttr::getDefault(getContext());
 
-    llvm::StringRef locStr = stringifyLocFromMemorySpace(getMemorySpace());
+  llvm::StringRef locStr = stringifyLocFromMemorySpace(getMemorySpace());
+  auto blayout = llvm::dyn_cast<BLayoutAttr>(cfg.getBLayout());
+  auto slayout = llvm::dyn_cast<SLayoutAttr>(cfg.getSLayout());
+  auto pad = llvm::dyn_cast<PadValueAttr>(cfg.getPad());
+  auto compact = llvm::dyn_cast<CompactModeAttr>(cfg.getCompactMode());
+  auto defaultBLayout = llvm::dyn_cast<BLayoutAttr>(defaultCfg.getBLayout());
+  auto defaultSLayout = llvm::dyn_cast<SLayoutAttr>(defaultCfg.getSLayout());
+  auto defaultPad = llvm::dyn_cast<PadValueAttr>(defaultCfg.getPad());
+  auto defaultCompact =
+      llvm::dyn_cast<CompactModeAttr>(defaultCfg.getCompactMode());
 
-    printer << "<"
-            << "loc=" << locStr
-            << ", dtype=";
-    printer.printType(getElementType());
+  auto vs = getValidShape();
+  int64_t vrow = rows;
+  int64_t vcol = cols;
+  if (vs.size() >= 2) {
+    vrow = vs[0];
+    vcol = vs[1];
+  }
 
-    auto blayout = llvm::dyn_cast<BLayoutAttr>(cfg.getBLayout());
-    auto slayout = llvm::dyn_cast<SLayoutAttr>(cfg.getSLayout());
+  const bool printValid = vrow != rows || vcol != cols;
+  const bool printBLayout =
+      blayout && defaultBLayout && blayout.getValue() != defaultBLayout.getValue();
+  const bool printSLayout =
+      slayout && defaultSLayout && slayout.getValue() != defaultSLayout.getValue();
+  const bool printFractal =
+      cfg.getSFractalSize().getInt() != defaultCfg.getSFractalSize().getInt();
+  const bool printPad =
+      pad && defaultPad && pad.getValue() != defaultPad.getValue();
+  const bool printCompact =
+      compact && defaultCompact &&
+      compact.getValue() != defaultCompact.getValue();
 
-    auto vs = getValidShape(); // ArrayRef<int64_t>
-    int64_t vrow = rows;
-    int64_t vcol = cols;
+  printer << "<" << locStr << ", ";
+  printTileBufDim(printer, rows);
+  printer << "x";
+  printTileBufDim(printer, cols);
+  printer << "x";
+  printer.printType(getElementType());
 
-    if (vs.size() >= 2) {
-        vrow = vs[0];
-        vcol = vs[1];
-    }
-    printer << ", rows=" << rows
-            << ", cols=" << cols;
-    printer << ", v_row=";
-    if (vrow < 0) printer << "?";
-    else printer << vrow;
+  if (printValid) {
+    printer << ", valid=";
+    printTileBufDim(printer, vrow);
+    printer << "x";
+    printTileBufDim(printer, vcol);
+  }
+  if (printBLayout)
+    printer << ", blayout=" << stringifyBLayout(blayout.getValue());
+  if (printSLayout)
+    printer << ", slayout=" << stringifySLayout(slayout.getValue());
+  if (printFractal)
+    printer << ", fractal=" << cfg.getSFractalSize().getInt();
+  if (printPad)
+    printer << ", pad=" << stringifyLocFromPad(cfg.getPad());
+  if (printCompact)
+    printer << ", compact=" << stringifyCompactModeInt(cfg.getCompactMode());
 
-    printer << ", v_col=";
-    if (vcol < 0) printer << "?";
-    else printer << vcol;
-
-    printer << ", blayout=" << stringifyBLayout(blayout.getValue())
-        << ", slayout=" << stringifySLayout(slayout.getValue())
-        << ", fractal=" << cfg.getSFractalSize().getInt()
-        << ", pad=" << stringifyLocFromPad(cfg.getPad())
-        << ">";
+  printer << ">";
 }
