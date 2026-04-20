@@ -5,16 +5,28 @@
 // - Inner-loop and outer-loop event chains must both keep their set/wait handshake.
 //
 // CHECK-LABEL: __global__ AICORE void nested_loop_same_pipe_pair()
+//
+// [R0] Function preheader: outer loop-carried seed.
 // CHECK: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[OUT:[0-9]+]]);
+//
+// [R1] Outer loop header: consume OUT.
+// CHECK: for (size_t [[OUT_IV:[^ ]+]] =
+// CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[OUT]]);
+//
+// [R2] Outer body before inner loop: seed inner loop-carried chain.
 // CHECK: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[IN:[0-9]+]]);
-// CHECK: for (size_t
-// CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[OUT]]);
-// CHECK: for (size_t
+//
+// [R3] Inner loop header: consume IN.
+// CHECK: for (size_t [[IN_IV:[^ ]+]] =
 // CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[IN]]);
+//
+// [R4] Inner latch: publish IN for next inner iteration.
 // CHECK: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[IN]]);
+//
+// [R5] Outer latch/tail + function tail drain.
 // CHECK: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[OUT]]);
-// CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[OUT]]);
 // CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[IN]]);
+// CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[OUT]]);
 // CHECK: ptoas_auto_sync_tail(PTOAutoSyncTailMode::kBarrierAll);
 
 module {
