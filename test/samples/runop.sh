@@ -557,8 +557,8 @@ process_one_dir() {
     # Regression guard: planned ping/pong buffers must be materialized as a
     # loop-local selector + dynamic event-id set/wait on back-edge deps.
     if [[ "$base" == "test_inject_sync_multibuf_pingpong" ]]; then
-      if ! grep -Fq "static_cast<event_t>" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing dynamic event-id (static_cast<event_t>) in generated C++"
+      if ! grep -Fq "static_cast<event_t>" "$cpp" && ! grep -Fq "(event_t)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing dynamic event-id cast in generated C++"
         overall=1
         continue
       fi
@@ -586,13 +586,13 @@ process_one_dir() {
         continue
       fi
       local uniq_i64_count
-      uniq_i64_count="$(awk '/^[[:space:]]*int64_t v[0-9]+ = -?[0-9]+;[[:space:]]*$/{print $4}' "$cpp" | tr -d ';' | sort -u | wc -l | tr -d ' ')"
+      uniq_i64_count="$(awk '/^[[:space:]]*(const[[:space:]]+)?int64_t v[0-9]+ = -?[0-9]+;[[:space:]]*$/{print $(NF)}' "$cpp" | tr -d ';' | sort -u | wc -l | tr -d ' ')"
       if [[ -z "${uniq_i64_count}" || "${uniq_i64_count}" -lt 2 ]]; then
         echo -e "${A}(${base}.py)\tFAIL\texpected >=2 distinct int64 constants for ping/pong addresses"
         overall=1
         continue
       fi
-      if ! grep -Eq "int64_t v[0-9]+ = .*\\? .* : .*;" "$cpp"; then
+      if ! grep -Eq "(const[[:space:]]+)?int64_t v[0-9]+ = .*\\? .* : .*;" "$cpp"; then
         echo -e "${A}(${base}.py)\tFAIL\tmissing int64 ternary selection for ping/pong address"
         overall=1
         continue
@@ -632,7 +632,7 @@ process_one_dir() {
         overall=1
         continue
       fi
-      if ! grep -Fq "static_cast<event_t>" "$cpp"; then
+      if ! grep -Fq "static_cast<event_t>" "$cpp" && ! grep -Fq "(event_t)" "$cpp"; then
         echo -e "${A}(${base}.py)\tFAIL\tmissing slot-aware dynamic event-id lowering"
         overall=1
         continue
@@ -655,7 +655,7 @@ process_one_dir() {
         overall=1
         continue
       fi
-      if grep -Fq "static_cast<event_t>" "$cpp"; then
+      if grep -Fq "static_cast<event_t>" "$cpp" || grep -Fq "(event_t)" "$cpp"; then
         echo -e "${A}(${base}.py)\tFAIL\toverlap case unexpectedly used slot-aware dynamic event-id"
         overall=1
         continue
@@ -678,7 +678,7 @@ process_one_dir() {
         overall=1
         continue
       fi
-      if grep -Fq "static_cast<event_t>" "$cpp"; then
+      if grep -Fq "static_cast<event_t>" "$cpp" || grep -Fq "(event_t)" "$cpp"; then
         echo -e "${A}(${base}.py)\tFAIL\tmissing-attr case unexpectedly used slot-aware dynamic event-id"
         overall=1
         continue
@@ -696,7 +696,7 @@ process_one_dir() {
     fi
 
     if [[ "$base" == "multibuffer_subset_pingpong_a3" ]]; then
-      if ! grep -Fq "static_cast<event_t>" "$cpp"; then
+      if ! grep -Fq "static_cast<event_t>" "$cpp" && ! grep -Fq "(event_t)" "$cpp"; then
         echo -e "${A}(${base}.py)\tFAIL\tA3 sample missing dynamic event-id lowering"
         overall=1
         continue

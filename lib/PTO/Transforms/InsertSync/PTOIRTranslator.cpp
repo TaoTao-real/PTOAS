@@ -688,25 +688,45 @@ void PTOIRTranslator::UpdateAliasBufferInfo(Value result, Value source) {
         newInfo->allocateSize = newSize;
     }
 
-    TryMarkSubsetMultibufferSlot(result, source, *newInfo);
+    TryMarkSubsetMultibufferSlot(result, source, *parentInfo, *newInfo);
 
     resultMemInfoVec.emplace_back(std::move(newInfo));
   }
 }
 
 void PTOIRTranslator::TryMarkSubsetMultibufferSlot(Value result, Value source,
-                                                   BaseMemInfo &newInfo) const {
+                                                   const BaseMemInfo &parentInfo,
+                                                   BaseMemInfo &newInfo) {
   Value multibufferRoot;
   int multibufferSlot = -1;
   int multibufferFactor = 1;
+  if (IsSubsetMultibufferRootInvalid(parentInfo.rootBuffer) ||
+      IsSubsetMultibufferRootInvalid(newInfo.rootBuffer)) {
+    newInfo.multibufferRoot = nullptr;
+    newInfo.multibufferSlot = -1;
+    newInfo.multibufferFactor = 1;
+    newInfo.isMultibufferSlotValid = false;
+    newInfo.suppressLegacyMultibuffer = true;
+    return;
+  }
+
   if (!TryComputeSubsetSlotInfo(result.getDefiningOp(), source, newInfo,
                                 multibufferRoot, multibufferSlot,
                                 multibufferFactor)) {
     if (isSubsetLikeOp(result.getDefiningOp()) &&
-        (IsRootMarkedAsPingpong(newInfo.rootBuffer) ||
-         isLegacyDoubleBufferRoot(newInfo))) {
+        IsRootLevelSubsetMultibufferCandidate(parentInfo)) {
+      InvalidateSubsetMultibufferRoot(parentInfo.rootBuffer);
       newInfo.suppressLegacyMultibuffer = true;
     }
+    return;
+  }
+
+  if (IsSubsetMultibufferRootInvalid(multibufferRoot)) {
+    newInfo.multibufferRoot = nullptr;
+    newInfo.multibufferSlot = -1;
+    newInfo.multibufferFactor = 1;
+    newInfo.isMultibufferSlotValid = false;
+    newInfo.suppressLegacyMultibuffer = true;
     return;
   }
 
@@ -833,6 +853,35 @@ bool PTOIRTranslator::IsRootMarkedAsPingpong(Value root) const {
     return attr && attr.getInt() == 2;
   }
   return false;
+}
+
+bool PTOIRTranslator::IsSubsetMultibufferRootInvalid(Value root) const {
+  return root && invalidSubsetMultibufferRoots_.contains(root);
+}
+
+bool PTOIRTranslator::IsRootLevelSubsetMultibufferCandidate(
+    const BaseMemInfo &parentInfo) const {
+  if (!parentInfo.rootBuffer) return false;
+  if (!IsRootMarkedAsPingpong(parentInfo.rootBuffer) &&
+      !isLegacyDoubleBufferRoot(parentInfo))
+    return false;
+  return parentInfo.baseBuffer == parentInfo.rootBuffer ||
+         parentInfo.allocateSize > 0;
+}
+
+void PTOIRTranslator::InvalidateSubsetMultibufferRoot(Value root) {
+  if (!root) return;
+  invalidSubsetMultibufferRoots_.insert(root);
+  for (auto &entry : buffer2MemInfoMap_) {
+    for (auto &info : entry.second) {
+      if (!info || info->rootBuffer != root) continue;
+      info->multibufferRoot = nullptr;
+      info->multibufferSlot = -1;
+      info->multibufferFactor = 1;
+      info->isMultibufferSlotValid = false;
+      info->suppressLegacyMultibuffer = true;
+    }
+  }
 }
  
 // ============================================================================

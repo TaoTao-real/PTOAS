@@ -551,6 +551,7 @@ int InsertSyncAnalysis::GetEventIdNum(
     if (AreSlotwiseNonOverlapping(depBaseMemInfosVec, *factor)) {
       return *factor;
     }
+    return 1;
   }
 
   auto isOverlap = [](const BaseMemInfo *a, const BaseMemInfo *b, int i,
@@ -574,6 +575,12 @@ int InsertSyncAnalysis::GetEventIdNum(
       return 1;
     }
     if (a->suppressLegacyMultibuffer || b->suppressLegacyMultibuffer) {
+      return 1;
+    }
+    if (a->isMultibufferSlotValid != b->isMultibufferSlotValid) {
+      return 1;
+    }
+    if (a->isMultibufferSlotValid || b->isMultibufferSlotValid) {
       return 1;
     }
 

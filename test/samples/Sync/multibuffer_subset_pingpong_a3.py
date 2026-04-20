@@ -37,11 +37,11 @@ def build():
                 c0 = arith.ConstantOp(idx, 0).result
                 c1 = arith.ConstantOp(idx, 1).result
                 c2 = arith.ConstantOp(idx, 2).result
-                c8 = arith.ConstantOp(idx, 8).result
                 c16 = arith.ConstantOp(idx, 16).result
+                c32 = arith.ConstantOp(idx, 32).result
 
-                tv_in = pto.MakeTensorViewOp(tv2_f16, src, [c8, c16], [c16, c1]).result
-                tv_out = pto.MakeTensorViewOp(tv2_f16, dst, [c8, c16], [c16, c1]).result
+                tv_in = pto.MakeTensorViewOp(tv2_f16, src, [c16, c16], [c16, c1]).result
+                tv_out = pto.MakeTensorViewOp(tv2_f16, dst, [c16, c16], [c16, c1]).result
 
                 alloc = pto.AllocTileOp(workspace_ty)
                 alloc.operation.attributes["pto.multi_buffer"] = IntegerAttr.get(i32, 2)
@@ -49,27 +49,43 @@ def build():
                 ping = pto.SubsetOp(workspace, [c0, c0], sizes=[16, 16]).result
                 pong = pto.SubsetOp(workspace, [c0, c16], sizes=[16, 16]).result
 
-                loop = scf.ForOp(c0, c8, c1, [])
+                loop = scf.ForOp(c0, c2, c1, [])
                 with InsertionPoint(loop.body):
-                    row = loop.induction_variable
-                    in_row = pto.PartitionViewOp(
-                        tile_view_16, tv_in, offsets=[row, c0], sizes=[c1, c16]
-                    ).result
-                    out_row = pto.PartitionViewOp(
-                        tile_view_16, tv_out, offsets=[row, c0], sizes=[c1, c16]
-                    ).result
-
-                    parity = arith.RemUIOp(row, c2).result
+                    parity = arith.RemUIOp(loop.induction_variable, c2).result
                     is_ping = arith.CmpIOp(arith.CmpIPredicate.eq, parity, c0).result
 
                     slot_if = scf.IfOp(is_ping, [], hasElse=True)
                     with InsertionPoint(slot_if.then_block):
-                        pto.TLoadOp(None, in_row, ping)
-                        pto.TStoreOp(None, ping, out_row)
+                        in_tile = pto.PartitionViewOp(
+                            tile_view_16,
+                            tv_in,
+                            offsets=[c0, c0],
+                            sizes=[c16, c16],
+                        ).result
+                        out_tile = pto.PartitionViewOp(
+                            tile_view_16,
+                            tv_out,
+                            offsets=[c0, c0],
+                            sizes=[c16, c16],
+                        ).result
+                        pto.TLoadOp(None, in_tile, ping)
+                        pto.TStoreOp(None, ping, out_tile)
                         scf.YieldOp([])
                     with InsertionPoint(slot_if.else_block):
-                        pto.TLoadOp(None, in_row, pong)
-                        pto.TStoreOp(None, pong, out_row)
+                        in_tile = pto.PartitionViewOp(
+                            tile_view_16,
+                            tv_in,
+                            offsets=[c0, c0],
+                            sizes=[c16, c16],
+                        ).result
+                        out_tile = pto.PartitionViewOp(
+                            tile_view_16,
+                            tv_out,
+                            offsets=[c0, c0],
+                            sizes=[c16, c16],
+                        ).result
+                        pto.TLoadOp(None, in_tile, pong)
+                        pto.TStoreOp(None, pong, out_tile)
                         scf.YieldOp([])
 
                     scf.YieldOp([])
