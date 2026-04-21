@@ -1,0 +1,67 @@
+// RUN: ptoas --pto-arch=a3 --enable-insert-sync %s | FileCheck %s
+//
+// Regression guard:
+// Multi-buffer loop-carried sync must use dynamic event id in loop body.
+// Otherwise only EVENT_ID0 is consumed and the companion id becomes seed/drain-only.
+//
+// CHECK-LABEL: __global__ AICORE void issue233_multibuffer_codegen_dyn_event_regression(
+// CHECK: set_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
+// CHECK: set_flag(PIPE_V, PIPE_MTE2, EVENT_ID1);
+// CHECK: set_flag(PIPE_MTE3, PIPE_V, EVENT_ID0);
+// CHECK: set_flag(PIPE_MTE3, PIPE_V, EVENT_ID1);
+// CHECK: for (size_t
+// CHECK: event_t [[EID_LOAD:v[0-9]+]] =
+// CHECK: wait_flag(PIPE_V, PIPE_MTE2, [[EID_LOAD]]);
+// CHECK: event_t [[EID_STORE:v[0-9]+]] =
+// CHECK: wait_flag(PIPE_MTE3, PIPE_V, [[EID_STORE]]);
+// CHECK: event_t [[EID_REL_LOAD:v[0-9]+]] =
+// CHECK: set_flag(PIPE_V, PIPE_MTE2, [[EID_REL_LOAD]]);
+// CHECK: event_t [[EID_REL_STORE:v[0-9]+]] =
+// CHECK: set_flag(PIPE_MTE3, PIPE_V, [[EID_REL_STORE]]);
+// CHECK: wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
+// CHECK: wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID1);
+// CHECK: wait_flag(PIPE_MTE3, PIPE_V, EVENT_ID0);
+// CHECK: wait_flag(PIPE_MTE3, PIPE_V, EVENT_ID1);
+
+module {
+  func.func @issue233_multibuffer_codegen_dyn_event_regression(
+      %src: memref<2x64xf16, #pto.address_space<gm>>,
+      %dst: memref<2x64xf16, #pto.address_space<gm>>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %c64 = arith.constant 64 : index
+
+    pto.section.vector {
+      %buf = pto.alloc_tile :
+        !pto.tile_buf<loc=vec, dtype=f16, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      %tmp0 = pto.alloc_tile :
+        !pto.tile_buf<loc=vec, dtype=f16, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      %tmp1 = pto.alloc_tile :
+        !pto.tile_buf<loc=vec, dtype=f16, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+      scf.for %i = %c0 to %c2 step %c1 {
+        %sv = memref.subview %src[%i, %c0] [1, 64] [1, 1] :
+          memref<2x64xf16, #pto.address_space<gm>>
+            to memref<1x64xf16, strided<[64, 1], offset: ?>, #pto.address_space<gm>>
+        %dv = memref.subview %dst[%i, %c0] [1, 64] [1, 1] :
+          memref<2x64xf16, #pto.address_space<gm>>
+            to memref<1x64xf16, strided<[64, 1], offset: ?>, #pto.address_space<gm>>
+
+        pto.tload ins(%sv : memref<1x64xf16, strided<[64, 1], offset: ?>, #pto.address_space<gm>>)
+                 outs(%buf : !pto.tile_buf<loc=vec, dtype=f16, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+        pto.tadd ins(%buf, %buf :
+          !pto.tile_buf<loc=vec, dtype=f16, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+          !pto.tile_buf<loc=vec, dtype=f16, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+          outs(%tmp0 : !pto.tile_buf<loc=vec, dtype=f16, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+        pto.tsub ins(%tmp0, %buf :
+          !pto.tile_buf<loc=vec, dtype=f16, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+          !pto.tile_buf<loc=vec, dtype=f16, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+          outs(%tmp1 : !pto.tile_buf<loc=vec, dtype=f16, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+        pto.tstore ins(%tmp1 : !pto.tile_buf<loc=vec, dtype=f16, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+                  outs(%dv : memref<1x64xf16, strided<[64, 1], offset: ?>, #pto.address_space<gm>>)
+      }
+    }
+    return
+  }
+}
