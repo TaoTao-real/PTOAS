@@ -104,6 +104,59 @@ static Value GetRealRoot(Value v) {
   }
   return v;
 }
+
+// Temporary policy for issue #499 (easy to revert in one commit):
+// Treat sibling tile subviews cut from the same parent as non-overlap by
+// contract from upper layer. Parent-child alias remains unchanged.
+static memref::SubViewOp getTileSubviewDef(Value v) {
+  int depth = 0;
+  constexpr int kMaxDepth = 12;
+  while (v && depth++ < kMaxDepth) {
+    Operation *defOp = v.getDefiningOp();
+    if (!defOp)
+      return {};
+    if (auto sv = dyn_cast<memref::SubViewOp>(defOp))
+      return sv;
+    if (auto bind = dyn_cast<pto::BindTileOp>(defOp)) {
+      auto semantics = bind->getAttrOfType<StringAttr>("pto.view_semantics");
+      if (!semantics || semantics.getValue() != "subview")
+        return {};
+      v = bind.getSource();
+      continue;
+    }
+    if (auto cast = dyn_cast<memref::CastOp>(defOp)) {
+      v = cast.getSource();
+      continue;
+    }
+    if (auto reCast = dyn_cast<memref::ReinterpretCastOp>(defOp)) {
+      v = reCast.getSource();
+      continue;
+    }
+    if (auto collapse = dyn_cast<memref::CollapseShapeOp>(defOp)) {
+      v = collapse.getSrc();
+      continue;
+    }
+    if (auto expand = dyn_cast<memref::ExpandShapeOp>(defOp)) {
+      v = expand.getSrc();
+      continue;
+    }
+    return {};
+  }
+  return {};
+}
+
+static bool isSiblingSubviewNonOverlapByContract(const BaseMemInfo *a,
+                                                 const BaseMemInfo *b) {
+  if (!a || !b)
+    return false;
+  if (a->baseBuffer == b->baseBuffer)
+    return false;
+  auto subA = getTileSubviewDef(a->baseBuffer);
+  auto subB = getTileSubviewDef(b->baseBuffer);
+  if (!subA || !subB)
+    return false;
+  return subA.getSource() == subB.getSource();
+}
  
 bool MemoryDependentAnalyzer::DepBetween(
     const SmallVector<const BaseMemInfo *> &a,
@@ -152,6 +205,13 @@ bool MemoryDependentAnalyzer::MemAlias(const BaseMemInfo *a,
   // 1. GM 内存
   if (as == pto::AddressSpace::GM) {
     return isGMBufferOverlap(a, b);
+  }
+
+  if (isSiblingSubviewNonOverlapByContract(a, b)) {
+    if (isTraceEnabled())
+      llvm::errs() << "    -> Sibling subviews from same parent: "
+                      "non-overlap by contract. False.\n";
+    return false;
   }
  
   // 2. Local Memory (UB/L1)
