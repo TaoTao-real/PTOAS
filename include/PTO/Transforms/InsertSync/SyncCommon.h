@@ -80,6 +80,13 @@ enum class TCoreType {
   CUBE_OR_VECTOR,
   CUBE_AND_VECTOR
 };
+
+enum class MultibufferSlotMode {
+  NONE,
+  SINGLE,
+  BRANCH,
+  PARITY,
+};
  
 /// Meminfo of the target buffer
 /// 用于追踪 Buffer 的别名和根节点
@@ -181,6 +188,10 @@ public:
   bool uselessSync{false};
   int eventIdNum{1};
   Value lowestCommonAncestorBuffer{nullptr};
+  MultibufferSlotMode slotMode{MultibufferSlotMode::NONE};
+  int slotCount{1};
+  int ownerLoopBeginId{-1};
+  int ownerLoopEndId{-1};
   int reuseCntForWiden{0};
   bool reallocatedLoopHeadTailSync{false};
   TCoreType syncCoreType{TCoreType::CUBE_OR_VECTOR};

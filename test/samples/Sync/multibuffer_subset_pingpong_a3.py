@@ -46,6 +46,9 @@ def build():
                 alloc = pto.AllocTileOp(workspace_ty)
                 alloc.operation.attributes["pto.multi_buffer"] = IntegerAttr.get(i32, 2)
                 workspace = alloc.result
+                # This A3-friendly sample uses explicit ping/pong branches, so
+                # the expected lowering is slot-bound static event ids instead
+                # of dynamic MTE3->MTE2 event selection.
                 ping = pto.SubsetOp(workspace, [c0, c0], sizes=[16, 16]).result
                 pong = pto.SubsetOp(workspace, [c0, c16], sizes=[16, 16]).result
 

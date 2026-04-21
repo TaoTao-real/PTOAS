@@ -289,15 +289,15 @@ odd  iteration -> lane1
 
 这些元数据的作用是让 `SyncCodegen` 消费已经证明过的槽位语义，而不是在 codegen 阶段重新猜。
 
-### 7.3 dynamic event-id 如何落代码
+### 7.3 static / dynamic event-id 如何落代码
 
-当一条 sync edge 分到了两个 event id，`SyncCodegen` 会调用 dynamic event-id 生成路径：
+分析阶段先决定一条 sync edge 究竟属于 single、branch 还是 parity：
 
-1. `single/branch` 路径直接生成静态 `set/wait`。
-2. `parity` 路径只在 analysis 确认的 `ownerLoop` 上构造 loop parity 条件。
-3. 在偶数迭代选择 `eventIds[0]`。
-4. 在奇数迭代选择 `eventIds[1]`。
-5. 生成 `pto.set_flag_dyn` 或 `pto.wait_flag_dyn`。
+1. `single` 路径只有一个 proven slot，直接生成静态 `set/wait`。
+2. `branch` 路径虽然整体上属于 ping/pong，但具体到 branch-local edge 时每条 edge 只绑定一个已证明 slot，因此也生成静态 `set/wait`。
+3. `parity` 路径只有在一条 edge 真实跨越多个 slot，且 slot 选择明确归属于某个 `ownerLoop` 时，才生成 dynamic event-id。
+4. `parity` 的偶数迭代选择 `eventIds[0]`，奇数迭代选择 `eventIds[1]`。
+5. 只有 `parity` 走 `pto.set_flag_dyn` 或 `pto.wait_flag_dyn`。
 
 伪代码如下：
 
@@ -308,7 +308,7 @@ set_flag_dyn(srcPipe, dstPipe, event)
 wait_flag_dyn(srcPipe, dstPipe, event)
 ```
 
-因此 ping 与 pong 拥有稳定的 slot-local event lane，loop 迭代交替时可以复用对应 slot 的 event id，而不是让两个 slot 竞争同一个静态 event。
+因此 ping 与 pong 拥有稳定的 slot-local event lane。对显式 `if/else` 写出的 ping/pong，编译器会把 event id 静态绑定到对应 branch-local slot；对真正的 parity edge，loop 迭代交替时再复用对应 slot 的 dynamic event id。
 
 这条规则的关键不是“只要在 loop 里就用 `%iv % 2`”，而是“只有当 slot 选择已被证明属于该 loop 时，才能把动态 event 绑定到该 loop 上”。否则必须保守退回单 id。
 
@@ -325,7 +325,7 @@ Subset V1 和 legacy 自动生成 multibuffer 的优先级如下：
 
 这个顺序保证了三件事：
 
-- 手工 subset/subview pingpong 能得到 dynamic event-id 支持。
+- 手工 subset/subview pingpong 能得到按槽位绑定的 static/dynamic event-id 语义。
 - 旧的 `pointer_cast(addrs=[...])` 主路径不回归。
 - 非法 subset 不会因为地址数量看起来像 double-buffer 而误进 multibuffer codegen。
 
@@ -346,7 +346,8 @@ pong offset = [128, 0], size = [128, 256]
 - `ping.multibufferSlot = 0`
 - `pong.multibufferSlot = 1`
 - `multibufferFactor = 2`
-- sync edge 可以分配两个 dynamic event lane。
+- 如果 edge 是 branch-local 单槽位访问，则静态绑定到对应 slot 的 event id。
+- 如果未来出现真实的 parity edge，再按 `ownerLoop` 生成两个 dynamic event lane。
 
 ### 9.2 非法 overlap
 
@@ -400,12 +401,12 @@ root has no pto.multi_buffer attribute
 
 本设计对应的看护用例覆盖三类场景：
 
-- `test_inject_sync_multibuf_subset_pingpong.py`：合法 `pto.subset` + `pto.multi_buffer=2`，期望生成 slot-aware dynamic event-id 形态，并防止回退到 tile pointer-cast 风格 lowering。
+- `test_inject_sync_multibuf_subset_pingpong.py`：合法 `pto.subset` + `pto.multi_buffer=2`，期望生成按槽位静态绑定的 event-id 形态，且不再产生 orphan dynamic lane，并防止回退到 tile pointer-cast 风格 lowering。
 - `test_inject_sync_multibuf_subset_overlap.py`：带 `pto.multi_buffer=2` 但 subset 重叠或不等分，期望只走普通 autosync，不进入 slot-aware multibuffer。
 - `test_inject_sync_multibuf_subset_no_attr.py`：ping/pong 几何合法但缺少 `pto.multi_buffer`，期望仍走普通 autosync。
 
 A3 上板最小用例为 `multibuffer_subset_pingpong_a3.py`。
-它使用单输入单输出和确定性 golden/compare，用于验证 subset-based ping/pong lowering、自动同步插入、dynamic event-id codegen 和远端 NPU 执行链路。
+它使用单输入单输出和确定性 golden/compare，用于验证 subset-based ping/pong lowering、自动同步插入、按槽位静态 event-id 绑定和远端 NPU 执行链路。
 
 ---
 
@@ -428,5 +429,5 @@ A3 上板最小用例为 `multibuffer_subset_pingpong_a3.py`。
 Subset V1 的核心是把 multibuffer 从“两个地址”提升为“同一 root 下的多个 slot”。
 当前正式支持的用户契约不是“编译器自动把单 buffer 扩成 ping/pong”，而是“用户先把 ping/pong workspace 和 slot 显式写出来，autosync 再把 event id 绑定到槽位”。
 
-依赖识别仍然保持原来的 alias/range correctness-first 策略，slot 元数据只在 event-id lane 统计和 dynamic event-id codegen 中生效。
+依赖识别仍然保持原来的 alias/range correctness-first 策略，slot 元数据只在 event-id lane 统计以及必要时的 dynamic event-id codegen 中生效。
 这样既能覆盖用户手工 `pto.subset/memref.subview` 定义 ping/pong 的场景，又不会破坏已有 `PTOPlanMemory + pointer_cast(addrs=[...])` 自动生成 multibuffer 路径。更重要的是，只要内部保持 slot-aware 抽象，未来就可以在 autosync 前面增加 annotation-driven 自动 multibuffer materialization pass，而不需要重写同步核心。

@@ -605,7 +605,8 @@ process_one_dir() {
     fi
 
     # Regression guard: handwritten multibuffer (subset ping/pong) should keep
-    # subset-based slot split and branch-local load/store structure.
+    # subset-based slot split and bind static event ids to proven ping/pong
+    # slots without synthesizing orphan dynamic lanes.
     if [[ "$base" == "test_inject_sync_multibuf_subset_pingpong" ]]; then
       if ! grep -Fq "pto.subset" "$pto_input"; then
         echo -e "${A}(${base}.py)\tFAIL\tmissing pto.subset in source PTO IR"
@@ -632,18 +633,31 @@ process_one_dir() {
         overall=1
         continue
       fi
-      if ! grep -Fq "static_cast<event_t>" "$cpp" && ! grep -Fq "(event_t)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing slot-aware dynamic event-id lowering"
+      if grep -Fq "static_cast<event_t>" "$cpp" || grep -Fq "(event_t)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tsubset ping/pong should bind static slot ids, not dynamic event-id lowering"
         overall=1
         continue
       fi
-      if ! grep -Eq "wait_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing dynamic wait_flag for subset ping/pong back-edge"
+      if grep -Eq "wait_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tsubset ping/pong unexpectedly emitted dynamic wait_flag"
         overall=1
         continue
       fi
-      if ! grep -Eq "set_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing dynamic set_flag for subset ping/pong back-edge"
+      if grep -Eq "set_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tsubset ping/pong unexpectedly emitted dynamic set_flag"
+        overall=1
+        continue
+      fi
+      local subset_wait_ids subset_set_ids
+      subset_wait_ids="$(grep -Eo 'wait_flag\(PIPE_MTE3, PIPE_MTE2, EVENT_ID[0-9]+\)' "$cpp" | sort -u | wc -l | tr -d ' ')"
+      subset_set_ids="$(grep -Eo 'set_flag\(PIPE_MTE3, PIPE_MTE2, EVENT_ID[0-9]+\)' "$cpp" | sort -u | wc -l | tr -d ' ')"
+      if [[ "${subset_wait_ids}" != "4" ]]; then
+        echo -e "${A}(${base}.py)\tFAIL\texpected exactly 4 static MTE3->MTE2 wait ids for ping/pong slots"
+        overall=1
+        continue
+      fi
+      if [[ "${subset_set_ids}" != "4" ]]; then
+        echo -e "${A}(${base}.py)\tFAIL\texpected exactly 4 static MTE3->MTE2 set ids for ping/pong slots"
         overall=1
         continue
       fi
@@ -695,19 +709,55 @@ process_one_dir() {
       fi
     fi
 
+    if [[ "$base" == "test_inject_sync_multibuf_subset_dynamic_offset" ]]; then
+      if ! grep -Fq "pto.multi_buffer = 2 : i32" "$pto_input"; then
+        echo -e "${A}(${base}.py)\tFAIL\tdynamic-offset negative case missing pto.multi_buffer=2 annotation"
+        overall=1
+        continue
+      fi
+      if grep -Fq "static_cast<event_t>" "$cpp" || grep -Fq "(event_t)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tdynamic-offset case unexpectedly used slot-aware dynamic event-id"
+        overall=1
+        continue
+      fi
+      if grep -Eq "wait_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tdynamic-offset case unexpectedly emitted dynamic wait_flag"
+        overall=1
+        continue
+      fi
+      if grep -Eq "set_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tdynamic-offset case unexpectedly emitted dynamic set_flag"
+        overall=1
+        continue
+      fi
+    fi
+
     if [[ "$base" == "multibuffer_subset_pingpong_a3" ]]; then
-      if ! grep -Fq "static_cast<event_t>" "$cpp" && ! grep -Fq "(event_t)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tA3 sample missing dynamic event-id lowering"
+      if grep -Fq "static_cast<event_t>" "$cpp" || grep -Fq "(event_t)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tA3 subset sample should bind static slot ids, not dynamic event-id lowering"
         overall=1
         continue
       fi
-      if ! grep -Eq "wait_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tA3 sample missing dynamic wait_flag"
+      if grep -Eq "wait_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tA3 subset sample unexpectedly emitted dynamic wait_flag"
         overall=1
         continue
       fi
-      if ! grep -Eq "set_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tA3 sample missing dynamic set_flag"
+      if grep -Eq "set_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tA3 subset sample unexpectedly emitted dynamic set_flag"
+        overall=1
+        continue
+      fi
+      local a3_subset_wait_ids a3_subset_set_ids
+      a3_subset_wait_ids="$(grep -Eo 'wait_flag\(PIPE_MTE3, PIPE_MTE2, EVENT_ID[0-9]+\)' "$cpp" | sort -u | wc -l | tr -d ' ')"
+      a3_subset_set_ids="$(grep -Eo 'set_flag\(PIPE_MTE3, PIPE_MTE2, EVENT_ID[0-9]+\)' "$cpp" | sort -u | wc -l | tr -d ' ')"
+      if [[ "${a3_subset_wait_ids}" != "4" ]]; then
+        echo -e "${A}(${base}.py)\tFAIL\tA3 subset sample expected exactly 4 static MTE3->MTE2 wait ids"
+        overall=1
+        continue
+      fi
+      if [[ "${a3_subset_set_ids}" != "4" ]]; then
+        echo -e "${A}(${base}.py)\tFAIL\tA3 subset sample expected exactly 4 static MTE3->MTE2 set ids"
         overall=1
         continue
       fi

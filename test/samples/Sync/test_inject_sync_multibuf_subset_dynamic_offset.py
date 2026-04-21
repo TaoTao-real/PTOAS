@@ -1,3 +1,11 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+# CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
 from mlir.ir import Context, Location, Module, InsertionPoint
 from mlir.dialects import arith, func, scf, pto
 from mlir.ir import F16Type, IndexType, IntegerAttr, IntegerType
@@ -29,7 +37,7 @@ def build():
 
             fn_ty = func.FunctionType.get([ptr_f16, ptr_f16], [])
             with InsertionPoint(m.body):
-                fn = func.FuncOp("test_inject_sync_multibuf_subset_pingpong_py", fn_ty)
+                fn = func.FuncOp("test_inject_sync_multibuf_subset_dynamic_offset_py", fn_ty)
                 entry = fn.add_entry_block()
 
             with InsertionPoint(entry):
@@ -38,7 +46,6 @@ def build():
                 c0 = arith.ConstantOp(idx, 0).result
                 c1 = arith.ConstantOp(idx, 1).result
                 c2 = arith.ConstantOp(idx, 2).result
-                c4 = arith.ConstantOp(idx, 4).result
                 c16 = arith.ConstantOp(idx, 16).result
 
                 tv_in = pto.MakeTensorViewOp(tv2_f16, src, [c16, c16], [c16, c1]).result
@@ -50,32 +57,20 @@ def build():
                     tile_view_16, tv_out, offsets=[c0, c0], sizes=[c16, c16]
                 ).result
 
-                # Hand-written multibuffer style:
-                # one workspace tile split into ping/pong by subset.
-                # `pto.multi_buffer=2` tells PlanMemory/InsertSync this is a
-                # ping/pong candidate. Because each branch uses a proven slot
-                # directly, autosync should bind static event ids per slot
-                # instead of inflating branch-local edges into dynamic lanes.
                 alloc = pto.AllocTileOp(workspace_ty)
                 alloc.operation.attributes["pto.multi_buffer"] = IntegerAttr.get(i32, 2)
                 workspace = alloc.result
-                ping = pto.SubsetOp(workspace, [c0, c0], sizes=[16, 16]).result
-                pong = pto.SubsetOp(workspace, [c0, c16], sizes=[16, 16]).result
 
-                loop = scf.ForOp(c0, c4, c1, [])
+                # Dynamic offset means V1 cannot statically prove a stable
+                # ping/pong slot geometry, so autosync must fall back to the
+                # normal single-event path.
+                loop = scf.ForOp(c0, c2, c1, [])
                 with InsertionPoint(loop.body):
-                    parity = arith.RemUIOp(loop.induction_variable, c2).result
-                    is_ping = arith.CmpIOp(arith.CmpIPredicate.eq, parity, c0).result
+                    slot_off = arith.MulIOp(loop.induction_variable, c16).result
+                    slot = pto.SubsetOp(workspace, [c0, slot_off], sizes=[16, 16]).result
 
-                    slot_if = scf.IfOp(is_ping, [], hasElse=True)
-                    with InsertionPoint(slot_if.then_block):
-                        pto.TLoadOp(None, sv_in, ping)
-                        pto.TStoreOp(None, ping, sv_out)
-                        scf.YieldOp([])
-                    with InsertionPoint(slot_if.else_block):
-                        pto.TLoadOp(None, sv_in, pong)
-                        pto.TStoreOp(None, pong, sv_out)
-                        scf.YieldOp([])
+                    pto.TLoadOp(None, sv_in, slot)
+                    pto.TStoreOp(None, slot, sv_out)
 
                     scf.YieldOp([])
 

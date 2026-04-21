@@ -15,6 +15,7 @@
 #include "PTO/Transforms/InsertSync/SyncCommon.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
 #include <algorithm>
@@ -290,7 +291,7 @@ void InsertSyncAnalysis::MemAnalyze(
   }
 
   if (forEndIndex.has_value()) {
-    int eventIdNum = GetEventIdNum(depVec);
+    int eventIdNum = AnalyzeMultibufferSync(depVec, forEndIndex).eventIdNum;
     for (int i = 1; i < eventIdNum; i++) {
       if (isAlreadySync(nowCompound, frontCompound, syncRecordList,
                         static_cast<unsigned>(i))) {
@@ -369,22 +370,10 @@ void InsertSyncAnalysis::InsertSyncOperation(
 
     // Back-edge dependencies may require multi-buffer event IDs.
     if (forEndIndex.has_value()) {
-      int eventIdNum = GetEventIdNum(depBaseMemInfosVec);
-
-      // Multi-buffer selection relies on a well-defined scf.for loop to compute
-      // the ping/pong slot. If the dependency is carried by a non-for loop,
-      // fall back to single-buffer synchronization.
-      if (eventIdNum > 1) {
-        auto *loopEndElem =
-            dyn_cast<LoopInstanceElement>(syncIR_[forEndIndex.value()].get());
-        auto loopOp = loopEndElem ? dyn_cast_or_null<scf::ForOp>(loopEndElem->elementOp)
-                                  : scf::ForOp();
-        if (!loopOp) {
-          eventIdNum = 1;
-        }
-      }
-      setOp->eventIdNum = eventIdNum;
-      waitOp->eventIdNum = eventIdNum;
+      auto decision = AnalyzeMultibufferSync(depBaseMemInfosVec, forEndIndex);
+      setOp->eventIdNum = decision.eventIdNum;
+      waitOp->eventIdNum = decision.eventIdNum;
+      ConfigureMultibufferSyncMetadata(setOp.get(), waitOp.get(), decision);
     }
 
     syncIR_[insertSetId]->pipeAfter.push_back(setOp.get());
@@ -542,18 +531,71 @@ SmallVector<Value> InsertSyncAnalysis::GetMemInfoBuffers(
   return result;
 }
 
-int InsertSyncAnalysis::GetEventIdNum(
-    const DepBaseMemInfoPairVec &depBaseMemInfosVec) {
+InsertSyncAnalysis::MultibufferSyncDecision
+InsertSyncAnalysis::AnalyzeMultibufferSync(
+    const DepBaseMemInfoPairVec &depBaseMemInfosVec,
+    const std::optional<unsigned> &forEndIndex) const {
+  MultibufferSyncDecision decision;
   if (depBaseMemInfosVec.empty())
-    return 1;
+    return decision;
 
   if (auto factor = GetSharedMultibufferFactor(depBaseMemInfosVec)) {
-    if (AreSlotwiseNonOverlapping(depBaseMemInfosVec, *factor)) {
-      return *factor;
+    if (!AreSlotwiseNonOverlapping(depBaseMemInfosVec, *factor))
+      return decision;
+
+    llvm::SmallDenseSet<int, MAX_MULTI_BUFFER_NUM> slotsUsed;
+    Value sharedRoot = nullptr;
+    auto recordInfo = [&](const BaseMemInfo *info) {
+      if (!info || !info->isMultibufferSlotValid)
+        return;
+      slotsUsed.insert(info->multibufferSlot);
+      if (!sharedRoot)
+        sharedRoot = info->multibufferRoot;
+    };
+    for (const auto &pair : depBaseMemInfosVec) {
+      recordInfo(pair.first);
+      recordInfo(pair.second);
     }
-    return 1;
+
+    decision.sharedRoot = sharedRoot;
+    if (slotsUsed.size() <= 1) {
+      decision.slotMode = sharedRoot ? MultibufferSlotMode::SINGLE
+                                     : MultibufferSlotMode::NONE;
+      return decision;
+    }
+
+    if (slotsUsed.size() != static_cast<size_t>(*factor))
+      return decision;
+    if (!forEndIndex.has_value() ||
+        static_cast<size_t>(forEndIndex.value()) >= syncIR_.size()) {
+      decision.slotMode = MultibufferSlotMode::SINGLE;
+      return decision;
+    }
+
+    auto *loopEndElem =
+        dyn_cast<LoopInstanceElement>(syncIR_[forEndIndex.value()].get());
+    auto loopOp =
+        loopEndElem ? dyn_cast_or_null<scf::ForOp>(loopEndElem->elementOp)
+                    : scf::ForOp();
+    if (!loopEndElem || !loopOp) {
+      decision.slotMode = MultibufferSlotMode::SINGLE;
+      return decision;
+    }
+
+    decision.eventIdNum = *factor;
+    decision.slotMode = MultibufferSlotMode::PARITY;
+    decision.slotCount = *factor;
+    decision.ownerLoopBeginId = static_cast<int>(loopEndElem->beginId);
+    decision.ownerLoopEndId = static_cast<int>(loopEndElem->endId);
+    return decision;
   }
 
+  decision.eventIdNum = GetLegacyEventIdNum(depBaseMemInfosVec);
+  return decision;
+}
+
+int InsertSyncAnalysis::GetLegacyEventIdNum(
+    const DepBaseMemInfoPairVec &depBaseMemInfosVec) const {
   auto isOverlap = [](const BaseMemInfo *a, const BaseMemInfo *b, int i,
                       int j) -> bool {
     uint64_t aStart = a->baseAddresses[static_cast<size_t>(i)];
@@ -613,18 +655,57 @@ int InsertSyncAnalysis::GetEventIdNum(
   return 2;
 }
 
+void InsertSyncAnalysis::ConfigureMultibufferSyncMetadata(
+    SyncOperation *setOp, SyncOperation *waitOp,
+    const MultibufferSyncDecision &decision) {
+  auto reset = [](SyncOperation *sync) {
+    if (!sync)
+      return;
+    sync->slotMode = MultibufferSlotMode::NONE;
+    sync->slotCount = 1;
+    sync->ownerLoopBeginId = -1;
+    sync->ownerLoopEndId = -1;
+  };
+
+  reset(setOp);
+  reset(waitOp);
+
+  if (!setOp || !waitOp)
+    return;
+
+  auto configure = [&](SyncOperation *sync) {
+    sync->slotMode = decision.slotMode;
+    sync->slotCount = decision.slotCount;
+    sync->ownerLoopBeginId = decision.ownerLoopBeginId;
+    sync->ownerLoopEndId = decision.ownerLoopEndId;
+    if (decision.sharedRoot)
+      sync->lowestCommonAncestorBuffer = decision.sharedRoot;
+  };
+
+  configure(setOp);
+  configure(waitOp);
+}
+
 std::optional<int> InsertSyncAnalysis::GetSharedMultibufferFactor(
     const DepBaseMemInfoPairVec &depBaseMemInfosVec) const {
   std::optional<int> factor;
+  Value sharedRoot = nullptr;
   for (const auto &pair : depBaseMemInfosVec) {
     const BaseMemInfo *a = pair.first;
     const BaseMemInfo *b = pair.second;
     if (!a || !b) return std::nullopt;
     if (!a->isMultibufferSlotValid || !b->isMultibufferSlotValid)
       return std::nullopt;
+    if (a->multibufferRoot != b->multibufferRoot)
+      return std::nullopt;
     if (a->multibufferFactor != b->multibufferFactor)
       return std::nullopt;
     if (a->multibufferFactor <= 1) return std::nullopt;
+    if (!sharedRoot) {
+      sharedRoot = a->multibufferRoot;
+    } else if (sharedRoot != a->multibufferRoot) {
+      return std::nullopt;
+    }
     if (!factor) {
       factor = a->multibufferFactor;
     } else if (*factor != a->multibufferFactor) {

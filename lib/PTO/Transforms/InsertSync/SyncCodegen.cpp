@@ -69,6 +69,43 @@ static bool IsSyncExist(const SyncOps &list, SyncOperation *newSync) {
   }
   return false;
 }
+
+static scf::ForOp getOwnerLoopFromSyncMetadata(SyncIRs &syncIR,
+                                               SyncOperation *sync) {
+  if (!sync)
+    return {};
+
+  if (sync->ownerLoopEndId >= 0 &&
+      static_cast<size_t>(sync->ownerLoopEndId) < syncIR.size()) {
+    auto *loopEndElem =
+        dyn_cast<LoopInstanceElement>(syncIR[sync->ownerLoopEndId].get());
+    if (loopEndElem) {
+      if (auto loopOp = dyn_cast_or_null<scf::ForOp>(loopEndElem->elementOp))
+        return loopOp;
+    }
+  }
+
+  if (sync->lowestCommonAncestorBuffer) {
+    if (Operation *def = sync->lowestCommonAncestorBuffer.getDefiningOp()) {
+      if (auto loopOp = def->getParentOfType<scf::ForOp>())
+        return loopOp;
+    }
+  }
+
+  if (sync->GetForEndIndex().has_value()) {
+    int forEndIndex = sync->GetForEndIndex().value();
+    if (forEndIndex >= 0 && static_cast<size_t>(forEndIndex) < syncIR.size()) {
+      auto *loopEndElem =
+          dyn_cast<LoopInstanceElement>(syncIR[forEndIndex].get());
+      if (loopEndElem) {
+        if (auto loopOp = dyn_cast_or_null<scf::ForOp>(loopEndElem->elementOp))
+          return loopOp;
+      }
+    }
+  }
+
+  return {};
+}
  
 static void MergeSyncList(SyncOps &dstList, const SyncOps &srcList) {
   for (auto *sync : srcList) {
@@ -367,26 +404,18 @@ void SyncCodegen::CreateSetWaitOpForMultiBuffer(IRRewriter &rewriter,
  
 Value SyncCodegen::GetBufferSelected(IRRewriter &rewriter, Operation *op,
                                      SyncOperation *sync) {
+  (void)op;
   if (SyncIndex2SelectBuffer.count(sync->GetSyncIndex())) {
     return SyncIndex2SelectBuffer[sync->GetSyncIndex()];
   }
 
-  scf::ForOp baseLoop;
-  if (sync->lowestCommonAncestorBuffer) {
-    if (Operation *def = sync->lowestCommonAncestorBuffer.getDefiningOp())
-      baseLoop = def->getParentOfType<scf::ForOp>();
-  }
-  if (!baseLoop && sync->GetForEndIndex().has_value()) {
-    int forEndIndex = sync->GetForEndIndex().value();
-    if (forEndIndex >= 0 && static_cast<size_t>(forEndIndex) < syncIR_.size()) {
-      auto *loopEndElem = dyn_cast<LoopInstanceElement>(syncIR_[forEndIndex].get());
-      if (loopEndElem)
-        baseLoop = dyn_cast_or_null<scf::ForOp>(loopEndElem->elementOp);
-    }
-  }
-  if (!baseLoop) {
-    baseLoop = op->getParentOfType<scf::ForOp>();
-  }
+  if (!sync || sync->eventIds.size() < 2)
+    return nullptr;
+  if (sync->slotMode != MultibufferSlotMode::NONE &&
+      sync->slotMode != MultibufferSlotMode::PARITY)
+    return nullptr;
+
+  scf::ForOp baseLoop = getOwnerLoopFromSyncMetadata(syncIR_, sync);
   if (!baseLoop)
     return nullptr;
 

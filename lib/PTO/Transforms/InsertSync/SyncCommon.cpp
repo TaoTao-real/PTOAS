@@ -118,6 +118,10 @@ SyncOperation::GetMatchSync(unsigned index) const {
   res->eventIds = this->eventIds;
   res->depRootBuffers = this->depRootBuffers;
   res->eventIdNum = this->eventIdNum;
+  res->slotMode = this->slotMode;
+  res->slotCount = this->slotCount;
+  res->ownerLoopBeginId = this->ownerLoopBeginId;
+  res->ownerLoopEndId = this->ownerLoopEndId;
   res->isCompensation = this->isCompensation;
   res->SetDepSyncIRIndex(this->GetDepSyncIRIndex());
   return res;

@@ -1,0 +1,63 @@
+// RUN: ptoas --enable-insert-sync --pto-insert-sync-debug=3 %s 2>&1 | FileCheck %s
+//
+// Issue #517 regression guard:
+// 1. Hand-written subset ping/pong should bind back-edge MTE3->MTE2 sync to
+//    the proven branch-local slot, so each branch-local edge keeps exactly one
+//    event id.
+// 2. InsertSync must not inflate those single-slot edges into orphan
+//    multibuffer lanes such as [2,3] / [4,5].
+// 3. Final InsertSync IR must not emit dynamic MTE3->MTE2 wait/set for this
+//    branch-local subset form.
+//
+// CHECK: // === [PTOInsertSync Debug] After EventId Allocation === //
+// CHECK: [   0] LOOP LOOP_BEGIN (begin=0, end=10)
+// CHECK: PRE : set_flag <PIPE_MTE3 -> PIPE_MTE2> idx=9 forEnd=10 eventIds=[2]
+// CHECK: PRE : set_flag <PIPE_MTE3 -> PIPE_MTE2> idx=10 forEnd=10 eventIds=[3]
+// CHECK: [   2] COMPOUND pto.tload [PIPE_MTE2]
+// CHECK-NEXT:      def=[%0(VEC)]
+// CHECK-NEXT:      use=[%arg0(GM)]
+// CHECK-NEXT:      PRE : wait_flag <PIPE_MTE3 -> PIPE_MTE2> idx=2 forEnd=10 eventIds=[2]
+// CHECK: [   3] COMPOUND pto.tstore [PIPE_MTE3]
+// CHECK:      POST: set_flag <PIPE_MTE3 -> PIPE_MTE2> idx=2 forEnd=10 eventIds=[2]
+// CHECK: [   6] COMPOUND pto.tload [PIPE_MTE2]
+// CHECK-NEXT:      def=[%0(VEC)]
+// CHECK-NEXT:      use=[%arg0(GM)]
+// CHECK-NEXT:      PRE : wait_flag <PIPE_MTE3 -> PIPE_MTE2> idx=5 forEnd=10 eventIds=[3]
+// CHECK: [   7] COMPOUND pto.tstore [PIPE_MTE3]
+// CHECK:      POST: set_flag <PIPE_MTE3 -> PIPE_MTE2> idx=5 forEnd=10 eventIds=[3]
+// CHECK-NOT: eventIdNum=2 eventIds=[2,3]
+// CHECK-NOT: eventIdNum=2 eventIds=[4,5]
+// CHECK: // ========================================= //
+// CHECK: // === [PTOInsertSync] Final Result === //
+// CHECK-NOT: pto.wait_flag_dyn[<PIPE_MTE3>, <PIPE_MTE2>
+// CHECK-NOT: pto.set_flag_dyn[<PIPE_MTE3>, <PIPE_MTE2>
+// CHECK: // === [PTOInsertSync] End === //
+
+module {
+  func.func @test_inject_sync_multibuf_subset_pingpong_py(%arg0: !pto.ptr<f16>, %arg1: !pto.ptr<f16>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %c4 = arith.constant 4 : index
+    %c16 = arith.constant 16 : index
+    %0 = pto.make_tensor_view %arg0, shape = [%c16, %c16], strides = [%c16, %c1] : !pto.tensor_view<?x?xf16>
+    %1 = pto.make_tensor_view %arg1, shape = [%c16, %c16], strides = [%c16, %c1] : !pto.tensor_view<?x?xf16>
+    %2 = pto.partition_view %0, offsets = [%c0, %c0], sizes = [%c16, %c16] : !pto.tensor_view<?x?xf16> -> !pto.partition_tensor_view<16x16xf16>
+    %3 = pto.partition_view %1, offsets = [%c0, %c0], sizes = [%c16, %c16] : !pto.tensor_view<?x?xf16> -> !pto.partition_tensor_view<16x16xf16>
+    %4 = pto.alloc_tile {pto.multi_buffer = 2 : i32} : !pto.tile_buf<vec, 16x32xf16>
+    %5 = pto.subset %4[%c0, %c0] sizes [16, 16] : !pto.tile_buf<vec, 16x32xf16>
+    %6 = pto.subset %4[%c0, %c16] sizes [16, 16] : !pto.tile_buf<vec, 16x32xf16>
+    scf.for %arg2 = %c0 to %c4 step %c1 {
+      %7 = arith.remui %arg2, %c2 : index
+      %8 = arith.cmpi eq, %7, %c0 : index
+      scf.if %8 {
+        pto.tload ins(%2 : !pto.partition_tensor_view<16x16xf16>) outs(%5 : !pto.tile_buf<vec, 16x16xf16>)
+        pto.tstore ins(%5 : !pto.tile_buf<vec, 16x16xf16>) outs(%3 : !pto.partition_tensor_view<16x16xf16>)
+      } else {
+        pto.tload ins(%2 : !pto.partition_tensor_view<16x16xf16>) outs(%6 : !pto.tile_buf<vec, 16x16xf16>)
+        pto.tstore ins(%6 : !pto.tile_buf<vec, 16x16xf16>) outs(%3 : !pto.partition_tensor_view<16x16xf16>)
+      }
+    }
+    return
+  }
+}

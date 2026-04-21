@@ -68,6 +68,15 @@ private:
   unsigned syncIndex_{0};
  
 private:
+  struct MultibufferSyncDecision {
+    int eventIdNum{1};
+    MultibufferSlotMode slotMode{MultibufferSlotMode::NONE};
+    int slotCount{1};
+    Value sharedRoot{nullptr};
+    int ownerLoopBeginId{-1};
+    int ownerLoopEndId{-1};
+  };
+
   // --- Core Logic Methods ---
  
   /// 主调度器：处理 Compound (Op) 节点的同步
@@ -161,7 +170,13 @@ private:
                             bool isBackwardDep) const;
  
   /// 获取依赖对涉及的 Event ID 数量 (用于 Multi-Buffer 分析)
-  int GetEventIdNum(const DepBaseMemInfoPairVec &depBaseMemInfosVec);
+  MultibufferSyncDecision AnalyzeMultibufferSync(
+      const DepBaseMemInfoPairVec &depBaseMemInfosVec,
+      const std::optional<unsigned> &forEndIndex) const;
+  int GetLegacyEventIdNum(const DepBaseMemInfoPairVec &depBaseMemInfosVec) const;
+  void ConfigureMultibufferSyncMetadata(
+      SyncOperation *setOp, SyncOperation *waitOp,
+      const MultibufferSyncDecision &decision);
   std::optional<int> GetSharedMultibufferFactor(
       const DepBaseMemInfoPairVec &depBaseMemInfosVec) const;
   bool AreSlotwiseNonOverlapping(const DepBaseMemInfoPairVec &depBaseMemInfosVec,
