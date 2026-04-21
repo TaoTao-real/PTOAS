@@ -13,6 +13,7 @@
 
 #include "PTO/Transforms/InsertSync/InsertSyncAnalysis.h"
 #include "PTO/Transforms/InsertSync/SyncCommon.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "llvm/Support/Casting.h"
@@ -34,6 +35,35 @@ static constexpr unsigned kPipeStateSize =
 
 static bool isValidPipeIndex(PipelineType pipe) {
   return static_cast<unsigned>(pipe) < kPipeStateSize;
+}
+
+static std::optional<int64_t> getConstantIndexValue(Value value) {
+  llvm::APInt apIntValue;
+  if (!matchPattern(value, m_ConstantInt(&apIntValue)))
+    return std::nullopt;
+  return apIntValue.getSExtValue();
+}
+
+static bool hasAtMostOneIteration(const LoopInstanceElement *loopElement) {
+  if (loopElement == nullptr || loopElement->elementOp == nullptr)
+    return false;
+
+  auto forOp = dyn_cast<scf::ForOp>(loopElement->elementOp);
+  if (!forOp)
+    return false;
+
+  auto lowerBound = getConstantIndexValue(forOp.getLowerBound());
+  auto upperBound = getConstantIndexValue(forOp.getUpperBound());
+  auto step = getConstantIndexValue(forOp.getStep());
+  if (!lowerBound || !upperBound || !step || *step <= 0)
+    return false;
+
+  if (*upperBound <= *lowerBound)
+    return true;
+
+  int64_t span = *upperBound - *lowerBound;
+  int64_t tripCount = (span + *step - 1) / *step;
+  return tripCount <= 1;
 }
 
 // ==============================================================================
@@ -77,6 +107,12 @@ void InsertSyncAnalysis::DealWithLoopSync(LoopInstanceElement *nowElement) {
   // Insert backward sync by copying the loop body slice and running the same
   // sequential insertion on the copied structure.
   if (nowElement->getLoopKind() != KindOfLoop::LOOP_END) {
+    return;
+  }
+
+  // No loop-carried dependence exists when a loop executes at most once.
+  // In that case, skip backward-edge sync analysis entirely.
+  if (hasAtMostOneIteration(nowElement)) {
     return;
   }
 
