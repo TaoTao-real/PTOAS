@@ -157,8 +157,25 @@ bool MemoryDependentAnalyzer::MemAlias(const BaseMemInfo *a,
   // 2. Local Memory (UB/L1)
   
   if (a->rootBuffer == b->rootBuffer) {
-    if (a->baseAddresses.empty() || b->baseAddresses.empty()) return true;
-    return isBufferAddressRangeOverlap(a, b);
+    if (a->baseAddresses.empty() || b->baseAddresses.empty()) {
+      if (isTraceEnabled())
+        llvm::errs()
+            << "    -> Same root but unknown baseAddresses. Conservative "
+               "overlap.\n";
+      return true;
+    }
+    if (a->allocateSize == 0 || b->allocateSize == 0) {
+      if (isTraceEnabled())
+        llvm::errs()
+            << "    -> Same root but unknown allocateSize. Conservative "
+               "overlap.\n";
+      return true;
+    }
+    const bool overlap = isBufferAddressRangeOverlap(a, b);
+    if (isTraceEnabled())
+      llvm::errs() << "    -> Same root range overlap: "
+                   << (overlap ? "true" : "false") << "\n";
+    return overlap;
   }
  
   // 2.2 深层比较：穿透 View

@@ -1,0 +1,36 @@
+// RUN: ptoas --pto-arch=a3 --enable-insert-sync %s | FileCheck %s
+//
+// Temporary assumption guard (can be reverted independently):
+// sibling subviews from one parent tile are treated as non-overlap when
+// static ranges are disjoint.
+//
+// CHECK-LABEL: __global__ AICORE void issue499_subview_sibling_nonoverlap_assumption()
+// CHECK: TADD(
+// CHECK: pipe_barrier(PIPE_V);
+// CHECK: TADD(
+// CHECK-NOT: set_flag(PIPE_V, PIPE_V
+// CHECK-NOT: wait_flag(PIPE_V, PIPE_V
+
+module {
+  func.func @issue499_subview_sibling_nonoverlap_assumption() {
+    pto.section.vector {
+      %c0 = arith.constant 0 : index
+      %c64 = arith.constant 64 : index
+
+      %parent = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=128, v_row=1, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      %lhs = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      %rhs = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+      %left = pto.subview %parent[%c0, %c0] sizes [1, 64] :
+        !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=128, v_row=1, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+        -> !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      %right = pto.subview %parent[%c0, %c64] sizes [1, 64] :
+        !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=128, v_row=1, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+        -> !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+      pto.tadd ins(%left, %lhs : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%left : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+      pto.tadd ins(%right, %rhs : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%right : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    }
+    return
+  }
+}
