@@ -25,4 +25,4 @@ module {
   }
 }
 
-// CHECK: error: 'pto.initialize_l2l_pipe' op requires a complete peer init pair when local_addr comes from pto.reserve_buffer or pto.import_reserved_buffer
+// CHECK: error: 'pto.initialize_l2l_pipe' op requires a complete compatible peer init pair when local_addr comes from pto.reserve_buffer or pto.import_reserved_buffer

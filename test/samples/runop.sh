@@ -1574,6 +1574,10 @@ PY
         *-pto-ir.pto) continue ;;
       esac
       base="$(basename "$f" .pto)"
+      local expect_fail=0
+      case "$base" in
+        *_invalid|*_xfail) expect_fail=1 ;;
+      esac
       if [[ ( "$base" == "test_tmov_col_major_16x1_align_a5" || \
               "$base" == "test_tmov_row_major_1x16_control_a5" || \
               "$base" == "decode_projection_incore_0" || \
@@ -1597,17 +1601,26 @@ PY
             "$base" == "test_tmov_col_major_16x1_align_a5" || \
             "$base" == "test_tmov_row_major_1x16_control_a5" || \
             "$base" == "decode_projection_incore_0" || \
-            "$base" == "rmsnorm_incore_0" ]]; then
+            "$base" == "rmsnorm_incore_0" || \
+            "$base" == "test_frontend_pipe_flag_id_overflow_invalid" ]]; then
         sample_use_ptobc_roundtrip=0
       fi
       if [[ $sample_use_ptobc_roundtrip -eq 1 ]]; then
         # Allow generic escape for ops that are not yet in the compact v0 opcode table.
         if ! PTOBC_ALLOW_GENERIC=1 "$ptobc" encode "$f" -o "$ptobc_file" >/dev/null 2>&1; then
+          if [[ $expect_fail -eq 1 ]]; then
+            echo -e "${A}(${base}.pto)\tXFAIL\tptobc encode failed as expected"
+            continue
+          fi
           echo -e "${A}(${base}.pto)\tFAIL\tptobc encode failed: $(basename "$f")"
           overall=1
           continue
         fi
         if ! "$ptobc" decode "$ptobc_file" -o "$decoded_pto" >/dev/null 2>&1; then
+          if [[ $expect_fail -eq 1 ]]; then
+            echo -e "${A}(${base}.pto)\tXFAIL\tptobc decode failed as expected"
+            continue
+          fi
           echo -e "${A}(${base}.pto)\tFAIL\tptobc decode failed: $(basename "$ptobc_file")"
           overall=1
           continue
@@ -1616,8 +1629,25 @@ PY
       fi
 
       local -a ptoas_cmd=("${ptoas_cmd_base[@]}" "$pto_input" -o "$cpp")
-      if ! "${ptoas_cmd[@]}" >/dev/null 2>&1; then
+      local ptoas_log="${out_subdir}/${base}-ptoas.log"
+      if ! "${ptoas_cmd[@]}" >"${ptoas_log}" 2>&1; then
+        if [[ $expect_fail -eq 1 ]]; then
+          if [[ "$base" == "test_frontend_pipe_flag_id_overflow_invalid" ]]; then
+            if ! grep -Fq "fit within 16 hardware flag ids" "${ptoas_log}"; then
+              echo -e "${A}(${base}.pto)\tFAIL\texpected hardware flag budget diagnostic not found"
+              overall=1
+              continue
+            fi
+          fi
+          echo -e "${A}(${base}.pto)\tXFAIL\tptoas failed as expected"
+          continue
+        fi
         echo -e "${A}(${base}.pto)\tFAIL\tptoas failed: $(basename "$f")"
+        overall=1
+        continue
+      fi
+      if [[ $expect_fail -eq 1 ]]; then
+        echo -e "${A}(${base}.pto)\tFAIL\texpected failure but succeeded"
         overall=1
         continue
       fi

@@ -152,6 +152,23 @@ def PTOLowerFrontendPipeOps : Pass<"pto-lower-frontend-pipe-ops", "func::FuncOp"
   ];
 }
 
+def PTOAssignDefaultFrontendPipeId : Pass<"pto-assign-default-frontend-pipe-id", "func::FuncOp"> {
+  let summary = "Materialize default id = 0 on frontend TPUSH/TPOP pipe ops";
+  let description = [{
+    Preserves backward compatibility with older frontend pipe syntax that
+    omitted `id`. This pass rewrites missing `id` attrs on
+    `aic/aiv_initialize_pipe`, `tpush_to_*`, `tpop_from_*`, and
+    `tfree_from_*` to an explicit `id = 0` before frontend pipe lowering.
+  }];
+
+  let constructor = "mlir::pto::createPTOAssignDefaultFrontendPipeIdPass()";
+
+  let dependentDialects = [
+    "mlir::pto::PTODialect",
+    "mlir::func::FuncDialect"
+  ];
+}
+
 def PTOInferValidatePipeInit : Pass<"pto-infer-validate-pipe-init", "ModuleOp"> {
   let summary = "Infer and validate internal pipe init nosplit configuration";
   let description = [{

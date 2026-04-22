@@ -26,6 +26,7 @@ add_mlir_dialect_library(PTOTransforms
   PTOA5NormalizeTMovPass.cpp
   BufferizableOpInterfaceImpl.cpp
   ConvertToPTOOp.cpp
+  PTOAssignDefaultFrontendPipeIdPass.cpp
   PTOLowerFrontendPipeOpsPass.cpp
   PTOInferValidatePipeInitPass.cpp
   PTOResolveReservedBuffersPass.cpp

@@ -1,0 +1,49 @@
+// RUN: not ptoas --pto-arch=a5 %s 2>&1 | FileCheck %s
+
+module {
+  func.func @cube_kernel() attributes {pto.kernel_kind = #pto.kernel_kind<cube>} {
+    %fifo0 = pto.reserve_buffer {name = "fifo0", size = 4096, location = #pto.address_space<mat>, auto = true} -> i32
+    %fifo1 = pto.reserve_buffer {name = "fifo1", size = 4096, location = #pto.address_space<mat>, auto = true} -> i32
+    %fifo2 = pto.reserve_buffer {name = "fifo2", size = 4096, location = #pto.address_space<mat>, auto = true} -> i32
+    %fifo3 = pto.reserve_buffer {name = "fifo3", size = 4096, location = #pto.address_space<mat>, auto = true} -> i32
+    %fifo4 = pto.reserve_buffer {name = "fifo4", size = 4096, location = #pto.address_space<mat>, auto = true} -> i32
+    %fifo5 = pto.reserve_buffer {name = "fifo5", size = 4096, location = #pto.address_space<mat>, auto = true} -> i32
+    %fifo6 = pto.reserve_buffer {name = "fifo6", size = 4096, location = #pto.address_space<mat>, auto = true} -> i32
+    %fifo7 = pto.reserve_buffer {name = "fifo7", size = 4096, location = #pto.address_space<mat>, auto = true} -> i32
+    %fifo8 = pto.reserve_buffer {name = "fifo8", size = 4096, location = #pto.address_space<mat>, auto = true} -> i32
+    %p0 = pto.initialize_l2l_pipe {dir_mask = 1, slot_size = 1024, slot_num = 8}(%fifo0 : i32) -> !pto.pipe
+    %p1 = pto.initialize_l2l_pipe {dir_mask = 1, slot_size = 1024, slot_num = 8}(%fifo1 : i32) -> !pto.pipe
+    %p2 = pto.initialize_l2l_pipe {dir_mask = 1, slot_size = 1024, slot_num = 8}(%fifo2 : i32) -> !pto.pipe
+    %p3 = pto.initialize_l2l_pipe {dir_mask = 1, slot_size = 1024, slot_num = 8}(%fifo3 : i32) -> !pto.pipe
+    %p4 = pto.initialize_l2l_pipe {dir_mask = 1, slot_size = 1024, slot_num = 8}(%fifo4 : i32) -> !pto.pipe
+    %p5 = pto.initialize_l2l_pipe {dir_mask = 1, slot_size = 1024, slot_num = 8}(%fifo5 : i32) -> !pto.pipe
+    %p6 = pto.initialize_l2l_pipe {dir_mask = 1, slot_size = 1024, slot_num = 8}(%fifo6 : i32) -> !pto.pipe
+    %p7 = pto.initialize_l2l_pipe {dir_mask = 1, slot_size = 1024, slot_num = 8}(%fifo7 : i32) -> !pto.pipe
+    %p8 = pto.initialize_l2l_pipe {dir_mask = 1, slot_size = 1024, slot_num = 8}(%fifo8 : i32) -> !pto.pipe
+    return
+  }
+
+  func.func @vector_kernel() attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %fifo0 = pto.import_reserved_buffer {name = "fifo0", peer_func = @cube_kernel} -> i32
+    %fifo1 = pto.import_reserved_buffer {name = "fifo1", peer_func = @cube_kernel} -> i32
+    %fifo2 = pto.import_reserved_buffer {name = "fifo2", peer_func = @cube_kernel} -> i32
+    %fifo3 = pto.import_reserved_buffer {name = "fifo3", peer_func = @cube_kernel} -> i32
+    %fifo4 = pto.import_reserved_buffer {name = "fifo4", peer_func = @cube_kernel} -> i32
+    %fifo5 = pto.import_reserved_buffer {name = "fifo5", peer_func = @cube_kernel} -> i32
+    %fifo6 = pto.import_reserved_buffer {name = "fifo6", peer_func = @cube_kernel} -> i32
+    %fifo7 = pto.import_reserved_buffer {name = "fifo7", peer_func = @cube_kernel} -> i32
+    %fifo8 = pto.import_reserved_buffer {name = "fifo8", peer_func = @cube_kernel} -> i32
+    %p0 = pto.initialize_l2l_pipe {dir_mask = 1, slot_size = 1024, slot_num = 8}(%fifo0 : i32) -> !pto.pipe
+    %p1 = pto.initialize_l2l_pipe {dir_mask = 1, slot_size = 1024, slot_num = 8}(%fifo1 : i32) -> !pto.pipe
+    %p2 = pto.initialize_l2l_pipe {dir_mask = 1, slot_size = 1024, slot_num = 8}(%fifo2 : i32) -> !pto.pipe
+    %p3 = pto.initialize_l2l_pipe {dir_mask = 1, slot_size = 1024, slot_num = 8}(%fifo3 : i32) -> !pto.pipe
+    %p4 = pto.initialize_l2l_pipe {dir_mask = 1, slot_size = 1024, slot_num = 8}(%fifo4 : i32) -> !pto.pipe
+    %p5 = pto.initialize_l2l_pipe {dir_mask = 1, slot_size = 1024, slot_num = 8}(%fifo5 : i32) -> !pto.pipe
+    %p6 = pto.initialize_l2l_pipe {dir_mask = 1, slot_size = 1024, slot_num = 8}(%fifo6 : i32) -> !pto.pipe
+    %p7 = pto.initialize_l2l_pipe {dir_mask = 1, slot_size = 1024, slot_num = 8}(%fifo7 : i32) -> !pto.pipe
+    %p8 = pto.initialize_l2l_pipe {dir_mask = 1, slot_size = 1024, slot_num = 8}(%fifo8 : i32) -> !pto.pipe
+    return
+  }
+}
+
+// CHECK: error: 'pto.initialize_l2l_pipe' op requires all pipe components in a function to fit within 16 hardware flag ids

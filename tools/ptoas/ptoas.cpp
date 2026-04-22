@@ -1093,6 +1093,8 @@ int main(int argc, char **argv) {
   PassManager pm(&context);
   
   pm.addNestedPass<mlir::func::FuncOp>(
+      pto::createPTOAssignDefaultFrontendPipeIdPass());
+  pm.addNestedPass<mlir::func::FuncOp>(
       pto::createPTOLowerFrontendPipeOpsPass());
   //pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOVerifyTFreePass());
   pm.addPass(pto::createPTOInferValidatePipeInitPass());

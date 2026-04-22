@@ -25,7 +25,7 @@ module {
       name = "c2v_fifo",
       peer_func = @matmul_tpush_tpop_loop4_print_vector
     } -> i32
-    pto.aic_initialize_pipe {dir_mask = 1, slot_size = 1024}
+    pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
       (c2v_consumer_buf = %c2v_import : i32,
        v2c_consumer_buf = %c0_i32 : i32)
 
@@ -49,7 +49,7 @@ module {
       pto.tload ins(%gm_b_iter : !pto.partition_tensor_view<16x16xf32>) outs(%mat_b_tile : !pto.tile_buf<loc=mat, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=512, pad=0>)
       pto.tmov ins(%mat_b_tile : !pto.tile_buf<loc=mat, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=512, pad=0>) outs(%right_tile : !pto.tile_buf<loc=right, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=col_major, fractal=512, pad=0>)
       pto.tmatmul ins(%left_tile, %right_tile : !pto.tile_buf<loc=left, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=512, pad=0>, !pto.tile_buf<loc=right, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=col_major, fractal=512, pad=0>) outs(%acc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>)
-      pto.tpush_to_aiv(%acc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>) {split = 1}
+      pto.tpush_to_aiv(%acc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>) {id = 0, split = 1}
     }
     return
   }
@@ -66,17 +66,17 @@ module {
       location = #pto.address_space<vec>,
       auto = true
     } -> i32
-    pto.aiv_initialize_pipe {dir_mask = 1, slot_size = 1024}
+    pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
       (c2v_consumer_buf = %c2v_local : i32,
        v2c_consumer_buf = %c0_i32 : i32)
 
     %vec_print = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
     scf.for %i = %c0 to %c4 step %c1 {
-      %fifo_tile = pto.tpop_from_aic {split = 1}
+      %fifo_tile = pto.tpop_from_aic {id = 0, split = 1}
         -> !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
       pto.tmov ins(%fifo_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%vec_print : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
       pto.tprint ins(%vec_print : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-      pto.tfree_from_aic {split = 1}
+      pto.tfree_from_aic {id = 0, split = 1}
     }
     return
   }

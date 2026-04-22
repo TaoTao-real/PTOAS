@@ -15,11 +15,16 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/Pass.h"
 
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallPtrSet.h"
+
+#include <algorithm>
 #include <map>
 #include <optional>
 #include <set>
 #include <string>
 #include <tuple>
+#include <type_traits>
 
 namespace mlir {
 namespace pto {
@@ -32,6 +37,8 @@ using namespace mlir;
 using namespace mlir::pto;
 
 namespace {
+
+constexpr int32_t kMaxHardwareFlagIds = 16;
 
 struct PipePeerKey {
   std::string ownerFunc;
@@ -50,10 +57,29 @@ struct PipeInitInfo {
   Operation *op = nullptr;
   func::FuncOp funcOp;
   int8_t dirMask = 0;
+  int32_t slotSize = 0;
+  int32_t slotNum = 0;
+  std::optional<int32_t> localSlotNum;
 };
 
-using PipeInitGroups = std::map<PipePeerKey, SmallVector<PipeInitInfo>>;
-using PipeParticipants = std::map<PipePeerKey, std::set<std::string>>;
+struct PipeComponent {
+  SmallVector<Operation *> ops;
+  std::set<std::string> participants;
+  int8_t dirMask = 0;
+  int32_t slotSize = 0;
+  int32_t slotNum = 0;
+  std::optional<int32_t> localSlotNum;
+  unsigned flagWidth = 0;
+  std::optional<int32_t> explicitFlagBase;
+};
+
+struct FlagInterval {
+  int32_t begin = 0;
+  int32_t end = 0;
+};
+
+using PipeInitGroups = std::map<PipePeerKey, SmallVector<Operation *>>;
+using PipeFlagUsage = std::map<std::string, SmallVector<FlagInterval>>;
 
 template <typename InitOpT> static Value getLocalAddrOperand(InitOpT op) {
   // Hide the concrete init-op type and expose the local address operand
@@ -88,7 +114,6 @@ static std::string getFuncSymbol(func::FuncOp funcOp) {
   return funcOp.getSymName().str();
 }
 
-
 static std::optional<PipePeerKey> getPipePeerKey(Value localAddr,
                                                  func::FuncOp currentFunc) {
   // reserve_buffer identifies the local owner directly, while
@@ -108,36 +133,33 @@ static std::optional<PipePeerKey> getPipePeerKey(Value localAddr,
   return std::nullopt;
 }
 
-static bool hasCompletePeerInitPair(const SmallVector<PipeInitInfo> &inits,
-                                    const std::set<std::string> &participants) {
-  // A peer-aware logical pipe is only well-defined when exactly two init ops
-  // participate: one in the reserve owner and one in the peer importer.
-  if (participants.size() != 2 || inits.size() != 2)
-    return false;
-
-  std::set<std::string> initFuncs;
-  for (const PipeInitInfo &info : inits)
-    initFuncs.insert(getFuncSymbol(info.funcOp));
-  return initFuncs.size() == 2;
-}
-
 template <typename InitOpT>
-static LogicalResult collectPeerAwareInit(InitOpT initOp,
-                                          PipeInitGroups &keyedInits,
-                                          PipeParticipants &keyedParticipants) {
+static PipeInitInfo buildPipeInitInfo(InitOpT initOp) {
   PipeInitInfo info;
   info.op = initOp.getOperation();
   info.funcOp = initOp->template getParentOfType<func::FuncOp>();
   info.dirMask = initOp.getDirMask();
+  info.slotSize = initOp.getSlotSize();
+  info.slotNum = initOp.getSlotNum();
+  if constexpr (std::is_same_v<InitOpT, InitializeL2G2LPipeOp>) {
+    if (auto attr = initOp.getLocalSlotNumAttr())
+      info.localSlotNum = attr.getInt();
+  }
+  return info;
+}
+
+template <typename InitOpT>
+static LogicalResult collectPeerAwareInit(InitOpT initOp,
+                                          SmallVectorImpl<PipeInitInfo> &initInfos,
+                                          PipeInitGroups &keyedInits) {
+  PipeInitInfo info = buildPipeInitInfo(initOp);
 
   auto recordAddr = [&](Value addr, int8_t effectiveDirMask) {
     auto key = getPipePeerKey(addr, info.funcOp);
     if (!key)
       return false;
     key->dirMask = effectiveDirMask;
-    keyedInits[*key].push_back(info);
-    keyedParticipants[*key].insert(getFuncSymbol(info.funcOp));
-    keyedParticipants[*key].insert(key->ownerFunc);
+    keyedInits[*key].push_back(info.op);
     return true;
   };
 
@@ -150,6 +172,8 @@ static LogicalResult collectPeerAwareInit(InitOpT initOp,
     recorded = recordAddr(getLocalAddrOperand(initOp), info.dirMask);
   }
 
+  if (recorded)
+    initInfos.push_back(info);
   if (recorded || getFlagBaseAttr(initOp))
     return success();
 
@@ -158,68 +182,195 @@ static LogicalResult collectPeerAwareInit(InitOpT initOp,
       "pto.import_reserved_buffer when 'flag_base' is not explicit");
 }
 
-static LogicalResult validatePeerInitGroups(const PipeInitGroups &keyedInits,
-                                            const PipeParticipants &keyedParticipants) {
-  for (const auto &it : keyedInits) {
-    if (hasCompletePeerInitPair(it.second, keyedParticipants.at(it.first)))
-      continue;
-    return it.second.front().op->emitOpError(
-        "requires a complete peer init pair when local_addr comes from "
-        "pto.reserve_buffer or pto.import_reserved_buffer");
+static IntegerAttr getFlagBaseAttr(Operation *op) {
+  if (auto initOp = dyn_cast<InitializeL2LPipeOp>(op))
+    return initOp.getFlagBaseAttr();
+  return cast<InitializeL2G2LPipeOp>(op).getFlagBaseAttr();
+}
+
+static void setFlagBaseAttr(Operation *op, IntegerAttr attr) {
+  if (auto initOp = dyn_cast<InitializeL2LPipeOp>(op)) {
+    if (!initOp.getFlagBaseAttr())
+      setFlagBaseAttr(initOp, attr);
+    return;
   }
+  auto initOp = cast<InitializeL2G2LPipeOp>(op);
+  if (!initOp.getFlagBaseAttr())
+    setFlagBaseAttr(initOp, attr);
+}
+
+static bool samePipeInitSignature(const PipeInitInfo &lhs,
+                                  const PipeInitInfo &rhs) {
+  return std::tie(lhs.dirMask, lhs.slotSize, lhs.slotNum, lhs.localSlotNum) ==
+         std::tie(rhs.dirMask, rhs.slotSize, rhs.slotNum, rhs.localSlotNum);
+}
+
+static FailureOr<SmallVector<PipeComponent>>
+buildPeerAwareComponents(const SmallVectorImpl<PipeInitInfo> &initInfos,
+                         const PipeInitGroups &keyedInits) {
+  llvm::DenseMap<Operation *, SmallVector<Operation *>> adjacency;
+  llvm::DenseMap<Operation *, const PipeInitInfo *> infoByOp;
+  for (const PipeInitInfo &info : initInfos) {
+    adjacency[info.op];
+    infoByOp[info.op] = &info;
+  }
+
+  for (const auto &it : keyedInits) {
+    SmallVector<Operation *> uniqueOps;
+    for (Operation *op : it.second) {
+      if (std::find(uniqueOps.begin(), uniqueOps.end(), op) == uniqueOps.end())
+        uniqueOps.push_back(op);
+    }
+    for (size_t i = 0; i < uniqueOps.size(); ++i) {
+      for (size_t j = i + 1; j < uniqueOps.size(); ++j) {
+        adjacency[uniqueOps[i]].push_back(uniqueOps[j]);
+        adjacency[uniqueOps[j]].push_back(uniqueOps[i]);
+      }
+    }
+  }
+
+  SmallVector<PipeComponent> components;
+  llvm::SmallPtrSet<Operation *, 16> visited;
+  for (const PipeInitInfo &rootInfo : initInfos) {
+    if (!visited.insert(rootInfo.op).second)
+      continue;
+
+    SmallVector<Operation *> stack{rootInfo.op};
+    PipeComponent component;
+    while (!stack.empty()) {
+      Operation *current = stack.pop_back_val();
+      component.ops.push_back(current);
+      for (Operation *neighbor : adjacency[current]) {
+        if (visited.insert(neighbor).second)
+          stack.push_back(neighbor);
+      }
+    }
+
+    if (component.ops.size() != 2) {
+      return rootInfo.op->emitOpError(
+          "requires a complete compatible peer init pair when local_addr comes "
+          "from pto.reserve_buffer or pto.import_reserved_buffer");
+    }
+
+    const PipeInitInfo &lhs = *infoByOp[component.ops[0]];
+    const PipeInitInfo &rhs = *infoByOp[component.ops[1]];
+    if (!samePipeInitSignature(lhs, rhs)) {
+      return component.ops.front()->emitOpError(
+          "requires peer pipe init ops to agree on direction and pipe shape");
+    }
+
+    component.dirMask = lhs.dirMask;
+    component.slotSize = lhs.slotSize;
+    component.slotNum = lhs.slotNum;
+    component.localSlotNum = lhs.localSlotNum;
+    component.flagWidth = component.dirMask == 3 ? 4u : 2u;
+
+    for (Operation *op : component.ops) {
+      const PipeInitInfo &info = *infoByOp[op];
+      component.participants.insert(getFuncSymbol(info.funcOp));
+      if (auto flagBaseAttr = getFlagBaseAttr(op)) {
+        if (component.explicitFlagBase &&
+            *component.explicitFlagBase != flagBaseAttr.getInt()) {
+          return op->emitOpError(
+              "conflicting explicit flag_base across peer pipe inits");
+        }
+        component.explicitFlagBase = flagBaseAttr.getInt();
+      }
+    }
+    if (component.participants.size() != 2) {
+      return component.ops.front()->emitOpError(
+          "requires a complete compatible peer init pair when local_addr comes "
+          "from pto.reserve_buffer or pto.import_reserved_buffer");
+    }
+
+    components.push_back(std::move(component));
+  }
+
+  return components;
+}
+
+static bool overlaps(const FlagInterval &lhs, const FlagInterval &rhs) {
+  return lhs.begin < rhs.end && rhs.begin < lhs.end;
+}
+
+static int32_t alignToEven(int32_t value) {
+  return value % 2 == 0 ? value : value + 1;
+}
+
+static LogicalResult reserveComponentFlagBase(const PipeComponent &component,
+                                              int32_t base,
+                                              PipeFlagUsage &usedByFunc) {
+  FlagInterval interval{base, base + static_cast<int32_t>(component.flagWidth)};
+  if (interval.end > kMaxHardwareFlagIds) {
+    return component.ops.front()->emitOpError()
+           << "requires all pipe components in a function to fit within "
+           << kMaxHardwareFlagIds << " hardware flag ids";
+  }
+  for (const std::string &funcName : component.participants) {
+    for (const FlagInterval &used : usedByFunc[funcName]) {
+      if (!overlaps(interval, used))
+        continue;
+      return component.ops.front()->emitOpError(
+          "conflicting flag_base across peer pipe init components in the same function");
+    }
+  }
+
+  for (const std::string &funcName : component.participants)
+    usedByFunc[funcName].push_back(interval);
   return success();
 }
 
-static FailureOr<int32_t> chooseFlagBaseForPeerGroup(
-    const SmallVector<PipeInitInfo> &inits) {
-  std::optional<int32_t> chosenBase;
-  for (const PipeInitInfo &info : inits) {
-    IntegerAttr flagBaseAttr;
-    if (auto initOp = dyn_cast<InitializeL2LPipeOp>(info.op))
-      flagBaseAttr = getFlagBaseAttr(initOp);
-    else
-      flagBaseAttr = getFlagBaseAttr(cast<InitializeL2G2LPipeOp>(info.op));
-
-    if (!flagBaseAttr)
-      continue;
-    if (chosenBase && *chosenBase != flagBaseAttr.getInt()) {
-      return info.op->emitOpError(
-          "conflicting explicit flag_base across peer pipe inits");
+static FailureOr<int32_t> chooseFlagBaseForComponent(const PipeComponent &component,
+                                                     PipeFlagUsage &usedByFunc) {
+  if (component.explicitFlagBase) {
+    if (failed(reserveComponentFlagBase(component, *component.explicitFlagBase,
+                                        usedByFunc))) {
+      return failure();
     }
-    chosenBase = flagBaseAttr.getInt();
+    return *component.explicitFlagBase;
   }
-  return chosenBase.value_or(0);
-}
 
-static void assignMissingFlagBases(const SmallVector<PipeInitInfo> &inits,
-                                   IntegerAttr flagBaseAttr) {
-  for (const PipeInitInfo &info : inits) {
-    if (auto initOp = dyn_cast<InitializeL2LPipeOp>(info.op)) {
-      if (!getFlagBaseAttr(initOp))
-        setFlagBaseAttr(initOp, flagBaseAttr);
-      continue;
+  int32_t candidateBase = 0;
+  while (true) {
+    candidateBase = alignToEven(candidateBase);
+    FlagInterval candidate{candidateBase,
+                           candidateBase +
+                               static_cast<int32_t>(component.flagWidth)};
+    bool conflict = false;
+    int32_t nextCandidate = candidateBase + 2;
+    for (const std::string &funcName : component.participants) {
+      for (const FlagInterval &used : usedByFunc[funcName]) {
+        if (!overlaps(candidate, used))
+          continue;
+        conflict = true;
+        nextCandidate = std::max(nextCandidate, alignToEven(used.end));
+      }
     }
-
-    auto initOp = cast<InitializeL2G2LPipeOp>(info.op);
-    if (!getFlagBaseAttr(initOp))
-      setFlagBaseAttr(initOp, flagBaseAttr);
+    if (!conflict)
+      break;
+    candidateBase = nextCandidate;
   }
+
+  if (failed(reserveComponentFlagBase(component, candidateBase, usedByFunc)))
+    return failure();
+  return candidateBase;
 }
 
 struct PTOResolveReservedBuffersPass
     : public mlir::pto::impl::PTOResolveReservedBuffersBase<
           PTOResolveReservedBuffersPass> {
   LogicalResult assignPeerAwareFlagBases(ModuleOp moduleOp) {
-    // Group internal pipe init ops by their logical pipe identity, then fill
-    // missing flag_base attrs so both sides of the same logical pipe agree.
+    // Build peer-connected pipe-init components, assign one consistent
+    // flag_base per component, and reserve non-overlapping flag ranges per
+    // function so multiple frontend pipes can coexist safely.
+    SmallVector<PipeInitInfo> initInfos;
     PipeInitGroups keyedInits;
-    PipeParticipants keyedParticipants;
     LogicalResult status = success();
 
     auto collectInit = [&](auto initOp) {
       if (failed(status))
         return;
-      status = collectPeerAwareInit(initOp, keyedInits, keyedParticipants);
+      status = collectPeerAwareInit(initOp, initInfos, keyedInits);
     };
 
     moduleOp.walk([&](InitializeL2LPipeOp initOp) { collectInit(initOp); });
@@ -227,17 +378,19 @@ struct PTOResolveReservedBuffersPass
     if (failed(status))
       return failure();
 
-    if (failed(validatePeerInitGroups(keyedInits, keyedParticipants)))
+    auto componentsOr = buildPeerAwareComponents(initInfos, keyedInits);
+    if (failed(componentsOr))
       return failure();
 
     OpBuilder builder(moduleOp.getContext());
-    for (const auto &it : keyedInits) {
-      const auto &inits = it.second;
-      auto chosenBaseOr = chooseFlagBaseForPeerGroup(inits);
+    PipeFlagUsage usedByFunc;
+    for (const PipeComponent &component : *componentsOr) {
+      auto chosenBaseOr = chooseFlagBaseForComponent(component, usedByFunc);
       if (failed(chosenBaseOr))
         return failure();
       auto flagBaseAttr = builder.getI32IntegerAttr(*chosenBaseOr);
-      assignMissingFlagBases(inits, flagBaseAttr);
+      for (Operation *op : component.ops)
+        setFlagBaseAttr(op, flagBaseAttr);
     }
 
     return success();

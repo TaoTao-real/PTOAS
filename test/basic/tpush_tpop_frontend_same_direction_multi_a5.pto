@@ -1,0 +1,77 @@
+// RUN: ptoas --pto-arch=a5 %s 2>&1 | FileCheck %s --check-prefix=A5
+
+module {
+  func.func @cube_kernel()
+      attributes {pto.kernel_kind = #pto.kernel_kind<cube>} {
+    %c0_i32 = arith.constant 0 : i32
+
+    %c2v_import0 = pto.import_reserved_buffer {
+      name = "c2v_fifo_0",
+      peer_func = @vector_kernel
+    } -> i32
+    %c2v_import1 = pto.import_reserved_buffer {
+      name = "c2v_fifo_1",
+      peer_func = @vector_kernel
+    } -> i32
+
+    pto.aic_initialize_pipe {id = 10, dir_mask = 1, slot_size = 1024}
+      (c2v_consumer_buf = %c2v_import0 : i32,
+       v2c_consumer_buf = %c0_i32 : i32)
+    pto.aic_initialize_pipe {id = 20, dir_mask = 1, slot_size = 1024}
+      (c2v_consumer_buf = %c2v_import1 : i32,
+       v2c_consumer_buf = %c0_i32 : i32)
+
+    %tile0 = pto.alloc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>
+    %tile1 = pto.alloc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>
+    pto.tpush_to_aiv(%tile0 : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>) {id = 10, split = 0}
+    pto.tpush_to_aiv(%tile1 : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>) {id = 20, split = 0}
+    return
+  }
+
+  func.func @vector_kernel()
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0_i32 = arith.constant 0 : i32
+
+    %c2v_local0 = pto.reserve_buffer {
+      name = "c2v_fifo_0",
+      size = 4096,
+      location = #pto.address_space<vec>,
+      auto = true
+    } -> i32
+    %c2v_local1 = pto.reserve_buffer {
+      name = "c2v_fifo_1",
+      size = 4096,
+      location = #pto.address_space<vec>,
+      auto = true
+    } -> i32
+
+    pto.aiv_initialize_pipe {id = 10, dir_mask = 1, slot_size = 1024}
+      (c2v_consumer_buf = %c2v_local0 : i32,
+       v2c_consumer_buf = %c0_i32 : i32)
+    pto.aiv_initialize_pipe {id = 20, dir_mask = 1, slot_size = 1024}
+      (c2v_consumer_buf = %c2v_local1 : i32,
+       v2c_consumer_buf = %c0_i32 : i32)
+
+    %recv0 = pto.tpop_from_aic {id = 10, split = 0}
+      -> !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %recv1 = pto.tpop_from_aic {id = 20, split = 0}
+      -> !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    pto.tfree_from_aic {id = 10, split = 0}
+    pto.tfree_from_aic {id = 20, split = 0}
+    return
+  }
+}
+
+// A5-LABEL: AICORE void cube_kernel(
+// A5: auto {{v[0-9]+}} = TPipe<0, Direction::DIR_C2V, 1024, 8, 2, true>(
+// A5: auto {{v[0-9]+}} = TPipe<2, Direction::DIR_C2V, 1024, 8, 2, true>(
+// A5: TPUSH<TPipe<0, Direction::DIR_C2V, 1024, 8, 2, true>
+// A5: TPUSH<TPipe<2, Direction::DIR_C2V, 1024, 8, 2, true>
+
+// A5-LABEL: AICORE void vector_kernel(
+// A5: auto {{v[0-9]+}} = TPipe<0, Direction::DIR_C2V, 1024, 8, 2, true>(
+// A5: auto {{v[0-9]+}} = TPipe<2, Direction::DIR_C2V, 1024, 8, 2, true>(
+// A5: TPOP<TPipe<0, Direction::DIR_C2V, 1024, 8, 2, true>
+// A5: TPOP<TPipe<2, Direction::DIR_C2V, 1024, 8, 2, true>
+// A5: TFREE<TPipe<0, Direction::DIR_C2V, 1024, 8, 2, true>
+// A5: TFREE<TPipe<2, Direction::DIR_C2V, 1024, 8, 2, true>

@@ -37,7 +37,7 @@ module {
       name = "scope3_incore_4_incore_0_c2v_slot_buffer",
       peer_func = @scope3_incore_4_incore_0_tpush_tpop_add_vector
     } -> i32
-    pto.aic_initialize_pipe {dir_mask = 1, slot_size = 8192}
+    pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 8192}
       (c2v_consumer_buf = %c2v_import : i32,
        v2c_consumer_buf = %c0_i32 : i32)
 
@@ -60,7 +60,7 @@ module {
 
       %acc_tile = pto.alloc_tile addr = %c0_i64 : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=128, v_row=16, v_col=128, blayout=col_major, slayout=row_major, fractal=1024, pad=0>
       pto.tmatmul ins(%lhs_left, %rhs_right : !pto.tile_buf<loc=left, dtype=bf16, rows=16, cols=64, v_row=16, v_col=64, blayout=col_major, slayout=row_major, fractal=512, pad=0>, !pto.tile_buf<loc=right, dtype=bf16, rows=64, cols=128, v_row=64, v_col=128, blayout=row_major, slayout=col_major, fractal=512, pad=0>) outs(%acc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=128, v_row=16, v_col=128, blayout=col_major, slayout=row_major, fractal=1024, pad=0>)
-      pto.tpush_to_aiv(%acc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=128, v_row=16, v_col=128, blayout=col_major, slayout=row_major, fractal=1024, pad=0>) {split = 1}
+      pto.tpush_to_aiv(%acc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=128, v_row=16, v_col=128, blayout=col_major, slayout=row_major, fractal=1024, pad=0>) {id = 0, split = 1}
     }
     return
   }
@@ -91,7 +91,7 @@ module {
       auto = false,
       base = 0
     } -> i32
-    pto.aiv_initialize_pipe {dir_mask = 1, slot_size = 8192}
+    pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 8192}
       (c2v_consumer_buf = %c2v_local : i32,
        v2c_consumer_buf = %c0_i32 : i32)
 
@@ -104,12 +104,12 @@ module {
       %gm_tile_view = pto.partition_view %gm_out_view, offsets = [%subblock_row, %col_offset], sizes = [%c8, %c128] : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<8x128xf32>
       pto.tload ins(%gm_tile_view : !pto.partition_tensor_view<8x128xf32>) outs(%gm_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=128, v_row=8, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
 
-      %recv_tile = pto.tpop_from_aic {split = 1}
+      %recv_tile = pto.tpop_from_aic {id = 0, split = 1}
         -> !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=128, v_row=8, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>
 
       %sum_tile = pto.alloc_tile addr = %c65536_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=128, v_row=8, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>
       pto.tadd ins(%gm_tile, %recv_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=128, v_row=8, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=128, v_row=8, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%sum_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=128, v_row=8, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-      pto.tfree_from_aic {split = 1}
+      pto.tfree_from_aic {id = 0, split = 1}
       pto.tstore ins(%sum_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=128, v_row=8, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%gm_tile_view : !pto.partition_tensor_view<8x128xf32>)
     }
     return

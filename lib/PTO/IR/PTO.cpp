@@ -9954,7 +9954,11 @@ void TPReluOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   PTO_ADD_READ(getSrc0Mutable());
   PTO_ADD_READ(getSrc1Mutable());
-  PTO_ADD_WRITE(getTmpMutable());
+  // A5 pto-isa TPRELU implementation does not consume tmp; modeling tmp as a
+  // write-only scratch on A5 incorrectly inflates local-memory planning and
+  // can trigger false vec-overflow diagnostics.
+  if (getTargetArch(getOperation()) != PTOArch::A5)
+    PTO_ADD_WRITE(getTmpMutable());
   PTO_ADD_WRITE(getDstMutable());
 }
 
@@ -10356,10 +10360,24 @@ static LogicalResult verifyFrontendInitCommon(InitOpT op,
   if (!funcOp)
     return op.emitOpError("must be nested under a func.func");
 
-  unsigned sameInitCount = 0;
-  funcOp.walk([&](InitOpT) { ++sameInitCount; });
-  if (sameInitCount > 1)
-    return op.emitOpError("requires at most one matching initialize_pipe op per function");
+  if (op.getId() < 0)
+    return op.emitOpError("expects 'id' to be non-negative");
+
+  unsigned sameIdInitCount = 0;
+  funcOp.walk([&](Operation *candidate) {
+    if (auto aic = dyn_cast<AicInitializePipeOp>(candidate)) {
+      if (aic.getId() == op.getId())
+        ++sameIdInitCount;
+      return;
+    }
+    if (auto aiv = dyn_cast<AivInitializePipeOp>(candidate))
+      if (aiv.getId() == op.getId())
+        ++sameIdInitCount;
+  });
+  if (sameIdInitCount > 1) {
+    return op.emitOpError(
+        "requires 'id' to be unique across frontend initialize_pipe ops in the function");
+  }
 
   int8_t dirMask = op.getDirMask();
   if (dirMask != 1 && dirMask != 2 && dirMask != 3)
@@ -10400,11 +10418,6 @@ LogicalResult ReserveBufferOp::verify() {
   if (auto baseAttr = getBaseAttr(); baseAttr && baseAttr.getInt() < 0)
     return emitOpError("expects 'base' to be non-negative when present");
 
-  unsigned reserveCount = 0;
-  funcOp.walk([&](ReserveBufferOp) { ++reserveCount; });
-  if (reserveCount > 1)
-    return emitOpError("expects at most one reserve_buffer in the function");
-
   unsigned sameNameCount = 0;
   funcOp.walk([&](ReserveBufferOp reserveOp) {
     if (reserveOp.getName() == getName())
@@ -10421,15 +10434,22 @@ LogicalResult ImportReservedBufferOp::verify() {
   if (!funcOp)
     return emitOpError("must be nested under a func.func");
 
-  unsigned importCount = 0;
-  funcOp.walk([&](ImportReservedBufferOp) { ++importCount; });
-  if (importCount > 1)
-    return emitOpError("expects at most one import_reserved_buffer in the function");
-
   auto peerFunc = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
       getOperation(), getPeerFuncAttr());
   if (!peerFunc)
     return emitOpError("expects 'peer_func' to reference an existing func.func");
+
+  unsigned sameImportCount = 0;
+  funcOp.walk([&](ImportReservedBufferOp importOp) {
+    if (importOp.getName() == getName() &&
+        importOp.getPeerFuncAttr() == getPeerFuncAttr()) {
+      ++sameImportCount;
+    }
+  });
+  if (sameImportCount > 1) {
+    return emitOpError(
+        "requires (name, peer_func) to be unique within the function");
+  }
 
   if (!findReserveBufferByName(peerFunc, getName()))
     return emitOpError("expects matching peer reserve_buffer to exist");
@@ -10440,18 +10460,86 @@ LogicalResult ImportReservedBufferOp::verify() {
 static LogicalResult verifyFrontendSplitOp(Operation *op,
                                            FunctionKernelKind expected,
                                            StringRef kernelName,
+                                           int32_t id,
                                            int64_t split) {
   if (failed(verifyFrontendKernelKind(op, expected, kernelName)))
     return failure();
+  if (id < 0)
+    return op->emitOpError("expects 'id' to be non-negative");
   return verifySplitAttr(op, split);
+}
+
+static FailureOr<int8_t> lookupFrontendInitDirMaskById(Operation *op,
+                                                       func::FuncOp funcOp,
+                                                       int32_t id) {
+  int8_t matchedDirMask = 0;
+  unsigned matchedInitCount = 0;
+  funcOp.walk([&](Operation *candidate) {
+    if (auto aic = dyn_cast<AicInitializePipeOp>(candidate)) {
+      if (aic.getId() == id) {
+        matchedDirMask = aic.getDirMask();
+        ++matchedInitCount;
+      }
+      return WalkResult::advance();
+    }
+    if (auto aiv = dyn_cast<AivInitializePipeOp>(candidate)) {
+      if (aiv.getId() == id) {
+        matchedDirMask = aiv.getDirMask();
+        ++matchedInitCount;
+      }
+      return WalkResult::advance();
+    }
+    return WalkResult::advance();
+  });
+
+  if (matchedInitCount == 0) {
+    op->emitOpError() << "expects 'id' = " << id
+                      << " to match a frontend initialize_pipe op in the same function";
+    return failure();
+  }
+  if (matchedInitCount > 1) {
+    op->emitOpError() << "expects 'id' = " << id
+                      << " to match exactly one frontend initialize_pipe op in the same function";
+    return failure();
+  }
+  return matchedDirMask;
+}
+
+static LogicalResult verifyFrontendDataOpDirection(Operation *op, int32_t id,
+                                                   bool expectC2V) {
+  auto funcOp = op->getParentOfType<func::FuncOp>();
+  if (!funcOp)
+    return op->emitOpError("must be nested under a func.func");
+
+  auto dirMaskOr = lookupFrontendInitDirMaskById(op, funcOp, id);
+  if (failed(dirMaskOr))
+    return failure();
+
+  int8_t dirMask = *dirMaskOr;
+  if (expectC2V && dirMask != 1 && dirMask != 3) {
+    return op->emitOpError()
+           << "expects 'id' = " << id
+           << " to reference initialize_pipe with dir_mask = 1 or 3";
+  }
+  if (!expectC2V && dirMask != 2 && dirMask != 3) {
+    return op->emitOpError()
+           << "expects 'id' = " << id
+           << " to reference initialize_pipe with dir_mask = 2 or 3";
+  }
+  return success();
 }
 
 template <typename FrontendPopOpT>
 static LogicalResult verifyFrontendPopOp(FrontendPopOpT op,
                                          FunctionKernelKind expected,
-                                         StringRef kernelName) {
+                                         StringRef kernelName,
+                                         bool expectC2V) {
   if (failed(verifyFrontendSplitOp(op.getOperation(), expected, kernelName,
+                                   op.getId(),
                                    op.getSplit())))
+    return failure();
+  if (failed(verifyFrontendDataOpDirection(op.getOperation(), op.getId(),
+                                           expectC2V)))
     return failure();
 
   bool hasValidRow = static_cast<bool>(op.getValidRow());
@@ -10475,6 +10563,7 @@ static LogicalResult verifyFrontendPopOp(FrontendPopOpT op,
 static LogicalResult verifyPipeShape(Operation *op, int8_t dirMask, int32_t slotSize,
                                      int32_t slotNum,
                                      std::optional<int32_t> flagBase) {
+  constexpr int32_t kMaxHardwareFlagIds = 16;
   if (dirMask != 1 && dirMask != 2 && dirMask != 3)
     return op->emitOpError("expects 'dir_mask' to be 1, 2, or 3");
   if (slotSize <= 0)
@@ -10483,6 +10572,14 @@ static LogicalResult verifyPipeShape(Operation *op, int8_t dirMask, int32_t slot
     return op->emitOpError("expects 'slot_num' to be 4 or 8");
   if (flagBase && *flagBase < 0)
     return op->emitOpError("expects 'flag_base' to be non-negative when present");
+  if (flagBase) {
+    int32_t flagWidth = dirMask == 3 ? 4 : 2;
+    if (*flagBase + flagWidth > kMaxHardwareFlagIds) {
+      return op->emitOpError()
+             << "requires 'flag_base' and dir_mask to fit within "
+             << kMaxHardwareFlagIds << " hardware flag ids";
+    }
+  }
 
   return success();
 }
@@ -10596,31 +10693,45 @@ LogicalResult AivInitializePipeOp::verify() {
 }
 
 LogicalResult TPushToAivOp::verify() {
-  return verifyFrontendSplitOp(getOperation(), FunctionKernelKind::Cube,
-                               "cube", getSplit());
+  if (failed(verifyFrontendSplitOp(getOperation(), FunctionKernelKind::Cube,
+                                   "cube", getId(), getSplit())))
+    return failure();
+  return verifyFrontendDataOpDirection(getOperation(), getId(),
+                                       /*expectC2V=*/true);
 }
 
 LogicalResult TPushToAicOp::verify() {
-  return verifyFrontendSplitOp(getOperation(), FunctionKernelKind::Vector,
-                               "vector", getSplit());
+  if (failed(verifyFrontendSplitOp(getOperation(), FunctionKernelKind::Vector,
+                                   "vector", getId(), getSplit())))
+    return failure();
+  return verifyFrontendDataOpDirection(getOperation(), getId(),
+                                       /*expectC2V=*/false);
 }
 
 LogicalResult TPopFromAicOp::verify() {
-  return verifyFrontendPopOp(*this, FunctionKernelKind::Vector, "vector");
+  return verifyFrontendPopOp(*this, FunctionKernelKind::Vector, "vector",
+                             /*expectC2V=*/true);
 }
 
 LogicalResult TPopFromAivOp::verify() {
-  return verifyFrontendPopOp(*this, FunctionKernelKind::Cube, "cube");
+  return verifyFrontendPopOp(*this, FunctionKernelKind::Cube, "cube",
+                             /*expectC2V=*/false);
 }
 
 LogicalResult TFreeFromAicOp::verify() {
-  return verifyFrontendSplitOp(getOperation(), FunctionKernelKind::Vector,
-                               "vector", getSplit());
+  if (failed(verifyFrontendSplitOp(getOperation(), FunctionKernelKind::Vector,
+                                   "vector", getId(), getSplit())))
+    return failure();
+  return verifyFrontendDataOpDirection(getOperation(), getId(),
+                                       /*expectC2V=*/true);
 }
 
 LogicalResult TFreeFromAivOp::verify() {
-  return verifyFrontendSplitOp(getOperation(), FunctionKernelKind::Cube,
-                               "cube", getSplit());
+  if (failed(verifyFrontendSplitOp(getOperation(), FunctionKernelKind::Cube,
+                                   "cube", getId(), getSplit())))
+    return failure();
+  return verifyFrontendDataOpDirection(getOperation(), getId(),
+                                       /*expectC2V=*/false);
 }
 
 LogicalResult InitializeL2G2LPipeOp::verify() {

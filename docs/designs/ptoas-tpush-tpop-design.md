@@ -47,18 +47,17 @@
 #### 语法
 
 ```mlir
-pto.aic_initialize_pipe(
-    DIR_MASK,
-    SLOT_SIZE,
-    GM_SLOT_BUFFER,
-    C2V_CONSUMER_BUF,
-    V2C_CONSUMER_BUF)
+pto.aic_initialize_pipe {id = 0, dir_mask = 3, slot_size = 1024}
+  (gm_slot_buffer = %gm_buf : !pto.ptr<f32>,
+   c2v_consumer_buf = %c2v_consumer_buf : i32,
+   v2c_consumer_buf = %v2c_consumer_buf : i32)
 ```
 
 #### 参数
 
 | 参数 | 类型 | 说明 |
 |---|---|---|
+| `ID` | 编译期整数常量 | 前端逻辑 pipe 标识，要求 `>= 0` |
 | `DIR_MASK` | 编译期整数常量 | `1`、`2` 或 `3` |
 | `SLOT_SIZE` | 编译期整数常量 | 单 slot 字节数，定义为切分前完整 tile 字节数 |
 | `GM_SLOT_BUFFER` | `!pto.ptr<T>` 或空值 | A2/A3 路径使用的 GM 指针，A5 路径为空 |
@@ -74,12 +73,10 @@ pto.aic_initialize_pipe(
 #### 语法
 
 ```mlir
-pto.aiv_initialize_pipe(
-    DIR_MASK,
-    SLOT_SIZE,
-    GM_SLOT_BUFFER,
-    C2V_CONSUMER_BUF,
-    V2C_CONSUMER_BUF)
+pto.aiv_initialize_pipe {id = 0, dir_mask = 3, slot_size = 1024}
+  (gm_slot_buffer = %gm_buf : !pto.ptr<f32>,
+   c2v_consumer_buf = %c2v_consumer_buf : i32,
+   v2c_consumer_buf = %v2c_consumer_buf : i32)
 ```
 
 参数语义与 `pto.aic_initialize_pipe` 相同。
@@ -89,7 +86,7 @@ pto.aiv_initialize_pipe(
 #### `pto.tpush_to_aiv`
 
 ```mlir
-pto.tpush_to_aiv(%tile) { split = 0 }
+pto.tpush_to_aiv(%tile) {id = 0, split = 0}
 ```
 
 - 仅出现在 Cube kernel 中
@@ -98,7 +95,7 @@ pto.tpush_to_aiv(%tile) { split = 0 }
 #### `pto.tpush_to_aic`
 
 ```mlir
-pto.tpush_to_aic(%tile) { split = 0 }
+pto.tpush_to_aic(%tile) {id = 0, split = 0}
 ```
 
 - 仅出现在 Vector kernel 中
@@ -107,7 +104,7 @@ pto.tpush_to_aic(%tile) { split = 0 }
 #### `pto.tpop_from_aic`
 
 ```mlir
-%tile = pto.tpop_from_aic { split = 0 } -> !pto.tile_buf<...>
+%tile = pto.tpop_from_aic {id = 0, split = 0} -> !pto.tile_buf<...>
 ```
 
 - 仅出现在 Vector kernel 中
@@ -116,7 +113,7 @@ pto.tpush_to_aic(%tile) { split = 0 }
 #### `pto.tpop_from_aiv`
 
 ```mlir
-%tile = pto.tpop_from_aiv { split = 0 } -> !pto.tile_buf<...>
+%tile = pto.tpop_from_aiv {id = 0, split = 0} -> !pto.tile_buf<...>
 ```
 
 - 仅出现在 Cube kernel 中
@@ -125,7 +122,7 @@ pto.tpush_to_aic(%tile) { split = 0 }
 #### `pto.tfree_from_aic`
 
 ```mlir
-pto.tfree_from_aic { split = 0 }
+pto.tfree_from_aic {id = 0, split = 0}
 ```
 
 - 仅出现在 Vector kernel 中
@@ -134,13 +131,13 @@ pto.tfree_from_aic { split = 0 }
 #### `pto.tfree_from_aiv`
 
 ```mlir
-pto.tfree_from_aiv { split = 0 }
+pto.tfree_from_aiv {id = 0, split = 0}
 ```
 
 - 仅出现在 Cube kernel 中
 - 表示 V2C 方向 consumer free
 
-以上前端数据传输接口中的 `split` 均为编译期常量属性，不是运行时 SSA operand。
+以上前端数据传输接口中的 `id` 和 `split` 均为编译期常量属性，不是运行时 SSA operand。
 
 - 取值使用 `TileSplitAxis` 枚举语义：`0/1/2` 分别对应 `TILE_NO_SPLIT`、`TILE_UP_DOWN`、`TILE_LEFT_RIGHT`
 - lowering 到 PTOAS 内部 IR 时，`split` 继续以属性形式保留
@@ -188,7 +185,7 @@ pto.tfree_from_aiv { split = 0 }
 - 结果类型为 `i32`
 - 结果值表示该 buffer 当前可用的基址
 - 当前可用基址可来自显式 `base`，也可来自 plan memory 回填后的解析地址
-- 在当前约束下，每个函数最多一条 `reserve_buffer`
+- 单函数允许存在多条 `reserve_buffer`，但 `name` 必须唯一
 - 编译路径与 `auto` 的合法组合只有两种：
   - 启用 local address planning：`auto = true`，且不带 `base`
   - 跳过 local address planning：`auto = false`，且显式提供 `base`
@@ -215,29 +212,37 @@ pto.tfree_from_aiv { split = 0 }
 
 - 结果类型为 `i32`
 - 结果值表示从 peer `reserve_buffer` 导入的已解析基址
+- 单函数允许存在多条 `import_reserved_buffer`，但 `(name, peer_func)` 必须唯一
 
 ### 3.5 前端层约束
 
 > **约束来源说明**：以下约束是当前软件方案的设计选择，而非硬件限制。
-> 当前 `tpush_to_aic` / `tpush_to_aiv` / `tpop_from_aic` / `tpop_from_aiv` /
-> `tfree_from_aic` / `tfree_from_aiv` 等前端接口上不携带 pipe 参数，因此在
-> lowering 时只能将函数内的所有 push/pop/free 绑定到同一条 pipe。这决定了每个
-> 函数最多只能存在一条初始化语句（即一条 pipe）。如果后续需要支持多条 pipe 并行
-> 通信，前端接口方案需要重新设计（例如在 push/pop/free 上显式引用 pipe handle）。
+> 当前前端方案通过 `id` 在 push/pop/free 与 initialize 之间建立绑定关系，
+> 因此单函数可以包含多条前端 initialize 语句，包括同方向多条逻辑 pipe。
+> 每条 initialize 的 `id` 必须唯一，且数据传输 op 只能引用同函数内一条匹配的 initialize。
+> 若同一函数内存在多条同方向 pipe，它们需要通过不同的 consumer FIFO
+> 标识区分，即绑定到不同的 `reserve_buffer` / `import_reserved_buffer`
+>（或显式不同的 local address）。
+> 硬件 flag 资源总量仍有限制：单向 pipe 占 2 个 hardware flag id，`dir_mask = 3`
+> 的双向 pipe 占 4 个 hardware flag id，因此单函数内所有 lowered pipe 的总占用
+> 必须落在 16 个 hardware flag id 以内。
 
 前端 IR 需满足以下约束：
 
-- 每个 Cube function 最多一条 `pto.aic_initialize_pipe`
-- 每个 Vector function 最多一条 `pto.aiv_initialize_pipe`
-- 每个函数内最多一条 C2V 逻辑 pipe 和一条 V2C 逻辑 pipe
-- 每个函数最多一条 `reserve_buffer`
-- 每个函数最多一条 `import_reserved_buffer`
+- 前端 initialize 的 `id` 在函数内必须唯一
+- `tpush/tpop/tfree` 的 `id` 必须在同函数内匹配且仅匹配一条 frontend initialize
+- C2V 方向数据 op（`tpush_to_aiv`/`tpop_from_aic`/`tfree_from_aic`）要求匹配的 init `dir_mask` 为 `1` 或 `3`
+- V2C 方向数据 op（`tpush_to_aic`/`tpop_from_aiv`/`tfree_from_aiv`）要求匹配的 init `dir_mask` 为 `2` 或 `3`
+- 单函数内 lowered pipe 的 hardware flag id 总占用必须不超过 16
+- 单函数允许多条 `reserve_buffer`
+- 单函数允许多条 `import_reserved_buffer`
 - `DIR_MASK` 只允许 `1`、`2`、`3`
 - `SLOT_SIZE > 0`
 - `reserve_buffer.size == SLOT_SIZE * SLOT_NUM`
 - C2V consumer 的 `reserve_buffer.location` 必须是 `VEC`
 - V2C consumer 的 `reserve_buffer.location` 必须是 `MAT`
 - `reserve_buffer.name` 在本函数内必须唯一
+- `import_reserved_buffer` 的 `(name, peer_func)` 在本函数内必须唯一
 - op 级约束：`reserve_buffer.auto = false` 时必须提供 `base`
 - op 级约束：`reserve_buffer.auto = true` 时必须不提供 `base`
 - 启用 local address planning 的编译流程：`reserve_buffer` 只允许 `auto = true`
@@ -571,14 +576,14 @@ pto.tfree(%pipe) { split = 0 }
 
 1. 先按现有逻辑完成普通 local buffer 的 `MemPlan`
 2. 再收集该地址空间内已经分配完成的 local 区间
-3. 在剩余空洞中按地址空间对齐要求寻找一段可容纳 `reserve_buffer.size` 的连续区间
-4. 将该区间起始地址回填为这条唯一 `reserve_buffer` 的 `base`
+3. 对该地址空间内每条 `reserve_buffer`，按稳定顺序在剩余空洞中寻找一段满足大小与对齐要求的连续区间
+4. 将找到的区间起始地址分别回填为对应 `reserve_buffer` 的 `base`
 
 即：
 
 - 普通 `memref.alloc` / tile buffer 等 local 内存仍先由既有 `MemPlan` 按原逻辑分配
 - `reserve_buffer` 不参与普通 local buffer 的 inplace / reuse 规划
-- `reserve_buffer` 在普通 local buffer 分配完成后，再作为独立的一段连续 local 区间进行 hole 分配
+- `reserve_buffer` 在普通 local buffer 分配完成后，再作为独立的一段连续 local 区间进行 hole 分配；多条 `reserve_buffer` 会逐条占用不重叠区间
 - `reserve_buffer` 不保证位于地址空间起始地址，也不保证形成预留前缀；其语义仅为“在该地址空间中为 consumer slot buffer 找到一段对齐且连续的可用地址”
 - 若整体容量足够但 `MemPlan` 结果将空间打散，导致不存在满足大小和对齐要求的连续空洞，则 `reserve_buffer` 分配失败并报错
 
@@ -645,13 +650,11 @@ pass 在模块级按两步执行：
   - `dir_mask = 3`（DIR_BOTH）：一条 pipe 携带两个地址，分别归入两个逻辑方向——`local_addr` 归入 C2V（方向 1），`peer_local_addr` 归入 V2C（方向 2）
 - 将 peer 两侧引用到同一逻辑 pipe 的内部 init op 归并到同一组
 - 若某条 init 未显式提供 `flag_base`，则其 `local_addr` 必须来自 `reserve_buffer` 或 `import_reserved_buffer`
-- 对每个逻辑 pipe 分组，要求必须形成完整 peer init pair：恰好两条 init，且分别来自 peer 两侧函数；若 peer 信息不完整则直接报错
-- 在同一组内，若任一侧已显式提供 `flag_base`，则该值作为该组最终值；若两侧显式值冲突则报错
-- 若同组两侧都未显式提供 `flag_base`，则按默认规则回填：
-  - 单向场景：`flag_base = 0`
-  - 双向场景：C2V 组 `flag_base = 0`，V2C 组 `flag_base = 2`
-- “双向场景”指同一对 peer 函数之间同时存在 C2V 和 V2C 两个逻辑 pipe 分组；DIR_BOTH 的一条物理 pipe 天然产生这两个分组
-- 完成分组决策后，将最终 `flag_base` 回填到该组内所有尚未显式填写的 init op，保证 peer 两侧一致
+- 以这些逻辑 pipe 分组为边建立 peer component；每个 component 必须恰好包含两条、且分别来自 peer 两侧函数的兼容 init op，否则直接报错
+- “兼容”指两侧 init 的 `dir_mask`、`slot_size`、`slot_num` 以及 `local_slot_num` 一致；因此 `DIR_BOTH` 与拆分后的单向 pipe 不能在同一条 peer 通道上混用
+- 在同一 component 内，若任一侧已显式提供 `flag_base`，则该值作为该 component 最终值；若两侧显式值冲突则报错
+- 若 component 内两侧都未显式提供 `flag_base`，则由 flag 分配器为该 component 选择一段与同函数其它 pipe component 不重叠的 flag 区间
+- 完成分配后，将最终 `flag_base` 回填到该 component 内所有尚未显式填写的 init op，保证 peer 两侧一致
 
 第二步的实现方式是：
 
@@ -682,8 +685,9 @@ pass 在模块级按两步执行：
 - `peer_func` 无法解析到函数
 - 在 peer function 中找不到同名 `reserve_buffer`
 - 某条未显式提供 `flag_base` 的内部 init，其 `local_addr` 不来自 `reserve_buffer` / `import_reserved_buffer`
-- 基于 `reserve_buffer` / `import_reserved_buffer` 建立的某个逻辑 pipe 分组，未形成完整 peer init pair
+- 基于 `reserve_buffer` / `import_reserved_buffer` 建立的某个 peer component，未形成完整兼容的 peer init pair
 - peer `flag_base` 已显式给定但两侧取值冲突
+- 同一函数内两个不同 pipe component 的 flag 区间重叠
 
 ## 8. flag 分配规则
 
@@ -692,27 +696,28 @@ pass 在模块级按两步执行：
 - `flag_base` 由 PTOAS flag 分配阶段在内部 init op 上填写
 - 在 flag 分配完成前，内部 init op 可以暂时不携带 `flag_base`
 - peer 两侧同一逻辑 pipe 必须使用同一个 `flag_base`
+- 同一函数内不同 pipe component 的 flag 区间必须互不重叠
+- 硬件只提供 16 个 flag id，因此单函数内所有 pipe component 的 flag 区间总占用必须落在 `[0, 16)` 内
 
 ### 8.2 单向场景
 
-当前规划中，当 `DIR_MASK = 1` 或 `2` 且函数内仅有该唯一逻辑 pipe 时，可采用：
+当前规划中，单向 pipe component 每条占用一对逻辑 flag：
 
-- 该方向唯一逻辑 pipe 的 `flag_base = 0`
-- 该 pipe 占用逻辑 flag 对：`0` 和 `1`
+- 若该函数内没有更早分配的 pipe component，则首条单向 pipe 的 `flag_base = 0`
+- 后续单向 pipe 继续按偶数递增分配，例如 `0`、`2`、`4` ...
+- 每条单向 pipe component 占用逻辑 flag 对：`flag_base` 和 `flag_base + 1`
+- 因此若函数内全是单向 pipe，最多可容纳 8 条
 
 ### 8.3 双向场景
 
-当前规划中，当 `DIR_MASK = 3`（DIR_BOTH）时，虽然物理上只有一条 pipe，但 resolve pass 将其拆为两个逻辑方向分别分配 `flag_base`：
+当前规划中，当 `DIR_MASK = 3`（DIR_BOTH）时，单条物理 pipe component 固定占用两组逻辑 flag：
 
-- C2V 方向：`flag_base = 0`
-- V2C 方向：`flag_base = 2`
+- 若该 component 的 `flag_base = B`，则它占用 `B/B+1` 与 `B+2/B+3`
+- 因而 `DIR_BOTH` component 的 flag 宽度等价于两个单向 component
+- 因此若函数内全是 `DIR_BOTH` pipe，最多可容纳 4 条
+- 若单向与双向混用，则总规则仍是所有 component 的 flag 宽度之和不超过 16
 
-因此双向固定占用两组逻辑 flag：
-
-- C2V：`0` / `1`
-- V2C：`2` / `3`
-
-对于单条 DIR_BOTH pipe，最终 `flag_base` 取 C2V 方向的值（`0`），底层 pto-isa `TPipe<flagBase, Direction::DIR_BOTH, ...>` 会自动管理两个方向的 flag 对。
+对于单条 DIR_BOTH pipe，最终写回到内部 init op 的仍是该 component 的起始 `flag_base`，底层 pto-isa `TPipe<flagBase, Direction::DIR_BOTH, ...>` 会自动管理两个方向的 flag 对。
 
 ### 8.4 与地址传播的关系
 
@@ -735,6 +740,7 @@ pass 在模块级按两步执行：
 - `reserve_buffer.size == SLOT_SIZE * SLOT_NUM`
 - `reserve_buffer.location` 与 consumer 函数类型匹配
 - `reserve_buffer.name` 在函数内唯一
+- `import_reserved_buffer` 的 `(name, peer_func)` 在函数内唯一
 - `reserve_buffer.auto = false` 时必须带 `base`
 - `reserve_buffer.auto = true` 时必须不带 `base`
 - driver / pipeline 级约束：启用规划的编译流程只接受 `auto = true`

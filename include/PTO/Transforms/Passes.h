@@ -34,6 +34,7 @@ namespace pto {
 #include "PTO/Transforms/Passes.h.inc"
 
 std::unique_ptr<Pass> createLoweringSyncToPipePass();
+std::unique_ptr<Pass> createPTOAssignDefaultFrontendPipeIdPass();
 std::unique_ptr<Pass> createPTOLowerFrontendPipeOpsPass();
 std::unique_ptr<Pass> createPTOInferValidatePipeInitPass();
 std::unique_ptr<Pass> createPTOResolveReservedBuffersPass();
