@@ -51,7 +51,7 @@ def build():
                 ).result
 
                 # Hand-written multibuffer style:
-                # one workspace tile split into ping/pong by subset.
+                # one workspace tile split into ping/pong by subview.
                 # `pto.multi_buffer=2` tells PlanMemory/InsertSync this is a
                 # ping/pong candidate. Because each branch uses a proven slot
                 # directly, autosync should bind static event ids per slot
@@ -59,8 +59,8 @@ def build():
                 alloc = pto.AllocTileOp(workspace_ty)
                 alloc.operation.attributes["pto.multi_buffer"] = IntegerAttr.get(i32, 2)
                 workspace = alloc.result
-                ping = pto.SubsetOp(workspace, [c0, c0], sizes=[16, 16]).result
-                pong = pto.SubsetOp(workspace, [c0, c16], sizes=[16, 16]).result
+                ping = pto.SubViewOp(workspace, [c0, c0], sizes=[16, 16]).result
+                pong = pto.SubViewOp(workspace, [c0, c16], sizes=[16, 16]).result
 
                 loop = scf.ForOp(c0, c4, c1, [])
                 with InsertionPoint(loop.body):

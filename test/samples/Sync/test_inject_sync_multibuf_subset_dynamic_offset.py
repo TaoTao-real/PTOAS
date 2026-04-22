@@ -67,7 +67,7 @@ def build():
                 loop = scf.ForOp(c0, c2, c1, [])
                 with InsertionPoint(loop.body):
                     slot_off = arith.MulIOp(loop.induction_variable, c16).result
-                    slot = pto.SubsetOp(workspace, [c0, slot_off], sizes=[16, 16]).result
+                    slot = pto.SubViewOp(workspace, [c0, slot_off], sizes=[16, 16]).result
 
                     pto.TLoadOp(None, sv_in, slot)
                     pto.TStoreOp(None, slot, sv_out)

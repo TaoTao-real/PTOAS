@@ -39,8 +39,8 @@ static std::optional<int64_t> getConstantIntValue(Value v) {
   return std::nullopt;
 }
 
-static bool isSubsetLikeOp(Operation *op) {
-  return isa<pto::SubsetOp, memref::SubViewOp>(op);
+static bool isSubviewLikeOp(Operation *op) {
+  return isa<pto::SubViewOp, memref::SubViewOp>(op);
 }
 
 static bool isLegacyDoubleBufferRoot(const BaseMemInfo &info) {
@@ -688,20 +688,20 @@ void PTOIRTranslator::UpdateAliasBufferInfo(Value result, Value source) {
         newInfo->allocateSize = newSize;
     }
 
-    TryMarkSubsetMultibufferSlot(result, source, *parentInfo, *newInfo);
+    TryMarkSubviewMultibufferSlot(result, source, *parentInfo, *newInfo);
 
     resultMemInfoVec.emplace_back(std::move(newInfo));
   }
 }
 
-void PTOIRTranslator::TryMarkSubsetMultibufferSlot(Value result, Value source,
-                                                   const BaseMemInfo &parentInfo,
-                                                   BaseMemInfo &newInfo) {
+void PTOIRTranslator::TryMarkSubviewMultibufferSlot(
+    Value result, Value source, const BaseMemInfo &parentInfo,
+    BaseMemInfo &newInfo) {
   Value multibufferRoot;
   int multibufferSlot = -1;
   int multibufferFactor = 1;
-  if (IsSubsetMultibufferRootInvalid(parentInfo.rootBuffer) ||
-      IsSubsetMultibufferRootInvalid(newInfo.rootBuffer)) {
+  if (IsSubviewMultibufferRootInvalid(parentInfo.rootBuffer) ||
+      IsSubviewMultibufferRootInvalid(newInfo.rootBuffer)) {
     newInfo.multibufferRoot = nullptr;
     newInfo.multibufferSlot = -1;
     newInfo.multibufferFactor = 1;
@@ -710,18 +710,18 @@ void PTOIRTranslator::TryMarkSubsetMultibufferSlot(Value result, Value source,
     return;
   }
 
-  if (!TryComputeSubsetSlotInfo(result.getDefiningOp(), source, newInfo,
-                                multibufferRoot, multibufferSlot,
-                                multibufferFactor)) {
-    if (isSubsetLikeOp(result.getDefiningOp()) &&
-        IsRootLevelSubsetMultibufferCandidate(parentInfo)) {
-      InvalidateSubsetMultibufferRoot(parentInfo.rootBuffer);
+  if (!TryComputeSubviewSlotInfo(result.getDefiningOp(), source, newInfo,
+                                 multibufferRoot, multibufferSlot,
+                                 multibufferFactor)) {
+    if (isSubviewLikeOp(result.getDefiningOp()) &&
+        IsRootLevelSubviewMultibufferCandidate(parentInfo)) {
+      InvalidateSubviewMultibufferRoot(parentInfo.rootBuffer);
       newInfo.suppressLegacyMultibuffer = true;
     }
     return;
   }
 
-  if (IsSubsetMultibufferRootInvalid(multibufferRoot)) {
+  if (IsSubviewMultibufferRootInvalid(multibufferRoot)) {
     newInfo.multibufferRoot = nullptr;
     newInfo.multibufferSlot = -1;
     newInfo.multibufferFactor = 1;
@@ -737,32 +737,32 @@ void PTOIRTranslator::TryMarkSubsetMultibufferSlot(Value result, Value source,
   newInfo.suppressLegacyMultibuffer = false;
 }
 
-bool PTOIRTranslator::TryComputeSubsetSlotInfo(Operation *op, Value source,
-                                               const BaseMemInfo &parentInfo,
-                                               Value &multibufferRoot,
-                                               int &multibufferSlot,
-                                               int &multibufferFactor) const {
+bool PTOIRTranslator::TryComputeSubviewSlotInfo(Operation *op, Value source,
+                                                const BaseMemInfo &parentInfo,
+                                                Value &multibufferRoot,
+                                                int &multibufferSlot,
+                                                int &multibufferFactor) const {
   if (!op) return false;
 
   SmallVector<int64_t> offsets;
   SmallVector<int64_t> sizes;
   SmallVector<int64_t> sourceShape;
 
-  auto fillForSubset = [&](pto::SubsetOp subsetOp) -> bool {
-    auto rootType = dyn_cast<pto::TileBufType>(subsetOp.getSource().getType());
+  auto fillForPTOSubview = [&](pto::SubViewOp subviewOp) -> bool {
+    auto rootType = dyn_cast<pto::TileBufType>(subviewOp.getSource().getType());
     if (!rootType) return false;
-    if (subsetOp.getOffsets().size() != subsetOp.getSizes().size()) return false;
-    if (rootType.getShape().size() != subsetOp.getSizes().size()) return false;
+    if (subviewOp.getOffsets().size() != subviewOp.getSizes().size()) return false;
+    if (rootType.getShape().size() != subviewOp.getSizes().size()) return false;
 
     sourceShape.assign(rootType.getShape().begin(), rootType.getShape().end());
-    offsets.reserve(subsetOp.getOffsets().size());
-    sizes.reserve(subsetOp.getSizes().size());
-    for (Value off : subsetOp.getOffsets()) {
+    offsets.reserve(subviewOp.getOffsets().size());
+    sizes.reserve(subviewOp.getSizes().size());
+    for (Value off : subviewOp.getOffsets()) {
       auto c = getConstantIntValue(off);
       if (!c || *c < 0) return false;
       offsets.push_back(*c);
     }
-    for (Attribute sizeAttr : subsetOp.getSizes()) {
+    for (Attribute sizeAttr : subviewOp.getSizes()) {
       int64_t size = cast<IntegerAttr>(sizeAttr).getInt();
       if (size == ShapedType::kDynamic || size <= 0) return false;
       sizes.push_back(size);
@@ -791,8 +791,8 @@ bool PTOIRTranslator::TryComputeSubsetSlotInfo(Operation *op, Value source,
   };
 
   bool matched = false;
-  if (auto subsetOp = dyn_cast<pto::SubsetOp>(op)) {
-    matched = fillForSubset(subsetOp);
+  if (auto subviewOp = dyn_cast<pto::SubViewOp>(op)) {
+    matched = fillForPTOSubview(subviewOp);
   } else if (auto subView = dyn_cast<memref::SubViewOp>(op)) {
     matched = fillForSubView(subView);
   }
@@ -855,11 +855,11 @@ bool PTOIRTranslator::IsRootMarkedAsPingpong(Value root) const {
   return false;
 }
 
-bool PTOIRTranslator::IsSubsetMultibufferRootInvalid(Value root) const {
-  return root && invalidSubsetMultibufferRoots_.contains(root);
+bool PTOIRTranslator::IsSubviewMultibufferRootInvalid(Value root) const {
+  return root && invalidSubviewMultibufferRoots_.contains(root);
 }
 
-bool PTOIRTranslator::IsRootLevelSubsetMultibufferCandidate(
+bool PTOIRTranslator::IsRootLevelSubviewMultibufferCandidate(
     const BaseMemInfo &parentInfo) const {
   if (!parentInfo.rootBuffer) return false;
   if (!IsRootMarkedAsPingpong(parentInfo.rootBuffer) &&
@@ -869,9 +869,9 @@ bool PTOIRTranslator::IsRootLevelSubsetMultibufferCandidate(
          parentInfo.allocateSize > 0;
 }
 
-void PTOIRTranslator::InvalidateSubsetMultibufferRoot(Value root) {
+void PTOIRTranslator::InvalidateSubviewMultibufferRoot(Value root) {
   if (!root) return;
-  invalidSubsetMultibufferRoots_.insert(root);
+  invalidSubviewMultibufferRoots_.insert(root);
   for (auto &entry : buffer2MemInfoMap_) {
     for (auto &info : entry.second) {
       if (!info || info->rootBuffer != root) continue;

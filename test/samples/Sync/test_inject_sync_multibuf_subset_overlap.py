@@ -55,9 +55,9 @@ def build():
                 workspace = alloc.result
 
                 # Invalid ping/pong geometry for slot-aware autosync:
-                # the two subsets overlap in the second half of the tile.
-                ping = pto.SubsetOp(workspace, [c0, c0], sizes=[16, 16]).result
-                pong = pto.SubsetOp(workspace, [c0, c8], sizes=[16, 16]).result
+                # the two subviews overlap in the second half of the tile.
+                ping = pto.SubViewOp(workspace, [c0, c0], sizes=[16, 16]).result
+                pong = pto.SubViewOp(workspace, [c0, c8], sizes=[16, 16]).result
 
                 loop = scf.ForOp(c0, c4, c1, [])
                 with InsertionPoint(loop.body):

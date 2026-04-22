@@ -1,13 +1,13 @@
 // RUN: ptoas --enable-insert-sync --pto-insert-sync-debug=3 %s 2>&1 | FileCheck %s
 //
 // Issue #517 regression guard:
-// 1. Hand-written subset ping/pong should bind back-edge MTE3->MTE2 sync to
+// 1. Hand-written subview ping/pong should bind back-edge MTE3->MTE2 sync to
 //    the proven branch-local slot, so each branch-local edge keeps exactly one
 //    event id.
 // 2. InsertSync must not inflate those single-slot edges into orphan
 //    multibuffer lanes such as [2,3] / [4,5].
 // 3. Final InsertSync IR must not emit dynamic MTE3->MTE2 wait/set for this
-//    branch-local subset form.
+//    branch-local subview form.
 //
 // CHECK: // === [PTOInsertSync Debug] After EventId Allocation === //
 // CHECK: [   0] LOOP LOOP_BEGIN (begin=0, end=10)
@@ -45,8 +45,8 @@ module {
     %2 = pto.partition_view %0, offsets = [%c0, %c0], sizes = [%c16, %c16] : !pto.tensor_view<?x?xf16> -> !pto.partition_tensor_view<16x16xf16>
     %3 = pto.partition_view %1, offsets = [%c0, %c0], sizes = [%c16, %c16] : !pto.tensor_view<?x?xf16> -> !pto.partition_tensor_view<16x16xf16>
     %4 = pto.alloc_tile {pto.multi_buffer = 2 : i32} : !pto.tile_buf<vec, 16x32xf16>
-    %5 = pto.subset %4[%c0, %c0] sizes [16, 16] : !pto.tile_buf<vec, 16x32xf16>
-    %6 = pto.subset %4[%c0, %c16] sizes [16, 16] : !pto.tile_buf<vec, 16x32xf16>
+    %5 = pto.subview %4[%c0, %c0] sizes [16, 16] : !pto.tile_buf<vec, 16x32xf16> -> !pto.tile_buf<vec, 16x16xf16>
+    %6 = pto.subview %4[%c0, %c16] sizes [16, 16] : !pto.tile_buf<vec, 16x32xf16> -> !pto.tile_buf<vec, 16x16xf16>
     scf.for %arg2 = %c0 to %c4 step %c1 {
       %7 = arith.remui %arg2, %c2 : index
       %8 = arith.cmpi eq, %7, %c0 : index

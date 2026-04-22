@@ -24,15 +24,15 @@ multibuffer 引入以后，同一个逻辑 tile buffer 会被拆成多个物理 
 
 ## 2. 目标和非目标
 
-本设计的目标是支持 `Subset V1`，同时保持已有自动生成 multibuffer 路径不回归：
+本设计的目标是支持 `SubView V1`，同时保持已有自动生成 multibuffer 路径不回归：
 
 1. 当前 V1 正式支持的用户契约是：用户先声明一块已经扩好的 root workspace，并显式切出 ping/pong slot。
 2. 用户可以在同一根 tile workspace 上标记 `pto.multi_buffer = 2`。
-3. 用户可以通过 `pto.subset` 或 lowering 后的 `memref.subview` 切出 ping/pong，并显式写出稳定的 slot 选择逻辑，例如 parity 分支。
+3. 用户可以通过 `pto.subview` 或 lowering 后的 `memref.subview` 切出 ping/pong，并显式写出稳定的 slot 选择逻辑，例如 parity 分支。
 4. `PTOInsertSync` 能识别这两个 slice 是同一 multibuffer root 下的两个 slot。
 5. event id 分配可以为 ping/pong 提供稳定的 slot-local event lane，并把具体 event id 绑定到槽位。
 6. 当几何关系无法静态证明时，必须回退到普通 autosync，保证正确性优先。
-7. 内部抽象要建立在 slot 语义上，而不是建立在 `pto.subset` 这一种语法上，为后续 annotation-driven 自动 multibuffer 留出演进空间。
+7. 内部抽象要建立在 slot 语义上，而不是建立在 `pto.subview` 这一种语法上，为后续 annotation-driven 自动 multibuffer 留出演进空间。
 
 本设计明确不解决以下问题：
 
@@ -50,14 +50,14 @@ multibuffer 引入以后，同一个逻辑 tile buffer 会被拆成多个物理 
 
 当前 PTOAS 中有两条与 multibuffer 相关的路径，它们解决的问题不同。V1 要正式支持的是“用户显式声明 slot”的路径，同时保持已有 legacy 自动生成路径不回归。
 
-### 3.1 手工定义：`pto.multi_buffer=2` + `pto.subset/subview`
+### 3.1 手工定义：`pto.multi_buffer=2` + `pto.subview/memref.subview`
 
-Subset V1 面向的是用户显式切分 workspace 的写法：
+SubView V1 面向的是用户显式切分 workspace 的写法：
 
 ```mlir
 %root = pto.alloc_tile ... {pto.multi_buffer = 2}
-%ping = pto.subset %root offsets = [0, 0] sizes = [128, 256]
-%pong = pto.subset %root offsets = [128, 0] sizes = [128, 256]
+%ping = pto.subview %root[%c0, %c0] sizes [128, 256] : !pto.tile_buf<...> -> !pto.tile_buf<...>
+%pong = pto.subview %root[%c128, %c0] sizes [128, 256] : !pto.tile_buf<...> -> !pto.tile_buf<...>
 ```
 
 这里的用户契约是：
@@ -69,8 +69,8 @@ Subset V1 面向的是用户显式切分 workspace 的写法：
 - loop 中必须存在稳定的 slot 选择逻辑，例如 `%iv % 2` 对应 ping/pong。
 - 用户只负责表达 workspace、slot 和选择逻辑；自动同步和 event id 插入仍然由 PTOAS 完成。
 
-`PTOViewToMemref` 会把 `pto.multi_buffer` 属性从 `pto.alloc_tile` 传递到 lowering 后的 `memref.alloc`，并把 `pto.subset` lowering 成 `memref.subview + pto.bind_tile`。
-因此 `PTOInsertSync` 同时识别原始 `pto.subset` 和 lowering 后的 `memref.subview`。
+`PTOViewToMemref` 会把 `pto.multi_buffer` 属性从 `pto.alloc_tile` 传递到 lowering 后的 `memref.alloc`，并把 `pto.subview` lowering 成 `memref.subview + pto.bind_tile`。
+因此 `PTOInsertSync` 同时识别原始 `pto.subview` 和 lowering 后的 `memref.subview`。
 
 ### 3.2 自动生成：`PTOPlanMemory` + `pointer_cast(addrs=[...])`
 
@@ -82,7 +82,7 @@ Subset V1 面向的是用户显式切分 workspace 的写法：
 4. `EnableMultiBuffer` 后续把它改写成 loop-local 地址选择。
 
 这条路径已经存在，InsertSync 的 legacy 逻辑通过 `baseAddresses.size() == 2` 识别 double-buffer 地址组。
-Subset V1 不替换这条主路径，只是在 slot 元数据存在时优先使用 slot-aware 语义；否则继续走 legacy 逻辑。
+SubView V1 不替换这条主路径，只是在 slot 元数据存在时优先使用 slot-aware 语义；否则继续走 legacy 逻辑。
 
 ### 3.3 不自动推断：两块独立 `alloc_tile`
 
@@ -116,14 +116,14 @@ scf.for ... {
 
 当前 V1 不是“把单 buffer 自动扩成 ping/pong”，而是“用户先把 ping/pong workspace 和 slot 显式写出来，autosync 再按 slot 分 event id”。
 
-但这条路线并不妨碍未来升级。关键在于内部抽象必须建立在 slot 语义上，而不是建立在 `pto.subset` 这一种来源上：
+但这条路线并不妨碍未来升级。关键在于内部抽象必须建立在 slot 语义上，而不是建立在 `pto.subview` 这一种来源上：
 
-1. 现在由 `pto.subset/memref.subview` 产生 slot 元数据。
+1. 现在由 `pto.subview/memref.subview` 产生 slot 元数据。
 2. 未来可以新增一个前置 multibuffer materialization pass，让用户只标 `pto.multi_buffer = 2` 或类似 annotation。
 3. 该 pass 负责把单 buffer 扩成 root workspace、生成 slot view、补齐 selector，必要时再配合 loop/pipeline 改写。
 4. `PTOInsertSync`、`SyncEventIdAllocation` 和 `SyncCodegen` 继续消费统一的 slot 元数据，不需要重新设计同步核心。
 
-换句话说，手工 subset/subview 只是当前 V1 的第一种 slot 来源，不应被当作 multibuffer 模型本身。
+换句话说，手工 subview 只是当前 V1 的第一种 slot 来源，不应被当作 multibuffer 模型本身。
 
 ---
 
@@ -137,11 +137,11 @@ scf.for ... {
 
 `PTOIRTranslator -> InsertSyncAnalysis -> MoveSyncState -> RemoveRedundantSync -> SyncEventIdAllocation -> SyncCodegen`
 
-当前 V1 中，slot 的直接来源是 `pto.subset/memref.subview`；未来如果新增自动 multibuffer materialization pass，它也应该产出同样的 slot 元数据。
+当前 V1 中，slot 的直接来源是 `pto.subview/memref.subview`；未来如果新增自动 multibuffer materialization pass，它也应该产出同样的 slot 元数据。
 
 新增 slot-aware 语义主要落在三处：
 
-1. `PTOIRTranslator`：从 `pto.subset/memref.subview` 计算 slot 元数据。
+1. `PTOIRTranslator`：从 `pto.subview/memref.subview` 计算 slot 元数据。
 2. `InsertSyncAnalysis`：基于 slot 元数据决定一条 sync edge 需要几个 event id lane。
 3. `SyncCodegen`：当 sync edge 有多个 event id 时，生成 dynamic event-id set/wait。
 
@@ -149,7 +149,7 @@ scf.for ... {
 
 ```mermaid
 flowchart LR
-  A["手工 root workspace + subset/subview"] --> C["slot producer"]
+  A["手工 root workspace + subview"] --> C["slot producer"]
   B["未来 auto multibuffer materialization pass"] --> C
   C --> D["PTOIRTranslator"]
   D --> E["BaseMemInfo slot metadata"]
@@ -172,26 +172,26 @@ flowchart LR
 - `baseAddresses`：静态可知的地址或 offset。
 - `allocateSize`：当前 view 的静态大小。
 
-Subset V1 在此基础上增加以下字段：
+SubView V1 在此基础上增加以下字段：
 
 - `multibufferRoot`：slot 所属的逻辑 multibuffer root。
 - `multibufferSlot`：当前 view 属于哪个 slot，ping/pong 分别是 0/1。
 - `multibufferFactor`：当前只支持 2。
 - `isMultibufferSlotValid`：slot 元数据是否可用。
-- `suppressLegacyMultibuffer`：该 root 已被证明不是合法 subset multibuffer 时，禁止半路回退到 legacy double-buffer。
+- `suppressLegacyMultibuffer`：该 root 已被证明不是合法 subview multibuffer 时，禁止半路回退到 legacy double-buffer。
 
 注意：slot 元数据不替代 alias/range 分析。
 RAW、WAR、WAW 依赖是否存在，仍然由原来的 def/use 和地址区间规则判定。slot 元数据只参与 event-id lane 数量和 loop/back-edge 相关的动态选择。
 
-这些字段的设计应保持 source-agnostic：当前可以由 subset/subview 填充，未来也可以由自动 multibuffer 物化 pass、显式 group/slot annotation 或其他 view-like IR 产生。
+这些字段的设计应保持 source-agnostic：当前可以由 subview 填充，未来也可以由自动 multibuffer 物化 pass、显式 group/slot annotation 或其他 view-like IR 产生。
 
 ---
 
 ## 6. slot 识别：只接受静态可证明的 ping/pong 几何
 
-当前 V1 中，`PTOIRTranslator::TryComputeSubsetSlotInfo` 是第一种 slot producer。它只在以下条件全部满足时标记 slot：
+当前 V1 中，`PTOIRTranslator::TryComputeSubviewSlotInfo` 是第一种 slot producer。它只在以下条件全部满足时标记 slot：
 
-1. 定义 op 是 `pto.subset` 或 `memref.subview`。
+1. 定义 op 是 `pto.subview` 或 `memref.subview`。
 2. root buffer 带 `pto.multi_buffer = 2`，或者来自已有 legacy double-buffer root。
 3. offset、size 都是静态整数。
 4. `memref.subview` 的 stride 必须全为 1。
@@ -213,12 +213,12 @@ isMultibufferSlotValid = true
 
 ### 6.1 为什么失败时要按 root 失效
 
-一个 root 下如果出现了非法 subset，例如两个 slice 重叠、不是二等分、或只识别到了其中一半，不能只让失败的那条 view 回退。
+一个 root 下如果出现了非法 subview，例如两个 slice 重叠、不是二等分、或只识别到了其中一半，不能只让失败的那条 view 回退。
 否则会出现一部分 use/def 带 slot 元数据，另一部分 use/def 没有 slot 元数据，event-id 分配可能半路进入 dynamic path。
 
 因此当前策略是：
 
-1. 如果 root-level subset multibuffer candidate 识别失败，标记整个 root invalid。
+1. 如果 root-level subview multibuffer candidate 识别失败，标记整个 root invalid。
 2. 清空该 root 下已记录的 slot 元数据。
 3. 设置 `suppressLegacyMultibuffer = true`，避免 overlap 等负向用例又被 legacy `baseAddresses.size()==2` 当成合法 double-buffer。
 4. 后续全部按普通 alias/range autosync 处理。
@@ -316,24 +316,24 @@ wait_flag_dyn(srcPipe, dstPipe, event)
 
 ## 8. 两条路径如何共存
 
-Subset V1 和 legacy 自动生成 multibuffer 的优先级如下：
+SubView V1 和 legacy 自动生成 multibuffer 的优先级如下：
 
 1. 如果 `BaseMemInfo` 已经带合法 `isMultibufferSlotValid`，优先走 slot-aware path。
 2. 如果 slot-aware 不成立，且没有 `suppressLegacyMultibuffer`，再尝试 legacy `baseAddresses.size()==2` path。
-3. 如果 root 被标记为 invalid subset multibuffer，直接禁用 legacy fallback。
+3. 如果 root 被标记为 invalid subview multibuffer，直接禁用 legacy fallback。
 4. 如果以上都不成立，回到单 event id 的普通 autosync。
 
 这个顺序保证了三件事：
 
-- 手工 subset/subview pingpong 能得到按槽位绑定的 static/dynamic event-id 语义。
+- 手工 subview pingpong 能得到按槽位绑定的 static/dynamic event-id 语义。
 - 旧的 `pointer_cast(addrs=[...])` 主路径不回归。
-- 非法 subset 不会因为地址数量看起来像 double-buffer 而误进 multibuffer codegen。
+- 非法 subview 不会因为地址数量看起来像 double-buffer 而误进 multibuffer codegen。
 
 ---
 
-## 9. 例子：合法 subset、非法 overlap、缺少属性
+## 9. 例子：合法 subview、非法 overlap、缺少属性
 
-### 9.1 合法 subset ping/pong
+### 9.1 合法 subview ping/pong
 
 ```text
 root shape = [256, 256]
@@ -360,7 +360,7 @@ pong offset = [96, 0], size = [160, 256]
 两个 slice 重叠，且不是二等分。
 识别结果：
 
-- 整个 root 被标记为 invalid subset multibuffer。
+- 整个 root 被标记为 invalid subview multibuffer。
 - 清空 slot 元数据。
 - 禁用 legacy multibuffer fallback。
 - 按普通 autosync 保守插同步。
@@ -391,7 +391,7 @@ root has no pto.multi_buffer attribute
 
 1. 没有显式 multibuffer intent，就不启用 slot-aware 语义。
 2. 没有静态可证明的二等分非重叠几何，就不启用 slot-aware 语义。
-3. 一旦某个 root 的 subset multibuffer 识别失败，该 root 下所有 view 都回退到普通 autosync。
+3. 一旦某个 root 的 subview multibuffer 识别失败，该 root 下所有 view 都回退到普通 autosync。
 
 这些不变量会牺牲一部分优化机会，但能保证不会因为误识别 multibuffer 而漏同步或错误复用 event id。
 
@@ -401,12 +401,12 @@ root has no pto.multi_buffer attribute
 
 本设计对应的看护用例覆盖三类场景：
 
-- `test_inject_sync_multibuf_subset_pingpong.py`：合法 `pto.subset` + `pto.multi_buffer=2`，期望生成按槽位静态绑定的 event-id 形态，且不再产生 orphan dynamic lane，并防止回退到 tile pointer-cast 风格 lowering。
-- `test_inject_sync_multibuf_subset_overlap.py`：带 `pto.multi_buffer=2` 但 subset 重叠或不等分，期望只走普通 autosync，不进入 slot-aware multibuffer。
+- `test_inject_sync_multibuf_subset_pingpong.py`：合法 `pto.subview` + `pto.multi_buffer=2`，期望生成按槽位静态绑定的 event-id 形态，且不再产生 orphan dynamic lane，并防止回退到 tile pointer-cast 风格 lowering。
+- `test_inject_sync_multibuf_subset_overlap.py`：带 `pto.multi_buffer=2` 但 subview 重叠或不等分，期望只走普通 autosync，不进入 slot-aware multibuffer。
 - `test_inject_sync_multibuf_subset_no_attr.py`：ping/pong 几何合法但缺少 `pto.multi_buffer`，期望仍走普通 autosync。
 
 A3 上板最小用例为 `multibuffer_subset_pingpong_a3.py`。
-它使用单输入单输出和确定性 golden/compare，用于验证 subset-based ping/pong lowering、自动同步插入、按槽位静态 event-id 绑定和远端 NPU 执行链路。
+它使用单输入单输出和确定性 golden/compare，用于验证 subview-based ping/pong lowering、自动同步插入、按槽位静态 event-id 绑定和远端 NPU 执行链路。
 
 ---
 
@@ -426,8 +426,8 @@ A3 上板最小用例为 `multibuffer_subset_pingpong_a3.py`。
 
 ## 13. 结论
 
-Subset V1 的核心是把 multibuffer 从“两个地址”提升为“同一 root 下的多个 slot”。
+SubView V1 的核心是把 multibuffer 从“两个地址”提升为“同一 root 下的多个 slot”。
 当前正式支持的用户契约不是“编译器自动把单 buffer 扩成 ping/pong”，而是“用户先把 ping/pong workspace 和 slot 显式写出来，autosync 再把 event id 绑定到槽位”。
 
 依赖识别仍然保持原来的 alias/range correctness-first 策略，slot 元数据只在 event-id lane 统计以及必要时的 dynamic event-id codegen 中生效。
-这样既能覆盖用户手工 `pto.subset/memref.subview` 定义 ping/pong 的场景，又不会破坏已有 `PTOPlanMemory + pointer_cast(addrs=[...])` 自动生成 multibuffer 路径。更重要的是，只要内部保持 slot-aware 抽象，未来就可以在 autosync 前面增加 annotation-driven 自动 multibuffer materialization pass，而不需要重写同步核心。
+这样既能覆盖用户手工 `pto.subview/memref.subview` 定义 ping/pong 的场景，又不会破坏已有 `PTOPlanMemory + pointer_cast(addrs=[...])` 自动生成 multibuffer 路径。更重要的是，只要内部保持 slot-aware 抽象，未来就可以在 autosync 前面增加 annotation-driven 自动 multibuffer materialization pass，而不需要重写同步核心。

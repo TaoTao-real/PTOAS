@@ -49,8 +49,8 @@ def build():
                 ).result
 
                 workspace = pto.AllocTileOp(workspace_ty).result
-                ping = pto.SubsetOp(workspace, [c0, c0], sizes=[16, 16]).result
-                pong = pto.SubsetOp(workspace, [c0, c16], sizes=[16, 16]).result
+                ping = pto.SubViewOp(workspace, [c0, c0], sizes=[16, 16]).result
+                pong = pto.SubViewOp(workspace, [c0, c16], sizes=[16, 16]).result
 
                 loop = scf.ForOp(c0, c4, c1, [])
                 with InsertionPoint(loop.body):
