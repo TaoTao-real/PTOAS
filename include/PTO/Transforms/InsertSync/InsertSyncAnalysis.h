@@ -183,7 +183,6 @@ private:
       const CompoundInstanceElement *frontCompound,
       const DepBaseMemInfoPairVec &depBaseMemInfosVec,
       const std::optional<unsigned> &forEndIndex) const;
-  int GetLegacyEventIdNum(const DepBaseMemInfoPairVec &depBaseMemInfosVec) const;
   void ConfigureMultibufferSyncMetadata(
       SyncOperation *setOp, SyncOperation *waitOp,
       const MultibufferSyncDecision &decision);

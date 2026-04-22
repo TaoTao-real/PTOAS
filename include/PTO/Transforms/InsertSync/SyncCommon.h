@@ -98,15 +98,13 @@ struct BaseMemInfo {
       SmallVector<uint64_t> baseAddresses, uint64_t allocateSize,
       Value multibufferRoot = nullptr, int multibufferSlot = -1,
       int multibufferFactor = 1, int multibufferGroup = 0,
-      bool isMultibufferSlotValid = false,
-      bool suppressLegacyMultibuffer = false)
+      bool isMultibufferSlotValid = false)
       : baseBuffer(baseBuffer), rootBuffer(rootBuffer), scope(scope),
         baseAddresses(std::move(baseAddresses)), allocateSize(allocateSize),
         multibufferRoot(multibufferRoot), multibufferSlot(multibufferSlot),
         multibufferFactor(multibufferFactor),
         multibufferGroup(multibufferGroup),
-        isMultibufferSlotValid(isMultibufferSlotValid),
-        suppressLegacyMultibuffer(suppressLegacyMultibuffer) {}
+        isMultibufferSlotValid(isMultibufferSlotValid) {}
  
   /// baseBuffer: 当前操作直接使用的 Buffer (可能是 View 或 Alias)
   Value baseBuffer;
@@ -121,7 +119,6 @@ struct BaseMemInfo {
   int multibufferFactor;
   int multibufferGroup;
   bool isMultibufferSlotValid;
-  bool suppressLegacyMultibuffer;
  
   bool areVectorEqual(const SmallVector<uint64_t>& vec1,
                       const SmallVector<uint64_t>& vec2) const {
@@ -144,7 +141,6 @@ struct BaseMemInfo {
     if (multibufferFactor != other.multibufferFactor) return false;
     if (multibufferGroup != other.multibufferGroup) return false;
     if (isMultibufferSlotValid != other.isMultibufferSlotValid) return false;
-    if (suppressLegacyMultibuffer != other.suppressLegacyMultibuffer) return false;
     if (baseBuffer != other.baseBuffer) return false;
     return true;
   }
@@ -153,16 +149,14 @@ struct BaseMemInfo {
     return std::make_unique<BaseMemInfo>(
         baseBuffer, rootBuffer, scope, baseAddresses, allocateSize,
         multibufferRoot, multibufferSlot, multibufferFactor,
-        multibufferGroup,
-        isMultibufferSlotValid, suppressLegacyMultibuffer);
+        multibufferGroup, isMultibufferSlotValid);
   }
 
   std::unique_ptr<BaseMemInfo> clone(Value cloneBaseBuffer) const {
     return std::make_unique<BaseMemInfo>(
         cloneBaseBuffer, rootBuffer, scope, baseAddresses, allocateSize,
         multibufferRoot, multibufferSlot, multibufferFactor,
-        multibufferGroup,
-        isMultibufferSlotValid, suppressLegacyMultibuffer);
+        multibufferGroup, isMultibufferSlotValid);
   }
 };
  

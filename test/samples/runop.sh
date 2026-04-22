@@ -573,56 +573,6 @@ process_one_dir() {
       fi
     fi
 
-    # Regression guard: planned ping/pong buffers must be materialized as a
-    # loop-local selector + dynamic event-id set/wait on back-edge deps.
-    if [[ "$base" == "test_inject_sync_multibuf_pingpong" ]]; then
-      if ! grep -Fq "static_cast<event_t>" "$cpp" && ! grep -Fq "(event_t)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing dynamic event-id cast in generated C++"
-        overall=1
-        continue
-      fi
-      # Ensure the dynamic event id is actually passed to set/wait flag calls.
-      # (CallOpaqueOp requires an IntegerAttr placeholder, otherwise the operand
-      # is silently dropped and we emit a 2-arg wait_flag/set_flag.)
-      if ! grep -Eq "wait_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing dynamic wait_flag(..., <var>) for ping/pong back-edge"
-        overall=1
-        continue
-      fi
-      if ! grep -Eq "set_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing dynamic set_flag(..., <var>) for ping/pong back-edge"
-        overall=1
-        continue
-      fi
-      if ! grep -Fq "?" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing ternary select for ping/pong buffer selection"
-        overall=1
-        continue
-      fi
-      if ! grep -Fq "TASSIGN(" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing TASSIGN for selected ping/pong address"
-        overall=1
-        continue
-      fi
-      local uniq_i64_count
-      uniq_i64_count="$(awk '/^[[:space:]]*(const[[:space:]]+)?int64_t v[0-9]+ = -?[0-9]+;[[:space:]]*$/{print $(NF)}' "$cpp" | tr -d ';' | sort -u | wc -l | tr -d ' ')"
-      if [[ -z "${uniq_i64_count}" || "${uniq_i64_count}" -lt 2 ]]; then
-        echo -e "${A}(${base}.py)\tFAIL\texpected >=2 distinct int64 constants for ping/pong addresses"
-        overall=1
-        continue
-      fi
-      if ! grep -Eq "(const[[:space:]]+)?int64_t v[0-9]+ = .*\\? .* : .*;" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing int64 ternary selection for ping/pong address"
-        overall=1
-        continue
-      fi
-      if grep -Fq "(__ubuf__" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tunexpected Tile->pointer cast (may break NPU compilation)"
-        overall=1
-        continue
-      fi
-    fi
-
     # Regression guard: handwritten multibuffer (subview ping/pong) should keep
     # subview-based slot split and bind static event ids to proven ping/pong
     # slots without synthesizing orphan dynamic lanes.

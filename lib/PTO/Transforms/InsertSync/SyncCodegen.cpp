@@ -380,7 +380,7 @@ void SyncCodegen::CreateSetWaitOpForMultiBuffer(IRRewriter &rewriter,
                                                 Operation *op,
                                                 SyncOperation *sync,
                                                 bool beforeInsert) {
-  // Multi-buffer needs a dynamic selector to choose between event IDs.
+  // Explicit multibuffer needs a dynamic selector to choose between event IDs.
   Value selectedEventId = GetBufferSelected(rewriter, op, sync);
   setSyncInsertionPoint(rewriter, op,
                         beforeInsert || op->hasTrait<OpTrait::IsTerminator>());
@@ -411,20 +411,12 @@ Value SyncCodegen::GetBufferSelected(IRRewriter &rewriter, Operation *op,
   if (!sync || sync->eventIds.size() < 2)
     return nullptr;
 
-  int selectorFactor = -1;
-  if (sync->slotMode == MultibufferSlotMode::SELECTOR) {
-    if (sync->slotCount <= 1 ||
-        sync->eventIds.size() != static_cast<size_t>(sync->slotCount))
-      return nullptr;
-    selectorFactor = sync->slotCount;
-  } else if (sync->slotMode == MultibufferSlotMode::NONE) {
-    // Legacy pointer_cast/addrs multibuffer path does not carry explicit slot
-    // metadata. Keep supporting it by selecting over the allocated event-id
-    // lanes directly.
-    selectorFactor = static_cast<int>(sync->eventIds.size());
-  } else {
+  if (sync->slotMode != MultibufferSlotMode::SELECTOR ||
+      sync->slotCount <= 1 ||
+      sync->eventIds.size() != static_cast<size_t>(sync->slotCount)) {
     return nullptr;
   }
+  int selectorFactor = sync->slotCount;
 
   scf::ForOp baseLoop = getOwnerLoopFromSyncMetadata(syncIR_, sync);
   if (!baseLoop)

@@ -1116,13 +1116,6 @@ int main(int argc, char **argv) {
   if (enableInsertSync)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
 
-  // Materialize ping/pong selection for planned multi-buffer pointer_cast ops.
-  pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOEnableMultiBufferPass());
-
-  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTORemoveRedundantBarrierPass());
-  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOHighDimLoweringPass());
-  // pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOVFloopGatherPass());
-
   pm.addPass(createCSEPass());
   if (arch == "a3") {
     pm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A3));

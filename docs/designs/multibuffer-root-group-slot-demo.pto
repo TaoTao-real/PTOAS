@@ -1,21 +1,16 @@
-// Design-review PTO example for hierarchical multibuffer modeling.
+// Design-review PTO example for explicit subview multibuffer modeling.
 //
 // Purpose:
-// - Show where root / group / slot metadata should conceptually live.
-// - Keep the hierarchical shape explicit: one root workspace, two groups,
-//   three slots per group.
-// - Avoid exposing any user-facing selector-id attribute. The intended default
-//   semantics are round-robin selection by owner-loop iteration modulo factor.
+// - Show the user-facing contract that this PR really supports.
+// - One root workspace, two groups, three slots per group.
+// - Metadata live directly on leaf subviews.
+// - Selector semantics are expressed by normal if-else control flow.
 //
-// Important:
-// - This file is an architecture/design example for review.
-// - The IR body below intentionally uses current PTO surface syntax for
-//   readability.
-// - Proposed multibuffer metadata are written as concrete op attributes so the
-//   user-facing contract is explicit, even though the final verifier/parser
-//   rules for these attrs are still part of the design work.
-// - There is no separate user-facing "family" annotation in this model:
-//   sharing the same root workspace is the implicit family relation.
+// Notes:
+// - Common root workspace is the implicit family relation.
+// - group is the isolation domain for sync/event lanes.
+// - slot is the rotation index inside one group.
+// - factor is explicit; the compiler does not infer it from leaf count.
 
 module {
   func.func @multibuffer_root_group_slot_demo(
@@ -84,12 +79,9 @@ module {
        pto.multi_buffer_slot = 2 : i32}
       : !pto.tile_buf<vec, 48x16xf16> -> !pto.tile_buf<vec, 8x16xf16>
 
-    // Canonical selector shape:
-    // - no explicit selector attr on user IR
-    // - intended semantic meaning is owner-loop round-robin by factor = 3
-    // - first decide the current slot once
-    // - then select the group0/group1 tiles for that slot together
-    // - tload/tstore consume the selected SSA values outside the branches
+    // Selector semantics:
+    // - no extra selector attr on user IR
+    // - owner loop does round-robin by iv % 3
     // - iter 0 -> group0.slot0 + group1.slot0
     // - iter 1 -> group0.slot1 + group1.slot1
     // - iter 2 -> group0.slot2 + group1.slot2
@@ -98,32 +90,39 @@ module {
       %is0 = arith.cmpi eq, %slot, %c0 : index
       %is1 = arith.cmpi eq, %slot, %c1 : index
 
-      %selected_group0, %selected_group1 = scf.if %is0
-          -> (!pto.tile_buf<vec, 8x16xf16>, !pto.tile_buf<vec, 8x16xf16>) {
-        scf.yield %group0_slot0, %group1_slot0
-            : !pto.tile_buf<vec, 8x16xf16>, !pto.tile_buf<vec, 8x16xf16>
+      scf.if %is0 {
+        pto.tload ins(%src_part : !pto.partition_tensor_view<8x16xf16>)
+          outs(%group0_slot0 : !pto.tile_buf<vec, 8x16xf16>)
+        pto.tstore ins(%group0_slot0 : !pto.tile_buf<vec, 8x16xf16>)
+          outs(%dst_part : !pto.partition_tensor_view<8x16xf16>)
+
+        pto.tload ins(%src_part : !pto.partition_tensor_view<8x16xf16>)
+          outs(%group1_slot0 : !pto.tile_buf<vec, 8x16xf16>)
+        pto.tstore ins(%group1_slot0 : !pto.tile_buf<vec, 8x16xf16>)
+          outs(%dst_part : !pto.partition_tensor_view<8x16xf16>)
       } else {
-        %selected_group0_else, %selected_group1_else = scf.if %is1
-            -> (!pto.tile_buf<vec, 8x16xf16>, !pto.tile_buf<vec, 8x16xf16>) {
-          scf.yield %group0_slot1, %group1_slot1
-              : !pto.tile_buf<vec, 8x16xf16>, !pto.tile_buf<vec, 8x16xf16>
+        scf.if %is1 {
+          pto.tload ins(%src_part : !pto.partition_tensor_view<8x16xf16>)
+            outs(%group0_slot1 : !pto.tile_buf<vec, 8x16xf16>)
+          pto.tstore ins(%group0_slot1 : !pto.tile_buf<vec, 8x16xf16>)
+            outs(%dst_part : !pto.partition_tensor_view<8x16xf16>)
+
+          pto.tload ins(%src_part : !pto.partition_tensor_view<8x16xf16>)
+            outs(%group1_slot1 : !pto.tile_buf<vec, 8x16xf16>)
+          pto.tstore ins(%group1_slot1 : !pto.tile_buf<vec, 8x16xf16>)
+            outs(%dst_part : !pto.partition_tensor_view<8x16xf16>)
         } else {
-          scf.yield %group0_slot2, %group1_slot2
-              : !pto.tile_buf<vec, 8x16xf16>, !pto.tile_buf<vec, 8x16xf16>
+          pto.tload ins(%src_part : !pto.partition_tensor_view<8x16xf16>)
+            outs(%group0_slot2 : !pto.tile_buf<vec, 8x16xf16>)
+          pto.tstore ins(%group0_slot2 : !pto.tile_buf<vec, 8x16xf16>)
+            outs(%dst_part : !pto.partition_tensor_view<8x16xf16>)
+
+          pto.tload ins(%src_part : !pto.partition_tensor_view<8x16xf16>)
+            outs(%group1_slot2 : !pto.tile_buf<vec, 8x16xf16>)
+          pto.tstore ins(%group1_slot2 : !pto.tile_buf<vec, 8x16xf16>)
+            outs(%dst_part : !pto.partition_tensor_view<8x16xf16>)
         }
-        scf.yield %selected_group0_else, %selected_group1_else
-            : !pto.tile_buf<vec, 8x16xf16>, !pto.tile_buf<vec, 8x16xf16>
       }
-
-      pto.tload ins(%src_part : !pto.partition_tensor_view<8x16xf16>)
-        outs(%selected_group0 : !pto.tile_buf<vec, 8x16xf16>)
-      pto.tstore ins(%selected_group0 : !pto.tile_buf<vec, 8x16xf16>)
-        outs(%dst_part : !pto.partition_tensor_view<8x16xf16>)
-
-      pto.tload ins(%src_part : !pto.partition_tensor_view<8x16xf16>)
-        outs(%selected_group1 : !pto.tile_buf<vec, 8x16xf16>)
-      pto.tstore ins(%selected_group1 : !pto.tile_buf<vec, 8x16xf16>)
-        outs(%dst_part : !pto.partition_tensor_view<8x16xf16>)
     }
 
     return

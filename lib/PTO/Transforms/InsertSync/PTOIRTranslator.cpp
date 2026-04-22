@@ -31,7 +31,6 @@ using namespace mlir::pto;
 
 namespace {
 
-constexpr const char *kLegacyMultiBufferAttr = "pto.multi_buffer";
 constexpr const char *kSubviewMultiBufferFactorAttr =
     "pto.multi_buffer_factor";
 constexpr const char *kSubviewMultiBufferSlotAttr =
@@ -54,11 +53,6 @@ static std::optional<int64_t> getConstantIntValue(Value v) {
 
 static bool isSubviewLikeOp(Operation *op) {
   return isa<pto::SubViewOp, memref::SubViewOp>(op);
-}
-
-static bool isLegacyDoubleBufferRoot(const BaseMemInfo &info) {
-  return info.baseAddresses.size() == 2 && info.allocateSize != 0 &&
-         info.scope != pto::AddressSpace::GM;
 }
 
 static std::optional<uint64_t> getElementBytes(Type elementType) {
@@ -748,7 +742,6 @@ void PTOIRTranslator::TryMarkSubviewMultibufferSlot(
     newInfo.multibufferFactor = 1;
     newInfo.multibufferGroup = 0;
     newInfo.isMultibufferSlotValid = false;
-    newInfo.suppressLegacyMultibuffer = true;
     return;
   }
 
@@ -756,10 +749,8 @@ void PTOIRTranslator::TryMarkSubviewMultibufferSlot(
                                  multibufferRoot, multibufferSlot,
                                  multibufferFactor, multibufferGroup)) {
     if (isSubviewLikeOp(result.getDefiningOp()) &&
-        (HasExplicitSubviewMultibufferAnnotation(result.getDefiningOp()) ||
-         IsRootLevelSubviewMultibufferCandidate(parentInfo))) {
+        HasExplicitSubviewMultibufferAnnotation(result.getDefiningOp())) {
       InvalidateSubviewMultibufferRoot(parentInfo.rootBuffer);
-      newInfo.suppressLegacyMultibuffer = true;
     }
     return;
   }
@@ -770,7 +761,6 @@ void PTOIRTranslator::TryMarkSubviewMultibufferSlot(
     newInfo.multibufferFactor = 1;
     newInfo.multibufferGroup = 0;
     newInfo.isMultibufferSlotValid = false;
-    newInfo.suppressLegacyMultibuffer = true;
     return;
   }
 
@@ -779,7 +769,6 @@ void PTOIRTranslator::TryMarkSubviewMultibufferSlot(
   newInfo.multibufferFactor = multibufferFactor;
   newInfo.multibufferGroup = multibufferGroup;
   newInfo.isMultibufferSlotValid = true;
-  newInfo.suppressLegacyMultibuffer = false;
 }
 
 bool PTOIRTranslator::TryComputeSubviewSlotInfo(Operation *op, Value source,
@@ -851,13 +840,12 @@ bool PTOIRTranslator::TryComputeSubviewSlotInfo(Operation *op, Value source,
   bool hasExplicitAnnotation = TryGetAnnotatedSubviewMultibufferInfo(
       op, annotatedSlot, annotatedFactor, annotatedGroup);
 
-  if (!hasExplicitAnnotation && !IsRootMarkedAsPingpong(parentInfo.rootBuffer) &&
-      !isLegacyDoubleBufferRoot(parentInfo))
+  if (!hasExplicitAnnotation)
     return false;
   if (offsets.size() != sizes.size() || offsets.size() != sourceShape.size())
     return false;
 
-  int factor = hasExplicitAnnotation ? annotatedFactor : 2;
+  int factor = annotatedFactor;
   if (factor <= 1) return false;
 
   for (size_t i = 0; i < offsets.size(); ++i) {
@@ -885,49 +873,6 @@ bool PTOIRTranslator::TryComputeSubviewSlotInfo(Operation *op, Value source,
     multibufferGroup = annotatedGroup;
     return true;
   }
-
-  int partitionDim = -1;
-  int64_t partitionExtent = 0;
-  for (size_t i = 0; i < offsets.size(); ++i) {
-    int64_t rootDim = sourceShape[i];
-    int64_t offset = offsets[i];
-    int64_t size = sizes[i];
-    if (size == rootDim) {
-      if (offset != 0) return false;
-      continue;
-    }
-
-    if (partitionDim != -1) return false;
-    partitionDim = static_cast<int>(i);
-    partitionExtent = rootDim;
-  }
-
-  if (partitionDim < 0 || partitionExtent <= 0) return false;
-  if (partitionExtent % factor != 0) return false;
-  if (sizes[static_cast<size_t>(partitionDim)] * factor != partitionExtent)
-    return false;
-  if (offsets[static_cast<size_t>(partitionDim)] %
-          sizes[static_cast<size_t>(partitionDim)] !=
-      0)
-    return false;
-
-  int64_t slot = offsets[static_cast<size_t>(partitionDim)] /
-                 sizes[static_cast<size_t>(partitionDim)];
-  if (slot < 0 || slot >= factor) return false;
-
-  auto rootAllocBytes = getStaticValueSizeInBytes(parentInfo.rootBuffer);
-  auto slotAllocBytes = getStaticValueSizeInBytes(op->getResult(0));
-  if (rootAllocBytes && slotAllocBytes && *rootAllocBytes > 0 &&
-      *slotAllocBytes > 0 &&
-      static_cast<uint64_t>(*rootAllocBytes) !=
-          static_cast<uint64_t>(*slotAllocBytes) *
-              static_cast<uint64_t>(factor))
-    return false;
-
-  multibufferRoot = parentInfo.rootBuffer;
-  multibufferSlot = static_cast<int>(slot);
-  multibufferFactor = factor;
-  multibufferGroup = 0;
   return true;
 }
 
@@ -965,27 +910,8 @@ bool PTOIRTranslator::HasExplicitSubviewMultibufferAnnotation(Operation *op) con
          op->hasAttr(kSubviewMultiBufferGroupAttr);
 }
 
-bool PTOIRTranslator::IsRootMarkedAsPingpong(Value root) const {
-  if (!root) return false;
-  if (Operation *defOp = root.getDefiningOp()) {
-    auto attr = defOp->getAttrOfType<IntegerAttr>(kLegacyMultiBufferAttr);
-    return attr && attr.getInt() == 2;
-  }
-  return false;
-}
-
 bool PTOIRTranslator::IsSubviewMultibufferRootInvalid(Value root) const {
   return root && invalidSubviewMultibufferRoots_.contains(root);
-}
-
-bool PTOIRTranslator::IsRootLevelSubviewMultibufferCandidate(
-    const BaseMemInfo &parentInfo) const {
-  if (!parentInfo.rootBuffer) return false;
-  if (!IsRootMarkedAsPingpong(parentInfo.rootBuffer) &&
-      !isLegacyDoubleBufferRoot(parentInfo))
-    return false;
-  return parentInfo.baseBuffer == parentInfo.rootBuffer ||
-         parentInfo.allocateSize > 0;
 }
 
 void PTOIRTranslator::InvalidateSubviewMultibufferRoot(Value root) {
@@ -999,7 +925,6 @@ void PTOIRTranslator::InvalidateSubviewMultibufferRoot(Value root) {
       info->multibufferFactor = 1;
       info->multibufferGroup = 0;
       info->isMultibufferSlotValid = false;
-      info->suppressLegacyMultibuffer = true;
     }
   }
 }

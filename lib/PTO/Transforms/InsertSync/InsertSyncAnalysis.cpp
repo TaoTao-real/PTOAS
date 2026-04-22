@@ -883,69 +883,7 @@ InsertSyncAnalysis::AnalyzeMultibufferSync(
     return decision;
   }
 
-  decision.eventIdNum = GetLegacyEventIdNum(depBaseMemInfosVec);
   return decision;
-}
-
-int InsertSyncAnalysis::GetLegacyEventIdNum(
-    const DepBaseMemInfoPairVec &depBaseMemInfosVec) const {
-  auto isOverlap = [](const BaseMemInfo *a, const BaseMemInfo *b, int i,
-                      int j) -> bool {
-    uint64_t aStart = a->baseAddresses[static_cast<size_t>(i)];
-    uint64_t bStart = b->baseAddresses[static_cast<size_t>(j)];
-    uint64_t aEnd = aStart + a->allocateSize;
-    uint64_t bEnd = bStart + b->allocateSize;
-    uint64_t maxStart = std::max(aStart, bStart);
-    uint64_t minEnd = std::min(aEnd, bEnd);
-    return maxStart < minEnd;
-  };
-
-  for (const auto &pair : depBaseMemInfosVec) {
-    const BaseMemInfo *a = pair.first;
-    const BaseMemInfo *b = pair.second;
-    if (!a || !b) {
-      return 1;
-    }
-    if (a->scope == pto::AddressSpace::GM || b->scope == pto::AddressSpace::GM) {
-      return 1;
-    }
-    if (a->suppressLegacyMultibuffer || b->suppressLegacyMultibuffer) {
-      return 1;
-    }
-    if (a->isMultibufferSlotValid != b->isMultibufferSlotValid) {
-      return 1;
-    }
-    if (a->isMultibufferSlotValid || b->isMultibufferSlotValid) {
-      return 1;
-    }
-
-    const int aSz = static_cast<int>(a->baseAddresses.size());
-    const int bSz = static_cast<int>(b->baseAddresses.size());
-    if (aSz != bSz || aSz <= 1) {
-      return 1;
-    }
-
-    // Currently only support double-buffer (ping/pong).
-    if (aSz != 2) {
-      return 1;
-    }
-
-    // Require known sizes to prove non-overlap across slots.
-    if (a->allocateSize == 0 || b->allocateSize == 0) {
-      return 1;
-    }
-
-    for (int i = 0; i < aSz; i++) {
-      for (int j = 0; j < bSz; j++) {
-        bool overlap = isOverlap(a, b, i, j);
-        if ((i == j && !overlap) || (i != j && overlap)) {
-          return 1;
-        }
-      }
-    }
-  }
-
-  return 2;
 }
 
 void InsertSyncAnalysis::ConfigureMultibufferSyncMetadata(

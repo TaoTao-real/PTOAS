@@ -21,7 +21,6 @@ add_mlir_dialect_library(PTOTransforms
   AllocToPointerCast.cpp
   InferPTOMemScope.cpp
   PTOPlanMemory.cpp
-  EnableMultiBuffer.cpp
   PTORemoveRedundantBarrier.cpp
   InferPTOLayout.cpp
   PTOA5NormalizeTMovPass.cpp
@@ -36,10 +35,10 @@ add_mlir_dialect_library(PTOTransforms
   InsertSync/InsertSyncAnalysis.cpp
   InsertSync/MemoryDependentAnalyzer.cpp
   InsertSync/MoveSyncState.cpp
-  InsertSync/MultiBufferSelector.cpp
   InsertSync/RemoveRedundantSync.cpp
   InsertSync/SyncEventIdAllocation.cpp
   InsertSync/SyncCodegen.cpp
+  InsertSync/MultiBufferSelector.cpp
   LoweringSyncToPipe.cpp
   PTOVerifyTFreePass.cpp
 

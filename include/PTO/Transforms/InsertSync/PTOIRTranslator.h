@@ -102,10 +102,7 @@ private:
                                              int &multibufferFactor,
                                              int &multibufferGroup) const;
   bool HasExplicitSubviewMultibufferAnnotation(Operation *op) const;
-  bool IsRootMarkedAsPingpong(Value root) const;
   bool IsSubviewMultibufferRootInvalid(Value root) const;
-  bool IsRootLevelSubviewMultibufferCandidate(
-      const BaseMemInfo &parentInfo) const;
   void InvalidateSubviewMultibufferRoot(Value root);
   void FinalizeExplicitSubviewMultibufferGroups();
   bool ValidateExplicitSubviewMultibufferRoot(
