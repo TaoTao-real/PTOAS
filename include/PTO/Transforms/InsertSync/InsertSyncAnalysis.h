@@ -75,6 +75,14 @@ private:
     Value sharedRoot{nullptr};
     int ownerLoopBeginId{-1};
     int ownerLoopEndId{-1};
+    int branchSelectorFamilyBeginId{-1};
+    Operation *branchSelectorRepresentativeOp{nullptr};
+  };
+
+  struct MultibufferIdentity {
+    Value root{nullptr};
+    int group{0};
+    int factor{1};
   };
 
   // --- Core Logic Methods ---
@@ -171,13 +179,15 @@ private:
  
   /// 获取依赖对涉及的 Event ID 数量 (用于 Multi-Buffer 分析)
   MultibufferSyncDecision AnalyzeMultibufferSync(
+      const CompoundInstanceElement *nowCompound,
+      const CompoundInstanceElement *frontCompound,
       const DepBaseMemInfoPairVec &depBaseMemInfosVec,
       const std::optional<unsigned> &forEndIndex) const;
   int GetLegacyEventIdNum(const DepBaseMemInfoPairVec &depBaseMemInfosVec) const;
   void ConfigureMultibufferSyncMetadata(
       SyncOperation *setOp, SyncOperation *waitOp,
       const MultibufferSyncDecision &decision);
-  std::optional<int> GetSharedMultibufferFactor(
+  std::optional<MultibufferIdentity> GetSharedMultibufferIdentity(
       const DepBaseMemInfoPairVec &depBaseMemInfosVec) const;
   bool AreSlotwiseNonOverlapping(const DepBaseMemInfoPairVec &depBaseMemInfosVec,
                                  int factor) const;
@@ -185,7 +195,8 @@ private:
                                   int factor) const;
 
   /// 辅助函数：获取所有涉及的 Buffer (用于 LCA 计算，虽然现在简化了，保留接口)
-  SmallVector<Value> GetMemInfoBuffers(const DepBaseMemInfoPairVec &depBaseMemInfosVec);
+  SmallVector<std::pair<Value, int>> GetMemInfoRootGroups(
+      const DepBaseMemInfoPairVec &depBaseMemInfosVec) const;
  
   /// 判断 buffer 是否是 Alloc 类操作 (用于溯源)
   bool IsMemAllocOp(Operation *op) const;

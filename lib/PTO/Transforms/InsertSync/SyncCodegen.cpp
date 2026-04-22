@@ -273,12 +273,11 @@ void SyncCodegen::updatePlaceHolderOpInsertSync(PlaceHolderInstanceElement *plac
           // 依然没有 Sync 需要插入，直接返回
           return;
       }
-  } 
+  }
   // 2. 处理 Normal PlaceHolder (Then End or Existing Else End)
   else if (placeHolder->elementOp == placeHolder->parentIfOp) {
       // 之前的 Translator 逻辑把 Normal Placeholder 也映射到了 ifOp
       // 我们需要修正它指向 Yield
-      auto ifOp = dyn_cast<scf::IfOp>(placeHolder->elementOp);
       // 判断是 Then 还是 Else
       // 简单判断：看 index。或者 Translator 里直接存 Yield Op。
       // 这里假设 Translator 存的是 IfOp，我们需要找到对应的 Yield。
@@ -411,33 +410,56 @@ Value SyncCodegen::GetBufferSelected(IRRewriter &rewriter, Operation *op,
 
   if (!sync || sync->eventIds.size() < 2)
     return nullptr;
-  if (sync->slotMode != MultibufferSlotMode::NONE &&
-      sync->slotMode != MultibufferSlotMode::PARITY)
+
+  int selectorFactor = -1;
+  if (sync->slotMode == MultibufferSlotMode::SELECTOR) {
+    if (sync->slotCount <= 1 ||
+        sync->eventIds.size() != static_cast<size_t>(sync->slotCount))
+      return nullptr;
+    selectorFactor = sync->slotCount;
+  } else if (sync->slotMode == MultibufferSlotMode::NONE) {
+    // Legacy pointer_cast/addrs multibuffer path does not carry explicit slot
+    // metadata. Keep supporting it by selecting over the allocated event-id
+    // lanes directly.
+    selectorFactor = static_cast<int>(sync->eventIds.size());
+  } else {
     return nullptr;
+  }
 
   scf::ForOp baseLoop = getOwnerLoopFromSyncMetadata(syncIR_, sync);
   if (!baseLoop)
     return nullptr;
 
-  // Get or build the nested-loop parity condition at the start of the base loop.
-  Value cond;
-  if (loop2BufferCounter.count(baseLoop.getOperation())) {
-    cond = loop2BufferCounter[baseLoop.getOperation()];
-  } else {
-    cond = buildLoopNestParityCond(rewriter, baseLoop);
-    if (!cond)
+  // Get or build the round-robin loop selector at the start of the base loop.
+  Value slotIndex;
+  auto &selectorCache = loop2BufferCounter[baseLoop.getOperation()];
+  for (const auto &[factor, selector] : selectorCache) {
+    if (factor == selectorFactor) {
+      slotIndex = selector;
+      break;
+    }
+  }
+  if (!slotIndex) {
+    slotIndex =
+        buildLoopNestRoundRobinSlotIndex(rewriter, baseLoop, selectorFactor);
+    if (!slotIndex)
       return nullptr;
-    loop2BufferCounter[baseLoop.getOperation()] = cond;
+    selectorCache.emplace_back(selectorFactor, slotIndex);
   }
 
-  rewriter.setInsertionPointAfter(cond.getDefiningOp());
-  Value id0 =
+  rewriter.setInsertionPointAfter(slotIndex.getDefiningOp());
+  Value selected =
       rewriter.create<arith::ConstantIndexOp>(op->getLoc(), sync->eventIds[0]);
-  Value id1 =
-      rewriter.create<arith::ConstantIndexOp>(op->getLoc(), sync->eventIds[1]);
-
-  // Select id1 on odd iterations, id0 on even iterations.
-  Value selected = rewriter.create<arith::SelectOp>(op->getLoc(), cond, id1, id0);
+  for (size_t i = 1; i < sync->eventIds.size(); ++i) {
+    Value slotConst = rewriter.create<arith::ConstantIndexOp>(
+        op->getLoc(), static_cast<int64_t>(i));
+    Value eventConst = rewriter.create<arith::ConstantIndexOp>(
+        op->getLoc(), sync->eventIds[i]);
+    Value isCurrentSlot = rewriter.create<arith::CmpIOp>(
+        op->getLoc(), arith::CmpIPredicate::eq, slotIndex, slotConst);
+    selected = rewriter.create<arith::SelectOp>(op->getLoc(), isCurrentSlot,
+                                                eventConst, selected);
+  }
 
   SyncIndex2SelectBuffer[sync->GetSyncIndex()] = selected;
   return selected;

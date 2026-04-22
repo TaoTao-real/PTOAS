@@ -33,11 +33,14 @@ def build():
             pd = pto.PadValueAttr.get(pto.PadValue.Null, ctx)
             fractal_ab_size = pto.TileConfig.fractalABSize
             cfg = pto.TileBufConfigAttr.get(bl, sl, fractal_ab_size, pd, ctx)
-            workspace_ty = pto.TileBufType.get([16, 32], f16, vec, [16, 32], cfg, ctx)
+            slot_ty = pto.TileBufType.get([16, 16], f16, vec, [16, 16], cfg, ctx)
+            workspace_ty = pto.TileBufType.get([16, 64], f16, vec, [16, 64], cfg, ctx)
 
             fn_ty = func.FunctionType.get([ptr_f16, ptr_f16], [])
             with InsertionPoint(m.body):
-                fn = func.FuncOp("test_inject_sync_multibuf_subset_dynamic_offset_py", fn_ty)
+                fn = func.FuncOp(
+                    "test_inject_sync_multibuf_subset_group_mixed_selector_py", fn_ty
+                )
                 entry = fn.add_entry_block()
 
             with InsertionPoint(entry):
@@ -46,7 +49,10 @@ def build():
                 c0 = arith.ConstantOp(idx, 0).result
                 c1 = arith.ConstantOp(idx, 1).result
                 c2 = arith.ConstantOp(idx, 2).result
+                c4 = arith.ConstantOp(idx, 4).result
                 c16 = arith.ConstantOp(idx, 16).result
+                c32 = arith.ConstantOp(idx, 32).result
+                c48 = arith.ConstantOp(idx, 48).result
 
                 tv_in = pto.MakeTensorViewOp(tv2_f16, src, [c16, c16], [c16, c1]).result
                 tv_out = pto.MakeTensorViewOp(tv2_f16, dst, [c16, c16], [c16, c1]).result
@@ -57,23 +63,47 @@ def build():
                     tile_view_16, tv_out, offsets=[c0, c0], sizes=[c16, c16]
                 ).result
 
-                alloc = pto.AllocTileOp(workspace_ty)
-                workspace = alloc.result
+                workspace = pto.AllocTileOp(workspace_ty).result
 
-                # Dynamic offset means V1 cannot statically prove a stable
-                # ping/pong slot geometry, so autosync must fall back to the
-                # normal single-event path.
-                loop = scf.ForOp(c0, c2, c1, [])
+                group0_slot0_op = pto.SubViewOp(workspace, [c0, c0], sizes=[16, 16])
+                group1_slot1_op = pto.SubViewOp(workspace, [c0, c48], sizes=[16, 16])
+
+                group0_slot0 = group0_slot0_op.result
+                group1_slot1 = group1_slot1_op.result
+
+                group0_slot0_op.operation.attributes["pto.multi_buffer_factor"] = IntegerAttr.get(
+                    i32, 2
+                )
+                group0_slot0_op.operation.attributes["pto.multi_buffer_group"] = IntegerAttr.get(
+                    i32, 0
+                )
+                group0_slot0_op.operation.attributes["pto.multi_buffer_slot"] = IntegerAttr.get(
+                    i32, 0
+                )
+                group1_slot1_op.operation.attributes["pto.multi_buffer_factor"] = IntegerAttr.get(
+                    i32, 2
+                )
+                group1_slot1_op.operation.attributes["pto.multi_buffer_group"] = IntegerAttr.get(
+                    i32, 1
+                )
+                group1_slot1_op.operation.attributes["pto.multi_buffer_slot"] = IntegerAttr.get(
+                    i32, 1
+                )
+
+                loop = scf.ForOp(c0, c4, c1, [])
                 with InsertionPoint(loop.body):
-                    slot_off = arith.MulIOp(loop.induction_variable, c16).result
-                    slot_op = pto.SubViewOp(workspace, [c0, slot_off], sizes=[16, 16])
-                    slot = slot_op.result
-                    slot_op.operation.attributes["pto.multi_buffer_factor"] = IntegerAttr.get(i32, 2)
-                    slot_op.operation.attributes["pto.multi_buffer_slot"] = IntegerAttr.get(i32, 0)
+                    parity = arith.RemUIOp(loop.induction_variable, c2).result
+                    is_group0 = arith.CmpIOp(arith.CmpIPredicate.eq, parity, c0).result
 
-                    pto.TLoadOp(None, sv_in, slot)
-                    pto.TStoreOp(None, slot, sv_out)
+                    mixed_if = scf.IfOp(is_group0, [slot_ty], hasElse=True)
+                    with InsertionPoint(mixed_if.then_block):
+                        scf.YieldOp([group0_slot0])
+                    with InsertionPoint(mixed_if.else_block):
+                        scf.YieldOp([group1_slot1])
 
+                    selected_slot = mixed_if.results[0]
+                    pto.TLoadOp(None, sv_in, selected_slot)
+                    pto.TStoreOp(None, selected_slot, sv_out)
                     scf.YieldOp([])
 
                 func.ReturnOp([])

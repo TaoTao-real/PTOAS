@@ -59,13 +59,18 @@ def build():
                 ).result
 
                 alloc = pto.AllocTileOp(workspace_ty)
-                alloc.operation.attributes["pto.multi_buffer"] = IntegerAttr.get(i32, 2)
                 workspace = alloc.result
 
                 # Invalid ping/pong geometry for slot-aware autosync:
                 # the two subviews overlap in the second half of the tile.
-                ping = pto.SubViewOp(workspace, [c0, c0], sizes=[16, 16]).result
-                pong = pto.SubViewOp(workspace, [c0, c8], sizes=[16, 16]).result
+                ping_op = pto.SubViewOp(workspace, [c0, c0], sizes=[16, 16])
+                pong_op = pto.SubViewOp(workspace, [c0, c8], sizes=[16, 16])
+                ping = ping_op.result
+                pong = pong_op.result
+                ping_op.operation.attributes["pto.multi_buffer_factor"] = IntegerAttr.get(i32, 2)
+                ping_op.operation.attributes["pto.multi_buffer_slot"] = IntegerAttr.get(i32, 0)
+                pong_op.operation.attributes["pto.multi_buffer_factor"] = IntegerAttr.get(i32, 2)
+                pong_op.operation.attributes["pto.multi_buffer_slot"] = IntegerAttr.get(i32, 1)
 
                 loop = scf.ForOp(c0, c4, c1, [])
                 with InsertionPoint(loop.body):

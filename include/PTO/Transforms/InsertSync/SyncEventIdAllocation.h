@@ -52,6 +52,8 @@ private:
   void AllocateEventId(InstanceElement *e);
   size_t GetCompilerAvailableEventIdNum(const SyncOperation *sync);
   void SetEventId(SyncOperation *sync);
+  const SyncOperation *
+  FindEquivalentBranchSelectorSync(const SyncOperation *sync) const;
  
   SmallVector<bool> GetEventPool(const SyncOperation *sync, size_t eventIdNum);
   int ScopePair(const SyncOperation *s);

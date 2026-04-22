@@ -21,6 +21,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/raw_ostream.h"
  
@@ -54,6 +55,17 @@ public:
   void print();
  
 private:
+  struct ExplicitSubviewMultibufferCandidate {
+    Value resultBuffer;
+    Value rootBuffer;
+    int multibufferGroup;
+    int multibufferSlot;
+    int multibufferFactor;
+    SmallVector<int64_t, 4> offsets;
+    SmallVector<int64_t, 4> sizes;
+    SmallVector<int64_t, 4> sourceShape;
+  };
+
   func::FuncOp func_;
   unsigned index; // 当前 SyncIR 节点的索引计数器
   
@@ -63,6 +75,8 @@ private:
   MemoryDependentAnalyzer &memAnalyzer_;
   SyncAnalysisMode mode_;
   llvm::DenseSet<Value> invalidSubviewMultibufferRoots_;
+  SmallVector<ExplicitSubviewMultibufferCandidate, 8>
+      explicitSubviewMultibufferCandidates_;
  
   // --- 递归遍历逻辑 ---
   void RecursionIR(Region *region);
@@ -82,13 +96,22 @@ private:
   bool TryComputeSubviewSlotInfo(Operation *op, Value source,
                                  const BaseMemInfo &parentInfo,
                                  Value &multibufferRoot, int &multibufferSlot,
-                                 int &multibufferFactor) const;
+                                 int &multibufferFactor,
+                                 int &multibufferGroup);
+  bool TryGetAnnotatedSubviewMultibufferInfo(Operation *op, int &multibufferSlot,
+                                             int &multibufferFactor,
+                                             int &multibufferGroup) const;
+  bool HasExplicitSubviewMultibufferAnnotation(Operation *op) const;
   bool IsRootMarkedAsPingpong(Value root) const;
   bool IsSubviewMultibufferRootInvalid(Value root) const;
   bool IsRootLevelSubviewMultibufferCandidate(
       const BaseMemInfo &parentInfo) const;
   void InvalidateSubviewMultibufferRoot(Value root);
- 
+  void FinalizeExplicitSubviewMultibufferGroups();
+  bool ValidateExplicitSubviewMultibufferRoot(
+      Value root,
+      ArrayRef<const ExplicitSubviewMultibufferCandidate *> candidates);
+
   // --- 控制流处理 (SCF) ---
   void UpdateForOpInfo(scf::ForOp forOp);
   void UpdateWhileOpInfo(scf::WhileOp whileOp);

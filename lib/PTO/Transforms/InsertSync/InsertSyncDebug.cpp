@@ -124,8 +124,8 @@ static llvm::StringRef getSlotModeName(MultibufferSlotMode mode) {
     return "SINGLE";
   case MultibufferSlotMode::BRANCH:
     return "BRANCH";
-  case MultibufferSlotMode::PARITY:
-    return "PARITY";
+  case MultibufferSlotMode::SELECTOR:
+    return "SELECTOR";
   }
   return "UNKNOWN";
 }

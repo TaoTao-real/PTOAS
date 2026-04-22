@@ -42,12 +42,39 @@ mlir::pto::canonicalizeSyncDepRoots(const SmallVector<Value> &roots) {
   return result;
 }
 
+static SmallVector<std::pair<const void *, int>>
+canonicalizeSyncDepRootGroups(const SmallVector<Value> &roots,
+                              const SmallVector<int> &groups) {
+  SmallVector<std::pair<const void *, int>> result;
+  const size_t pairCount = std::min(roots.size(), groups.size());
+  result.reserve(pairCount);
+  for (size_t i = 0; i < pairCount; ++i) {
+    if (!roots[i])
+      continue;
+    result.emplace_back(roots[i].getAsOpaquePointer(), groups[i]);
+  }
+  llvm::sort(result, [](const auto &lhs, const auto &rhs) {
+    if (lhs.first != rhs.first)
+      return lhs.first < rhs.first;
+    return lhs.second < rhs.second;
+  });
+  result.erase(std::unique(result.begin(), result.end()), result.end());
+  return result;
+}
+
 bool mlir::pto::hasSameSyncDepRoots(const SyncOperation *lhs,
                                     const SyncOperation *rhs) {
   if (!lhs || !rhs)
     return false;
   if (lhs->depRootBuffers.empty() || rhs->depRootBuffers.empty())
     return false;
+  if (lhs->depRootBuffers.size() == lhs->depRootGroups.size() &&
+      rhs->depRootBuffers.size() == rhs->depRootGroups.size()) {
+    return canonicalizeSyncDepRootGroups(lhs->depRootBuffers,
+                                         lhs->depRootGroups) ==
+           canonicalizeSyncDepRootGroups(rhs->depRootBuffers,
+                                         rhs->depRootGroups);
+  }
   return canonicalizeSyncDepRoots(lhs->depRootBuffers) ==
          canonicalizeSyncDepRoots(rhs->depRootBuffers);
 }
@@ -117,11 +144,15 @@ SyncOperation::GetMatchSync(unsigned index) const {
                                       kSyncIndex_, index, this->forEndIndex_);
   res->eventIds = this->eventIds;
   res->depRootBuffers = this->depRootBuffers;
+  res->depRootGroups = this->depRootGroups;
   res->eventIdNum = this->eventIdNum;
+  res->lowestCommonAncestorBuffer = this->lowestCommonAncestorBuffer;
   res->slotMode = this->slotMode;
   res->slotCount = this->slotCount;
   res->ownerLoopBeginId = this->ownerLoopBeginId;
   res->ownerLoopEndId = this->ownerLoopEndId;
+  res->branchSelectorFamilyBeginId = this->branchSelectorFamilyBeginId;
+  res->branchSelectorRepresentativeOp = this->branchSelectorRepresentativeOp;
   res->isCompensation = this->isCompensation;
   res->SetDepSyncIRIndex(this->GetDepSyncIRIndex());
   return res;

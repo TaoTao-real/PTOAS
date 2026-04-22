@@ -31,6 +31,19 @@ using namespace mlir::pto;
 
 namespace {
 
+constexpr const char *kLegacyMultiBufferAttr = "pto.multi_buffer";
+constexpr const char *kSubviewMultiBufferFactorAttr =
+    "pto.multi_buffer_factor";
+constexpr const char *kSubviewMultiBufferSlotAttr =
+    "pto.multi_buffer_slot";
+constexpr const char *kSubviewMultiBufferGroupAttr =
+    "pto.multi_buffer_group";
+
+static bool isSupportedExplicitSubviewMultibufferFactor(int factor) {
+  return factor > 1 &&
+         factor < kMaxExplicitSubviewMultiBufferFactorExclusive;
+}
+
 static std::optional<int64_t> getConstantIntValue(Value v) {
   llvm::APInt apIntValue;
   if (matchPattern(v, m_ConstantInt(&apIntValue))) {
@@ -48,40 +61,66 @@ static bool isLegacyDoubleBufferRoot(const BaseMemInfo &info) {
          info.scope != pto::AddressSpace::GM;
 }
 
-static std::optional<int64_t> getStaticRootSizeInBytes(Value root) {
-  Type type = root.getType();
-  auto getElementBytes = [](Type elementType) -> std::optional<uint64_t> {
-    if (auto intType = dyn_cast<IntegerType>(elementType)) {
-      uint64_t width = static_cast<uint64_t>((intType.getWidth() + 7) / 8);
-      return width == 0 ? 1 : width;
-    }
-    if (auto floatType = dyn_cast<FloatType>(elementType)) {
-      uint64_t width = static_cast<uint64_t>((floatType.getWidth() + 7) / 8);
-      return width == 0 ? 1 : width;
-    }
-    return std::nullopt;
-  };
-
-  auto accumulateShape = [&](ArrayRef<int64_t> shape,
-                             Type elementType) -> std::optional<int64_t> {
-    auto elemBytes = getElementBytes(elementType);
-    if (!elemBytes) return std::nullopt;
-    uint64_t numElems = 1;
-    for (int64_t dim : shape) {
-      if (dim == ShapedType::kDynamic || dim <= 0) return std::nullopt;
-      numElems *= static_cast<uint64_t>(dim);
-    }
-    return static_cast<int64_t>(numElems * *elemBytes);
-  };
-
-  if (auto tileType = dyn_cast<pto::TileBufType>(type)) {
-    return accumulateShape(tileType.getShape(), tileType.getElementType());
+static std::optional<uint64_t> getElementBytes(Type elementType) {
+  if (auto intType = dyn_cast<IntegerType>(elementType)) {
+    uint64_t width = static_cast<uint64_t>((intType.getWidth() + 7) / 8);
+    return width == 0 ? 1 : width;
   }
-  if (auto memrefType = dyn_cast<MemRefType>(type)) {
-    if (!memrefType.hasStaticShape()) return std::nullopt;
-    return accumulateShape(memrefType.getShape(), memrefType.getElementType());
+  if (auto floatType = dyn_cast<FloatType>(elementType)) {
+    uint64_t width = static_cast<uint64_t>((floatType.getWidth() + 7) / 8);
+    return width == 0 ? 1 : width;
   }
   return std::nullopt;
+}
+
+static std::optional<int64_t> accumulateStaticShapeBytes(ArrayRef<int64_t> shape,
+                                                         Type elementType) {
+  auto elemBytes = getElementBytes(elementType);
+  if (!elemBytes)
+    return std::nullopt;
+  uint64_t numElems = 1;
+  for (int64_t dim : shape) {
+    if (dim == ShapedType::kDynamic || dim <= 0)
+      return std::nullopt;
+    numElems *= static_cast<uint64_t>(dim);
+  }
+  return static_cast<int64_t>(numElems * *elemBytes);
+}
+
+static std::optional<int64_t> getStaticValueSizeInBytes(Value value) {
+  if (!value)
+    return std::nullopt;
+  Type type = value.getType();
+  if (auto tileType = dyn_cast<pto::TileBufType>(type)) {
+    return accumulateStaticShapeBytes(tileType.getShape(),
+                                      tileType.getElementType());
+  }
+  if (auto memrefType = dyn_cast<MemRefType>(type)) {
+    if (!memrefType.hasStaticShape())
+      return std::nullopt;
+    return accumulateStaticShapeBytes(memrefType.getShape(),
+                                      memrefType.getElementType());
+  }
+  return std::nullopt;
+}
+
+static bool areStaticBoxesOverlapping(ArrayRef<int64_t> aOffsets,
+                                      ArrayRef<int64_t> aSizes,
+                                      ArrayRef<int64_t> bOffsets,
+                                      ArrayRef<int64_t> bSizes) {
+  if (aOffsets.size() != bOffsets.size() || aSizes.size() != bSizes.size() ||
+      aOffsets.size() != aSizes.size())
+    return false;
+
+  for (size_t i = 0; i < aOffsets.size(); ++i) {
+    int64_t aBegin = aOffsets[i];
+    int64_t aEnd = aBegin + aSizes[i];
+    int64_t bBegin = bOffsets[i];
+    int64_t bEnd = bBegin + bSizes[i];
+    if (std::max(aBegin, bBegin) >= std::min(aEnd, bEnd))
+      return false;
+  }
+  return true;
 }
 
 } // namespace
@@ -153,6 +192,7 @@ void PTOIRTranslator::Build() {
   Region &funcRegion = func_.getBody();
   UpdateKernelArgMemInfo();
   RecursionIR(&funcRegion);
+  FinalizeExplicitSubviewMultibufferGroups();
 }
  
 // ============================================================================
@@ -700,11 +740,13 @@ void PTOIRTranslator::TryMarkSubviewMultibufferSlot(
   Value multibufferRoot;
   int multibufferSlot = -1;
   int multibufferFactor = 1;
+  int multibufferGroup = 0;
   if (IsSubviewMultibufferRootInvalid(parentInfo.rootBuffer) ||
       IsSubviewMultibufferRootInvalid(newInfo.rootBuffer)) {
     newInfo.multibufferRoot = nullptr;
     newInfo.multibufferSlot = -1;
     newInfo.multibufferFactor = 1;
+    newInfo.multibufferGroup = 0;
     newInfo.isMultibufferSlotValid = false;
     newInfo.suppressLegacyMultibuffer = true;
     return;
@@ -712,9 +754,10 @@ void PTOIRTranslator::TryMarkSubviewMultibufferSlot(
 
   if (!TryComputeSubviewSlotInfo(result.getDefiningOp(), source, newInfo,
                                  multibufferRoot, multibufferSlot,
-                                 multibufferFactor)) {
+                                 multibufferFactor, multibufferGroup)) {
     if (isSubviewLikeOp(result.getDefiningOp()) &&
-        IsRootLevelSubviewMultibufferCandidate(parentInfo)) {
+        (HasExplicitSubviewMultibufferAnnotation(result.getDefiningOp()) ||
+         IsRootLevelSubviewMultibufferCandidate(parentInfo))) {
       InvalidateSubviewMultibufferRoot(parentInfo.rootBuffer);
       newInfo.suppressLegacyMultibuffer = true;
     }
@@ -725,6 +768,7 @@ void PTOIRTranslator::TryMarkSubviewMultibufferSlot(
     newInfo.multibufferRoot = nullptr;
     newInfo.multibufferSlot = -1;
     newInfo.multibufferFactor = 1;
+    newInfo.multibufferGroup = 0;
     newInfo.isMultibufferSlotValid = false;
     newInfo.suppressLegacyMultibuffer = true;
     return;
@@ -733,6 +777,7 @@ void PTOIRTranslator::TryMarkSubviewMultibufferSlot(
   newInfo.multibufferRoot = multibufferRoot;
   newInfo.multibufferSlot = multibufferSlot;
   newInfo.multibufferFactor = multibufferFactor;
+  newInfo.multibufferGroup = multibufferGroup;
   newInfo.isMultibufferSlotValid = true;
   newInfo.suppressLegacyMultibuffer = false;
 }
@@ -741,7 +786,9 @@ bool PTOIRTranslator::TryComputeSubviewSlotInfo(Operation *op, Value source,
                                                 const BaseMemInfo &parentInfo,
                                                 Value &multibufferRoot,
                                                 int &multibufferSlot,
-                                                int &multibufferFactor) const {
+                                                int &multibufferFactor,
+                                                int &multibufferGroup) {
+  (void)source;
   if (!op) return false;
 
   SmallVector<int64_t> offsets;
@@ -785,7 +832,7 @@ bool PTOIRTranslator::TryComputeSubviewSlotInfo(Operation *op, Value source,
       sizes.push_back(size);
     }
     for (int64_t stride : subView.getStaticStrides()) {
-      if (stride == ShapedType::kDynamic || stride != 1) return false;
+      if (stride == ShapedType::kDynamic || stride <= 0) return false;
     }
     return true;
   };
@@ -798,11 +845,46 @@ bool PTOIRTranslator::TryComputeSubviewSlotInfo(Operation *op, Value source,
   }
   if (!matched) return false;
 
-  if (!IsRootMarkedAsPingpong(parentInfo.rootBuffer) &&
+  int annotatedSlot = -1;
+  int annotatedFactor = 1;
+  int annotatedGroup = 0;
+  bool hasExplicitAnnotation = TryGetAnnotatedSubviewMultibufferInfo(
+      op, annotatedSlot, annotatedFactor, annotatedGroup);
+
+  if (!hasExplicitAnnotation && !IsRootMarkedAsPingpong(parentInfo.rootBuffer) &&
       !isLegacyDoubleBufferRoot(parentInfo))
     return false;
   if (offsets.size() != sizes.size() || offsets.size() != sourceShape.size())
     return false;
+
+  int factor = hasExplicitAnnotation ? annotatedFactor : 2;
+  if (factor <= 1) return false;
+
+  for (size_t i = 0; i < offsets.size(); ++i) {
+    int64_t rootDim = sourceShape[i];
+    int64_t offset = offsets[i];
+    int64_t size = sizes[i];
+    if (rootDim == ShapedType::kDynamic || rootDim <= 0) return false;
+    if (offset + size > rootDim) return false;
+  }
+
+  if (hasExplicitAnnotation) {
+    explicitSubviewMultibufferCandidates_.push_back(
+        ExplicitSubviewMultibufferCandidate{
+            op->getResult(0),
+            parentInfo.rootBuffer,
+            annotatedGroup,
+            annotatedSlot,
+            factor,
+            SmallVector<int64_t, 4>(offsets.begin(), offsets.end()),
+            SmallVector<int64_t, 4>(sizes.begin(), sizes.end()),
+            SmallVector<int64_t, 4>(sourceShape.begin(), sourceShape.end())});
+    multibufferRoot = parentInfo.rootBuffer;
+    multibufferSlot = annotatedSlot;
+    multibufferFactor = factor;
+    multibufferGroup = annotatedGroup;
+    return true;
+  }
 
   int partitionDim = -1;
   int64_t partitionExtent = 0;
@@ -810,9 +892,6 @@ bool PTOIRTranslator::TryComputeSubviewSlotInfo(Operation *op, Value source,
     int64_t rootDim = sourceShape[i];
     int64_t offset = offsets[i];
     int64_t size = sizes[i];
-    if (rootDim == ShapedType::kDynamic || rootDim <= 0) return false;
-    if (offset + size > rootDim) return false;
-
     if (size == rootDim) {
       if (offset != 0) return false;
       continue;
@@ -824,32 +903,72 @@ bool PTOIRTranslator::TryComputeSubviewSlotInfo(Operation *op, Value source,
   }
 
   if (partitionDim < 0 || partitionExtent <= 0) return false;
-  if (partitionExtent % 2 != 0) return false;
-  if (sizes[static_cast<size_t>(partitionDim)] * 2 != partitionExtent)
+  if (partitionExtent % factor != 0) return false;
+  if (sizes[static_cast<size_t>(partitionDim)] * factor != partitionExtent)
     return false;
-  if (offsets[static_cast<size_t>(partitionDim)] % sizes[static_cast<size_t>(partitionDim)] != 0)
+  if (offsets[static_cast<size_t>(partitionDim)] %
+          sizes[static_cast<size_t>(partitionDim)] !=
+      0)
     return false;
 
   int64_t slot = offsets[static_cast<size_t>(partitionDim)] /
                  sizes[static_cast<size_t>(partitionDim)];
-  if (slot < 0 || slot >= 2) return false;
+  if (slot < 0 || slot >= factor) return false;
 
-  auto rootAllocBytes = getStaticRootSizeInBytes(parentInfo.rootBuffer);
-  if (!rootAllocBytes || *rootAllocBytes <= 0 || parentInfo.allocateSize == 0)
-    return false;
-  if (static_cast<uint64_t>(*rootAllocBytes) != parentInfo.allocateSize * 2)
+  auto rootAllocBytes = getStaticValueSizeInBytes(parentInfo.rootBuffer);
+  auto slotAllocBytes = getStaticValueSizeInBytes(op->getResult(0));
+  if (rootAllocBytes && slotAllocBytes && *rootAllocBytes > 0 &&
+      *slotAllocBytes > 0 &&
+      static_cast<uint64_t>(*rootAllocBytes) !=
+          static_cast<uint64_t>(*slotAllocBytes) *
+              static_cast<uint64_t>(factor))
     return false;
 
   multibufferRoot = parentInfo.rootBuffer;
   multibufferSlot = static_cast<int>(slot);
-  multibufferFactor = 2;
+  multibufferFactor = factor;
+  multibufferGroup = 0;
   return true;
+}
+
+bool PTOIRTranslator::TryGetAnnotatedSubviewMultibufferInfo(
+    Operation *op, int &multibufferSlot, int &multibufferFactor,
+    int &multibufferGroup) const {
+  if (!op) return false;
+
+  auto factorAttr =
+      op->getAttrOfType<IntegerAttr>(kSubviewMultiBufferFactorAttr);
+  auto slotAttr = op->getAttrOfType<IntegerAttr>(kSubviewMultiBufferSlotAttr);
+  auto groupAttr = op->getAttrOfType<IntegerAttr>(kSubviewMultiBufferGroupAttr);
+
+  if (!factorAttr && !slotAttr && !groupAttr)
+    return false;
+  if (!factorAttr || !slotAttr)
+    return false;
+  if (groupAttr && groupAttr.getInt() < 0)
+    return false;
+
+  multibufferFactor = static_cast<int>(factorAttr.getInt());
+  multibufferSlot = static_cast<int>(slotAttr.getInt());
+  multibufferGroup = groupAttr ? static_cast<int>(groupAttr.getInt()) : 0;
+  if (!isSupportedExplicitSubviewMultibufferFactor(multibufferFactor))
+    return false;
+  if (multibufferSlot < 0 || multibufferSlot >= multibufferFactor)
+    return false;
+  return true;
+}
+
+bool PTOIRTranslator::HasExplicitSubviewMultibufferAnnotation(Operation *op) const {
+  if (!op) return false;
+  return op->hasAttr(kSubviewMultiBufferFactorAttr) ||
+         op->hasAttr(kSubviewMultiBufferSlotAttr) ||
+         op->hasAttr(kSubviewMultiBufferGroupAttr);
 }
 
 bool PTOIRTranslator::IsRootMarkedAsPingpong(Value root) const {
   if (!root) return false;
   if (Operation *defOp = root.getDefiningOp()) {
-    auto attr = defOp->getAttrOfType<IntegerAttr>("pto.multi_buffer");
+    auto attr = defOp->getAttrOfType<IntegerAttr>(kLegacyMultiBufferAttr);
     return attr && attr.getInt() == 2;
   }
   return false;
@@ -878,10 +997,140 @@ void PTOIRTranslator::InvalidateSubviewMultibufferRoot(Value root) {
       info->multibufferRoot = nullptr;
       info->multibufferSlot = -1;
       info->multibufferFactor = 1;
+      info->multibufferGroup = 0;
       info->isMultibufferSlotValid = false;
       info->suppressLegacyMultibuffer = true;
     }
   }
+}
+
+void PTOIRTranslator::FinalizeExplicitSubviewMultibufferGroups() {
+  llvm::DenseMap<Value, SmallVector<const ExplicitSubviewMultibufferCandidate *, 8>>
+      candidatesByRoot;
+  for (const auto &candidate : explicitSubviewMultibufferCandidates_) {
+    if (!candidate.rootBuffer)
+      continue;
+    candidatesByRoot[candidate.rootBuffer].push_back(&candidate);
+  }
+
+  for (const auto &[root, candidates] : candidatesByRoot) {
+    if (IsSubviewMultibufferRootInvalid(root))
+      continue;
+    if (!ValidateExplicitSubviewMultibufferRoot(root, candidates))
+      InvalidateSubviewMultibufferRoot(root);
+  }
+}
+
+bool PTOIRTranslator::ValidateExplicitSubviewMultibufferRoot(
+    Value root,
+    ArrayRef<const ExplicitSubviewMultibufferCandidate *> candidates) {
+  if (!root || candidates.empty())
+    return false;
+
+  struct GroupRegion {
+    SmallVector<int64_t, 4> offsets;
+    SmallVector<int64_t, 4> sizes;
+  };
+
+  llvm::DenseMap<int, SmallVector<const ExplicitSubviewMultibufferCandidate *, 8>>
+      candidatesByGroup;
+  for (const auto *candidate : candidates) {
+    if (!candidate || candidate->rootBuffer != root)
+      return false;
+    candidatesByGroup[candidate->multibufferGroup].push_back(candidate);
+  }
+
+  SmallVector<GroupRegion, 4> groupRegions;
+  for (const auto &[group, groupCandidates] : candidatesByGroup) {
+    (void)group;
+    if (groupCandidates.empty())
+      return false;
+
+    const auto *first = groupCandidates.front();
+    const size_t rank = first->offsets.size();
+    const int factor = first->multibufferFactor;
+    if (rank == 0 || rank != first->sizes.size() ||
+        rank != first->sourceShape.size() || factor <= 1)
+      return false;
+
+    for (const auto *candidate : groupCandidates) {
+      if (!candidate || candidate->offsets.size() != rank ||
+          candidate->sizes.size() != rank ||
+          candidate->sourceShape.size() != rank)
+        return false;
+      if (candidate->multibufferFactor != factor)
+        return false;
+      if (candidate->multibufferSlot < 0 || candidate->multibufferSlot >= factor)
+        return false;
+      if (candidate->sizes != first->sizes ||
+          candidate->sourceShape != first->sourceShape)
+        return false;
+    }
+
+    SmallVector<int64_t, 4> chosenBaseOffsets;
+    SmallVector<int64_t, 4> chosenGroupSizes;
+    bool foundSlotDim = false;
+    for (size_t dim = 0; dim < rank; ++dim) {
+      int64_t slotBase =
+          first->offsets[dim] -
+          static_cast<int64_t>(first->multibufferSlot) * first->sizes[dim];
+      if (slotBase < 0)
+        continue;
+      if (slotBase + static_cast<int64_t>(factor) * first->sizes[dim] >
+          first->sourceShape[dim])
+        continue;
+
+      bool validSlotDim = true;
+      SmallVector<int64_t, 4> baseOffsets(first->offsets.begin(),
+                                          first->offsets.end());
+      baseOffsets[dim] = slotBase;
+      for (const auto *candidate : groupCandidates) {
+        if (candidate->offsets[dim] -
+                static_cast<int64_t>(candidate->multibufferSlot) *
+                    candidate->sizes[dim] !=
+            slotBase) {
+          validSlotDim = false;
+          break;
+        }
+        for (size_t otherDim = 0; otherDim < rank; ++otherDim) {
+          if (otherDim == dim)
+            continue;
+          if (candidate->offsets[otherDim] != first->offsets[otherDim]) {
+            validSlotDim = false;
+            break;
+          }
+        }
+        if (!validSlotDim)
+          break;
+      }
+      if (!validSlotDim)
+        continue;
+
+      SmallVector<int64_t, 4> groupSizes(first->sizes.begin(),
+                                         first->sizes.end());
+      groupSizes[dim] *= factor;
+      chosenBaseOffsets = std::move(baseOffsets);
+      chosenGroupSizes = std::move(groupSizes);
+      foundSlotDim = true;
+      break;
+    }
+
+    if (!foundSlotDim)
+      return false;
+    groupRegions.push_back({std::move(chosenBaseOffsets),
+                            std::move(chosenGroupSizes)});
+  }
+
+  for (size_t i = 0; i < groupRegions.size(); ++i) {
+    for (size_t j = i + 1; j < groupRegions.size(); ++j) {
+      if (areStaticBoxesOverlapping(groupRegions[i].offsets, groupRegions[i].sizes,
+                                    groupRegions[j].offsets,
+                                    groupRegions[j].sizes)) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
  
 // ============================================================================

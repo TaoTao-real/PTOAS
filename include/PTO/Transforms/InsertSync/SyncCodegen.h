@@ -69,7 +69,7 @@ private:
  
   // --- 辅助函数 ---
   
-  // 生成用于多缓冲 ID 选择的 Value (e.g., select(cond, id0, id1))
+  // 生成用于多缓冲 ID 选择的 Value。
   Value GetBufferSelected(IRRewriter &rewriter, Operation *op,
                           SyncOperation *sync);
  
@@ -81,8 +81,8 @@ private:
   // 记录 Op -> Sync 的映射
   DenseMap<const Operation *, SyncPipeBuild> op2InsertSync;
  
-  // 记录 Loop -> Counter 的映射 (缓存)
-  DenseMap<Operation *, Value> loop2BufferCounter;
+  // 记录 Loop -> (factor, selector value) 的映射 (缓存)
+  DenseMap<Operation *, SmallVector<std::pair<int, Value>, 2>> loop2BufferCounter;
  
   // 记录 SyncIndex -> EventID Value 的映射 (缓存)
   DenseMap<unsigned, Value> SyncIndex2SelectBuffer;

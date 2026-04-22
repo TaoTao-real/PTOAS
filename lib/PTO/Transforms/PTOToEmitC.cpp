@@ -10620,6 +10620,13 @@ static AICORE inline void ptoas_auto_sync_tail(
         return opaqueTy.getValue().ends_with("*");
       return false;
     };
+    auto isEmitCTileLikeType = [](Type ty) {
+      if (auto opaqueTy = dyn_cast<emitc::OpaqueType>(ty)) {
+        StringRef typeStr = opaqueTy.getValue();
+        return typeStr.contains("Tile<") || typeStr.contains("ConvTile<");
+      }
+      return false;
+    };
 
     llvm::SmallVector<UnrealizedConversionCastOp> castsToErase;
     bool castCleanupFailed = false;
@@ -10652,7 +10659,8 @@ static AICORE inline void ptoas_auto_sync_tail(
       // SCF/CFG type conversion can transiently materialize pointer->memref
       // bridge casts. At this stage, the producing value is already in the
       // lowered EmitC pointer form; keep it and drop the bridge cast.
-      if (isEmitCPointerLikeType(inTy) && isa<BaseMemRefType>(outTy)) {
+      if ((isEmitCPointerLikeType(inTy) || isEmitCTileLikeType(inTy)) &&
+          isa<BaseMemRefType>(outTy)) {
         output.replaceAllUsesWith(input);
         castsToErase.push_back(cast);
         return;

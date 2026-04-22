@@ -623,8 +623,14 @@ process_one_dir() {
         overall=1
         continue
       fi
-      if ! grep -Fq "pto.multi_buffer = 2 : i32" "$pto_input"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing pto.multi_buffer=2 annotation for subview ping/pong"
+      if ! grep -Fq "pto.multi_buffer_factor = 2 : i32" "$pto_input"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing subview multibuffer factor annotation for ping/pong"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "pto.multi_buffer_slot = 0 : i32" "$pto_input" || \
+         ! grep -Fq "pto.multi_buffer_slot = 1 : i32" "$pto_input"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing subview multibuffer slot annotations for ping/pong"
         overall=1
         continue
       fi
@@ -643,18 +649,18 @@ process_one_dir() {
         overall=1
         continue
       fi
-      if grep -Fq "static_cast<event_t>" "$cpp" || grep -Fq "(event_t)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tsubview ping/pong should bind static slot ids, not dynamic event-id lowering"
+      if ! grep -Fq "static_cast<event_t>" "$cpp" && ! grep -Fq "(event_t)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tsubview ping/pong should lower through dynamic event-id selection"
         overall=1
         continue
       fi
-      if grep -Eq "wait_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tsubview ping/pong unexpectedly emitted dynamic wait_flag"
+      if ! grep -Eq "wait_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tsubview ping/pong missing dynamic wait_flag"
         overall=1
         continue
       fi
-      if grep -Eq "set_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tsubview ping/pong unexpectedly emitted dynamic set_flag"
+      if ! grep -Eq "set_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tsubview ping/pong missing dynamic set_flag"
         overall=1
         continue
       fi
@@ -663,34 +669,225 @@ process_one_dir() {
         overall=1
         continue
       fi
-      if ! grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*slotMode=SINGLE" "$sync_debug_log"; then
-        echo -e "${A}(${base}.py)\tFAIL\tsubview ping/pong is missing slot-aware SINGLE sync metadata"
+      if ! grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*slotMode=SELECTOR.*slotCount=2" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\tsubview ping/pong is missing selector-mode sync metadata"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*eventIdNum=2" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\tsubview ping/pong did not allocate 2 event lanes"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*eventIds=\\[0,1\\]" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\tsubview ping/pong missing event lane bundle [0,1]"
+        overall=1
+        continue
+      fi
+      if grep -Eq 'EVENT_ID[2-9]' "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tsubview ping/pong unexpectedly allocated extra event ids beyond 0..1"
+        overall=1
+        continue
+      fi
+    fi
+
+    if [[ "$base" == "test_inject_sync_multibuf_subset_three_slot_selector" ]]; then
+      if ! grep -Fq "pto.multi_buffer_factor = 3 : i32" "$pto_input"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing explicit factor=3 annotation for three-slot selector case"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "pto.multi_buffer_slot = 0 : i32" "$pto_input" || \
+         ! grep -Fq "pto.multi_buffer_slot = 1 : i32" "$pto_input" || \
+         ! grep -Fq "pto.multi_buffer_slot = 2 : i32" "$pto_input"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing one or more explicit slot annotations for three-slot selector case"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "static_cast<event_t>" "$cpp" && ! grep -Fq "(event_t)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tthree-slot selector case missing dynamic event-id cast"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "wait_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tthree-slot selector case missing dynamic wait_flag"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "set_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tthree-slot selector case missing dynamic set_flag"
+        overall=1
+        continue
+      fi
+      if ! ensure_insert_sync_debug_log; then
+        echo -e "${A}(${base}.py)\tFAIL\tfailed to capture insert-sync debug log"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*slotMode=SELECTOR.*slotCount=3" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\tthree-slot selector case is missing selector-mode sync metadata"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*eventIdNum=3" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\tthree-slot selector case did not allocate 3 event lanes"
+        overall=1
+        continue
+      fi
+    fi
+
+    if [[ "$base" == "test_inject_sync_multibuf_subset_group_selector" ]]; then
+      if ! grep -Fq "pto.multi_buffer_group = 0 : i32" "$pto_input" || \
+         ! grep -Fq "pto.multi_buffer_group = 1 : i32" "$pto_input"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing explicit group annotations for group selector case"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "static_cast<event_t>" "$cpp" && ! grep -Fq "(event_t)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tgroup selector case missing dynamic event-id cast"
+        overall=1
+        continue
+      fi
+      local group_dyn_wait_count group_dyn_set_count
+      group_dyn_wait_count="$(grep -Ec 'wait_flag\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\)' "$cpp" || true)"
+      group_dyn_set_count="$(grep -Ec 'set_flag\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\)' "$cpp" || true)"
+      if [[ -z "${group_dyn_wait_count}" || "${group_dyn_wait_count}" -lt 2 ]]; then
+        echo -e "${A}(${base}.py)\tFAIL\texpected >=2 dynamic wait_flag sites for independent multibuffer groups"
+        overall=1
+        continue
+      fi
+      if [[ -z "${group_dyn_set_count}" || "${group_dyn_set_count}" -lt 2 ]]; then
+        echo -e "${A}(${base}.py)\tFAIL\texpected >=2 dynamic set_flag sites for independent multibuffer groups"
+        overall=1
+        continue
+      fi
+      if ! ensure_insert_sync_debug_log; then
+        echo -e "${A}(${base}.py)\tFAIL\tfailed to capture insert-sync debug log"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*slotMode=SELECTOR.*slotCount=2" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\tgroup selector case is missing selector-mode sync metadata"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*eventIdNum=2" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\tgroup selector case did not allocate 2 event lanes"
+        overall=1
+        continue
+      fi
+    fi
+
+    if [[ "$base" == "test_inject_sync_multibuf_subset_group_if_else" ]]; then
+      if ! grep -Fq "pto.multi_buffer_group = 0 : i32" "$pto_input" || \
+         ! grep -Fq "pto.multi_buffer_group = 1 : i32" "$pto_input"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing explicit group annotations for pure if-else group case"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "pto.multi_buffer_factor = 3 : i32" "$pto_input"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing explicit factor=3 annotation for pure if-else group case"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "static_cast<event_t>" "$cpp" && ! grep -Fq "(event_t)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tpure if-else group case missing dynamic event-id cast"
+        overall=1
+        continue
+      fi
+      local if_else_dyn_wait_count if_else_dyn_set_count
+      if_else_dyn_wait_count="$(grep -Ec 'wait_flag\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\)' "$cpp" || true)"
+      if_else_dyn_set_count="$(grep -Ec 'set_flag\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\)' "$cpp" || true)"
+      if [[ -z "${if_else_dyn_wait_count}" || "${if_else_dyn_wait_count}" -lt 4 ]]; then
+        echo -e "${A}(${base}.py)\tFAIL\texpected dynamic wait_flag sites in pure if-else branches for both groups"
+        overall=1
+        continue
+      fi
+      if [[ -z "${if_else_dyn_set_count}" || "${if_else_dyn_set_count}" -lt 4 ]]; then
+        echo -e "${A}(${base}.py)\tFAIL\texpected dynamic set_flag sites in pure if-else branches for both groups"
+        overall=1
+        continue
+      fi
+      if ! ensure_insert_sync_debug_log; then
+        echo -e "${A}(${base}.py)\tFAIL\tfailed to capture insert-sync debug log"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*slotMode=SELECTOR.*slotCount=3" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\tpure if-else group case is missing selector-mode sync metadata"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*eventIdNum=3" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\tpure if-else group case did not allocate 3 event lanes per group"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*eventIds=\\[0,1,2\\]" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\tpure if-else group case missing first group event lane bundle [0,1,2]"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*eventIds=\\[3,4,5\\]" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\tpure if-else group case missing second group event lane bundle [3,4,5]"
+        overall=1
+        continue
+      fi
+      if grep -Eq 'EVENT_ID[6-9]' "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tpure if-else group case unexpectedly allocated extra event ids beyond 0..5"
+        overall=1
+        continue
+      fi
+    fi
+
+    if [[ "$base" == "test_inject_sync_multibuf_subset_group_mixed_selector" ]]; then
+      if ! grep -Fq "pto.multi_buffer_group = 0 : i32" "$pto_input" || \
+         ! grep -Fq "pto.multi_buffer_group = 1 : i32" "$pto_input"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmixed-group negative case missing explicit group annotations"
+        overall=1
+        continue
+      fi
+      if grep -Fq "static_cast<event_t>" "$cpp" || grep -Fq "(event_t)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmixed-group negative case unexpectedly used slot-aware dynamic event-id"
+        overall=1
+        continue
+      fi
+      if grep -Eq "wait_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmixed-group negative case unexpectedly emitted dynamic wait_flag"
+        overall=1
+        continue
+      fi
+      if grep -Eq "set_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmixed-group negative case unexpectedly emitted dynamic set_flag"
+        overall=1
+        continue
+      fi
+      if ! ensure_insert_sync_debug_log; then
+        echo -e "${A}(${base}.py)\tFAIL\tfailed to capture insert-sync debug log"
+        overall=1
+        continue
+      fi
+      if grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*slotMode=" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmixed-group negative case unexpectedly carried slot-aware sync metadata"
         overall=1
         continue
       fi
       if grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*eventIdNum=2" "$sync_debug_log"; then
-        echo -e "${A}(${base}.py)\tFAIL\tsubview ping/pong unexpectedly widened branch-local sync into eventIdNum=2"
-        overall=1
-        continue
-      fi
-      local subset_wait_ids subset_set_ids
-      subset_wait_ids="$(grep -Eo 'wait_flag\(PIPE_MTE3, PIPE_MTE2, EVENT_ID[0-9]+\)' "$cpp" | sort -u | wc -l | tr -d ' ')"
-      subset_set_ids="$(grep -Eo 'set_flag\(PIPE_MTE3, PIPE_MTE2, EVENT_ID[0-9]+\)' "$cpp" | sort -u | wc -l | tr -d ' ')"
-      if [[ "${subset_wait_ids}" != "4" ]]; then
-        echo -e "${A}(${base}.py)\tFAIL\texpected exactly 4 static MTE3->MTE2 wait ids for subview ping/pong slots"
-        overall=1
-        continue
-      fi
-      if [[ "${subset_set_ids}" != "4" ]]; then
-        echo -e "${A}(${base}.py)\tFAIL\texpected exactly 4 static MTE3->MTE2 set ids for subview ping/pong slots"
+        echo -e "${A}(${base}.py)\tFAIL\tmixed-group negative case unexpectedly widened into eventIdNum=2"
         overall=1
         continue
       fi
     fi
 
     if [[ "$base" == "test_inject_sync_multibuf_subset_overlap" ]]; then
-      if ! grep -Fq "pto.multi_buffer = 2 : i32" "$pto_input"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing pto.multi_buffer=2 annotation for overlap negative case"
+      if ! grep -Fq "pto.multi_buffer_factor = 2 : i32" "$pto_input"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing subview multibuffer factor annotation for overlap negative case"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "pto.multi_buffer_slot = 0 : i32" "$pto_input" || \
+         ! grep -Fq "pto.multi_buffer_slot = 1 : i32" "$pto_input"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing subview multibuffer slot annotations for overlap negative case"
         overall=1
         continue
       fi
@@ -732,8 +929,10 @@ process_one_dir() {
     fi
 
     if [[ "$base" == "test_inject_sync_multibuf_subset_no_attr" ]]; then
-      if grep -Fq "pto.multi_buffer = 2 : i32" "$pto_input"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing-attr negative case unexpectedly carries pto.multi_buffer=2"
+      if grep -Fq "pto.multi_buffer_factor = 2 : i32" "$pto_input" || \
+         grep -Fq "pto.multi_buffer_slot = 0 : i32" "$pto_input" || \
+         grep -Fq "pto.multi_buffer_slot = 1 : i32" "$pto_input"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing-attr negative case unexpectedly carries subview multibuffer annotation"
         overall=1
         continue
       fi
@@ -775,8 +974,13 @@ process_one_dir() {
     fi
 
     if [[ "$base" == "test_inject_sync_multibuf_subset_dynamic_offset" ]]; then
-      if ! grep -Fq "pto.multi_buffer = 2 : i32" "$pto_input"; then
-        echo -e "${A}(${base}.py)\tFAIL\tdynamic-offset negative case missing pto.multi_buffer=2 annotation"
+      if ! grep -Fq "pto.multi_buffer_factor = 2 : i32" "$pto_input"; then
+        echo -e "${A}(${base}.py)\tFAIL\tdynamic-offset negative case missing subview multibuffer factor annotation"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "pto.multi_buffer_slot = 0 : i32" "$pto_input"; then
+        echo -e "${A}(${base}.py)\tFAIL\tdynamic-offset negative case missing subview multibuffer slot annotation"
         overall=1
         continue
       fi
@@ -818,18 +1022,29 @@ process_one_dir() {
     fi
 
     if [[ "$base" == "multibuffer_subset_pingpong_a3" ]]; then
-      if grep -Fq "static_cast<event_t>" "$cpp" || grep -Fq "(event_t)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tA3 subview sample should bind static slot ids, not dynamic event-id lowering"
+      if ! grep -Fq "pto.multi_buffer_factor = 2 : i32" "$pto_input"; then
+        echo -e "${A}(${base}.py)\tFAIL\tA3 subview sample missing factor=2 annotation"
         overall=1
         continue
       fi
-      if grep -Eq "wait_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tA3 subview sample unexpectedly emitted dynamic wait_flag"
+      if ! grep -Fq "pto.multi_buffer_slot = 0 : i32" "$pto_input" || \
+         ! grep -Fq "pto.multi_buffer_slot = 1 : i32" "$pto_input"; then
+        echo -e "${A}(${base}.py)\tFAIL\tA3 subview sample missing slot annotations"
         overall=1
         continue
       fi
-      if grep -Eq "set_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tA3 subview sample unexpectedly emitted dynamic set_flag"
+      if ! grep -Fq "static_cast<event_t>" "$cpp" && ! grep -Fq "(event_t)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tA3 subview sample missing dynamic event-id cast"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "wait_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tA3 subview sample missing dynamic wait_flag"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "set_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tA3 subview sample missing dynamic set_flag"
         overall=1
         continue
       fi
@@ -838,26 +1053,23 @@ process_one_dir() {
         overall=1
         continue
       fi
-      if ! grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*slotMode=SINGLE" "$sync_debug_log"; then
-        echo -e "${A}(${base}.py)\tFAIL\tA3 subview sample is missing slot-aware SINGLE sync metadata"
+      if ! grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*slotMode=SELECTOR.*slotCount=2" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\tA3 subview sample is missing selector-mode sync metadata"
         overall=1
         continue
       fi
-      if grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*eventIdNum=2" "$sync_debug_log"; then
-        echo -e "${A}(${base}.py)\tFAIL\tA3 subview sample unexpectedly widened branch-local sync into eventIdNum=2"
+      if ! grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*eventIdNum=2" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\tA3 subview sample did not allocate 2 event lanes"
         overall=1
         continue
       fi
-      local a3_subset_wait_ids a3_subset_set_ids
-      a3_subset_wait_ids="$(grep -Eo 'wait_flag\(PIPE_MTE3, PIPE_MTE2, EVENT_ID[0-9]+\)' "$cpp" | sort -u | wc -l | tr -d ' ')"
-      a3_subset_set_ids="$(grep -Eo 'set_flag\(PIPE_MTE3, PIPE_MTE2, EVENT_ID[0-9]+\)' "$cpp" | sort -u | wc -l | tr -d ' ')"
-      if [[ "${a3_subset_wait_ids}" != "4" ]]; then
-        echo -e "${A}(${base}.py)\tFAIL\tA3 subview sample expected exactly 4 static MTE3->MTE2 wait ids"
+      if ! grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*eventIds=\\[0,1\\]" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\tA3 subview sample missing event lane bundle [0,1]"
         overall=1
         continue
       fi
-      if [[ "${a3_subset_set_ids}" != "4" ]]; then
-        echo -e "${A}(${base}.py)\tFAIL\tA3 subview sample expected exactly 4 static MTE3->MTE2 set ids"
+      if grep -Eq 'EVENT_ID[2-9]' "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tA3 subview sample unexpectedly allocated extra event ids beyond 0..1"
         overall=1
         continue
       fi

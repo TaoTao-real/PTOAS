@@ -33,6 +33,9 @@ public:
   bool MemAlias(const BaseMemInfo *a, const BaseMemInfo *b);
  
 private:
+  bool isProvenDisjointSubviewMultibufferPair(const BaseMemInfo *a,
+                                              const BaseMemInfo *b) const;
+
   bool isGMBufferOverlap(const BaseMemInfo *a, const BaseMemInfo *b);
   
   bool isBufferAddressRangeOverlap(const BaseMemInfo *a, const BaseMemInfo *b);

@@ -52,13 +52,18 @@ def build():
                 tv_out = pto.MakeTensorViewOp(tv2_f16, dst, [c16, c16], [c16, c1]).result
 
                 alloc = pto.AllocTileOp(workspace_ty)
-                alloc.operation.attributes["pto.multi_buffer"] = IntegerAttr.get(i32, 2)
                 workspace = alloc.result
-                # This A3-friendly sample uses explicit ping/pong branches, so
-                # the expected lowering is slot-bound static event ids instead
-                # of dynamic MTE3->MTE2 event selection.
-                ping = pto.SubViewOp(workspace, [c0, c0], sizes=[16, 16]).result
-                pong = pto.SubViewOp(workspace, [c0, c16], sizes=[16, 16]).result
+                # This A3-friendly sample uses explicit ping/pong branches, and
+                # InsertSync should still recover the two-slot selector so the
+                # MTE3->MTE2 back-edge lowers through dynamic event-id selection.
+                ping_op = pto.SubViewOp(workspace, [c0, c0], sizes=[16, 16])
+                pong_op = pto.SubViewOp(workspace, [c0, c16], sizes=[16, 16])
+                ping = ping_op.result
+                pong = pong_op.result
+                ping_op.operation.attributes["pto.multi_buffer_factor"] = IntegerAttr.get(i32, 2)
+                ping_op.operation.attributes["pto.multi_buffer_slot"] = IntegerAttr.get(i32, 0)
+                pong_op.operation.attributes["pto.multi_buffer_factor"] = IntegerAttr.get(i32, 2)
+                pong_op.operation.attributes["pto.multi_buffer_slot"] = IntegerAttr.get(i32, 1)
 
                 loop = scf.ForOp(c0, c2, c1, [])
                 with InsertionPoint(loop.body):

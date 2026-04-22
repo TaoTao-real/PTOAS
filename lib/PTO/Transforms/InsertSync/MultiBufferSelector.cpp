@@ -15,8 +15,9 @@ using namespace mlir;
 namespace mlir {
 namespace pto {
 
-Value buildLoopNestParityCond(IRRewriter &rewriter, scf::ForOp baseLoop) {
-  if (!baseLoop)
+Value buildLoopNestRoundRobinSlotIndex(IRRewriter &rewriter, scf::ForOp baseLoop,
+                                       int factor) {
+  if (!baseLoop || factor <= 1)
     return nullptr;
 
   Location loc = baseLoop.getLoc();
@@ -54,10 +55,19 @@ Value buildLoopNestParityCond(IRRewriter &rewriter, scf::ForOp baseLoop) {
     nElems = rewriter.create<arith::MulIOp>(loc, nElems, tripCount);
   }
 
-  Value two = rewriter.create<arith::ConstantIndexOp>(loc, 2);
-  Value mod = rewriter.create<arith::RemUIOp>(loc, idx, two);
+  Value factorValue = rewriter.create<arith::ConstantIndexOp>(loc, factor);
+  return rewriter.create<arith::RemUIOp>(loc, idx, factorValue);
+}
+
+Value buildLoopNestParityCond(IRRewriter &rewriter, scf::ForOp baseLoop) {
+  Value slotIndex = buildLoopNestRoundRobinSlotIndex(rewriter, baseLoop, 2);
+  if (!slotIndex)
+    return nullptr;
+
+  Location loc = baseLoop.getLoc();
+  rewriter.setInsertionPointAfter(slotIndex.getDefiningOp());
   Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-  return rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ne, mod,
+  return rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ne, slotIndex,
                                         zero);
 }
 

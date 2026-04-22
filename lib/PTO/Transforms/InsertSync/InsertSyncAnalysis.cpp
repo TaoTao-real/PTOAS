@@ -15,6 +15,7 @@
 #include "PTO/Transforms/InsertSync/SyncCommon.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -29,6 +30,255 @@ using namespace mlir;
 using namespace mlir::pto;
 
 namespace mlir::pto {
+
+static size_t countCompoundSlotsForRoot(const CompoundInstanceElement *compound,
+                                        Value sharedRoot, int sharedGroup,
+                                        int factor) {
+  if (!compound || !sharedRoot || factor <= 1)
+    return 0;
+
+  llvm::SmallDenseSet<int, MAX_MULTI_BUFFER_NUM> slots;
+  auto collect = [&](const SmallVector<const BaseMemInfo *> &vec) {
+    for (const BaseMemInfo *info : vec) {
+      if (!info || !info->isMultibufferSlotValid)
+        continue;
+      if (info->multibufferRoot != sharedRoot)
+        continue;
+      if (info->multibufferGroup != sharedGroup)
+        continue;
+      if (info->multibufferFactor != factor)
+        continue;
+      if (info->multibufferSlot < 0 || info->multibufferSlot >= factor)
+        continue;
+      slots.insert(info->multibufferSlot);
+    }
+  };
+  collect(compound->defVec);
+  collect(compound->useVec);
+  return slots.size();
+}
+
+struct BranchMultibufferIdentity {
+  Value root{nullptr};
+  int group{0};
+  int factor{1};
+};
+
+static bool matchesMultibufferIdentity(
+    const BaseMemInfo *info, const BranchMultibufferIdentity &identity) {
+  if (!info || !info->isMultibufferSlotValid)
+    return false;
+  if (info->multibufferRoot != identity.root)
+    return false;
+  if (info->multibufferGroup != identity.group)
+    return false;
+  if (info->multibufferFactor != identity.factor)
+    return false;
+  return info->multibufferSlot >= 0 && info->multibufferSlot < identity.factor;
+}
+
+static SmallVector<std::pair<const void *, int>>
+canonicalizeCompoundRootGroups(
+    const SmallVector<std::pair<const void *, int>> &roots) {
+  SmallVector<std::pair<const void *, int>> result = roots;
+  llvm::sort(result, [](const auto &lhs, const auto &rhs) {
+    if (lhs.first != rhs.first)
+      return lhs.first < rhs.first;
+    return lhs.second < rhs.second;
+  });
+  result.erase(std::unique(result.begin(), result.end()), result.end());
+  return result;
+}
+
+struct BranchCompoundSignature {
+  std::string opName;
+  PipelineType pipe{PipelineType::PIPE_UNASSIGNED};
+  int targetDefCount{0};
+  int targetUseCount{0};
+  SmallVector<std::pair<const void *, int>> otherDefRoots;
+  SmallVector<std::pair<const void *, int>> otherUseRoots;
+
+  bool operator==(const BranchCompoundSignature &other) const {
+    return opName == other.opName && pipe == other.pipe &&
+           targetDefCount == other.targetDefCount &&
+           targetUseCount == other.targetUseCount &&
+           otherDefRoots == other.otherDefRoots &&
+           otherUseRoots == other.otherUseRoots;
+  }
+};
+
+struct BranchSelectorFamilyCandidate {
+  Operation *ifOp{nullptr};
+  int branchBeginId{-1};
+  Operation *representativeOp{nullptr};
+};
+
+static std::optional<BranchCompoundSignature> buildBranchCompoundSignature(
+    const CompoundInstanceElement *compound,
+    const BranchMultibufferIdentity &identity) {
+  if (!compound)
+    return std::nullopt;
+
+  BranchCompoundSignature signature;
+  signature.opName = compound->opName.getStringRef().str();
+  signature.pipe = compound->kPipeValue;
+
+  auto collect = [&](const SmallVector<const BaseMemInfo *> &vec, bool isDef) {
+    auto &targetCount =
+        isDef ? signature.targetDefCount : signature.targetUseCount;
+    auto &otherRoots =
+        isDef ? signature.otherDefRoots : signature.otherUseRoots;
+    for (const BaseMemInfo *info : vec) {
+      if (!info)
+        continue;
+      if (matchesMultibufferIdentity(info, identity)) {
+        ++targetCount;
+        continue;
+      }
+      if (info->isMultibufferSlotValid && info->multibufferRoot) {
+        otherRoots.emplace_back(info->multibufferRoot.getAsOpaquePointer(),
+                                info->multibufferGroup);
+      } else if (info->rootBuffer) {
+        otherRoots.emplace_back(info->rootBuffer.getAsOpaquePointer(), -1);
+      }
+    }
+  };
+  collect(compound->defVec, /*isDef=*/true);
+  collect(compound->useVec, /*isDef=*/false);
+  signature.otherDefRoots =
+      canonicalizeCompoundRootGroups(signature.otherDefRoots);
+  signature.otherUseRoots =
+      canonicalizeCompoundRootGroups(signature.otherUseRoots);
+
+  if (signature.targetDefCount + signature.targetUseCount == 0)
+    return std::nullopt;
+  return signature;
+}
+
+static std::optional<int> getCompoundSingleTargetSlot(
+    const CompoundInstanceElement *compound,
+    const BranchMultibufferIdentity &identity) {
+  if (!compound)
+    return std::nullopt;
+  llvm::SmallDenseSet<int, MAX_MULTI_BUFFER_NUM> slots;
+  auto collect = [&](const SmallVector<const BaseMemInfo *> &vec) {
+    for (const BaseMemInfo *info : vec) {
+      if (matchesMultibufferIdentity(info, identity))
+        slots.insert(info->multibufferSlot);
+    }
+  };
+  collect(compound->defVec);
+  collect(compound->useVec);
+  if (slots.size() != 1)
+    return std::nullopt;
+  return *slots.begin();
+}
+
+static const BranchInstanceElement *
+findIfBeginElementForOp(const SyncIRs &syncIR, Operation *ifOp) {
+  if (!ifOp)
+    return nullptr;
+  for (const auto &element : syncIR) {
+    auto *branch = dyn_cast<BranchInstanceElement>(element.get());
+    if (!branch || branch->getBranchKind() != KindOfBranch::IF_BEGIN)
+      continue;
+    if (branch->elementOp == ifOp)
+      return branch;
+  }
+  return nullptr;
+}
+
+static SmallVector<BranchSelectorFamilyCandidate> collectBranchSelectorFamilies(
+    const SyncIRs &syncIR, const CompoundInstanceElement *reference,
+    const BranchMultibufferIdentity &identity, scf::ForOp ownerLoop) {
+  SmallVector<BranchSelectorFamilyCandidate> families;
+  if (!reference || !reference->elementOp || !ownerLoop)
+    return families;
+
+  auto referenceSignature = buildBranchCompoundSignature(reference, identity);
+  auto referenceSlot = getCompoundSingleTargetSlot(reference, identity);
+  if (!referenceSignature || !referenceSlot)
+    return families;
+
+  for (Operation *parent = reference->elementOp->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    if (parent == ownerLoop.getOperation())
+      break;
+    auto ifOp = dyn_cast<scf::IfOp>(parent);
+    if (!ifOp)
+      continue;
+
+    const BranchInstanceElement *ifBegin =
+        findIfBeginElementForOp(syncIR, ifOp.getOperation());
+    if (!ifBegin)
+      continue;
+
+    llvm::SmallDenseMap<int, const CompoundInstanceElement *, MAX_MULTI_BUFFER_NUM>
+        slotToCompound;
+    bool invalidFamily = false;
+    for (unsigned idx = ifBegin->GetIndex() + 1; idx < ifBegin->endId; ++idx) {
+      auto *candidate = dyn_cast<CompoundInstanceElement>(syncIR[idx].get());
+      if (!candidate)
+        continue;
+      auto candidateSignature = buildBranchCompoundSignature(candidate, identity);
+      if (!candidateSignature ||
+          !(*candidateSignature == *referenceSignature))
+        continue;
+      auto candidateSlot = getCompoundSingleTargetSlot(candidate, identity);
+      if (!candidateSlot) {
+        invalidFamily = true;
+        break;
+      }
+      if (slotToCompound.count(*candidateSlot)) {
+        invalidFamily = true;
+        break;
+      }
+      slotToCompound[*candidateSlot] = candidate;
+    }
+
+    if (!invalidFamily &&
+        slotToCompound.size() == static_cast<size_t>(identity.factor) &&
+        slotToCompound.count(*referenceSlot)) {
+      Operation *representativeOp = nullptr;
+      for (int slot = 0; slot < identity.factor; ++slot) {
+        auto it = slotToCompound.find(slot);
+        if (it == slotToCompound.end() || !it->second)
+          continue;
+        representativeOp = it->second->elementOp;
+        break;
+      }
+      families.push_back(
+          {ifOp.getOperation(), static_cast<int>(ifBegin->GetIndex()),
+           representativeOp});
+    }
+  }
+
+  return families;
+}
+
+static std::optional<BranchSelectorFamilyCandidate> findCommonBranchSelectorFamily(
+    const SyncIRs &syncIR, const CompoundInstanceElement *nowCompound,
+    const CompoundInstanceElement *frontCompound,
+    const BranchMultibufferIdentity &identity, scf::ForOp ownerLoop) {
+  SmallVector<BranchSelectorFamilyCandidate> nowFamilies =
+      collectBranchSelectorFamilies(syncIR, nowCompound, identity, ownerLoop);
+  if (nowFamilies.empty())
+    return std::nullopt;
+
+  SmallVector<BranchSelectorFamilyCandidate> frontFamilies =
+      collectBranchSelectorFamilies(syncIR, frontCompound, identity, ownerLoop);
+  if (frontFamilies.empty())
+    return std::nullopt;
+
+  llvm::SmallDenseMap<const void *, BranchSelectorFamilyCandidate, 4> frontFamilyMap;
+  for (const auto &family : frontFamilies)
+    frontFamilyMap[family.ifOp] = family;
+  for (const auto &family : nowFamilies) {
+    if (frontFamilyMap.count(family.ifOp))
+      return family;
+  }
+  return std::nullopt;
+}
 
 static constexpr unsigned kPipeStateSize =
     static_cast<unsigned>(PipelineType::PIPE_LAST) + 1U;
@@ -291,7 +541,9 @@ void InsertSyncAnalysis::MemAnalyze(
   }
 
   if (forEndIndex.has_value()) {
-    int eventIdNum = AnalyzeMultibufferSync(depVec, forEndIndex).eventIdNum;
+    int eventIdNum =
+        AnalyzeMultibufferSync(nowCompound, frontCompound, depVec, forEndIndex)
+            .eventIdNum;
     for (int i = 1; i < eventIdNum; i++) {
       if (isAlreadySync(nowCompound, frontCompound, syncRecordList,
                         static_cast<unsigned>(i))) {
@@ -362,15 +614,21 @@ void InsertSyncAnalysis::InsertSyncOperation(
         SyncOperation::TYPE::SET_EVENT, frontPipe, nowPipe, syncIndex_,
         insertSetId, forEndIndex);
     auto waitOp = setOp->GetMatchSync(insertWaitId);
-    SmallVector<Value> depRoots = GetMemInfoBuffers(depBaseMemInfosVec);
-    setOp->depRootBuffers = depRoots;
-    waitOp->depRootBuffers = depRoots;
+    SmallVector<std::pair<Value, int>> depRootGroups =
+        GetMemInfoRootGroups(depBaseMemInfosVec);
+    for (const auto &[depRoot, depGroup] : depRootGroups) {
+      setOp->depRootBuffers.push_back(depRoot);
+      setOp->depRootGroups.push_back(depGroup);
+      waitOp->depRootBuffers.push_back(depRoot);
+      waitOp->depRootGroups.push_back(depGroup);
+    }
     setOp->SetDepSyncIRIndex(frontCompound->GetIndex());
     waitOp->SetDepSyncIRIndex(frontCompound->GetIndex());
 
     // Back-edge dependencies may require multi-buffer event IDs.
     if (forEndIndex.has_value()) {
-      auto decision = AnalyzeMultibufferSync(depBaseMemInfosVec, forEndIndex);
+      auto decision = AnalyzeMultibufferSync(nowCompound, frontCompound,
+                                             depBaseMemInfosVec, forEndIndex);
       setOp->eventIdNum = decision.eventIdNum;
       waitOp->eventIdNum = decision.eventIdNum;
       ConfigureMultibufferSyncMetadata(setOp.get(), waitOp.get(), decision);
@@ -513,62 +771,64 @@ bool InsertSyncAnalysis::IsMemAllocOp(Operation *op) const {
   return isa<memref::AllocOp>(op) || isa<pto::PointerCastOp>(op);
 }
 
-SmallVector<Value> InsertSyncAnalysis::GetMemInfoBuffers(
-    const DepBaseMemInfoPairVec &depBaseMemInfosVec) {
-  llvm::DenseSet<Value> touchedBuffer;
-  SmallVector<Value> result;
+SmallVector<std::pair<Value, int>> InsertSyncAnalysis::GetMemInfoRootGroups(
+    const DepBaseMemInfoPairVec &depBaseMemInfosVec) const {
+  SmallVector<std::pair<Value, int>> result;
+  auto append = [&](const BaseMemInfo *info) {
+    if (!info || !info->rootBuffer)
+      return;
+    result.emplace_back(info->rootBuffer, info->multibufferGroup);
+  };
   for (auto &pair : depBaseMemInfosVec) {
-    if (pair.first && pair.first->rootBuffer)
-      touchedBuffer.insert(pair.first->rootBuffer);
-    if (pair.second && pair.second->rootBuffer)
-      touchedBuffer.insert(pair.second->rootBuffer);
+    append(pair.first);
+    append(pair.second);
   }
-  for (auto v : touchedBuffer)
-    result.push_back(v);
-  llvm::sort(result, [](Value lhs, Value rhs) {
-    return lhs.getAsOpaquePointer() < rhs.getAsOpaquePointer();
+  llvm::sort(result, [](const auto &lhs, const auto &rhs) {
+    if (lhs.first != rhs.first)
+      return lhs.first.getAsOpaquePointer() < rhs.first.getAsOpaquePointer();
+    return lhs.second < rhs.second;
   });
+  result.erase(std::unique(result.begin(), result.end()), result.end());
   return result;
 }
 
 InsertSyncAnalysis::MultibufferSyncDecision
 InsertSyncAnalysis::AnalyzeMultibufferSync(
+    const CompoundInstanceElement *nowCompound,
+    const CompoundInstanceElement *frontCompound,
     const DepBaseMemInfoPairVec &depBaseMemInfosVec,
     const std::optional<unsigned> &forEndIndex) const {
   MultibufferSyncDecision decision;
   if (depBaseMemInfosVec.empty())
     return decision;
 
-  if (auto factor = GetSharedMultibufferFactor(depBaseMemInfosVec)) {
-    if (!AreSlotwiseNonOverlapping(depBaseMemInfosVec, *factor))
+  if (auto identity = GetSharedMultibufferIdentity(depBaseMemInfosVec)) {
+    if (!AreSlotwiseNonOverlapping(depBaseMemInfosVec, identity->factor))
       return decision;
 
     llvm::SmallDenseSet<int, MAX_MULTI_BUFFER_NUM> slotsUsed;
-    Value sharedRoot = nullptr;
     auto recordInfo = [&](const BaseMemInfo *info) {
       if (!info || !info->isMultibufferSlotValid)
         return;
+      if (info->multibufferRoot != identity->root)
+        return;
+      if (info->multibufferGroup != identity->group)
+        return;
+      if (info->multibufferFactor != identity->factor)
+        return;
       slotsUsed.insert(info->multibufferSlot);
-      if (!sharedRoot)
-        sharedRoot = info->multibufferRoot;
     };
     for (const auto &pair : depBaseMemInfosVec) {
       recordInfo(pair.first);
       recordInfo(pair.second);
     }
 
-    decision.sharedRoot = sharedRoot;
-    if (slotsUsed.size() <= 1) {
-      decision.slotMode = sharedRoot ? MultibufferSlotMode::SINGLE
-                                     : MultibufferSlotMode::NONE;
-      return decision;
-    }
-
-    if (slotsUsed.size() != static_cast<size_t>(*factor))
-      return decision;
+    decision.sharedRoot = identity->root;
     if (!forEndIndex.has_value() ||
         static_cast<size_t>(forEndIndex.value()) >= syncIR_.size()) {
-      decision.slotMode = MultibufferSlotMode::SINGLE;
+      decision.slotMode =
+          identity->root ? MultibufferSlotMode::SINGLE
+                         : MultibufferSlotMode::NONE;
       return decision;
     }
 
@@ -582,9 +842,42 @@ InsertSyncAnalysis::AnalyzeMultibufferSync(
       return decision;
     }
 
-    decision.eventIdNum = *factor;
-    decision.slotMode = MultibufferSlotMode::PARITY;
-    decision.slotCount = *factor;
+    BranchMultibufferIdentity branchIdentity{identity->root, identity->group,
+                                             identity->factor};
+    if (auto family = findCommonBranchSelectorFamily(syncIR_, nowCompound,
+                                                     frontCompound,
+                                                     branchIdentity, loopOp)) {
+      decision.eventIdNum = identity->factor;
+      decision.slotMode = MultibufferSlotMode::SELECTOR;
+      decision.slotCount = identity->factor;
+      decision.ownerLoopBeginId = static_cast<int>(loopEndElem->beginId);
+      decision.ownerLoopEndId = static_cast<int>(loopEndElem->endId);
+      decision.branchSelectorFamilyBeginId = family->branchBeginId;
+      decision.branchSelectorRepresentativeOp = family->representativeOp;
+      return decision;
+    }
+
+    if (slotsUsed.size() <= 1) {
+      decision.slotMode =
+          identity->root ? MultibufferSlotMode::SINGLE
+                         : MultibufferSlotMode::NONE;
+      return decision;
+    }
+
+    if (slotsUsed.size() != static_cast<size_t>(identity->factor))
+      return decision;
+    if (countCompoundSlotsForRoot(nowCompound, identity->root, identity->group,
+                                  identity->factor) <= 1 &&
+        countCompoundSlotsForRoot(frontCompound, identity->root,
+                                  identity->group, identity->factor) <= 1) {
+      decision.slotMode = MultibufferSlotMode::BRANCH;
+      decision.slotCount = identity->factor;
+      return decision;
+    }
+
+    decision.eventIdNum = identity->factor;
+    decision.slotMode = MultibufferSlotMode::SELECTOR;
+    decision.slotCount = identity->factor;
     decision.ownerLoopBeginId = static_cast<int>(loopEndElem->beginId);
     decision.ownerLoopEndId = static_cast<int>(loopEndElem->endId);
     return decision;
@@ -665,6 +958,8 @@ void InsertSyncAnalysis::ConfigureMultibufferSyncMetadata(
     sync->slotCount = 1;
     sync->ownerLoopBeginId = -1;
     sync->ownerLoopEndId = -1;
+    sync->branchSelectorFamilyBeginId = -1;
+    sync->branchSelectorRepresentativeOp = nullptr;
   };
 
   reset(setOp);
@@ -678,6 +973,9 @@ void InsertSyncAnalysis::ConfigureMultibufferSyncMetadata(
     sync->slotCount = decision.slotCount;
     sync->ownerLoopBeginId = decision.ownerLoopBeginId;
     sync->ownerLoopEndId = decision.ownerLoopEndId;
+    sync->branchSelectorFamilyBeginId = decision.branchSelectorFamilyBeginId;
+    sync->branchSelectorRepresentativeOp =
+        decision.branchSelectorRepresentativeOp;
     if (decision.sharedRoot)
       sync->lowestCommonAncestorBuffer = decision.sharedRoot;
   };
@@ -686,10 +984,10 @@ void InsertSyncAnalysis::ConfigureMultibufferSyncMetadata(
   configure(waitOp);
 }
 
-std::optional<int> InsertSyncAnalysis::GetSharedMultibufferFactor(
+std::optional<InsertSyncAnalysis::MultibufferIdentity>
+InsertSyncAnalysis::GetSharedMultibufferIdentity(
     const DepBaseMemInfoPairVec &depBaseMemInfosVec) const {
-  std::optional<int> factor;
-  Value sharedRoot = nullptr;
+  std::optional<MultibufferIdentity> identity;
   for (const auto &pair : depBaseMemInfosVec) {
     const BaseMemInfo *a = pair.first;
     const BaseMemInfo *b = pair.second;
@@ -698,26 +996,27 @@ std::optional<int> InsertSyncAnalysis::GetSharedMultibufferFactor(
       return std::nullopt;
     if (a->multibufferRoot != b->multibufferRoot)
       return std::nullopt;
+    if (a->multibufferGroup != b->multibufferGroup)
+      return std::nullopt;
     if (a->multibufferFactor != b->multibufferFactor)
       return std::nullopt;
     if (a->multibufferFactor <= 1) return std::nullopt;
-    if (!sharedRoot) {
-      sharedRoot = a->multibufferRoot;
-    } else if (sharedRoot != a->multibufferRoot) {
-      return std::nullopt;
+    if (!identity) {
+      identity = MultibufferIdentity{
+          a->multibufferRoot, a->multibufferGroup, a->multibufferFactor};
+      continue;
     }
-    if (!factor) {
-      factor = a->multibufferFactor;
-    } else if (*factor != a->multibufferFactor) {
+    if (identity->root != a->multibufferRoot ||
+        identity->group != a->multibufferGroup ||
+        identity->factor != a->multibufferFactor) {
       return std::nullopt;
     }
   }
-  return factor;
+  return identity;
 }
 
 bool InsertSyncAnalysis::AreSlotwiseNonOverlapping(
     const DepBaseMemInfoPairVec &depBaseMemInfosVec, int factor) const {
-  (void)factor;
   for (const auto &pair : depBaseMemInfosVec) {
     if (!IsSlotAwareMultibufferPair(pair.first, pair.second, factor)) {
       return false;
@@ -736,29 +1035,22 @@ bool InsertSyncAnalysis::IsSlotAwareMultibufferPair(const BaseMemInfo *a,
     return false;
   if (a->multibufferRoot != b->multibufferRoot)
     return false;
+  if (a->multibufferGroup != b->multibufferGroup)
+    return false;
   if (a->multibufferFactor != factor || b->multibufferFactor != factor)
     return false;
   if (a->multibufferSlot < 0 || b->multibufferSlot < 0)
     return false;
   if (a->multibufferSlot >= factor || b->multibufferSlot >= factor)
     return false;
-  if (a->allocateSize == 0 || b->allocateSize == 0)
-    return false;
-
-  auto overlaps = [](const BaseMemInfo *lhs, const BaseMemInfo *rhs) -> bool {
-    if (lhs->baseAddresses.empty() || rhs->baseAddresses.empty()) return false;
-    uint64_t lhsStart = lhs->baseAddresses.front();
-    uint64_t rhsStart = rhs->baseAddresses.front();
-    uint64_t lhsEnd = lhsStart + lhs->allocateSize;
-    uint64_t rhsEnd = rhsStart + rhs->allocateSize;
-    return std::max(lhsStart, rhsStart) < std::min(lhsEnd, rhsEnd);
-  };
-
-  bool overlap = overlaps(a, b);
-  if (a->multibufferSlot == b->multibufferSlot) {
-    return overlap;
-  }
-  return !overlap;
+  //
+  // Translator-side slot proof is based on explicit factor/slot annotations and
+  // a statically-proven equal partition on the same logical root buffer. Once
+  // that proof exists, different slots are disjoint by construction, even when
+  // the lowered memref subviews inherit non-unit parent strides and their
+  // flattened byte ranges look overlapping. Same-slot pairs are conservatively
+  // kept on one lane.
+  return true;
 }
 
 bool InsertSyncAnalysis::IsGMHazard(

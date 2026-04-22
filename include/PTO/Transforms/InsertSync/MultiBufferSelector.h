@@ -15,13 +15,19 @@
 namespace mlir {
 namespace pto {
 
-/// Build a boolean `cond` that flips between even/odd iterations across a loop
-/// nest.
+/// Build a round-robin slot selector across a loop nest.
 ///
-/// - The condition is inserted at the beginning of `baseLoop`'s body.
-/// - The computed parity is based on a flattened linear index across `baseLoop`
-///   and all its parent `scf.for` loops, supporting non-unit steps.
+/// - The selector is inserted at the beginning of `baseLoop`'s body.
+/// - The computed slot id is based on a flattened linear index across
+///   `baseLoop` and all its parent `scf.for` loops, supporting non-unit steps.
+/// - The returned value is guaranteed to be in `[0, factor)`.
 /// - Returns a null Value if `baseLoop` is invalid.
+Value buildLoopNestRoundRobinSlotIndex(IRRewriter &rewriter, scf::ForOp baseLoop,
+                                       int factor);
+
+/// Legacy helper for 2-slot ping/pong paths that still want an even/odd
+/// predicate. New slot-aware code should prefer
+/// `buildLoopNestRoundRobinSlotIndex`.
 Value buildLoopNestParityCond(IRRewriter &rewriter, scf::ForOp baseLoop);
 
 } // namespace pto

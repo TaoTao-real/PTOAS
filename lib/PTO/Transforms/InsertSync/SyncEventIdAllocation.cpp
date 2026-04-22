@@ -132,6 +132,15 @@ size_t SyncEventIdAllocation::GetCompilerAvailableEventIdNum(const SyncOperation
 }
  
 void SyncEventIdAllocation::SetEventId(SyncOperation *sync) {
+  if (const SyncOperation *familySync =
+          FindEquivalentBranchSelectorSync(sync)) {
+    auto &syncPair = syncOperations_[sync->GetSyncIndex()];
+    const auto &familyPair = syncOperations_[familySync->GetSyncIndex()];
+    for (auto &op : syncPair)
+      op->eventIds = familyPair[0]->eventIds;
+    return;
+  }
+
   const size_t poolSize = getEventIdPoolSize(sync, reservedBlockSyncEventIdNum);
   const size_t availableEventIdNum = GetCompilerAvailableEventIdNum(sync);
 
@@ -166,6 +175,46 @@ void SyncEventIdAllocation::SetEventId(SyncOperation *sync) {
     SetEventPool(sync, canAllocaEventId[0]);
     sync->eventIdNum = 1;
   }
+}
+
+const SyncOperation *SyncEventIdAllocation::FindEquivalentBranchSelectorSync(
+    const SyncOperation *sync) const {
+  if (!sync || sync->slotMode != MultibufferSlotMode::SELECTOR ||
+      sync->branchSelectorFamilyBeginId < 0 ||
+      !sync->branchSelectorRepresentativeOp) {
+    return nullptr;
+  }
+
+  for (unsigned syncIrId = 0; syncIrId < sync->GetSyncIRIndex(); ++syncIrId) {
+    for (const SyncOperation *candidate : syncIR_[syncIrId]->pipeAfter) {
+      if (!candidate || candidate == sync || !candidate->isSyncSetType() ||
+          candidate->uselessSync || candidate->eventIds.empty()) {
+        continue;
+      }
+      if (candidate->slotMode != MultibufferSlotMode::SELECTOR)
+        continue;
+      if (candidate->branchSelectorFamilyBeginId !=
+              sync->branchSelectorFamilyBeginId ||
+          candidate->branchSelectorRepresentativeOp !=
+              sync->branchSelectorRepresentativeOp) {
+        continue;
+      }
+      if (candidate->GetActualSrcPipe() != sync->GetActualSrcPipe() ||
+          candidate->GetActualDstPipe() != sync->GetActualDstPipe()) {
+        continue;
+      }
+      if (candidate->GetForEndIndex() != sync->GetForEndIndex())
+        continue;
+      if (!hasSameSyncDepRoots(candidate, sync))
+        continue;
+      if (candidate->eventIds.size() !=
+          static_cast<size_t>(sync->eventIdNum)) {
+        continue;
+      }
+      return candidate;
+    }
+  }
+  return nullptr;
 }
  
 SmallVector<int> SyncEventIdAllocation::UpdateBlockAvailableEventId(
@@ -374,12 +423,30 @@ void SyncEventIdAllocation::UpdateBackwardMatchSync(
       static_cast<unsigned>(syncOperations_.size()), setFlag->GetSyncIRIndex(),
       setFlag->GetForEndIndex());
   syncFront->depRootBuffers = setFlag->depRootBuffers;
+  syncFront->depRootGroups = setFlag->depRootGroups;
   syncFront->eventIdNum = setFlag->eventIdNum;
+  syncFront->lowestCommonAncestorBuffer = setFlag->lowestCommonAncestorBuffer;
+  syncFront->slotMode = setFlag->slotMode;
+  syncFront->slotCount = setFlag->slotCount;
+  syncFront->ownerLoopBeginId = setFlag->ownerLoopBeginId;
+  syncFront->ownerLoopEndId = setFlag->ownerLoopEndId;
+  syncFront->branchSelectorFamilyBeginId = setFlag->branchSelectorFamilyBeginId;
+  syncFront->branchSelectorRepresentativeOp =
+      setFlag->branchSelectorRepresentativeOp;
   syncFront->SetDepSyncIRIndex(setFlag->GetDepSyncIRIndex());
       
   auto syncEnd = syncFront->GetMatchSync(waitFlag->GetSyncIRIndex());
   syncEnd->depRootBuffers = waitFlag->depRootBuffers;
+  syncEnd->depRootGroups = waitFlag->depRootGroups;
   syncEnd->eventIdNum = waitFlag->eventIdNum;
+  syncEnd->lowestCommonAncestorBuffer = waitFlag->lowestCommonAncestorBuffer;
+  syncEnd->slotMode = waitFlag->slotMode;
+  syncEnd->slotCount = waitFlag->slotCount;
+  syncEnd->ownerLoopBeginId = waitFlag->ownerLoopBeginId;
+  syncEnd->ownerLoopEndId = waitFlag->ownerLoopEndId;
+  syncEnd->branchSelectorFamilyBeginId = waitFlag->branchSelectorFamilyBeginId;
+  syncEnd->branchSelectorRepresentativeOp =
+      waitFlag->branchSelectorRepresentativeOp;
   syncEnd->SetDepSyncIRIndex(waitFlag->GetDepSyncIRIndex());
   
   syncFront->syncCoreType = setFlag->syncCoreType;

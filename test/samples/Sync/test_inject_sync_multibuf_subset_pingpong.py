@@ -58,17 +58,21 @@ def build():
                     tile_view_16, tv_out, offsets=[c0, c0], sizes=[c16, c16]
                 ).result
 
+                alloc = pto.AllocTileOp(workspace_ty)
+                workspace = alloc.result
+                ping_op = pto.SubViewOp(workspace, [c0, c0], sizes=[16, 16])
+                pong_op = pto.SubViewOp(workspace, [c0, c16], sizes=[16, 16])
+                ping = ping_op.result
+                pong = pong_op.result
                 # Hand-written multibuffer style:
                 # one workspace tile split into ping/pong by subview.
-                # `pto.multi_buffer=2` tells PlanMemory/InsertSync this is a
-                # ping/pong candidate. Because each branch uses a proven slot
-                # directly, autosync should bind static event ids per slot
-                # instead of inflating branch-local edges into dynamic lanes.
-                alloc = pto.AllocTileOp(workspace_ty)
-                alloc.operation.attributes["pto.multi_buffer"] = IntegerAttr.get(i32, 2)
-                workspace = alloc.result
-                ping = pto.SubViewOp(workspace, [c0, c0], sizes=[16, 16]).result
-                pong = pto.SubViewOp(workspace, [c0, c16], sizes=[16, 16]).result
+                # InsertSync should recognize the two annotated leaf slots and
+                # bind the back-edge dependency to a 2-lane selector instead of
+                # treating the branches as unrelated single-slot syncs.
+                ping_op.operation.attributes["pto.multi_buffer_factor"] = IntegerAttr.get(i32, 2)
+                ping_op.operation.attributes["pto.multi_buffer_slot"] = IntegerAttr.get(i32, 0)
+                pong_op.operation.attributes["pto.multi_buffer_factor"] = IntegerAttr.get(i32, 2)
+                pong_op.operation.attributes["pto.multi_buffer_slot"] = IntegerAttr.get(i32, 1)
 
                 loop = scf.ForOp(c0, c4, c1, [])
                 with InsertionPoint(loop.body):

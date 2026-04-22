@@ -153,6 +153,12 @@ bool MemoryDependentAnalyzer::MemAlias(const BaseMemInfo *a,
   if (as == pto::AddressSpace::GM) {
     return isGMBufferOverlap(a, b);
   }
+
+  if (isProvenDisjointSubviewMultibufferPair(a, b)) {
+    if (isTraceEnabled())
+      llvm::errs() << "    -> Proven disjoint multibuffer group/slot. False.\n";
+    return false;
+  }
  
   // 2. Local Memory (UB/L1)
   //
@@ -169,6 +175,33 @@ bool MemoryDependentAnalyzer::MemAlias(const BaseMemInfo *a,
     return true;
   }
   return isBufferAddressRangeOverlap(a, b);
+}
+
+bool MemoryDependentAnalyzer::isProvenDisjointSubviewMultibufferPair(
+    const BaseMemInfo *a, const BaseMemInfo *b) const {
+  if (!a || !b)
+    return false;
+  if (!a->isMultibufferSlotValid || !b->isMultibufferSlotValid)
+    return false;
+  if (!a->multibufferRoot || !b->multibufferRoot)
+    return false;
+  if (a->multibufferRoot != b->multibufferRoot)
+    return false;
+
+  if (a->multibufferGroup != b->multibufferGroup)
+    return true;
+
+  if (a->multibufferFactor != b->multibufferFactor)
+    return false;
+  if (a->multibufferFactor <= 1)
+    return false;
+  if (a->multibufferSlot < 0 || b->multibufferSlot < 0)
+    return false;
+  if (a->multibufferSlot >= a->multibufferFactor ||
+      b->multibufferSlot >= b->multibufferFactor)
+    return false;
+
+  return a->multibufferSlot != b->multibufferSlot;
 }
  
 bool MemoryDependentAnalyzer::isGMBufferOverlap(const BaseMemInfo *a,

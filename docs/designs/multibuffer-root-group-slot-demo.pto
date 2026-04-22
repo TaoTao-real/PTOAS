@@ -1,0 +1,131 @@
+// Design-review PTO example for hierarchical multibuffer modeling.
+//
+// Purpose:
+// - Show where root / group / slot metadata should conceptually live.
+// - Keep the hierarchical shape explicit: one root workspace, two groups,
+//   three slots per group.
+// - Avoid exposing any user-facing selector-id attribute. The intended default
+//   semantics are round-robin selection by owner-loop iteration modulo factor.
+//
+// Important:
+// - This file is an architecture/design example for review.
+// - The IR body below intentionally uses current PTO surface syntax for
+//   readability.
+// - Proposed multibuffer metadata are written as concrete op attributes so the
+//   user-facing contract is explicit, even though the final verifier/parser
+//   rules for these attrs are still part of the design work.
+// - There is no separate user-facing "family" annotation in this model:
+//   sharing the same root workspace is the implicit family relation.
+
+module {
+  func.func @multibuffer_root_group_slot_demo(
+      %arg0: !pto.ptr<f16>, %arg1: !pto.ptr<f16>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %c3 = arith.constant 3 : index
+    %c3_trip = arith.constant 3 : index
+    %c8 = arith.constant 8 : index
+    %c16 = arith.constant 16 : index
+    %c24 = arith.constant 24 : index
+    %c32 = arith.constant 32 : index
+    %c40 = arith.constant 40 : index
+    %src_tv = pto.make_tensor_view %arg0, shape = [%c8, %c16], strides = [%c16, %c1] : !pto.tensor_view<?x?xf16>
+    %dst_tv = pto.make_tensor_view %arg1, shape = [%c8, %c16], strides = [%c16, %c1] : !pto.tensor_view<?x?xf16>
+
+    %src_part = pto.partition_view %src_tv, offsets = [%c0, %c0], sizes = [%c8, %c16] : !pto.tensor_view<?x?xf16> -> !pto.partition_tensor_view<8x16xf16>
+    %dst_part = pto.partition_view %dst_tv, offsets = [%c0, %c0], sizes = [%c8, %c16] : !pto.tensor_view<?x?xf16> -> !pto.partition_tensor_view<8x16xf16>
+
+    // Common root workspace.
+    // The root itself provides the implicit family relation for all leaves.
+    %workspace = pto.alloc_tile : !pto.tile_buf<vec, 48x16xf16>
+
+    // group is modeled directly on the leaf subviews instead of introducing
+    // a separate SSA value for an intermediate group view.
+    //
+    // group 0 slots: rows [0,8), [8,16), [16,24)
+    // group 1 slots: rows [24,32), [32,40), [40,48)
+
+    // group 0 slots
+    %group0_slot0 = pto.subview %workspace[%c0, %c0] sizes [8, 16]
+      {pto.multi_buffer_factor = 3 : i32,
+       pto.multi_buffer_group = 0 : i32,
+       pto.multi_buffer_slot = 0 : i32}
+      : !pto.tile_buf<vec, 48x16xf16> -> !pto.tile_buf<vec, 8x16xf16>
+
+    %group0_slot1 = pto.subview %workspace[%c8, %c0] sizes [8, 16]
+      {pto.multi_buffer_factor = 3 : i32,
+       pto.multi_buffer_group = 0 : i32,
+       pto.multi_buffer_slot = 1 : i32}
+      : !pto.tile_buf<vec, 48x16xf16> -> !pto.tile_buf<vec, 8x16xf16>
+
+    %group0_slot2 = pto.subview %workspace[%c16, %c0] sizes [8, 16]
+      {pto.multi_buffer_factor = 3 : i32,
+       pto.multi_buffer_group = 0 : i32,
+       pto.multi_buffer_slot = 2 : i32}
+      : !pto.tile_buf<vec, 48x16xf16> -> !pto.tile_buf<vec, 8x16xf16>
+
+    // group 1 slots
+    %group1_slot0 = pto.subview %workspace[%c24, %c0] sizes [8, 16]
+      {pto.multi_buffer_factor = 3 : i32,
+       pto.multi_buffer_group = 1 : i32,
+       pto.multi_buffer_slot = 0 : i32}
+      : !pto.tile_buf<vec, 48x16xf16> -> !pto.tile_buf<vec, 8x16xf16>
+
+    %group1_slot1 = pto.subview %workspace[%c32, %c0] sizes [8, 16]
+      {pto.multi_buffer_factor = 3 : i32,
+       pto.multi_buffer_group = 1 : i32,
+       pto.multi_buffer_slot = 1 : i32}
+      : !pto.tile_buf<vec, 48x16xf16> -> !pto.tile_buf<vec, 8x16xf16>
+
+    %group1_slot2 = pto.subview %workspace[%c40, %c0] sizes [8, 16]
+      {pto.multi_buffer_factor = 3 : i32,
+       pto.multi_buffer_group = 1 : i32,
+       pto.multi_buffer_slot = 2 : i32}
+      : !pto.tile_buf<vec, 48x16xf16> -> !pto.tile_buf<vec, 8x16xf16>
+
+    // Canonical selector shape:
+    // - no explicit selector attr on user IR
+    // - intended semantic meaning is owner-loop round-robin by factor = 3
+    // - first decide the current slot once
+    // - then select the group0/group1 tiles for that slot together
+    // - tload/tstore consume the selected SSA values outside the branches
+    // - iter 0 -> group0.slot0 + group1.slot0
+    // - iter 1 -> group0.slot1 + group1.slot1
+    // - iter 2 -> group0.slot2 + group1.slot2
+    scf.for %iv = %c0 to %c3_trip step %c1 {
+      %slot = arith.remui %iv, %c3 : index
+      %is0 = arith.cmpi eq, %slot, %c0 : index
+      %is1 = arith.cmpi eq, %slot, %c1 : index
+
+      %selected_group0, %selected_group1 = scf.if %is0
+          -> (!pto.tile_buf<vec, 8x16xf16>, !pto.tile_buf<vec, 8x16xf16>) {
+        scf.yield %group0_slot0, %group1_slot0
+            : !pto.tile_buf<vec, 8x16xf16>, !pto.tile_buf<vec, 8x16xf16>
+      } else {
+        %selected_group0_else, %selected_group1_else = scf.if %is1
+            -> (!pto.tile_buf<vec, 8x16xf16>, !pto.tile_buf<vec, 8x16xf16>) {
+          scf.yield %group0_slot1, %group1_slot1
+              : !pto.tile_buf<vec, 8x16xf16>, !pto.tile_buf<vec, 8x16xf16>
+        } else {
+          scf.yield %group0_slot2, %group1_slot2
+              : !pto.tile_buf<vec, 8x16xf16>, !pto.tile_buf<vec, 8x16xf16>
+        }
+        scf.yield %selected_group0_else, %selected_group1_else
+            : !pto.tile_buf<vec, 8x16xf16>, !pto.tile_buf<vec, 8x16xf16>
+      }
+
+      pto.tload ins(%src_part : !pto.partition_tensor_view<8x16xf16>)
+        outs(%selected_group0 : !pto.tile_buf<vec, 8x16xf16>)
+      pto.tstore ins(%selected_group0 : !pto.tile_buf<vec, 8x16xf16>)
+        outs(%dst_part : !pto.partition_tensor_view<8x16xf16>)
+
+      pto.tload ins(%src_part : !pto.partition_tensor_view<8x16xf16>)
+        outs(%selected_group1 : !pto.tile_buf<vec, 8x16xf16>)
+      pto.tstore ins(%selected_group1 : !pto.tile_buf<vec, 8x16xf16>)
+        outs(%dst_part : !pto.partition_tensor_view<8x16xf16>)
+    }
+
+    return
+  }
+}

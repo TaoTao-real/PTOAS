@@ -36,6 +36,8 @@
  
 namespace mlir {
 namespace pto {
+
+static constexpr int kMaxExplicitSubviewMultiBufferFactorExclusive = 8;
  
 enum class SyncAnalysisMode {
   NORMALSYNC, // 核内同步 (Intra-Core): 解决流水线冒险
@@ -85,7 +87,7 @@ enum class MultibufferSlotMode {
   NONE,
   SINGLE,
   BRANCH,
-  PARITY,
+  SELECTOR,
 };
  
 /// Meminfo of the target buffer
@@ -95,12 +97,14 @@ struct BaseMemInfo {
       Value baseBuffer, Value rootBuffer, pto::AddressSpace scope,
       SmallVector<uint64_t> baseAddresses, uint64_t allocateSize,
       Value multibufferRoot = nullptr, int multibufferSlot = -1,
-      int multibufferFactor = 1, bool isMultibufferSlotValid = false,
+      int multibufferFactor = 1, int multibufferGroup = 0,
+      bool isMultibufferSlotValid = false,
       bool suppressLegacyMultibuffer = false)
       : baseBuffer(baseBuffer), rootBuffer(rootBuffer), scope(scope),
         baseAddresses(std::move(baseAddresses)), allocateSize(allocateSize),
         multibufferRoot(multibufferRoot), multibufferSlot(multibufferSlot),
         multibufferFactor(multibufferFactor),
+        multibufferGroup(multibufferGroup),
         isMultibufferSlotValid(isMultibufferSlotValid),
         suppressLegacyMultibuffer(suppressLegacyMultibuffer) {}
  
@@ -115,6 +119,7 @@ struct BaseMemInfo {
   Value multibufferRoot;
   int multibufferSlot;
   int multibufferFactor;
+  int multibufferGroup;
   bool isMultibufferSlotValid;
   bool suppressLegacyMultibuffer;
  
@@ -137,6 +142,7 @@ struct BaseMemInfo {
     if (multibufferRoot != other.multibufferRoot) return false;
     if (multibufferSlot != other.multibufferSlot) return false;
     if (multibufferFactor != other.multibufferFactor) return false;
+    if (multibufferGroup != other.multibufferGroup) return false;
     if (isMultibufferSlotValid != other.isMultibufferSlotValid) return false;
     if (suppressLegacyMultibuffer != other.suppressLegacyMultibuffer) return false;
     if (baseBuffer != other.baseBuffer) return false;
@@ -147,6 +153,7 @@ struct BaseMemInfo {
     return std::make_unique<BaseMemInfo>(
         baseBuffer, rootBuffer, scope, baseAddresses, allocateSize,
         multibufferRoot, multibufferSlot, multibufferFactor,
+        multibufferGroup,
         isMultibufferSlotValid, suppressLegacyMultibuffer);
   }
 
@@ -154,6 +161,7 @@ struct BaseMemInfo {
     return std::make_unique<BaseMemInfo>(
         cloneBaseBuffer, rootBuffer, scope, baseAddresses, allocateSize,
         multibufferRoot, multibufferSlot, multibufferFactor,
+        multibufferGroup,
         isMultibufferSlotValid, suppressLegacyMultibuffer);
   }
 };
@@ -185,6 +193,7 @@ public:
   // Used by redundant-sync pruning to avoid removing syncs from unrelated
   // producer/consumer chains that happen to share the same pipe pair.
   SmallVector<Value> depRootBuffers;
+  SmallVector<int> depRootGroups;
   bool uselessSync{false};
   int eventIdNum{1};
   Value lowestCommonAncestorBuffer{nullptr};
@@ -192,6 +201,8 @@ public:
   int slotCount{1};
   int ownerLoopBeginId{-1};
   int ownerLoopEndId{-1};
+  int branchSelectorFamilyBeginId{-1};
+  Operation *branchSelectorRepresentativeOp{nullptr};
   int reuseCntForWiden{0};
   bool reallocatedLoopHeadTailSync{false};
   TCoreType syncCoreType{TCoreType::CUBE_OR_VECTOR};

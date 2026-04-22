@@ -1032,6 +1032,12 @@ static LogicalResult lowerSubViewOps(func::FuncOp func, MLIRContext *ctx) {
     auto sv = rewriter.create<memref::SubViewOp>(loc, subViewMemRefType, src,
                                                  mixedOffsets, mixedSizes,
                                                  mixedStrides);
+    for (StringRef attrName : {"pto.multi_buffer_factor",
+                               "pto.multi_buffer_slot",
+                               "pto.multi_buffer_group"}) {
+      if (Attribute attr = op->getAttr(attrName))
+        sv->setAttr(attrName, attr);
+    }
 
     Value vRow;
     Value vCol;
