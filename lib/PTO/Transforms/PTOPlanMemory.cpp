@@ -16,6 +16,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "AllocToPointerCast.h"
+#include "Utils.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "llvm/Support/Debug.h"
@@ -335,18 +336,6 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
       // of the result as a use of the source in liveness analysis.
       UpdateBufferAlias(bindOp.getResult(), bindOp.getSource());
       return WalkResult::advance();
-    } else if (isLocalMemPlan() && isa<memref::AllocOp>(op)) {
-      auto allocOp = cast<memref::AllocOp>(op);
-      auto memorySpaceAttr = getPlanningBufferSpaceAttr(allocOp.getResult());
-      if (isLocalBuffer(memorySpaceAttr)) {
-        allocOp.emitOpError(
-            "PlanMemory is tilebuf-only: local memref.alloc is unsupported; "
-            "use pto.alloc_tile");
-        return WalkResult::interrupt();
-      }
-      return WalkResult::advance();
-    } else if (auto loadOp = dyn_cast<memref::LoadOp>(op)) {
-      OpKillHandle(curOpInfo, live, op->getBlock());
     } else if (auto tprintOp = dyn_cast<pto::TPrintOp>(op)) {
       // TPrintOp only reads from buffer, similar to LoadOp
       OpKillHandle(curOpInfo, live, op->getBlock());
@@ -361,11 +350,8 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
       // alias/result buffer.
       UpdateOpGenInfo(curOpInfo, ValueRange{op->getOperand(0)});
       OpKillHandle(curOpInfo, live, op->getBlock());
-    } else if (auto storeOp = dyn_cast<memref::StoreOp>(op)) {
-      UpdateStoreOpInfo(curOpInfo, storeOp.getMemRef(), live);
     } else if (auto ptoDpsOp = dyn_cast<pto::PTO_DpsInitOpInterface>(op)) {
-      // PTO ops with destination (tile_buf, partition_view, etc.); no
-      // tensor/memref-only verification.
+      // PTO ops with destination (tile_buf, partition_view, etc.).
       SmallVector<Value> genBuffers = llvm::to_vector(ptoDpsOp.getDpsInits());
       auto scratchBuffers =
           getScratchBuffersFromEffects(op, ptoDpsOp.getDpsInits());
@@ -378,8 +364,8 @@ void MemLivenessAnalysis::RecursionIR(Region *region, Liveness live) {
       OpKillHandle(curOpInfo, live, op->getBlock());
     } else if (auto dstStyleOp = dyn_cast<DestinationStyleOpInterface>(op)) {
       // Process the operation of pto instructions as follows:
-      // pto.hir.copy ins(%0 : memref<16xf16, #pto.address_space<gm>>)
-      //              outs(%1 : memref<16xxf16, #pto.address_space<ub>>)
+      // pto.hir.copy ins(%0 : tensor<16xf16>)
+      //              outs(%1 : tensor<16xf16>)
       // need to handle kill buffer.
       UpdateInitAndResAlias(dstStyleOp);
       UpdateOpGenInfo(curOpInfo, llvm::to_vector(dstStyleOp.getDpsInits()));
@@ -462,10 +448,10 @@ void MemLivenessAnalysis::RecursiveForOp(scf::ForOp forOp, Liveness live) {
   // Process the operation of ForOp as follows:
   // alloca %allocA
   // %0 = scf.for %arg4 = %c0 to %c1024 step %c128 iter_args(%arg5 = %4)->
-  //      (memref<16x16x16xf16, #pto.address_space<ub>>):
+  //      (tensor<16x16x16xf16>):
   //          def(allocA)
   //          ...
-  //          scf.yield %alloc0 : memref<16xf16,#pto.address_space<ub>>
+  //          scf.yield %alloc0 : tensor<16xf16>
   // need to handle kill buffer.
   auto forBeginSeq = UpdateLinearOperation(forOp.getOperation());
   UpdateOpGenInfo(forBeginSeq, GetLiveBuffersInLoop(forOp, live));
@@ -506,10 +492,10 @@ void MemLivenessAnalysis::UpdateIfOpBufferAlias(scf::IfOp ifOp,
 
 void MemLivenessAnalysis::RecursiveIfOp(scf::IfOp ifOp, Liveness live) {
   // Process the operation of IfOp as follows:
-  // %0 = scf.if %cond -> (memref<16xf16, #pto.address_space<ub>>)
-  //        scf.yield %alloc0: memref<16xf16, #pto.address_space<ub>>
+  // %0 = scf.if %cond -> (tensor<16xf16>)
+  //        scf.yield %alloc0: tensor<16xf16>
   //      else:
-  //        scf.yield %alloc1 : memref<16xf16, #pto.address_space<ub>>
+  //        scf.yield %alloc1 : tensor<16xf16>
   UpdateLinearOperation(ifOp.getOperation());
   RecursionIR(&ifOp.getThenRegion(), live);
   if (hasAnalysisError) {
@@ -577,7 +563,7 @@ LogicalResult MemLivenessAnalysis::CheckLocalBufferDefOp(Operation *op) const {
 bool MemLivenessAnalysis::isSkippableOp(Operation *op) const {
   // Call-like ops are still modeled explicitly. Only pure terminators and
   // dim queries are skipped here.
-  return isa<func::ReturnOp, scf::YieldOp, memref::DimOp>(op);
+  return isa<func::ReturnOp, scf::YieldOp>(op);
 }
 
 LogicalResult
@@ -639,7 +625,7 @@ SetVector<Value> MemLivenessAnalysis::GetAliasBuffers(Value aliasBuffer) {
 void MemLivenessAnalysis::UpdateStoreOpInfo(OpInfo *opInfo,
                                             const Value storeValue,
                                             Liveness live) {
-  // The src of memref store may also serve as a gen buffer.
+  // The stored buffer may also serve as a gen buffer.
   SmallVector<Value, 1> storeValues;
   storeValues.push_back(storeValue);
   UpdateOpGenInfo(opInfo, storeValues);
@@ -751,8 +737,7 @@ LogicalResult MemLivenessAnalysis::GenerateBufferInfo(Operation *op,
                          out);
   }
   // } else if (isGlobalWorkSpaceMemPlan() &&
-  //            isa<bishengir::memref_ext::AllocWorkspaceOp>(
-  //                operand.getDefiningOp())) {
+  //            isa<legacy::AllocWorkspaceOp>(operand.getDefiningOp())) {
   //   return GetBufferInfo(op, operand, pto::AddressSpace::GM);
   // }
   op->emitError("expects local tile buffer result for PlanMemory");

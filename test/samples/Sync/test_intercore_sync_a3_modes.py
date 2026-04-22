@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from mlir.ir import Context, IndexType, InsertionPoint, IntegerType, Location, MemRefType, Module
+from mlir.ir import Context, IndexType, InsertionPoint, IntegerType, Location, Module
 from mlir.dialects import func, pto
 
 
@@ -11,8 +11,8 @@ def build():
 
             idx = IndexType.get(ctx)
             i64 = IntegerType.get_signless(64, ctx)
-            ffts_ty = MemRefType.get([256], i64)
-            fn_ty = func.FunctionType.get([ffts_ty, idx], [])
+            ptr_i64 = pto.PtrType.get(i64, ctx)
+            fn_ty = func.FunctionType.get([ptr_i64, idx], [])
 
             with InsertionPoint(module.body):
                 fn = func.FuncOp("test_intercore_sync_a3_modes", fn_ty)

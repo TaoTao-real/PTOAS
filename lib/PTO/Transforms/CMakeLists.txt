@@ -23,8 +23,6 @@ add_mlir_dialect_library(PTOTransforms
   PTORemoveRedundantBarrier.cpp
   InferPTOLayout.cpp
   PTOA5NormalizeTMovPass.cpp
-  BufferizableOpInterfaceImpl.cpp
-  ConvertToPTOOp.cpp
   PTOLowerFrontendPipeOpsPass.cpp
   PTOInferValidatePipeInitPass.cpp
   PTOResolveReservedBuffersPass.cpp
@@ -52,7 +50,6 @@ add_mlir_dialect_library(PTOTransforms
   MLIRIR
   MLIRPass
   MLIRFuncDialect
-  MLIRMemRefDialect
   MLIRArithDialect
   MLIRAffineDialect
   MLIREmitCDialect

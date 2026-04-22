@@ -2,12 +2,26 @@
 
 module {
   func.func @subview_col_major_compact_keeps_normal_shape(
-      %src: memref<16x16xf32, #pto.address_space<gm>>,
-      %dst: memref<16x8xf32, #pto.address_space<gm>>) {
+      %src: !pto.ptr<f32>,
+      %dst: !pto.ptr<f32>) {
+    %c0_src = arith.constant 0 : index
+    %c16_src_0 = arith.constant 16 : index
+    %c16_src_1 = arith.constant 16 : index
+    %c16_src_s0 = arith.constant 16 : index
+    %c1_src_s1 = arith.constant 1 : index
+    %src_tv = pto.make_tensor_view %src, shape = [%c16_src_0, %c16_src_1], strides = [%c16_src_s0, %c1_src_s1] : !pto.tensor_view<16x16xf32>
+    %src_pt = pto.partition_view %src_tv, offsets = [%c0_src, %c0_src], sizes = [%c16_src_0, %c16_src_1] : !pto.tensor_view<16x16xf32> -> !pto.partition_tensor_view<16x16xf32>
+    %c0_dst = arith.constant 0 : index
+    %c16_dst_0 = arith.constant 16 : index
+    %c8_dst_1 = arith.constant 8 : index
+    %c8_dst_s0 = arith.constant 8 : index
+    %c1_dst_s1 = arith.constant 1 : index
+    %dst_tv = pto.make_tensor_view %dst, shape = [%c16_dst_0, %c8_dst_1], strides = [%c8_dst_s0, %c1_dst_s1] : !pto.tensor_view<16x8xf32>
+    %dst_pt = pto.partition_view %dst_tv, offsets = [%c0_dst, %c0_dst], sizes = [%c16_dst_0, %c8_dst_1] : !pto.tensor_view<16x8xf32> -> !pto.partition_tensor_view<16x8xf32>
     %c0 = arith.constant 0 : index
 
     %tile = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=none_box, fractal=512, pad=0>
-    pto.tload ins(%src : memref<16x16xf32, #pto.address_space<gm>>)
+    pto.tload ins(%src_pt : !pto.partition_tensor_view<16x16xf32>)
              outs(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=none_box, fractal=512, pad=0>)
 
     %s = pto.subview %tile[%c0, %c0] sizes [16, 8] :
@@ -15,7 +29,7 @@ module {
       -> !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=8, v_row=16, v_col=8, blayout=col_major, slayout=none_box, fractal=512, pad=0>
 
     pto.tstore ins(%s : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=8, v_row=16, v_col=8, blayout=col_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%dst : memref<16x8xf32, #pto.address_space<gm>>)
+              outs(%dst_pt : !pto.partition_tensor_view<16x8xf32>)
     return
   }
 }

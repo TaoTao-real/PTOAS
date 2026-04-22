@@ -26,7 +26,7 @@ PTOAS changes often span multiple layers. **All relevant layers must be updated 
 
 - Update ODS (`*.td`): operand definition + assembly format
 - Update C++ verifier (`Op::verify`) if constraints change
-- Update lowering patterns (PTO → memref / EmitC) to consume/forward the operand
+- Update lowering patterns (PTO → tile/view/pointer / EmitC) to consume/forward the operand
 - Update python bindings if the op is exposed and used from Python
 - Add or adjust a regression test
 - Update docs/spec if user-visible
@@ -43,8 +43,7 @@ Before finishing a change:
 
 - [ ] ODS matches actual operands/attrs and prints/parses correctly
 - [ ] C++ verifier errors are actionable
-- [ ] Lowering/codegen handles all new cases (including view ops like `memref.subview`)
+- [ ] Lowering/codegen handles all new cases (including view ops like `pto.subview`)
 - [ ] Python side still builds/imports (if impacted)
 - [ ] Docs/specs updated
 - [ ] Tests cover regression
-

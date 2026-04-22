@@ -9,24 +9,38 @@
 PTO_IR = r"""
 
 module {
-  func.func @if_yield(%arg0: memref<16x256xf16, #pto.address_space<gm>>,
-                      %arg1: memref<16x256xf16, #pto.address_space<gm>>) {
+  func.func @if_yield(%arg0: !pto.ptr<f16>,
+                      %arg1: !pto.ptr<f16>) {
+    %c0_arg0 = arith.constant 0 : index
+    %c16_arg0_0 = arith.constant 16 : index
+    %c256_arg0_1 = arith.constant 256 : index
+    %c256_arg0_s0 = arith.constant 256 : index
+    %c1_arg0_s1 = arith.constant 1 : index
+    %arg0_tv = pto.make_tensor_view %arg0, shape = [%c16_arg0_0, %c256_arg0_1], strides = [%c256_arg0_s0, %c1_arg0_s1] : !pto.tensor_view<16x256xf16>
+    %arg0_pt = pto.partition_view %arg0_tv, offsets = [%c0_arg0, %c0_arg0], sizes = [%c16_arg0_0, %c256_arg0_1] : !pto.tensor_view<16x256xf16> -> !pto.partition_tensor_view<16x256xf16>
+    %c0_arg1 = arith.constant 0 : index
+    %c16_arg1_0 = arith.constant 16 : index
+    %c256_arg1_1 = arith.constant 256 : index
+    %c256_arg1_s0 = arith.constant 256 : index
+    %c1_arg1_s1 = arith.constant 1 : index
+    %arg1_tv = pto.make_tensor_view %arg1, shape = [%c16_arg1_0, %c256_arg1_1], strides = [%c256_arg1_s0, %c1_arg1_s1] : !pto.tensor_view<16x256xf16>
+    %arg1_pt = pto.partition_view %arg1_tv, offsets = [%c0_arg1, %c0_arg1], sizes = [%c16_arg1_0, %c256_arg1_1] : !pto.tensor_view<16x256xf16> -> !pto.partition_tensor_view<16x256xf16>
     %cond = arith.constant true
-    // Use scf.if control-flow without yielding a memref (the current emitc
-    // lowering can't handle memref-typed scf.if results), but still ensure
+    // Use scf.if control-flow without yielding a tile/view value (the current emitc
+    // lowering can't handle legacy-typed scf.if results), but still ensure
     // PlanMemory rewrites allocs inside both branches.
     scf.if %cond {
       %then = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-      pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+      pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
                outs(%then : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
       pto.tstore ins(%then : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-                outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+                outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
     } else {
       %els = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-      pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+      pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
                outs(%els : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
       pto.tstore ins(%els : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-                outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+                outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
     }
     return
   }

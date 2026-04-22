@@ -1,22 +1,36 @@
 // RUN: ptoas --pto-arch=a5 %s | FileCheck %s
 
 module attributes {"pto.target_arch" = "a5"} {
-  func.func @tinsert_vec_mat_nd(%src_gm: memref<32x32xf16, #pto.address_space<gm>>) {
+  func.func @tinsert_vec_mat_nd(%src_gm: !pto.ptr<f16>) {
+    %c0_src_gm = arith.constant 0 : index
+    %c32_src_gm_0 = arith.constant 32 : index
+    %c32_src_gm_1 = arith.constant 32 : index
+    %c32_src_gm_s0 = arith.constant 32 : index
+    %c1_src_gm_s1 = arith.constant 1 : index
+    %src_gm_tv = pto.make_tensor_view %src_gm, shape = [%c32_src_gm_0, %c32_src_gm_1], strides = [%c32_src_gm_s0, %c1_src_gm_s1] : !pto.tensor_view<32x32xf16>
+    %src_gm_pt = pto.partition_view %src_gm_tv, offsets = [%c0_src_gm, %c0_src_gm], sizes = [%c32_src_gm_0, %c32_src_gm_1] : !pto.tensor_view<32x32xf16> -> !pto.partition_tensor_view<32x32xf16>
     %c0 = arith.constant 0 : index
     %src = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
     %dst = pto.alloc_tile : !pto.tile_buf<loc=mat, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>
-    pto.tload ins(%src_gm : memref<32x32xf16, #pto.address_space<gm>>)
+    pto.tload ins(%src_gm_pt : !pto.partition_tensor_view<32x32xf16>)
               outs(%src : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) {layout = #pto.layout<nd>}
     pto.tinsert ins(%src, %c0, %c0 : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index)
                outs(%dst : !pto.tile_buf<loc=mat, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>)
     return
   }
 
-  func.func @tinsert_vec_mat_nz(%src_gm: memref<32x32xf16, #pto.address_space<gm>>) {
+  func.func @tinsert_vec_mat_nz(%src_gm: !pto.ptr<f16>) {
+    %c0_src_gm = arith.constant 0 : index
+    %c32_src_gm_0 = arith.constant 32 : index
+    %c32_src_gm_1 = arith.constant 32 : index
+    %c32_src_gm_s0 = arith.constant 32 : index
+    %c1_src_gm_s1 = arith.constant 1 : index
+    %src_gm_tv = pto.make_tensor_view %src_gm, shape = [%c32_src_gm_0, %c32_src_gm_1], strides = [%c32_src_gm_s0, %c1_src_gm_s1] : !pto.tensor_view<32x32xf16>
+    %src_gm_pt = pto.partition_view %src_gm_tv, offsets = [%c0_src_gm, %c0_src_gm], sizes = [%c32_src_gm_0, %c32_src_gm_1] : !pto.tensor_view<32x32xf16> -> !pto.partition_tensor_view<32x32xf16>
     %c0 = arith.constant 0 : index
     %src = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>
     %dst = pto.alloc_tile : !pto.tile_buf<loc=mat, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>
-    pto.tload ins(%src_gm : memref<32x32xf16, #pto.address_space<gm>>)
+    pto.tload ins(%src_gm_pt : !pto.partition_tensor_view<32x32xf16>)
               outs(%src : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>) {layout = #pto.layout<nz>}
     pto.tinsert ins(%src, %c0, %c0 : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>, index, index)
                outs(%dst : !pto.tile_buf<loc=mat, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=col_major, slayout=row_major, fractal=512, pad=0>)

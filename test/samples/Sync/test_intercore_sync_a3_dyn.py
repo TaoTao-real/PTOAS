@@ -14,7 +14,6 @@ from mlir.ir import (
     InsertionPoint,
     IntegerType,
     Location,
-    MemRefType,
     Module,
 )
 from mlir.dialects import arith, func, pto, scf
@@ -30,9 +29,9 @@ def build():
             idx = IndexType.get(ctx)
             i64 = IntegerType.get_signless(64, ctx)
             i32 = IntegerType.get_signless(32, ctx)
-            ffts_ty = MemRefType.get([256], i64)
+            ptr_i64 = pto.PtrType.get(i64, ctx)
             ptr_f32 = pto.PtrType.get(f32, ctx)
-            fn_ty = func.FunctionType.get([ffts_ty, ptr_f32, i32], [])
+            fn_ty = func.FunctionType.get([ptr_i64, ptr_f32, i32], [])
 
             with InsertionPoint(module.body):
                 fn = func.FuncOp("test_intercore_sync_a3_dyn", fn_ty)

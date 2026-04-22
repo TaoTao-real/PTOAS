@@ -576,7 +576,7 @@ pto.tfree(%pipe) { split = 0 }
 
 即：
 
-- 普通 `memref.alloc` / tile buffer 等 local 内存仍先由既有 `MemPlan` 按原逻辑分配
+- 普通 `pto.alloc_tile` / tile buffer 等 local 内存仍先由既有 `MemPlan` 按原逻辑分配
 - `reserve_buffer` 不参与普通 local buffer 的 inplace / reuse 规划
 - `reserve_buffer` 在普通 local buffer 分配完成后，再作为独立的一段连续 local 区间进行 hole 分配
 - `reserve_buffer` 不保证位于地址空间起始地址，也不保证形成预留前缀；其语义仅为“在该地址空间中为 consumer slot buffer 找到一段对齐且连续的可用地址”

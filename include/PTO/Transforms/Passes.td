@@ -33,16 +33,7 @@ def PTOInsertSync : Pass<"pto-insert-sync", "func::FuncOp"> {
 
   let dependentDialects = [
     "mlir::pto::PTODialect",
-    "mlir::memref::MemRefDialect",
     "mlir::arith::ArithDialect" 
-  ];
-}
-
-def ConvertToPTOOp : Pass<"convert-to-pto-op"> {
-  let summary = "Convert Ops from other dialects to PTO Ops";
-  let constructor = "mlir::pto::createConvertToPTOOpPass()";
-  let dependentDialects = ["arith::ArithDialect", "pto::PTODialect",
-                           "tensor::TensorDialect",
   ];
 }
 
@@ -85,7 +76,7 @@ def PlanMemory : Pass<"pto-plan-memory", "ModuleOp"> {
                clEnumValN(
                    pto::MemPlanMode::GLOBAL_WORKSPACE_PLAN,
                    "global-work-space-plan",
-                   "plan mem mode is for memref_ext.alloc_workspace"))}]>,
+                   "plan mem mode is for global workspace allocation"))}]>,
     Option<"enableGlobalReuse", "enable-global-workspace-reuse", "bool",
            /*default=*/"false",
            "Enable global workspace reuse ,default : false">,

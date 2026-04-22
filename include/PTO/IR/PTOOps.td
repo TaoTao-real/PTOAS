@@ -34,22 +34,13 @@ include "mlir/Interfaces/ViewLikeInterface.td"
 // Types
 //===----------------------------------------------------------------------===//
 
-def TensorOrMemref :
-  AnyTypeOf<[AnyMemRef, AnyRankedTensor], "Tensor or Memref">;
-
 def PTODpsType :
-  AnyTypeOf<[AnyRankedTensor, AnyMemRef, PartitionTensorViewType, TileBufType]>;
+  AnyTypeOf<[AnyRankedTensor, PartitionTensorViewType, TileBufType]>;
 
-def PtrOrMemRef :
-  AnyTypeOf<[PtrType, AnyMemRef], "Ptr or MemRef">;
-
-def TileBufOrMemRef :
-  AnyTypeOf<[TileBufType, AnyMemRef], "TileBuf or MemRef">;
-
-def ScalarPtrOrMemRef :
+def ScalarPtrType :
   TypeConstraint<
-    CPred<"::mlir::pto::isScalarPtrOrMemRef($_self)">,
-    "Ptr or MemRef in GM">;
+    CPred<"::mlir::pto::isScalarPtr($_self)">,
+    "Scalar PTO pointer">;
 
 def ScalarType :
   AnyTypeOf<[AnySignlessInteger, AnyFloat], "numeric (integer/float)">;
@@ -111,7 +102,7 @@ def LoadScalarOp : PTO_Op<"load_scalar", [
   let summary = "Load a single scalar element from a pointer at offset.";
 
   let arguments = (ins
-    ScalarPtrOrMemRef:$ptr,
+    ScalarPtrType:$ptr,
     Index:$offset
   );
 
@@ -130,7 +121,7 @@ def StoreScalarOp : PTO_Op<"store_scalar", [
   let summary = "Store a single scalar element to a pointer at offset.";
 
   let arguments = (ins
-    ScalarPtrOrMemRef:$ptr,
+    ScalarPtrType:$ptr,
     Index:$offset,
     AnyType:$value
   );
@@ -190,26 +181,18 @@ def PartitionViewOp : PTO_Op<"partition_view", [AttrSizedOperandSegments]> {
   }];
 }
 
-// Helper: tensor_view or memref (after lowering tensor_view to memref).
-def TensorViewOrMemRef :
-  AnyTypeOf<[TensorViewType, AnyMemRef], "TensorView or MemRef">;
-
-// Get the size of a dimension of a tensor_view or its lowered memref view.
+// Get the size of a dimension of a tensor_view.
 // Result type: Index (use arith.index_cast if i32 is needed).
 def GetTensorViewDimOp : PTO_Op<"get_tensor_view_dim", [Pure]> {
   let summary = "Get the size of a dimension of a tensor_view.";
   let description = [{
     Returns the size of the given dimension of a logical tensor view.
-    This op accepts either !pto.tensor_view or the memref it is lowered to.
     IR (tensor_view form):
       %dim_size = pto.get_tensor_view_dim %tv, %dim_index
         : !pto.tensor_view, index -> index
-    IR (memref form, after lowering):
-      %dim_size = pto.get_tensor_view_dim %mr, %dim_index
-        : memref<...>, index -> index
   }];
   let arguments = (ins
-    TensorViewOrMemRef:$tensor_view,
+    TensorViewType:$tensor_view,
     Index:$dim_index
   );
   let results = (outs Index:$result);
@@ -243,31 +226,24 @@ def AllocTileOp : PTO_Op<"alloc_tile", [AttrSizedOperandSegments]> {
 }
 
 
-// ============================================================================
-// BindTileOp: 将 Config 和 Valid Dims 绑定到 MemRef 上
-// ============================================================================
 def BindTileOp : PTO_Op<"bind_tile", [
     Pure,
     AttrSizedOperandSegments
-    // 允许输入 offset:0 -> 输出 offset:?
   ]> {
   let summary = "Binds metadata and implicitly casts layout";
   let description = [{
-    Wraps a memref with PTO metadata (valid dimensions and config).
+    Wraps a tile buffer with PTO metadata (valid dimensions and config).
   }];
 
-  // [修改] 以前是 Variadic<Index>:$valid_dims
-  // 现在改为明确的 Optional Row/Col，与 PointerCastOp 保持一致
   let arguments = (ins
-    AnyMemRef:$source,
+    TileBufType:$source,
     Optional<Index>:$valid_row,
     Optional<Index>:$valid_col,
     TileBufConfigAttr:$config
   );
 
-  let results = (outs AnyMemRef:$result);
+  let results = (outs TileBufType:$result);
 
-  // [修改] assemblyFormat: 去掉 valid_dims，改为 ($row, $col)?
   let assemblyFormat = [{
     $source (`,` $valid_row^ `,` $valid_col)? attr-dict `:` qualified(type($source)) `->` qualified(type($result))
   }];
@@ -577,13 +553,6 @@ def TStoreOp: PTO_TOp<"tstore", [
             return as.getAddressSpace() == ::mlir::pto::AddressSpace::ACC;
           return false;
         }
-        if (auto mr = ::mlir::dyn_cast<::mlir::MemRefType>(ty)) {
-          if (auto ms = mr.getMemorySpace()) {
-            if (auto as = ::mlir::dyn_cast<::mlir::pto::AddressSpaceAttr>(ms))
-              return as.getAddressSpace() == ::mlir::pto::AddressSpace::ACC;
-          }
-          return false;
-        }
         return false;
       };
       if (isAcc(getSrc().getType()))
@@ -658,14 +627,9 @@ def TTransOp : PTO_TOp<"ttrans", [
 }
 //===----------------------------------------------------------------------===//
 // TMATMUL_BIAS / TMATMUL_MX family
-//   - DPS: AnyMemRef
 //   - TOp: PTODpsType
 //   - All in ins/outs form
 //===----------------------------------------------------------------------===//
-
-// -------------------------
-// DPS versions (AnyMemRef)
-// -------------------------
 
 // -------------------------
 // Tile-world TOp versions (PTODpsType)
@@ -1129,21 +1093,10 @@ def TMovOp  : PTO_TOp<"tmov", [
       // while UB->UB copies are vector-pipe operations.
       auto getASFromType = [](Type ty)
           -> std::optional<::mlir::pto::AddressSpace> {
-        // Pre-lowering: tile_buf carries the address space in its memorySpace.
         if (auto tb = llvm::dyn_cast<::mlir::pto::TileBufType>(ty)) {
           if (auto as = llvm::dyn_cast_or_null<::mlir::pto::AddressSpaceAttr>(
                   tb.getMemorySpace()))
             return as.getAddressSpace();
-          return std::nullopt;
-        }
-        // Legacy memref-typed IR still preserves the PTO address-space attr in
-        // memref.memorySpace, so keep reading it defensively here.
-        if (auto mr = llvm::dyn_cast<::mlir::MemRefType>(ty)) {
-          if (auto ms = mr.getMemorySpace()) {
-            if (auto as =
-                    llvm::dyn_cast<::mlir::pto::AddressSpaceAttr>(ms))
-              return as.getAddressSpace();
-          }
           return std::nullopt;
         }
         return std::nullopt;
@@ -1570,8 +1523,8 @@ def BuildAsyncSessionOp : PTO_Op<"build_async_session", [
   let summary = "Build an async DMA session handle for TPUT_ASYNC/TGET_ASYNC";
 
   let arguments = (ins
-      TileBufOrMemRef:$scratch,
-      ScalarPtrOrMemRef:$workspace,
+      TileBufType:$scratch,
+      PtrType:$workspace,
       OptionalAttr<I32Attr>:$sync_id,
       OptionalAttr<I64Attr>:$block_bytes,
       OptionalAttr<I64Attr>:$comm_block_offset,
@@ -1762,13 +1715,6 @@ def TPushOp : PTO_TOp<"tpush", [
             return as.getAddressSpace();
           return std::nullopt;
         }
-        if (auto mr = ::mlir::dyn_cast<::mlir::MemRefType>(ty)) {
-          if (auto ms = mr.getMemorySpace()) {
-            if (auto as = ::mlir::dyn_cast<::mlir::pto::AddressSpaceAttr>(ms))
-              return as.getAddressSpace();
-          }
-          return std::nullopt;
-        }
         return std::nullopt;
       };
 
@@ -1889,13 +1835,6 @@ def TPopOp : PTO_TOp<"tpop", [
           if (auto as = ::mlir::dyn_cast_or_null<::mlir::pto::AddressSpaceAttr>(
                   tb.getMemorySpace()))
             return as.getAddressSpace();
-          return std::nullopt;
-        }
-        if (auto mr = ::mlir::dyn_cast<::mlir::MemRefType>(ty)) {
-          if (auto ms = mr.getMemorySpace()) {
-            if (auto as = ::mlir::dyn_cast<::mlir::pto::AddressSpaceAttr>(ms))
-              return as.getAddressSpace();
-          }
           return std::nullopt;
         }
         return std::nullopt;
@@ -2136,7 +2075,7 @@ def TSyncOp : PTO_TOp<"tsync"> {
 
 def SetFFTsOp : PTO_Op<"set_ffts", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Set FFTS/flags pointer for runtime (side-effecting).";
-  let arguments = (ins AnyMemRef:$ffts);
+  let arguments = (ins PtrType:$ffts);
   let results = (outs);
 
   let assemblyFormat = "$ffts attr-dict `:` type($ffts)";
@@ -3436,14 +3375,6 @@ def TExtractOp : PTO_TOp<"textract", [
             return as.getAddressSpace();
           return std::nullopt;
         }
-        if (auto mr = llvm::dyn_cast<::mlir::MemRefType>(ty)) {
-          if (auto ms = mr.getMemorySpace()) {
-            if (auto as =
-                    llvm::dyn_cast<::mlir::pto::AddressSpaceAttr>(ms))
-              return as.getAddressSpace();
-          }
-          return std::nullopt;
-        }
         return std::nullopt;
       };
 
@@ -3569,13 +3500,6 @@ def TInsertOp : PTO_TOp<"tinsert", [
           if (auto as = ::mlir::dyn_cast_or_null<::mlir::pto::AddressSpaceAttr>(
                   tb.getMemorySpace()))
             return as.getAddressSpace();
-          return std::nullopt;
-        }
-        if (auto mr = ::mlir::dyn_cast<::mlir::MemRefType>(ty)) {
-          if (auto ms = mr.getMemorySpace()) {
-            if (auto as = ::mlir::dyn_cast<::mlir::pto::AddressSpaceAttr>(ms))
-              return as.getAddressSpace();
-          }
           return std::nullopt;
         }
         return std::nullopt;

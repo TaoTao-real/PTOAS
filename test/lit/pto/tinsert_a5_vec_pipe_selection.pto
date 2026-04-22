@@ -2,13 +2,20 @@
 
 module attributes {"pto.device-spec" = "Ascend950"} {
   // A5: vec->vec TINSERT keeps PIPE_V path and no explicit mode template.
-  func.func @tinsert_vec_vec_pipeline(%a: memref<32x32xf16, #pto.address_space<gm>>) {
+  func.func @tinsert_vec_vec_pipeline(%a: !pto.ptr<f16>) {
+    %c0_a = arith.constant 0 : index
+    %c32_a_0 = arith.constant 32 : index
+    %c32_a_1 = arith.constant 32 : index
+    %c32_a_s0 = arith.constant 32 : index
+    %c1_a_s1 = arith.constant 1 : index
+    %a_tv = pto.make_tensor_view %a, shape = [%c32_a_0, %c32_a_1], strides = [%c32_a_s0, %c1_a_s1] : !pto.tensor_view<32x32xf16>
+    %a_pt = pto.partition_view %a_tv, offsets = [%c0_a, %c0_a], sizes = [%c32_a_0, %c32_a_1] : !pto.tensor_view<32x32xf16> -> !pto.partition_tensor_view<32x32xf16>
     %c0 = arith.constant 0 : index
     %src_vec = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
     %dst_vec = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
     %out_vec = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
 
-    pto.tload ins(%a : memref<32x32xf16, #pto.address_space<gm>>)
+    pto.tload ins(%a_pt : !pto.partition_tensor_view<32x32xf16>)
               outs(%src_vec : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) {layout = #pto.layout<nd>}
     pto.tinsert ins(%src_vec, %c0, %c0 : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, index, index)
                outs(%dst_vec : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)

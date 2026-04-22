@@ -24,7 +24,6 @@
 #include "mlir/Pass/Pass.h"
 #include "PTO/IR/PTODialect.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 
 namespace mlir {
@@ -47,9 +46,6 @@ std::unique_ptr<Pass> createEmitPTOManualPass();
 // Explicitly select target arch for codegen.
 std::unique_ptr<Pass> createEmitPTOManualPass(PTOArch arch);
 
-
-/// Create a pass to convert ops from other dialects to PTO Ops.
-std::unique_ptr<Pass> createConvertToPTOOpPass();
 
 /// Create a pass to plan memory.
 std::unique_ptr<Pass>

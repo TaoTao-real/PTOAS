@@ -1,7 +1,14 @@
 // RUN: ptoas %s 2>&1 1>/dev/null | FileCheck %s
 
 module {
-  func.func @tilebuf_semantic_smoke(%arg0: memref<32x32xf16, #pto.address_space<gm>>) {
+  func.func @tilebuf_semantic_smoke(%arg0: !pto.ptr<f16>) {
+    %c0_arg0 = arith.constant 0 : index
+    %c32_arg0_0 = arith.constant 32 : index
+    %c32_arg0_1 = arith.constant 32 : index
+    %c32_arg0_s0 = arith.constant 32 : index
+    %c1_arg0_s1 = arith.constant 1 : index
+    %arg0_tv = pto.make_tensor_view %arg0, shape = [%c32_arg0_0, %c32_arg0_1], strides = [%c32_arg0_s0, %c1_arg0_s1] : !pto.tensor_view<32x32xf16>
+    %arg0_pt = pto.partition_view %arg0_tv, offsets = [%c0_arg0, %c0_arg0], sizes = [%c32_arg0_0, %c32_arg0_1] : !pto.tensor_view<32x32xf16> -> !pto.partition_tensor_view<32x32xf16>
     %c0 = arith.constant 0 : index
 
     %buf = pto.alloc_tile
@@ -11,7 +18,7 @@ module {
       : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=32, v_col=32,
                       blayout=row_major, slayout=none_box, fractal=512, pad=0>
 
-    pto.tload ins(%arg0 : memref<32x32xf16, #pto.address_space<gm>>)
+    pto.tload ins(%arg0_pt : !pto.partition_tensor_view<32x32xf16>)
              outs(%buf : !pto.tile_buf<loc=vec, dtype=f16, rows=32, cols=32, v_row=32, v_col=32,
                                        blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     pto.tprint ins(%sub : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=32, v_row=16, v_col=32,
@@ -23,5 +30,4 @@ module {
 // CHECK: end PTO plan Mem!
 // CHECK: func.func @tilebuf_semantic_smoke
 // CHECK-NOT: PlanMemory Fail : Unrecognized type of Operation touches local buffer!
-// CHECK-NOT: memref.alloc
 // CHECK: pto.pointer_cast(

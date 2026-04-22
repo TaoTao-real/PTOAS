@@ -41,9 +41,9 @@ body:
     id: lowering
     attributes:
       label: Lowering/codegen expectations
-      description: How should this lower (e.g. to memref/emitc), and any arch/level specifics.
+      description: How should this lower (e.g. to tile/view/pointer + emitc), and any arch/level specifics.
       placeholder: |
-        - Lowering path: PTO -> memref -> EmitC
+        - Lowering path: PTO -> tile/view/pointer -> EmitC
         - Arch differences: a3 vs a5
         - Level gating: level1/2/3 differences
     validations:
@@ -75,4 +75,3 @@ body:
       description: If proposing against a specific revision, provide `git rev-parse HEAD`
     validations:
       required: false
-

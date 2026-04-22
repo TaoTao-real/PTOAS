@@ -11,8 +11,6 @@
 #include "Utils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 
 #define DEBUG_TYPE "pto-tile-buffer-semantics"
@@ -20,15 +18,8 @@
 namespace mlir {
 namespace pto {
 
-// Reads planning address-space from either memref or tile-buffer values.
+// Reads planning address-space from tile/view values.
 std::optional<AddressSpaceAttr> getPlanningBufferSpaceAttr(Value operand) {
-  if (auto memRefType = dyn_cast<MemRefType>(operand.getType())) {
-    auto memorySpace = memRefType.getMemorySpace();
-    if (!memorySpace)
-      return std::nullopt;
-    return dyn_cast<AddressSpaceAttr>(memorySpace);
-  }
-
   if (auto tileBufType = dyn_cast<pto::TileBufType>(operand.getType())) {
     auto memorySpace = tileBufType.getMemorySpace();
     if (!memorySpace)
@@ -78,10 +69,6 @@ TileViewKind getTileViewKind(Operation *op) {
     return TileViewKind::Bitcast;
   if (isa<pto::TReshapeOp>(op))
     return TileViewKind::TReshape;
-  if (isa<memref::SubViewOp, memref::ViewOp, memref::ReinterpretCastOp,
-          memref::CastOp, memref::CollapseShapeOp, memref::ExpandShapeOp,
-          memref::ReshapeOp, memref::ExtractStridedMetadataOp>(op))
-    return TileViewKind::MemRefViewLike;
   return TileViewKind::Unknown;
 }
 
@@ -132,11 +119,6 @@ static Value tracebackRootOneStep(Value value) {
       return sourceValue;
   }
 
-  // Case 2: cast-like memref ops.
-  if (auto op = dyn_cast<memref::MemorySpaceCastOp>(def))
-    return op.getSource();
-  if (auto op = dyn_cast<memref::TransposeOp>(def))
-    return op.getIn();
   if (auto op = dyn_cast<UnrealizedConversionCastOp>(def))
     return op.getOperand(cast<OpResult>(value).getResultNumber());
   if (auto op = dyn_cast<scf::ForOp>(def))
@@ -175,23 +157,29 @@ static int64_t getElemBitWidth(Type elemTy) {
   return -1;
 }
 
-// Decodes shape/valid/config from either memref or tile type.
+// Decodes shape/valid/config from tile/view types.
 static bool decodeTypeSemantics(Type type, Type &elemTy,
                                 SmallVectorImpl<int64_t> &shape,
                                 SmallVectorImpl<int64_t> &validShape,
                                 TileBufConfigAttr &config) {
-  if (auto memRefType = dyn_cast<MemRefType>(type)) {
-    elemTy = memRefType.getElementType();
-    shape.assign(memRefType.getShape().begin(), memRefType.getShape().end());
-    validShape = shape;
-    return true;
-  }
   if (auto tileBufType = dyn_cast<pto::TileBufType>(type)) {
     elemTy = tileBufType.getElementType();
     shape.assign(tileBufType.getShape().begin(), tileBufType.getShape().end());
     validShape.assign(tileBufType.getValidShape().begin(),
                       tileBufType.getValidShape().end());
     config = tileBufType.getConfigAttr();
+    return true;
+  }
+  if (auto partitionType = dyn_cast<pto::PartitionTensorViewType>(type)) {
+    elemTy = partitionType.getElementType();
+    shape.assign(partitionType.getShape().begin(), partitionType.getShape().end());
+    validShape = shape;
+    return true;
+  }
+  if (auto tensorViewType = dyn_cast<pto::TensorViewType>(type)) {
+    elemTy = tensorViewType.getElementType();
+    shape.assign(tensorViewType.getShape().begin(), tensorViewType.getShape().end());
+    validShape = shape;
     return true;
   }
   return false;

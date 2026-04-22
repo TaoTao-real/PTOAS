@@ -23,7 +23,6 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/EmitC/IR/EmitC.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 
 #include "mlir/IR/AffineExpr.h"
@@ -237,13 +236,9 @@ tracePointerCastAddrsFromSource(Value source) {
   return failure();
 }
 
-static Value buildGlobalTensorFromMemref(ConversionPatternRewriter &rewriter,
-                                         Location loc, Value basePtr,
-                                         MemRefType mrTy, Operation *anchor);
-
-static Value maybeWrapGlobalMemrefAsGlobalTensor(
-    ConversionPatternRewriter &rewriter, Location loc, Value loweredValue,
-    Type originalType, Operation *anchor);
+static Value materializeGlobalTensorFromViewLike(
+    ConversionPatternRewriter &rewriter, Location loc, Value originalValue,
+    Value loweredValue, Operation *anchor);
 
 static std::optional<mlir::pto::Layout> getLayoutAttrFromOp(Operation *op) {
   if (!op)
@@ -262,16 +257,16 @@ static std::optional<mlir::pto::Layout> resolveLayoutFromValueChain(Value v) {
       v = peelUnrealized(partition.getSource());
       continue;
     }
-    if (auto subview = dyn_cast<memref::SubViewOp>(def)) {
+    if (auto subview = dyn_cast<pto::SubViewOp>(def)) {
       v = peelUnrealized(subview.getSource());
       continue;
     }
-    if (auto reinterpret = dyn_cast<memref::ReinterpretCastOp>(def)) {
-      v = peelUnrealized(reinterpret.getSource());
+    if (auto bitcast = dyn_cast<pto::BitcastOp>(def)) {
+      v = peelUnrealized(bitcast.getSrc());
       continue;
     }
-    if (auto cast = dyn_cast<memref::CastOp>(def)) {
-      v = peelUnrealized(cast.getSource());
+    if (auto reshape = dyn_cast<pto::TReshapeOp>(def)) {
+      v = peelUnrealized(reshape.getSrc());
       continue;
     }
     if (auto unrealized = dyn_cast<UnrealizedConversionCastOp>(def)) {
@@ -632,51 +627,8 @@ public:
                    std::to_string(fractal) + ", " + padTok + ", " +
                    compactTok + ">");
     });
-
     // ---------------------------------------------------------
-    // 3. MemRef 转换 (Debug 重点)
-    // ---------------------------------------------------------
-    addConversion([this, Ctx](MemRefType type) -> std::optional<Type> {
-      llvm::errs() << "[Debug] Converting MemRef: " << type << "\n";
-
-      // A. 转换元素类型
-      Type elemType = type.getElementType();
-      Type newElemType = convertType(elemType); 
-      if (!newElemType) {
-        llvm::errs() << "  [Error] Failed to convert element type: " << elemType << "\n";
-        return std::nullopt;
-      }
-      
-      // 获取元素类型的字符串
-      std::string elemTypeStr;
-      if (auto opq = dyn_cast<emitc::OpaqueType>(newElemType)) {
-        elemTypeStr = opq.getValue().str();
-      } else {
-         llvm::errs() << "  [Error] Converted element type is not OpaqueType: " << newElemType << "\n";
-         return std::nullopt;
-      }
-
-      // B. 处理 Memory Space
-      std::string qualifier = "";
-      Attribute memorySpace = type.getMemorySpace();
-      
-      if (!memorySpace) {
-         qualifier = "__gm__";
-      } else if (auto ptoAttr = dyn_cast<pto::AddressSpaceAttr>(memorySpace)) {
-         qualifier = addrSpaceQualifier(ptoAttr.getAddressSpace());
-      } else {
-         llvm::errs() << "  [Warning] Unknown MemorySpace Attribute type: " << memorySpace << "\n";
-         qualifier = "__gm__"; // Fallback
-      }
-
-      std::string finalTypeStr = qualifier + " " + elemTypeStr;
-      llvm::errs() << "  [Success] -> " << finalTypeStr << "*\n";
-      
-      return emitc::PointerType::get(emitc::OpaqueType::get(Ctx, finalTypeStr));
-    });
-
-    // ---------------------------------------------------------
-    // 4. Function & Materialization
+    // 3. Function & Materialization
     // ---------------------------------------------------------
     addConversion([this](FunctionType type) -> Type {
       SmallVector<Type> inputs;
@@ -1586,12 +1538,6 @@ struct ArithIndexCastUIToEmitC : public OpConversionPattern<arith::IndexCastUIOp
     Type dstTy = getTypeConverter()->convertType(op.getType());
     if (!dstTy)
       return failure();
-
-    // MemRef casts are handled elsewhere; for safety, fall back to emitc.cast.
-    if (isa<MemRefType>(op.getIn().getType()) || isa<MemRefType>(op.getType())) {
-      rewriter.replaceOpWithNewOp<emitc::CastOp>(op, dstTy, adaptor.getIn());
-      return success();
-    }
 
     auto getBW = [](Type t) -> std::optional<unsigned> {
       if (auto i = dyn_cast<IntegerType>(t))
@@ -2724,8 +2670,10 @@ struct PTOMGatherToMGATHER : public OpConversionPattern<pto::MGatherOp> {
     Value idx = peelUnrealized(adaptor.getIdx());
     Value dst = peelUnrealized(adaptor.getDst());
 
-    Value memArg = maybeWrapGlobalMemrefAsGlobalTensor(
-        rewriter, op.getLoc(), mem, op.getMem().getType(), op.getOperation());
+    Value memArg = mem;
+    if (Value gt = materializeGlobalTensorFromViewLike(
+            rewriter, op.getLoc(), op.getMem(), mem, op.getOperation()))
+      memArg = gt;
 
     ArrayAttr templateArgs;
     if (op.getGatherOob() != pto::GatherOOB::Undefined) {
@@ -2818,29 +2766,39 @@ static KernelKind inferKernelKind(func::FuncOp f) {
 }
 
 static void inferTileMNK(func::FuncOp f, int &M, int &N, int &K) {
-  M = 32; N = 32; K = 32;
-  SmallVector<memref::SubViewOp, 4> subs;
-  f.walk([&](memref::SubViewOp sv) { subs.push_back(sv); });
+  M = 32;
+  N = 32;
+  K = 32;
+  SmallVector<pto::SubViewOp, 4> subs;
+  f.walk([&](pto::SubViewOp sv) { subs.push_back(sv); });
 
-  auto readShape2D = [&](memref::SubViewOp sv, int &d0, int &d1) {
-    auto resTy = mlir::cast<MemRefType>(sv.getResult().getType());
-    if (resTy.getRank() == 2 && resTy.hasStaticShape()) {
-      d0 = (int)resTy.getDimSize(0);
-      d1 = (int)resTy.getDimSize(1);
+  auto readShape2D = [&](pto::SubViewOp sv, int &d0, int &d1) {
+    auto resTy = dyn_cast<pto::TileBufType>(sv.getResult().getType());
+    if (!resTy)
+      return;
+    auto shape = resTy.getShape();
+    if (shape.size() == 2 && shape[0] != ShapedType::kDynamic &&
+        shape[1] != ShapedType::kDynamic) {
+      d0 = static_cast<int>(shape[0]);
+      d1 = static_cast<int>(shape[1]);
     }
   };
 
-  if (subs.empty()) return;
+  if (subs.empty())
+    return;
 
-  int a0=32, a1=32;
+  int a0 = 32, a1 = 32;
   readShape2D(subs[0], a0, a1);
-  M = a0; N = a1;
+  M = a0;
+  N = a1;
 
   if (subs.size() >= 2) {
-    int b0=32, b1=32;
+    int b0 = 32, b1 = 32;
     readShape2D(subs[0], a0, a1);
     readShape2D(subs[1], b0, b1);
-    M = a0; K = a1; N = b1;
+    M = a0;
+    K = a1;
+    N = b1;
   }
 }
 
@@ -3001,519 +2959,6 @@ static std::optional<Role> inferSubviewRoleFromUser(Operation *user, Value resul
   return std::nullopt;
 }
 
-static Role inferSubviewRole(memref::SubViewOp sv) {
-  Value result = sv.getResult();
-  for (Operation *user : result.getUsers()) {
-    if (auto role = inferSubviewRoleFromUser(user, result))
-      return *role;
-  }
-  return Role::Unknown;
-}
-
-// =============================================================================
-// 4. MemRef SubView -> Explicit Shape/Stride Construction (Full Implementation)
-// =============================================================================
-struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
-  using OpConversionPattern<memref::SubViewOp>::OpConversionPattern;
-
-  // 辅助函数：尝试从 OpFoldResult 中提取静态整数值
-  std::optional<int64_t> extractStaticInt(OpFoldResult ofr) const {
-    if (auto attr = ofr.dyn_cast<Attribute>()) {
-      if (auto intAttr = dyn_cast<IntegerAttr>(attr))
-        return intAttr.getInt();
-    } else {
-      Value v = ofr.get<Value>();
-      if (auto cOp = v.getDefiningOp<arith::ConstantOp>()) {
-        if (auto iAttr = dyn_cast<IntegerAttr>(cOp.getValue()))
-          return iAttr.getInt();
-      } else if (auto idxOp = v.getDefiningOp<arith::ConstantIndexOp>()) {
-        return idxOp.value();
-      }
-    }
-    return std::nullopt;
-  }
-
-  LogicalResult matchAndRewrite(memref::SubViewOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-    auto *ctx = rewriter.getContext();
-    
-    // 获取源 MemRef 类型信息
-    auto srcType = mlir::cast<MemRefType>(op.getSource().getType());
-    int64_t rank = srcType.getRank();
-
-	    auto elemTypeToString = [&](Type elemTy) -> std::string {
-	      if (elemTy.isF16())
-	        return "half";
-	      if (elemTy.isBF16())
-	        return "bfloat16_t";
-	      if (elemTy.isF32())
-	        return "float";
-	      if (elemTy.isF64())
-	        return "double";
-      if (elemTy.isInteger(8)) {
-        if (elemTy.isSignlessInteger(8) || elemTy.isSignedInteger(8))
-          return "int8_t";
-        return "uint8_t";
-      }
-      if (elemTy.isInteger(16)) {
-        if (elemTy.isSignlessInteger(16) || elemTy.isSignedInteger(16))
-          return "int16_t";
-        return "uint16_t";
-      }
-      if (elemTy.isInteger(32)) {
-        if (elemTy.isSignlessInteger(32) || elemTy.isSignedInteger(32))
-          return "int32_t";
-        return "uint32_t";
-      }
-      if (elemTy.isInteger(64)) {
-        return cast<IntegerType>(elemTy).isUnsigned() ? "uint64_t" : "int64_t";
-      }
-      return "float";
-    };
-
-    // -------------------------------------------------------------------------
-    // Part 1: 指针偏移计算 (Runtime Pointer Arithmetic)
-    // -------------------------------------------------------------------------
-    
-    // 准备类型: unsigned
-    Type u32Ty = emitc::OpaqueType::get(ctx, "unsigned");
-    
-    // Helper: 创建 unsigned 常量
-    auto mkU32 = [&](int64_t v) -> Value {
-      return rewriter.create<emitc::ConstantOp>(
-          loc, u32Ty, emitc::OpaqueAttr::get(ctx, std::to_string(v)));
-    };
-
-    // Helper: 将 OpFoldResult 转为 EmitC Value (用于计算)
-    auto ofrToEmitCValue = [&](OpFoldResult ofr) -> Value {
-      if (auto v = ofr.dyn_cast<Value>()) {
-        Value rv = rewriter.getRemappedValue(v);
-        // 如果类型不匹配，插入 Cast
-        if (rv.getType() != u32Ty)
-             return rewriter.create<emitc::CastOp>(loc, u32Ty, rv).getResult();
-        return rv;
-      }
-      if (auto attr = ofr.dyn_cast<Attribute>()) {
-         if (auto ia = dyn_cast<IntegerAttr>(attr))
-             return mkU32(ia.getValue().getSExtValue());
-      }
-      return mkU32(0);
-    };
-
-    // 1. 获取 Source 的 Strides (支持动态 Stride 收集)
-    SmallVector<OpFoldResult> sourceStrides;
-
-    if (auto rc = op.getSource().getDefiningOp<memref::ReinterpretCastOp>()) {
-        sourceStrides = rc.getMixedStrides();
-    } else {
-        SmallVector<int64_t> strideInts;
-        int64_t offset = ShapedType::kDynamic;
-        bool useTypeStrides = succeeded(getStridesAndOffset(srcType, strideInts, offset));
-        (void)offset;
-        if (useTypeStrides) {
-            for (int64_t s : strideInts) {
-                if (s == ShapedType::kDynamic) {
-                    useTypeStrides = false;
-                    break;
-                }
-            }
-        }
-        if (useTypeStrides) {
-            for (int64_t s : strideInts) {
-                sourceStrides.push_back(rewriter.getIndexAttr(s));
-            }
-        } else {
-            // Fallback: Compact Layout
-            auto shape = srcType.getShape();
-            int64_t current = 1;
-            sourceStrides.resize(rank);
-            for (int i = rank - 1; i >= 0; --i) {
-                sourceStrides[i] = rewriter.getIndexAttr(current);
-                if (shape[i] != ShapedType::kDynamic) current *= shape[i];
-            }
-        }
-    }
-
-    // 2. 计算运行时 Offset
-    auto staticOffsets = op.getStaticOffsets();
-    auto dynamicOffsets = adaptor.getOffsets();
-    int dynOffIdx = 0;
-    Value totalOffset = mkU32(0);
-
-    for (int i = 0; i < rank; ++i) {
-        // A. 获取 Offset
-        Value offVal;
-        if (staticOffsets[i] == ShapedType::kDynamic) {
-            Value rawDyn = dynamicOffsets[dynOffIdx++];
-            offVal = rewriter.create<emitc::CastOp>(loc, u32Ty, rawDyn);
-        } else {
-            offVal = mkU32(staticOffsets[i]);
-        }
-
-        // B. 获取 Stride (用于指针计算)
-        Value strideVal = mkU32(1);
-        if (i < (int)sourceStrides.size()) {
-            strideVal = ofrToEmitCValue(sourceStrides[i]);
-        }
-
-        // C. 累加
-        Value term = rewriter.create<emitc::MulOp>(loc, u32Ty, offVal, strideVal);
-        totalOffset = rewriter.create<emitc::AddOp>(loc, u32Ty, totalOffset, term);
-    }
-
-    // 3. 生成新指针
-    //
-    // NOTE: Some toolchains may materialize kernel pointer params as `void*` even
-    // when the underlying element type is i16. Pointer arithmetic on `void*`
-    // is ill-formed in C++, so we explicitly cast to a typed pointer for i16.
-    Value sourcePtr = adaptor.getSource();
-    Value tileCandidate = sourcePtr;
-    if (auto castOp = sourcePtr.getDefiningOp<emitc::CastOp>()) {
-      tileCandidate = castOp.getOperand();
-    } else if (auto uc =
-                   sourcePtr.getDefiningOp<UnrealizedConversionCastOp>()) {
-      tileCandidate = uc.getOperand(0);
-    }
-    if (auto ot = dyn_cast<emitc::OpaqueType>(tileCandidate.getType())) {
-      auto tyStr = ot.getValue();
-      if (tyStr.find("Tile<") != std::string::npos ||
-          tyStr.find("ConvTile<") != std::string::npos) {
-        std::string elemTok = elemTypeToString(srcType.getElementType());
-        pto::AddressSpace as = pto::AddressSpace::GM;
-        if (auto asAttr =
-                dyn_cast_or_null<pto::AddressSpaceAttr>(srcType.getMemorySpace()))
-          as = asAttr.getAddressSpace();
-        sourcePtr =
-            materializeTileDataValue(rewriter, loc, tileCandidate, as, elemTok);
-        if (tileDataReturnsIntegralAddress(as))
-          sourcePtr =
-              materializeAddressAsPointer(rewriter, loc, sourcePtr, as, elemTok);
-      }
-    }
-    Value newPtr;
-    {
-      auto resTy = mlir::cast<MemRefType>(op.getResult().getType());
-      Type elemTy = resTy.getElementType();
-      if (elemTy.isInteger(16)) {
-        std::string castElemTypeStr = "int16_t";
-        if (cast<IntegerType>(elemTy).isUnsigned())
-          castElemTypeStr = "uint16_t";
-
-        std::string qualifier = "__gm__";
-        if (Attribute ms = srcType.getMemorySpace()) {
-          if (auto ptoAttr = dyn_cast<pto::AddressSpaceAttr>(ms)) {
-            qualifier = addrSpaceQualifier(ptoAttr.getAddressSpace());
-          }
-        }
-
-        auto typedPtrTy = emitc::OpaqueType::get(ctx, qualifier + " " + castElemTypeStr + "*");
-        Value typedSourcePtr = rewriter.create<emitc::CastOp>(loc, typedPtrTy, sourcePtr);
-        newPtr = rewriter.create<emitc::AddOp>(loc, typedPtrTy, typedSourcePtr, totalOffset);
-      } else {
-        newPtr = rewriter.create<emitc::AddOp>(loc, sourcePtr.getType(), sourcePtr, totalOffset);
-      }
-    }
-
-
-    // -------------------------------------------------------------------------
-    // Part 2: For non-GM memrefs, keep pointer (no GlobalTensor).
-    // -------------------------------------------------------------------------
-    bool isGlobal = true;
-    if (auto asAttr = dyn_cast_or_null<pto::AddressSpaceAttr>(srcType.getMemorySpace())) {
-      auto as = asAttr.getAddressSpace();
-      isGlobal = (as == pto::AddressSpace::GM || as == pto::AddressSpace::Zero);
-    }
-    if (!isGlobal) {
-      Type dstTy = getTypeConverter()->convertType(op.getType());
-      if (!dstTy)
-        return failure();
-      if (newPtr.getType() != dstTy)
-        newPtr = rewriter.create<emitc::CastOp>(loc, dstTy, newPtr);
-      rewriter.replaceOp(op, newPtr);
-      return success();
-    }
-
-    // -------------------------------------------------------------------------
-    // Part 3: 生成 GlobalTensor 类型 (Shape/Stride Template Generation)
-    // -------------------------------------------------------------------------
-    
-    // When emitting C++ with `declareVariablesAtTop`, value declarations are
-    // hoisted before body statements. Avoid introducing local `using` aliases
-    // for templated types (Shape/Stride/GlobalTensor) because those aliases
-    // would appear after the hoisted declarations and break compilation
-    // (`unknown type name`).
-    //
-    // Instead, use the fully spelled template types as EmitC opaque types.
-
-    auto resTy = mlir::cast<MemRefType>(op.getResult().getType());
-    
-    // 1. 解析具体元素类型 (完整逻辑，不省略)
-    std::string elemTypeStr = "float"; 
-    Type elemTy = resTy.getElementType();
-    
-	    if (elemTy.isF16()) {
-	        elemTypeStr = "half";
-	    } else if (elemTy.isBF16()) {
-	        elemTypeStr = "bfloat16_t";
-	    } else if (elemTy.isF32()) {
-	        elemTypeStr = "float";
-	    } else if (elemTy.isInteger(8)) {
-        // 区分有符号/无符号通常依赖上下文，但在 EmitC 中 int8_t 比较通用
-        if (elemTy.isSignlessInteger(8) || elemTy.isSignedInteger(8))
-            elemTypeStr = "int8_t";
-        else 
-            elemTypeStr = "uint8_t";
-    } else if (elemTy.isInteger(16)) {
-        if (elemTy.isSignlessInteger(16) || elemTy.isSignedInteger(16))
-            elemTypeStr = "int16_t";
-        else
-            elemTypeStr = "uint16_t";
-    } else if (elemTy.isInteger(32)) {
-        if (elemTy.isSignlessInteger(32) || elemTy.isSignedInteger(32))
-            elemTypeStr = "int32_t";
-        else 
-            elemTypeStr = "uint32_t";
-    } else if (elemTy.isInteger(64)) {
-        elemTypeStr = cast<IntegerType>(elemTy).isUnsigned() ? "uint64_t" : "int64_t";
-    }
-
-    // 2. 生成 Shape 模板参数，之后会右对齐有效维度并补齐到 5 维（高维填 1）
-    SmallVector<std::string> shapeParamsVec;
-    SmallVector<Value> sizeValues; // 每个维度对应的运行时 size（统一为 unsigned）
-    auto resShape = resTy.getShape();
-    auto mixedSizes = op.getMixedSizes();
-    sizeValues.reserve(rank);
-    for (int i = 0; i < resTy.getRank(); ++i) {
-      if (resShape[i] == ShapedType::kDynamic) {
-        shapeParamsVec.push_back("-1");
-      } else {
-        shapeParamsVec.push_back(std::to_string(resShape[i]));
-      }
-      // size 值：优先从 op.getMixedSizes() 取（可动态/静态），否则退化为类型里的静态 shape。
-      if (i < (int)mixedSizes.size())
-        sizeValues.push_back(ofrToEmitCValue(mixedSizes[i]));
-      else
-        sizeValues.push_back(
-            mkU32(resShape[i] == ShapedType::kDynamic ? 1 : resShape[i]));
-    }
-
-    // 3. 生成 Stride 模板参数 + 运行时 stride 值（考虑 subview step）
-    SmallVector<std::string> dummyStrideVec;
-    SmallVector<Value> strideValues; // 每个维度对应的运行时 stride（统一为 unsigned）
-    dummyStrideVec.reserve(rank);
-    strideValues.reserve(rank);
-    auto subViewSteps = op.getMixedStrides();
-    for (int i = 0; i < rank; ++i) {
-      OpFoldResult srcStrideOfr =
-          (i < (int)sourceStrides.size()) ? sourceStrides[i]
-                                          : rewriter.getIndexAttr(1);
-      OpFoldResult stepOfr = (i < (int)subViewSteps.size())
-                                 ? subViewSteps[i]
-                                 : rewriter.getIndexAttr(1);
-
-      auto srcStatic = extractStaticInt(srcStrideOfr);
-      auto stepStatic = extractStaticInt(stepOfr);
-      if (srcStatic && stepStatic) {
-        int64_t finalStride = (*srcStatic) * (*stepStatic);
-        dummyStrideVec.push_back(std::to_string(finalStride));
-        strideValues.push_back(mkU32(finalStride));
-        continue;
-      }
-
-      dummyStrideVec.push_back("-1");
-      Value srcV = ofrToEmitCValue(srcStrideOfr);
-      Value stepV = ofrToEmitCValue(stepOfr);
-      // 尽量避免乘以 1 生成冗余指令
-      if (stepStatic && *stepStatic == 1)
-        strideValues.push_back(srcV);
-      else if (srcStatic && *srcStatic == 1)
-        strideValues.push_back(stepV);
-      else
-        strideValues.push_back(
-            rewriter.create<emitc::MulOp>(loc, u32Ty, srcV, stepV));
-    }
-
-    // 3.1 右对齐到 5 维：shape 补 1；已有维度继承原 stride；
-    //      被补出来的高维按“紧密升维”规则连续推导：stride[i] = shape[i+1] * stride[i+1]
-    SmallVector<std::string, 5> finalShape(5, "1");
-    SmallVector<std::string, 5> finalStride(5, "1");
-    Value oneU32 = mkU32(1);
-    SmallVector<Value, 5> finalShapeValues(5, oneU32);
-    SmallVector<Value, 5> finalStrideValues(5, oneU32);
-    int shift = 5 - rank;
-
-    // 先放入原始 shape/stride（保持用户提供的值）
-    for (int i = 0; i < rank && i < 5; ++i) {
-      finalShape[shift + i] = shapeParamsVec[i];
-      finalStride[shift + i] = dummyStrideVec[i];
-      finalShapeValues[shift + i] = sizeValues[i];
-      finalStrideValues[shift + i] = strideValues[i];
-    }
-
-    auto mulOrDyn = [](const std::string &a, const std::string &b) -> std::string {
-        if (a == "-1" || b == "-1")
-            return "-1";
-        int64_t va = 1, vb = 1;
-        (void)llvm::to_integer(a, va);
-        (void)llvm::to_integer(b, vb);
-        return std::to_string(va * vb);
-    };
-
-    // 从低维到高维倒推补齐 stride（仅对补出来的前置维度生效）
-    for (int i = 3; i >= 0; --i) {
-      // 如果该维已由原始 rank 覆盖，则保持原值
-      if (i >= shift)
-        continue;
-      // 补维：shape 已经是 1，stride = shape[i+1] * stride[i+1]（或动态）
-      finalStride[i] = mulOrDyn(finalShape[i + 1], finalStride[i + 1]);
-      if (finalStride[i] != "-1") {
-        int64_t si = 1;
-        (void)llvm::to_integer(finalStride[i], si);
-        finalStrideValues[i] = mkU32(si);
-        continue;
-      }
-      // 动态推导：stride[i] = shape[i+1] * stride[i+1]
-      if (finalShape[i + 1] == "1") {
-        finalStrideValues[i] = finalStrideValues[i + 1];
-      } else {
-        finalStrideValues[i] = rewriter.create<emitc::MulOp>(
-            loc, u32Ty, finalShapeValues[i + 1], finalStrideValues[i + 1]);
-      }
-    }
-
-    auto joinParams = [](llvm::ArrayRef<std::string> vec) {
-        std::string out;
-        for (size_t i = 0; i < vec.size(); ++i) {
-            if (i > 0) out += ", ";
-            out += vec[i];
-        }
-        return out;
-    };
-
-    std::string shapeParams = joinParams(finalShape);
-    std::string strideParams = joinParams(finalStride);
-
-    // Spelled-out C++ types.
-    std::string shapeCppType = "pto::Shape<" + shapeParams + ">";
-    std::string strideCppType = "pto::Stride<" + strideParams + ">";
-
-    // 3.0 Layout: prefer the attribute from InferPTOLayout; only fall back to
-    // local inference when the pass is disabled.
-    std::string layoutEnum = "pto::Layout::ND";
-    if (auto layout = resolveLayoutForGlobalTensor(op, op.getSource())) {
-      layoutEnum = layoutToEmitCString(*layout);
-    } else {
-      auto strToInt = [](const std::string &s, int64_t &out) -> bool {
-        return s != "-1" && llvm::to_integer(s, out);
-      };
-      SmallVector<int64_t, 5> shapeInt(5, -1), strideInt(5, -1);
-      bool allStatic = true;
-      for (int i = 0; i < 5; ++i) {
-        if (!strToInt(finalShape[i], shapeInt[i]) ||
-            !strToInt(finalStride[i], strideInt[i]))
-          allStatic = false;
-      }
-
-      int layoutTag = 0; // ND
-      auto elemBytes = 4; // default float
-      if (elemTypeStr.find("half") != std::string::npos ||
-          elemTypeStr.find("f16") != std::string::npos ||
-          elemTypeStr.find("bf16") != std::string::npos)
-        elemBytes = 2;
-      else if (elemTypeStr.find("double") != std::string::npos ||
-               elemTypeStr.find("f64") != std::string::npos)
-        elemBytes = 8;
-
-      if (allStatic) {
-        if (shapeInt[2] == 16 && shapeInt[2] * shapeInt[3] * elemBytes == 512 &&
-            strideInt[4] == 1 && strideInt[3] == shapeInt[4]) {
-          layoutTag = 2; // NZ
-        } else {
-          bool isRow = strideInt[4] == 1;
-          for (int i = 3; i >= 0; --i)
-            isRow &= (strideInt[i] == strideInt[i + 1] * shapeInt[i + 1]);
-          bool isCol = strideInt[0] == 1;
-          for (int i = 0; i < 4; ++i)
-            isCol &= (strideInt[i + 1] == strideInt[i] * shapeInt[i]);
-          if (isCol)
-            layoutTag = 1; // DN
-          else
-            layoutTag = isRow ? 0 : 0; // fallback ND
-        }
-      }
-
-      if (layoutTag == 1)
-        layoutEnum = "pto::Layout::DN";
-      else if (layoutTag == 2)
-        layoutEnum = "pto::Layout::NZ";
-    }
-    // GlobalTensor takes a Layout non-type template parameter; directly use the
-    // enum constant.
-
-
-    // -------------------------------------------------------------------------
-    // Part 3: 显式对象实例化 (Explicit Object Instantiation)
-    // -------------------------------------------------------------------------
-
-    // A. Instantiate Shape object.
-    auto shapeTypeOpaque = emitc::OpaqueType::get(ctx, shapeCppType);
-    SmallVector<Value> shapeArgs;
-    // 从 adaptor.getSizes() 获取 subview 的所有 dynamic sizes
-    for (Value dynSize : adaptor.getSizes()) {
-        shapeArgs.push_back(dynSize);
-    }
-    
-    auto shapeInstOp = rewriter.create<emitc::CallOpaqueOp>(
-        loc, 
-        shapeTypeOpaque, // 返回类型
-        shapeCppType,    // 调用的“函数名”即类名构造函数
-        /*args=*/ArrayAttr{}, 
-        /*templateArgs=*/ArrayAttr{}, 
-        /*operands=*/ValueRange(shapeArgs)
-    );
-    
-    // B. Instantiate Stride object.
-    auto strideTypeOpaque = emitc::OpaqueType::get(ctx, strideCppType);
-    // 仅传入动态 stride 维度对应的值，匹配 pto::Stride 的 N-parameter ctor（并满足其 static_assert）。
-    SmallVector<Value> strideCtorArgs;
-    strideCtorArgs.reserve(5);
-    for (int i = 0; i < 5; ++i) {
-      if (finalStride[i] == "-1")
-        strideCtorArgs.push_back(finalStrideValues[i]);
-    }
-    auto strideInstOp = rewriter.create<emitc::CallOpaqueOp>(
-        loc, strideTypeOpaque, strideCppType,
-        /*args=*/ArrayAttr{}, /*templateArgs=*/ArrayAttr{},
-        /*operands=*/ValueRange(strideCtorArgs));
-
-    // C. Instantiate GlobalTensor object (ptr + shape + stride).
-    std::string gtCppType = "GlobalTensor<" + elemTypeStr + ", " + shapeCppType +
-                            ", " + strideCppType + ", " + layoutEnum + ">";
-    auto gtType = emitc::OpaqueType::get(ctx, gtCppType);
-
-    // 准备构造参数: [ptr, shape_instance, stride_instance]
-    SmallVector<Value> gtConstructorArgs;
-    gtConstructorArgs.push_back(newPtr);
-    gtConstructorArgs.push_back(shapeInstOp.getResult(0)); // 拿到 shape_inst 的 SSA Value
-    gtConstructorArgs.push_back(strideInstOp.getResult(0)); // 拿到 stride_inst 的 SSA Value
-
-    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
-        op, 
-        gtType, 
-        gtCppType,
-        /*args=*/ArrayAttr{}, 
-        /*templateArgs=*/ArrayAttr{},
-        /*operands=*/ValueRange(gtConstructorArgs)
-    );
-
-    return success();
-  }
-};
-
-//===----------------------------------------------------------------------===//
-// Helper: build GlobalTensor from a static MemRef (for TLOAD/TSTORE)
-//===----------------------------------------------------------------------===//
 
 static std::string getElemTypeStringForGT(Type elemTy) {
   if (elemTy.isF16()) return "half";
@@ -3539,217 +2984,6 @@ static std::string getElemTypeStringForGT(Type elemTy) {
     return cast<IntegerType>(elemTy).isUnsigned() ? "uint64_t" : "int64_t";
   }
   return "float";
-}
-
-static bool hasStaticShape(MemRefType mrTy) {
-  return llvm::none_of(mrTy.getShape(), [](int64_t dim) {
-    return dim == ShapedType::kDynamic;
-  });
-}
-
-static bool getStaticMemrefLayout(MemRefType mrTy, SmallVectorImpl<int64_t> &strides,
-                                  int64_t &offset) {
-  if (failed(getStridesAndOffset(mrTy, strides, offset))) {
-    strides.clear();
-    int64_t stride = 1;
-    ArrayRef<int64_t> shape = mrTy.getShape();
-    for (int i = static_cast<int>(shape.size()) - 1; i >= 0; --i) {
-      strides.push_back(stride);
-      stride *= shape[i];
-    }
-    std::reverse(strides.begin(), strides.end());
-    offset = 0;
-  }
-  return offset != ShapedType::kDynamic &&
-         llvm::none_of(strides, [](int64_t strideValue) {
-           return strideValue == ShapedType::kDynamic;
-         });
-}
-
-static Value applyStaticMemrefOffset(ConversionPatternRewriter &rewriter,
-                                     Location loc, Value basePtr,
-                                     int64_t offset) {
-  if (offset == 0)
-    return basePtr;
-  auto *ctx = rewriter.getContext();
-  Type u32Ty = emitc::OpaqueType::get(ctx, "unsigned");
-  auto offVal = rewriter.create<emitc::ConstantOp>(
-      loc, u32Ty, emitc::OpaqueAttr::get(ctx, std::to_string(offset)));
-  return rewriter.create<emitc::AddOp>(loc, basePtr.getType(), basePtr, offVal);
-}
-
-static int getGlobalTensorElementBytes(StringRef elemTypeStr) {
-  if (elemTypeStr.contains("half") || elemTypeStr.contains("bf16"))
-    return 2;
-  if (elemTypeStr.contains("double"))
-    return 8;
-  return 4;
-}
-
-static int64_t multiplyOrDynamic(int64_t lhs, int64_t rhs) {
-  if (lhs < 0 || rhs < 0)
-    return -1;
-  return lhs * rhs;
-}
-
-static void buildGlobalTensorShapeAndStride(ArrayRef<int64_t> shape,
-                                            ArrayRef<int64_t> strides,
-                                            SmallVectorImpl<int64_t> &shape5D,
-                                            SmallVectorImpl<int64_t> &stride5D) {
-  shape5D.assign(5, 1);
-  stride5D.assign(5, 1);
-  int rank = static_cast<int>(shape.size());
-  int shift = 5 - rank;
-  for (int i = 0; i < rank && i < 5; ++i) {
-    shape5D[shift + i] = shape[i];
-    stride5D[shift + i] = strides[i];
-  }
-  for (int i = 3; i >= 0; --i) {
-    if (i >= shift)
-      continue;
-    stride5D[i] = multiplyOrDynamic(shape5D[i + 1], stride5D[i + 1]);
-  }
-}
-
-static std::string joinIntTemplateParams(ArrayRef<int64_t> values) {
-  std::string result;
-  for (size_t i = 0; i < values.size(); ++i) {
-    if (i != 0)
-      result += ", ";
-    result += std::to_string(values[i]);
-  }
-  return result;
-}
-
-static std::string inferFallbackGlobalTensorLayout(ArrayRef<int64_t> shape5D,
-                                                   ArrayRef<int64_t> stride5D,
-                                                   StringRef elemTypeStr) {
-  int elemBytes = getGlobalTensorElementBytes(elemTypeStr);
-  if (shape5D[2] == 16 && multiplyOrDynamic(shape5D[2], shape5D[3]) * elemBytes == 512 &&
-      stride5D[4] == 1 && stride5D[3] == shape5D[4]) {
-    return "pto::Layout::NZ";
-  }
-
-  bool isRowMajor = stride5D[4] == 1;
-  for (int i = 3; i >= 0 && isRowMajor; --i)
-    isRowMajor = stride5D[i] == multiplyOrDynamic(stride5D[i + 1], shape5D[i + 1]);
-
-  bool isColMajor = stride5D[0] == 1;
-  for (int i = 0; i < 4 && isColMajor; ++i)
-    isColMajor = stride5D[i + 1] == multiplyOrDynamic(stride5D[i], shape5D[i]);
-
-  if (isColMajor)
-    return "pto::Layout::DN";
-  return isRowMajor ? "pto::Layout::ND" : "pto::Layout::ND";
-}
-
-static std::string resolveGlobalTensorLayout(Operation *anchor, Value basePtr,
-                                             ArrayRef<int64_t> shape5D,
-                                             ArrayRef<int64_t> stride5D,
-                                             StringRef elemTypeStr) {
-  if (auto layout = resolveLayoutForGlobalTensor(anchor, basePtr))
-    return layoutToEmitCString(*layout);
-  return inferFallbackGlobalTensorLayout(shape5D, stride5D, elemTypeStr);
-}
-
-struct GlobalTensorTypeNames {
-  std::string shapeTypeName;
-  std::string strideTypeName;
-  std::string tensorTypeName;
-  std::string layoutConstName;
-};
-
-static GlobalTensorTypeNames getGlobalTensorTypeNames(Operation *anchor) {
-  std::string suffix = "_" + std::to_string(reinterpret_cast<uintptr_t>(anchor));
-  return {
-      "GTShape" + suffix,
-      "GTStride" + suffix,
-      "GT" + suffix,
-      "GT" + suffix + "_layout",
-  };
-}
-static Value buildGlobalTensorFromMemref(ConversionPatternRewriter &rewriter,
-                                         Location loc, Value basePtr,
-                                         MemRefType mrTy,
-                                         Operation *anchor) {
-  auto *ctx = rewriter.getContext();
-
-  ArrayRef<int64_t> shape = mrTy.getShape();
-  if (!hasStaticShape(mrTy))
-    return Value();
-
-  SmallVector<int64_t> strides;
-  int64_t offset = 0;
-  if (!getStaticMemrefLayout(mrTy, strides, offset))
-    return Value();
-
-  Value ptr = applyStaticMemrefOffset(rewriter, loc, basePtr, offset);
-  GlobalTensorTypeNames names = getGlobalTensorTypeNames(anchor);
-  std::string elemTypeStr = getElemTypeStringForGT(mrTy.getElementType());
-  SmallVector<int64_t, 5> shape5D;
-  SmallVector<int64_t, 5> stride5D;
-  buildGlobalTensorShapeAndStride(shape, strides, shape5D, stride5D);
-
-  rewriter.create<emitc::VerbatimOp>(
-      loc, "using " + names.shapeTypeName + " = pto::Shape<" +
-               joinIntTemplateParams(shape5D) + ">;");
-  rewriter.create<emitc::VerbatimOp>(
-      loc, "using " + names.strideTypeName + " = pto::Stride<" +
-               joinIntTemplateParams(stride5D) + ">;");
-
-  std::string layoutEnum = resolveGlobalTensorLayout(anchor, basePtr, shape5D,
-                                                     stride5D, elemTypeStr);
-  rewriter.create<emitc::VerbatimOp>(loc, "constexpr pto::Layout " +
-                                              names.layoutConstName + " = " +
-                                              layoutEnum + ";");
-
-  auto shapeTypeOpaque = emitc::OpaqueType::get(ctx, names.shapeTypeName);
-  auto strideTypeOpaque = emitc::OpaqueType::get(ctx, names.strideTypeName);
-  auto shapeInstOp = rewriter.create<emitc::CallOpaqueOp>(
-      loc, shapeTypeOpaque, names.shapeTypeName, ArrayAttr{}, ArrayAttr{},
-      ValueRange{});
-  auto strideInstOp = rewriter.create<emitc::CallOpaqueOp>(
-      loc, strideTypeOpaque, names.strideTypeName, ArrayAttr{}, ArrayAttr{},
-      ValueRange{});
-
-  rewriter.create<emitc::VerbatimOp>(
-      loc, "using " + names.tensorTypeName + " = GlobalTensor<" + elemTypeStr +
-               ", " + names.shapeTypeName + ", " + names.strideTypeName +
-               ", " + names.layoutConstName + ">;");
-  auto gtType = emitc::OpaqueType::get(ctx, names.tensorTypeName);
-
-  SmallVector<Value> gtArgs;
-  gtArgs.push_back(ptr);
-  gtArgs.push_back(shapeInstOp.getResult(0));
-  gtArgs.push_back(strideInstOp.getResult(0));
-
-  auto gtInst = rewriter.create<emitc::CallOpaqueOp>(
-      loc, gtType, names.tensorTypeName, ArrayAttr{}, ArrayAttr{},
-      ValueRange(gtArgs));
-
-  return gtInst.getResult(0);
-}
-
-static Value maybeWrapGlobalMemrefAsGlobalTensor(
-    ConversionPatternRewriter &rewriter, Location loc, Value loweredValue,
-    Type originalType, Operation *anchor) {
-  auto mrTy = dyn_cast<MemRefType>(originalType);
-  if (!mrTy)
-    return loweredValue;
-
-  bool isGlobal = true;
-  if (auto asAttr =
-          dyn_cast_or_null<pto::AddressSpaceAttr>(mrTy.getMemorySpace())) {
-    auto as = asAttr.getAddressSpace();
-    isGlobal = (as == pto::AddressSpace::GM || as == pto::AddressSpace::Zero);
-  }
-  if (!isGlobal)
-    return loweredValue;
-
-  if (Value gt =
-          buildGlobalTensorFromMemref(rewriter, loc, loweredValue, mrTy, anchor))
-    return gt;
-  return loweredValue;
 }
 
 struct DynamicGlobalTensorDesc {
@@ -3858,15 +3092,6 @@ resolveTensorViewDimValue(ConversionPatternRewriter &rewriter, Location loc,
       return failure();
     return resolveTensorViewDimValue(rewriter, loc, cast.getOperand(0), dimIndex,
                                      resultType);
-  }
-
-  if (auto mrTy = dyn_cast<BaseMemRefType>(tensorView.getType())) {
-    if (dimIndex < 0 || dimIndex >= mrTy.getRank())
-      return failure();
-    int64_t dim = mrTy.getDimSize(dimIndex);
-    if (dim == ShapedType::kDynamic)
-      return failure();
-    return makeEmitCIntConstant(rewriter, loc, resultType, dim);
   }
 
   return failure();
@@ -4032,6 +3257,39 @@ buildPartitionViewDesc(ConversionPatternRewriter &rewriter, Location loc,
   return desc;
 }
 
+static int64_t multiplyOrDynamic(int64_t lhs, int64_t rhs) {
+  if (lhs < 0 || rhs < 0)
+    return -1;
+  return lhs * rhs;
+}
+
+static std::string joinIntTemplateParams(ArrayRef<int64_t> values) {
+  std::string result;
+  for (size_t i = 0; i < values.size(); ++i) {
+    if (i != 0)
+      result += ", ";
+    result += std::to_string(values[i]);
+  }
+  return result;
+}
+
+struct GlobalTensorTypeNames {
+  std::string shapeTypeName;
+  std::string strideTypeName;
+  std::string tensorTypeName;
+  std::string layoutConstName;
+};
+
+static GlobalTensorTypeNames getGlobalTensorTypeNames(Operation *anchor) {
+  std::string suffix = "_" + std::to_string(reinterpret_cast<uintptr_t>(anchor));
+  return {
+      "GTShape" + suffix,
+      "GTStride" + suffix,
+      "GT" + suffix,
+      "GT" + suffix + "_layout",
+  };
+}
+
 static Value materializeDynamicGlobalTensor(ConversionPatternRewriter &rewriter,
                                             Location loc,
                                             const DynamicGlobalTensorDesc &desc,
@@ -4145,8 +3403,7 @@ static Value materializeGlobalTensorFromViewLike(
                                           anchor ? anchor : makeView);
   }
 
-  return maybeWrapGlobalMemrefAsGlobalTensor(rewriter, loc, loweredValue,
-                                             originalValue.getType(), anchor);
+  return Value();
 }
 
 static Value castToGMBytePointer(ConversionPatternRewriter &rewriter,
@@ -4219,12 +3476,13 @@ static FailureOr<Value> buildAsyncScratchTileValue(
       return scratch;
   }
 
-  auto memTy = dyn_cast<MemRefType>(originalScratch.getType());
-  if (!memTy)
+  auto scratchTy = dyn_cast<pto::TileBufType>(originalScratch.getType());
+  if (!scratchTy)
     return failure();
 
-  ArrayRef<int64_t> shape = memTy.getShape();
-  if (!memTy.hasStaticShape() || shape.empty() || shape.size() > 2)
+  ArrayRef<int64_t> shape = scratchTy.getShape();
+  if (shape.empty() || shape.size() > 2 ||
+      llvm::any_of(shape, [](int64_t dim) { return dim == ShapedType::kDynamic; }))
     return failure();
 
   int64_t rows = shape.size() == 1 ? 1 : shape[0];
@@ -4243,7 +3501,7 @@ static FailureOr<Value> buildAsyncScratchTileValue(
   if (auto frAttr = dyn_cast<IntegerAttr>(configAttr.getSFractalSize()))
     fractal = frAttr.getInt();
 
-    std::string elemTypeStr = getEmitCScalarTypeToken(memTy.getElementType());
+  std::string elemTypeStr = getEmitCScalarTypeToken(scratchTy.getElementType());
   std::string tileTypeStr =
       "Tile<TileType::Vec, " + elemTypeStr + ", " + std::to_string(rows) +
       ", " + std::to_string(cols) + ", " + tileBufBLayoutToken(configAttr) +
@@ -4862,18 +4120,9 @@ struct PTOTLoadToTLOAD : public OpConversionPattern<pto::TLoadOp> {
     Value src = peelUnrealized(adaptor.getSrc());
     Value dst = peelUnrealized(adaptor.getDst());
     Value srcArg = src;
-    if (auto srcMrTy = dyn_cast<MemRefType>(op.getSrc().getType())) {
-      bool isGlobal = true;
-      if (auto asAttr = dyn_cast_or_null<pto::AddressSpaceAttr>(srcMrTy.getMemorySpace())) {
-        auto as = asAttr.getAddressSpace();
-        isGlobal = (as == pto::AddressSpace::GM || as == pto::AddressSpace::Zero);
-      }
-      if (isGlobal) {
-        if (Value gt = buildGlobalTensorFromMemref(rewriter, op.getLoc(), src, srcMrTy,
-                                                  op.getOperation()))
-          srcArg = gt;
-      }
-    }
+    if (Value gt = materializeGlobalTensorFromViewLike(
+            rewriter, op.getLoc(), op.getSrc(), src, op.getOperation()))
+      srcArg = gt;
 
     rewriter.create<emitc::CallOpaqueOp>(
         op.getLoc(), TypeRange{}, "TLOAD",
@@ -4900,18 +4149,9 @@ struct PTOTPrefetchToTPREFETCH : public OpConversionPattern<pto::TPrefetchOp> {
     Value src = peelUnrealized(adaptor.getSrc());
     Value dst = peelUnrealized(adaptor.getDst());
     Value srcArg = src;
-    if (auto srcMrTy = dyn_cast<MemRefType>(op.getSrc().getType())) {
-      bool isGlobal = true;
-      if (auto asAttr = dyn_cast_or_null<pto::AddressSpaceAttr>(srcMrTy.getMemorySpace())) {
-        auto as = asAttr.getAddressSpace();
-        isGlobal = (as == pto::AddressSpace::GM || as == pto::AddressSpace::Zero);
-      }
-      if (isGlobal) {
-        if (Value gt = buildGlobalTensorFromMemref(rewriter, op.getLoc(), src, srcMrTy,
-                                                  op.getOperation()))
-          srcArg = gt;
-      }
-    }
+    if (Value gt = materializeGlobalTensorFromViewLike(
+            rewriter, op.getLoc(), op.getSrc(), src, op.getOperation()))
+      srcArg = gt;
 
     rewriter.create<emitc::CallOpaqueOp>(
         op.getLoc(), TypeRange{}, "TPREFETCH",
@@ -4981,18 +4221,9 @@ struct PTOTStoreToTSTORE : public OpConversionPattern<pto::TStoreOp> {
     if (op.getPreQuantScalar())
       preQuantScalar = peelUnrealized(adaptor.getPreQuantScalar());
     Value dstArg = dst;
-    if (auto dstMrTy = dyn_cast<MemRefType>(op.getDst().getType())) {
-      bool isGlobal = true;
-      if (auto asAttr = dyn_cast_or_null<pto::AddressSpaceAttr>(dstMrTy.getMemorySpace())) {
-        auto as = asAttr.getAddressSpace();
-        isGlobal = (as == pto::AddressSpace::GM || as == pto::AddressSpace::Zero);
-      }
-      if (isGlobal) {
-        if (Value gt = buildGlobalTensorFromMemref(rewriter, op.getLoc(), dst, dstMrTy,
-                                                  op.getOperation()))
-          dstArg = gt;
-      }
-    }
+    if (Value gt = materializeGlobalTensorFromViewLike(
+            rewriter, op.getLoc(), op.getDst(), dst, op.getOperation()))
+      dstArg = gt;
 
     const auto phase = op.getStPhase();
     const auto atomicType = op.getAtomicType();
@@ -6004,8 +5235,10 @@ struct PTOMScatterToMSCATTER : public OpConversionPattern<pto::MScatterOp> {
     Value idx = peelUnrealized(adaptor.getIdx());
     Value mem = peelUnrealized(adaptor.getMem());
 
-    Value memArg = maybeWrapGlobalMemrefAsGlobalTensor(
-        rewriter, op.getLoc(), mem, op.getMem().getType(), op.getOperation());
+    Value memArg = mem;
+    if (Value gt = materializeGlobalTensorFromViewLike(
+            rewriter, op.getLoc(), op.getMem(), mem, op.getOperation()))
+      memArg = gt;
 
     auto scatterAtomicTok = [&](pto::ScatterAtomicOp atomic) -> StringRef {
       switch (atomic) {
@@ -6892,160 +6125,6 @@ struct PTOTFreeToEmitC : public OpConversionPattern<mlir::pto::TFreeOp> {
 //===----------------------------------------------------------------------===//
 // populate patterns
 //===----------------------------------------------------------------------===
-struct ReinterpretCastToEmitC : public OpConversionPattern<memref::ReinterpretCastOp> {
-  using OpConversionPattern<memref::ReinterpretCastOp>::OpConversionPattern;
-
-  LogicalResult matchAndRewrite(memref::ReinterpretCastOp op, OpAdaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
-    auto *ctx = rewriter.getContext();
-
-    auto resMrTy = dyn_cast<MemRefType>(op.getType());
-    if (!resMrTy)
-      return failure();
-
-    auto asAttr = dyn_cast_or_null<pto::AddressSpaceAttr>(resMrTy.getMemorySpace());
-    const bool isGm = (!asAttr || asAttr.getAddressSpace() == pto::AddressSpace::GM);
-
-    bool emitAddPtrTrace = op->hasAttr("pto.addptr_trace");
-    Value source = peelUnrealized(adaptor.getSource());
-    auto offsets = adaptor.getOffsets();
-    Value offsetVal = offsets.empty() ? Value() : offsets[0];
-
-    // GM: keep pointer arithmetic.
-    if (isGm) {
-      if (!offsetVal) {
-        rewriter.replaceOp(op, source);
-        return success();
-      }
-
-      Type resultType = getTypeConverter()->convertType(op.getType());
-      if (!resultType)
-        return failure();
-
-      auto addOp = rewriter.create<emitc::AddOp>(loc, resultType, source, offsetVal);
-      if (emitAddPtrTrace) {
-        rewriter.setInsertionPointAfter(addOp);
-        rewriter.create<emitc::CallOpaqueOp>(
-            loc, TypeRange{}, "PTOAS__ADDPTR_TRACE",
-            ArrayAttr{}, ArrayAttr{},
-            ValueRange{addOp.getResult(), source, offsetVal});
-      }
-      rewriter.replaceOp(op, addOp.getResult());
-      return success();
-    }
-
-    // UB/L1/L0 tiles: materialize a new Tile view by assigning an adjusted
-    // underlying pointer (in elements).
-    pto::AddressSpace as = asAttr.getAddressSpace();
-
-    // Element type token.
-    Type elemTy = resMrTy.getElementType();
-    std::string elemTok = getEmitCScalarTypeToken(elemTy);
-    int64_t elemBytes = getEmitCScalarByteWidth(elemTy);
-
-    // Tile role.
-    const char *roleTok = "TileType::Vec";
-    switch (as) {
-    case pto::AddressSpace::VEC:
-      roleTok = "TileType::Vec";
-      break;
-    case pto::AddressSpace::MAT:
-      roleTok = "TileType::Mat";
-      break;
-    case pto::AddressSpace::LEFT:
-      roleTok = "TileType::Left";
-      break;
-    case pto::AddressSpace::RIGHT:
-      roleTok = "TileType::Right";
-      break;
-    case pto::AddressSpace::ACC:
-      roleTok = "TileType::Acc";
-      break;
-    case pto::AddressSpace::BIAS:
-      roleTok = "TileType::Bias";
-      break;
-    case pto::AddressSpace::GM:
-      roleTok = "TileType::Vec";
-      break;
-    }
-
-    // Shape (fallback to 32x32).
-    int64_t rows = 32, cols = 32;
-    if (resMrTy.getRank() >= 2 && resMrTy.hasStaticShape()) {
-      rows = resMrTy.getDimSize(0);
-      cols = resMrTy.getDimSize(1);
-    }
-
-    // Keep a conservative default config for now.
-    std::string tileTypeStr =
-        std::string("Tile<") + roleTok + ", " + elemTok + ", " +
-        std::to_string(rows) + ", " + std::to_string(cols) +
-        ", BLayout::RowMajor, " + std::to_string(rows) + ", " +
-        std::to_string(cols) +
-        ", SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>";
-
-    auto tileType = emitc::OpaqueType::get(ctx, tileTypeStr);
-    Value tile = rewriter
-                     .create<emitc::VariableOp>(loc, tileType,
-                                                emitc::OpaqueAttr::get(ctx, ""))
-                     .getResult();
-
-    // Compute an integer address and assign it to the new tile.
-    // NOTE: pto-isa TASSIGN requires an integral address (not a pointer).
-    auto u64Ty = emitc::OpaqueType::get(ctx, "uint64_t");
-    auto rcU64 = rewriter.getArrayAttr({emitc::OpaqueAttr::get(ctx, "uint64_t")});
-
-    // Non-GM reinterpret_cast operands come from UB/L1/L0 tiles.
-    // We need the underlying address, but `__cce_get_tile_ptr()` is only valid
-    // inside `__tf__` functions. Use `tile.data()` (via a post-processed marker)
-    // and compute the adjusted address in bytes.
-    Value rawPtr = source;
-    if (auto ot = dyn_cast<emitc::OpaqueType>(source.getType())) {
-      // Only Tiles have a `.data()` member. For plain address-space pointers
-      // (e.g. `__ubuf__ float*`), use the pointer value directly.
-      if (ot.getValue().starts_with("Tile<")) {
-        rawPtr = materializeTileDataValue(rewriter, loc, source, as, elemTok);
-      }
-    }
-
-    Value baseAddr = rawPtr;
-    if (isSetFFTsPointerLikeType(rawPtr.getType())) {
-      baseAddr = rewriter
-                     .create<emitc::CallOpaqueOp>(loc, u64Ty, "reinterpret_cast",
-                                                  /*args=*/ArrayAttr{},
-                                                  /*templateArgs=*/rcU64,
-                                                  /*operands=*/ValueRange{rawPtr})
-                     .getResult(0);
-    } else if (rawPtr.getType() != u64Ty) {
-      baseAddr = rewriter.create<emitc::CastOp>(loc, u64Ty, rawPtr).getResult();
-    }
-
-    Value addr = baseAddr;
-    if (offsetVal) {
-      Value offU64 = offsetVal;
-      if (offU64.getType() != u64Ty)
-        offU64 = rewriter.create<emitc::CastOp>(loc, u64Ty, offU64).getResult();
-
-      auto bytesAttr = emitc::OpaqueAttr::get(ctx, std::to_string(elemBytes));
-      Value bytesVal = rewriter.create<emitc::ConstantOp>(loc, u64Ty, bytesAttr);
-      Value byteOff = rewriter.create<emitc::MulOp>(loc, u64Ty, offU64, bytesVal);
-      addr = rewriter.create<emitc::AddOp>(loc, u64Ty, baseAddr, byteOff);
-    }
-
-    rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{}, "TASSIGN",
-                                         /*args=*/ArrayAttr{},
-                                         /*templateArgs=*/ArrayAttr{},
-                                         /*operands=*/ValueRange{tile, addr});
-
-    rewriter.replaceOp(op, tile);
-    return success();
-  }
-};
-//===----------------------------------------------------------------------===//
-// pto.taddc lowering -> TADDC(dst, src0, src1, src2)
-//===----------------------------------------------------------------------===//
-
 struct PTOTAddCToTADDC : public OpConversionPattern<pto::TAddCOp> {
   using OpConversionPattern<pto::TAddCOp>::OpConversionPattern;
 
@@ -7055,48 +6134,33 @@ struct PTOTAddCToTADDC : public OpConversionPattern<pto::TAddCOp> {
     Value src0 = peelUnrealized(adaptor.getSrc0());
     Value src1 = peelUnrealized(adaptor.getSrc1());
     Value src2 = peelUnrealized(adaptor.getSrc2());
-    Value dst  = peelUnrealized(adaptor.getDst());
+    Value dst = peelUnrealized(adaptor.getDst());
 
-    // pto-isa does not provide NPU implementation for TADDC yet.
-    // Decompose: dst = src0 + src1 + src2
-    rewriter.create<emitc::CallOpaqueOp>(
-        loc, TypeRange{}, "TADD",
-        ArrayAttr{}, ArrayAttr{},
-        ValueRange{dst, src0, src1});
-    rewriter.create<emitc::CallOpaqueOp>(
-        loc, TypeRange{}, "TADD",
-        ArrayAttr{}, ArrayAttr{},
-        ValueRange{dst, dst, src2});
-
+    rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{}, "TADD", ArrayAttr{},
+                                         ArrayAttr{}, ValueRange{dst, src0, src1});
+    rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{}, "TADD", ArrayAttr{},
+                                         ArrayAttr{}, ValueRange{dst, dst, src2});
     rewriter.eraseOp(op);
     return success();
   }
 };
-//===----------------------------------------------------------------------===//
-// pto.tadds lowering -> TADDS(dst, src, scalar)
-//===----------------------------------------------------------------------===//
 
 struct PTOAddSToTADDS : public OpConversionPattern<pto::TAddSOp> {
   using OpConversionPattern<pto::TAddSOp>::OpConversionPattern;
 
   LogicalResult matchAndRewrite(pto::TAddSOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
-    Value src    = peelUnrealized(adaptor.getSrc());
-    Value dst    = peelUnrealized(adaptor.getDst());
+    Value src = peelUnrealized(adaptor.getSrc());
+    Value dst = peelUnrealized(adaptor.getDst());
     Value scalar = peelUnrealized(adaptor.getScalar());
 
-    rewriter.create<emitc::CallOpaqueOp>(
-        op.getLoc(), TypeRange{}, "TADDS",
-        ArrayAttr{}, ArrayAttr{},
-        ValueRange{dst, src, scalar});
-
+    rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, "TADDS",
+                                         ArrayAttr{}, ArrayAttr{},
+                                         ValueRange{dst, src, scalar});
     rewriter.eraseOp(op);
     return success();
   }
 };
-//===----------------------------------------------------------------------===//
-// pto.taddsc lowering -> TADDSC(dst, src0, scalar, src1)
-//===----------------------------------------------------------------------===//
 
 struct PTOAddSCToTADDSC : public OpConversionPattern<pto::TAddSCOp> {
   using OpConversionPattern<pto::TAddSCOp>::OpConversionPattern;
@@ -7104,40 +6168,32 @@ struct PTOAddSCToTADDSC : public OpConversionPattern<pto::TAddSCOp> {
   LogicalResult matchAndRewrite(pto::TAddSCOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
-    Value src0    = peelUnrealized(adaptor.getSrc0());
-    Value scalar  = peelUnrealized(adaptor.getScalar());
-    Value src1    = peelUnrealized(adaptor.getSrc1());
-    Value dst     = peelUnrealized(adaptor.getDst());
+    Value src0 = peelUnrealized(adaptor.getSrc0());
+    Value scalar = peelUnrealized(adaptor.getScalar());
+    Value src1 = peelUnrealized(adaptor.getSrc1());
+    Value dst = peelUnrealized(adaptor.getDst());
 
-    // pto-isa does not provide NPU implementation for TADDSC yet.
-    // Decompose: dst = src0 + scalar + src1
-    rewriter.create<emitc::CallOpaqueOp>(
-        loc, TypeRange{}, "TADDS",
-        ArrayAttr{}, ArrayAttr{},
-        ValueRange{dst, src0, scalar});
-    rewriter.create<emitc::CallOpaqueOp>(
-        loc, TypeRange{}, "TADD",
-        ArrayAttr{}, ArrayAttr{},
-        ValueRange{dst, dst, src1});
-
+    rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{}, "TADDS", ArrayAttr{},
+                                         ArrayAttr{}, ValueRange{dst, src0, scalar});
+    rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{}, "TADD", ArrayAttr{},
+                                         ArrayAttr{}, ValueRange{dst, dst, src1});
     rewriter.eraseOp(op);
     return success();
   }
 };
+
 struct PTOTAndToEmitC : public OpConversionPattern<pto::TAndOp> {
   using OpConversionPattern<pto::TAndOp>::OpConversionPattern;
 
   LogicalResult matchAndRewrite(pto::TAndOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
-    Value a   = peelUnrealized(adaptor.getSrc0());
-    Value b   = peelUnrealized(adaptor.getSrc1());
+    Value a = peelUnrealized(adaptor.getSrc0());
+    Value b = peelUnrealized(adaptor.getSrc1());
     Value dst = peelUnrealized(adaptor.getDst());
 
-    rewriter.create<emitc::CallOpaqueOp>(
-        op.getLoc(), TypeRange{}, "TAND",
-        ArrayAttr{}, ArrayAttr{},
-        ValueRange{dst, a, b});
-
+    rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, "TAND",
+                                         ArrayAttr{}, ArrayAttr{},
+                                         ValueRange{dst, a, b});
     rewriter.eraseOp(op);
     return success();
   }
@@ -8464,7 +7520,7 @@ struct PTOMovToEmitC : public OpConversionPattern<pto::TMovOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TMOV_FP DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TMOV_FP DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTOMovFPToEmitC : public OpConversionPattern<pto::TMovFPOp> {
@@ -8602,7 +7658,7 @@ struct PTODequantToEmitC : public OpConversionPattern<pto::TDequantOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TMRGSORT DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TMRGSORT DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTOMrgSortToEmitC : public OpConversionPattern<pto::TMrgSortOp> {
@@ -8670,7 +7726,7 @@ struct PTOMrgSortToEmitC : public OpConversionPattern<pto::TMrgSortOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TMUL DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TMUL DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTOMulToEmitC : public OpConversionPattern<pto::TMulOp> {
@@ -8695,7 +7751,7 @@ struct PTOMulToEmitC : public OpConversionPattern<pto::TMulOp> {
   }
 };
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TMULS DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TMULS DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTOMulsToEmitC : public OpConversionPattern<pto::TMulSOp> {
@@ -8721,7 +7777,7 @@ struct PTOMulsToEmitC : public OpConversionPattern<pto::TMulSOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TNEG DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TNEG DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTONegToEmitC : public OpConversionPattern<pto::TNegOp> {
@@ -8746,7 +7802,7 @@ struct PTONegToEmitC : public OpConversionPattern<pto::TNegOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TNOT DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TNOT DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTONotToEmitC : public OpConversionPattern<pto::TNotOp> {
@@ -8770,7 +7826,7 @@ struct PTONotToEmitC : public OpConversionPattern<pto::TNotOp> {
   }
 };
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TOR DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TOR DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTOOrToEmitC : public OpConversionPattern<pto::TOrOp> {
@@ -8795,7 +7851,7 @@ struct PTOOrToEmitC : public OpConversionPattern<pto::TOrOp> {
   }
 };
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TORS DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TORS DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTOOrsToEmitC : public OpConversionPattern<pto::TOrSOp> {
@@ -8823,7 +7879,7 @@ struct PTOOrsToEmitC : public OpConversionPattern<pto::TOrSOp> {
   }
 };
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TPARTADD DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TPARTADD DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTOPartAddToEmitC : public OpConversionPattern<pto::TPartAddOp> {
@@ -8848,7 +7904,7 @@ struct PTOPartAddToEmitC : public OpConversionPattern<pto::TPartAddOp> {
   }
 };
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TPARTMAX DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TPARTMAX DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTOPartMaxToEmitC : public OpConversionPattern<pto::TPartMaxOp> {
@@ -8874,7 +7930,7 @@ struct PTOPartMaxToEmitC : public OpConversionPattern<pto::TPartMaxOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TPARTMIN DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TPARTMIN DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTOPartMinToEmitC : public OpConversionPattern<pto::TPartMinOp> {
@@ -8899,7 +7955,7 @@ struct PTOPartMinToEmitC : public OpConversionPattern<pto::TPartMinOp> {
   }
 };
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TPARTMUL DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TPARTMUL DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTOPartMulToEmitC : public OpConversionPattern<pto::TPartMulOp> {
@@ -8924,7 +7980,7 @@ struct PTOPartMulToEmitC : public OpConversionPattern<pto::TPartMulOp> {
   }
 };
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TPRELU DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TPRELU DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTOPreluToEmitC : public OpConversionPattern<pto::TPReluOp> {
@@ -8951,7 +8007,7 @@ struct PTOPreluToEmitC : public OpConversionPattern<pto::TPReluOp> {
   }
 };
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TRECIP DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TRECIP DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTORecipToEmitC : public OpConversionPattern<pto::TRecipOp> {
@@ -8975,7 +8031,7 @@ struct PTORecipToEmitC : public OpConversionPattern<pto::TRecipOp> {
   }
 };
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TRELU DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TRELU DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTOReluToEmitC : public OpConversionPattern<pto::TReluOp> {
@@ -8999,7 +8055,7 @@ struct PTOReluToEmitC : public OpConversionPattern<pto::TReluOp> {
   }
 };
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TREM DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TREM DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTORemToEmitC : public OpConversionPattern<pto::TRemOp> {
@@ -9046,7 +8102,7 @@ struct PTOFModToEmitC : public OpConversionPattern<pto::TFModOp> {
   }
 };
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TREMS DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TREMS DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTORemSToEmitC : public OpConversionPattern<pto::TRemSOp> {
@@ -9094,7 +8150,7 @@ struct PTOFModSToEmitC : public OpConversionPattern<pto::TFModSOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TROWEXPAND DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TROWEXPAND DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTORowExpandToEmitC : public OpConversionPattern<pto::TRowExpandOp> {
@@ -9169,7 +8225,7 @@ struct PTORowExpandExpdifToEmitC
 };
 
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TROWEXPANDDIV DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TROWEXPANDDIV DPS op)
 //===----------------------------------------------------------------------===//
 // Helper: replace or erase based on whether op has results.
 static void replaceOrEraseWithOpaqueCall(Operation *op,
@@ -9371,7 +8427,7 @@ struct PTORowExpandDivToEmitC : public OpConversionPattern<pto::TRowExpandDivOp>
   }
 };
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TROWEXPANDMUL DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TROWEXPANDMUL DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTORowExpandMulToEmitC : public OpConversionPattern<pto::TRowExpandMulOp> {
@@ -9402,7 +8458,7 @@ struct PTORowExpandMulToEmitC : public OpConversionPattern<pto::TRowExpandMulOp>
 };
 
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TROWEXPANDSUB DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TROWEXPANDSUB DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTORowExpandSubToEmitC : public OpConversionPattern<pto::TRowExpandSubOp> {
@@ -9487,7 +8543,7 @@ struct PTORowExpandMinToEmitC : public OpConversionPattern<pto::TRowExpandMinOp>
 };
 
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TROWMAX DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TROWMAX DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTORowMaxToEmitC : public OpConversionPattern<pto::TRowMaxOp> {
@@ -9534,7 +8590,7 @@ struct PTORowArgMaxToEmitC
   }
 };
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TROWMIN DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TROWMIN DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTORowMinToEmitC : public OpConversionPattern<pto::TRowMinOp> {
@@ -9582,7 +8638,7 @@ struct PTORowArgMinToEmitC
 };
 
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TROWSUM DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TROWSUM DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTORowSumToEmitC : public OpConversionPattern<pto::TRowSumOp> {
@@ -9629,7 +8685,7 @@ struct PTORowProdToEmitC : public OpConversionPattern<pto::TRowProdOp> {
   }
 };
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TRSQRT DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TRSQRT DPS op)
 // - no-tmp form : TRSQRT(dst, src)
 // - tmp form    : TRSQRT(dst, src, tmp)
 //===----------------------------------------------------------------------===//
@@ -9656,7 +8712,7 @@ struct PTORsqrtToEmitC : public OpConversionPattern<pto::TRsqrtOp> {
   }
 };
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TSCATTER DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TSCATTER DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTOScatterToEmitC : public OpConversionPattern<pto::TScatterOp> {
@@ -9682,7 +8738,7 @@ struct PTOScatterToEmitC : public OpConversionPattern<pto::TScatterOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TSEL DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TSEL DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTOSelToEmitC : public OpConversionPattern<pto::TSelOp> {
@@ -9709,7 +8765,7 @@ struct PTOSelToEmitC : public OpConversionPattern<pto::TSelOp> {
   }
 };
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TSELS DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TSELS DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTOSelSToEmitC : public OpConversionPattern<pto::TSelSOp> {
@@ -9736,7 +8792,7 @@ struct PTOSelSToEmitC : public OpConversionPattern<pto::TSelSOp> {
   }
 };
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TSHL DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TSHL DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTOShlSToEmitC : public OpConversionPattern<pto::TShlOp> {
@@ -9761,7 +8817,7 @@ struct PTOShlSToEmitC : public OpConversionPattern<pto::TShlOp> {
   }
 };
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TSHR DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TSHR DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTOShrSToEmitC : public OpConversionPattern<pto::TShrOp> {
@@ -9829,7 +8885,7 @@ struct PTOShrSConstToEmitC : public OpConversionPattern<pto::TShrSOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (TSORT32 DPS/memref op: ins(src, idx[, tmp]) outs(dst))
+// PTOConvert.cpp  (TSORT32 DPS op: ins(src, idx[, tmp]) outs(dst))
 //===----------------------------------------------------------------------===//
 
 struct PTOSORT32SToEmitC : public OpConversionPattern<pto::TSort32Op> {
@@ -9859,7 +8915,7 @@ struct PTOSORT32SToEmitC : public OpConversionPattern<pto::TSort32Op> {
   }
 };
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TSQRT DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TSQRT DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTOSqrtSToEmitC : public OpConversionPattern<pto::TSqrtOp> {
@@ -9884,7 +8940,7 @@ struct PTOSqrtSToEmitC : public OpConversionPattern<pto::TSqrtOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TSTORE_FP DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TSTORE_FP DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTOStoreFPSToEmitC : public OpConversionPattern<pto::TStoreFPOp> {
@@ -9910,7 +8966,7 @@ struct PTOStoreFPSToEmitC : public OpConversionPattern<pto::TStoreFPOp> {
 };
 
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TSUB DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TSUB DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTOSubSToEmitC : public OpConversionPattern<pto::TSubOp> {
@@ -9935,7 +8991,7 @@ struct PTOSubSToEmitC : public OpConversionPattern<pto::TSubOp> {
   }
 };
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TSUBC DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TSUBC DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTOSubCSToEmitC : public OpConversionPattern<pto::TSubCOp> {
@@ -9966,7 +9022,7 @@ struct PTOSubCSToEmitC : public OpConversionPattern<pto::TSubCOp> {
   }
 };
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TSUBS DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TSUBS DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTOSubSSToEmitC : public OpConversionPattern<pto::TSubSOp> {
@@ -9991,7 +9047,7 @@ struct PTOSubSSToEmitC : public OpConversionPattern<pto::TSubSOp> {
   }
 };
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TSUBSC DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TSUBSC DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTOSubSCToEmitC : public OpConversionPattern<pto::TSubSCOp> {
@@ -10024,7 +9080,7 @@ struct PTOSubSCToEmitC : public OpConversionPattern<pto::TSubSCOp> {
 
 
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TXOR DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TXOR DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTOXORToEmitC : public OpConversionPattern<pto::TXorOp> {
@@ -10070,7 +9126,7 @@ struct PTOTTransToEmitC : public OpConversionPattern<pto::TTransOp> {
   }
 };
 //===----------------------------------------------------------------------===//
-// PTOConvert.cpp  (add lowering + patterns.add for TXORS DPS/memref op)
+// PTOConvert.cpp  (add lowering + patterns.add for TXORS DPS op)
 //===----------------------------------------------------------------------===//
 
 struct PTOXORSToEmitC : public OpConversionPattern<pto::TXorSOp> {
@@ -10219,13 +9275,13 @@ struct PTOBindTileToEmitC : public OpConversionPattern<pto::BindTileOp> {
       return s.contains("Tile<") || s.contains("ConvTile<");
     };
     auto buildTileSpec = [&]() -> FailureOr<TileBuildSpec> {
-      auto resMrTy = dyn_cast<MemRefType>(op.getType());
-      if (!resMrTy)
+      auto resTileTy = dyn_cast<pto::TileBufType>(op.getType());
+      if (!resTileTy)
         return failure();
 
       const char *roleTok = "TileType::Vec";
       if (auto asAttr =
-              dyn_cast_or_null<pto::AddressSpaceAttr>(resMrTy.getMemorySpace())) {
+              dyn_cast_or_null<pto::AddressSpaceAttr>(resTileTy.getMemorySpace())) {
         switch (asAttr.getAddressSpace()) {
         case pto::AddressSpace::VEC:
           roleTok = "TileType::Vec";
@@ -10255,7 +9311,7 @@ struct PTOBindTileToEmitC : public OpConversionPattern<pto::BindTileOp> {
         }
       }
 
-      Type elemTy = resMrTy.getElementType();
+      Type elemTy = resTileTy.getElementType();
       Type emitElemTy = getTypeConverter()->convertType(elemTy);
       if (!emitElemTy)
         return failure();
@@ -10264,10 +9320,10 @@ struct PTOBindTileToEmitC : public OpConversionPattern<pto::BindTileOp> {
         return failure();
       std::string elemTypeStr = emitElemOpaque.getValue().str();
 
-      if (resMrTy.getRank() < 2)
+      if (resTileTy.getShape().size() < 2)
         return failure();
-      int64_t rows = resMrTy.getDimSize(0);
-      int64_t cols = resMrTy.getDimSize(1);
+      int64_t rows = resTileTy.getShape()[0];
+      int64_t cols = resTileTy.getShape()[1];
       if (rows == ShapedType::kDynamic || cols == ShapedType::kDynamic)
         return failure();
 
@@ -10419,13 +9475,13 @@ struct PTOBindTileToEmitC : public OpConversionPattern<pto::BindTileOp> {
       if (auto ot = dyn_cast<emitc::OpaqueType>(sourceValue.getType())) {
         StringRef tyStr = ot.getValue();
         if (tyStr.contains("Tile<") || tyStr.contains("ConvTile<")) {
-          auto srcMrTy = dyn_cast<MemRefType>(op.getSource().getType());
-          if (!srcMrTy)
+          auto srcTileTy = dyn_cast<pto::TileBufType>(op.getSource().getType());
+          if (!srcTileTy)
             return failure();
-          std::string elemTok = emitElemTypeToString(srcMrTy.getElementType());
+          std::string elemTok = emitElemTypeToString(srcTileTy.getElementType());
           pto::AddressSpace as = pto::AddressSpace::GM;
           if (auto asAttr =
-                  dyn_cast_or_null<pto::AddressSpaceAttr>(srcMrTy.getMemorySpace()))
+                  dyn_cast_or_null<pto::AddressSpaceAttr>(srcTileTy.getMemorySpace()))
             as = asAttr.getAddressSpace();
           rawPtr = materializeTileDataValue(rewriter, loc, sourceValue, as,
                                             elemTok);
@@ -11373,7 +10429,6 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOLReluToEmitC>(typeConverter, ctx);
   patterns.add<PTOMrgSortToEmitC>(typeConverter, ctx);
   patterns.add<PTORandomToEmitC>(typeConverter, ctx);
-  patterns.add<SubviewToEmitCPattern>(typeConverter, ctx);
   patterns.add<PTOAllocTileToPointerCast>(typeConverter, ctx);
   patterns.add<PTOTReshapeToPointerCast, PTOSubViewToPointerCast>(
       typeConverter, ctx);
@@ -11460,7 +10515,6 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
   patterns.add<PTOTMatmulAccToTMATMULACC>(typeConverter, ctx);
   patterns.add<PTOTGemvToTGEMV>(typeConverter, ctx);
   patterns.add<PTOTGemvAccToTGEMVACC>(typeConverter, ctx);
-  patterns.add<ReinterpretCastToEmitC>(typeConverter, ctx);
   patterns.add<PTOTAbsToTABS>(typeConverter, ctx);
   patterns.add<PTOTAddToTADD>(typeConverter, ctx);
   patterns.add<PTOAddSCToTADDSC>(typeConverter, ctx);
@@ -11538,7 +10592,7 @@ struct EmitPTOManualPass
 
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<emitc::EmitCDialect, func::FuncDialect, arith::ArithDialect,
-                    memref::MemRefDialect, affine::AffineDialect,
+                    affine::AffineDialect,
                     mlir::cf::ControlFlowDialect, mlir::pto::PTODialect>();
   }
 
@@ -11722,7 +10776,7 @@ static AICORE inline void ptoas_auto_sync_tail(
 
     // 2. Pre-convert SCF structural op types (e.g. scf.if/scf.for results)
     // using the same type converter. This avoids creating emitc.variable with
-    // unsupported types such as memref.
+    // unsupported legacy bridge types.
     {
       RewritePatternSet scfTypePatterns(ctx);
       ConversionTarget scfTypeTarget(*ctx);
@@ -11741,7 +10795,6 @@ static AICORE inline void ptoas_auto_sync_tail(
     // 3. 配置转换目标
     ConversionTarget target(*ctx);
 
-    target.addIllegalDialect<memref::MemRefDialect>();
     target.addIllegalDialect<pto::PTODialect>();
     target.addIllegalDialect<arith::ArithDialect>();
     target.addIllegalDialect<mlir::scf::SCFDialect>(); 
@@ -11825,23 +10878,13 @@ static AICORE inline void ptoas_auto_sync_tail(
         return;
       }
 
-      // SCF/CFG type conversion can transiently materialize pointer->memref
-      // bridge casts. At this stage, the producing value is already in the
-      // lowered EmitC pointer form; keep it and drop the bridge cast.
-      if (isEmitCPointerLikeType(inTy) && isa<BaseMemRefType>(outTy)) {
-        output.replaceAllUsesWith(input);
-        castsToErase.push_back(cast);
-        return;
-      }
-
       // Tile-native/view-native lowering materializes concrete EmitC values
       // (often via "auto") and can leave bridge casts back to the original PTO
       // view/tile types around SCF result plumbing. Those old PTO types are
       // illegal at this stage; keep the lowered EmitC value and drop the bridge.
       if (emitc::isSupportedEmitCType(inTy) &&
-          (isa<pto::TensorViewType, pto::PartitionTensorViewType,
-               pto::TileBufType, pto::PtrType, pto::PipeType>(outTy) ||
-           isa<BaseMemRefType>(outTy))) {
+          isa<pto::TensorViewType, pto::PartitionTensorViewType,
+              pto::TileBufType, pto::PtrType, pto::PipeType>(outTy)) {
         output.replaceAllUsesWith(input);
         castsToErase.push_back(cast);
         return;

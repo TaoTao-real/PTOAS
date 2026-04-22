@@ -38,13 +38,13 @@ def OpPipeInterface : OpInterface<"OpPipeInterface"> {
 }
 
 // PTO destination-style ops: have "init" operands (e.g. $dst) for plan-memory.
-// No tensor/memref type requirement (unlike MLIR DestinationStyleOpInterface).
+// No MLIR tensor-only requirement (unlike DestinationStyleOpInterface).
 // Each op implements getDpsInitsMutable(); this interface provides getDpsInits().
 def PTO_DpsInitOpInterface : OpInterface<"PTO_DpsInitOpInterface"> {
   let description = [{
     PTO ops that have destination (init) operands for memory planning. Init
-    operands may be tile_buf, partition_tensor_view, tensor, or memref. Used by
-    PTOPlanMemory to get written-to buffers without MLIR's tensor/memref-only
+    operands may be tile_buf, partition_tensor_view, or tensor. Used by
+    PTOPlanMemory to get written-to buffers without MLIR's tensor-only
     verification.
   }];
   let cppNamespace = "::mlir::pto";

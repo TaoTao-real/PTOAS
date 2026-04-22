@@ -8,21 +8,14 @@
 
 #include "PTO/IR/PTO.h"
 #include "Utils.h"
-#include "llvm/Support/ErrorHandling.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/Dialect/Tensor/IR/Tensor.h"
-#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 
 #define DEBUG_TYPE "pto-utils"
 #define DBGS() (llvm::dbgs() << '[' << DEBUG_TYPE << "] ")
 #define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
-#define DBGSNL() (llvm::dbgs() << "\n")
 
 namespace mlir {
 namespace pto {
 
-// Returns the unique return op of a function when it exists.
 func::ReturnOp getAssumedUniqueReturnOp(func::FuncOp funcOp) {
   func::ReturnOp returnOp;
   for (Block &b : funcOp.getBody()) {
@@ -35,93 +28,36 @@ func::ReturnOp getAssumedUniqueReturnOp(func::FuncOp funcOp) {
   return returnOp;
 }
 
-// Returns a memref type identical to `type` except for memory-space.
-BaseMemRefType getBaseMemRefTypeWithNewScope(BaseMemRefType type,
-                                             AddressSpaceAttr targetMemScope) {
-  if (auto memRefType = dyn_cast<MemRefType>(type)) {
-    return MemRefType::Builder(memRefType).setMemorySpace(targetMemScope);
-  } else if (auto unrankedMemRefType = dyn_cast<UnrankedMemRefType>(type)) {
-    return UnrankedMemRefType::get(unrankedMemRefType.getElementType(),
-                                   targetMemScope);
-  }
-  llvm_unreachable("Unexpected BaseMemRefType");
-  return type;
+std::optional<std::pair<Value, Value>> getOperationAliasInfo(Operation *op) {
+  if (auto subViewOp = dyn_cast<pto::SubViewOp>(op))
+    return std::make_pair(subViewOp.getResult(), subViewOp.getSource());
+  if (auto bitcastOp = dyn_cast<pto::BitcastOp>(op))
+    return std::make_pair(bitcastOp.getResult(), bitcastOp.getSrc());
+  if (auto reshapeOp = dyn_cast<pto::TReshapeOp>(op))
+    return std::make_pair(reshapeOp.getResult(), reshapeOp.getSrc());
+  if (auto bindTileOp = dyn_cast<pto::BindTileOp>(op))
+    return std::make_pair(bindTileOp.getResult(), bindTileOp.getSource());
+  if (auto sliceOp = dyn_cast<tensor::ExtractSliceOp>(op))
+    return std::make_pair(sliceOp.getResult(), sliceOp.getSource());
+  return std::nullopt;
 }
 
-// Updates an SSA memref value type with a target memory-space, keeping shape
-// and element type unchanged.
-void setBaseMemRefTypeScope(Value val, AddressSpaceAttr targetMemScope) {
-  Type type = val.getType();
-  if (!isa<BaseMemRefType>(type)) {
-    return;
-  }
-
-  if (auto curMemScope = dyn_cast_if_present<AddressSpaceAttr>(
-          dyn_cast<BaseMemRefType>(type).getMemorySpace())) {
-    if (curMemScope != targetMemScope)
-      llvm::report_fatal_error("memref scope mismatch while propagating PTO address space");
-    return;
-  }
-
-  auto memRefType = cast<BaseMemRefType>(type);
-  auto newMemRefType =
-      getBaseMemRefTypeWithNewScope(memRefType, targetMemScope);
-  val.setType(newMemRefType);
-}
-
-// Resolve local memory space from memref SSA values.
 std::optional<AddressSpaceAttr> GetBufferSpaceAttr(Value operand) {
-  if (auto memRefType = dyn_cast<MemRefType>(operand.getType())) {
-    auto memorySpace = memRefType.getMemorySpace();
+  if (auto tileBufType = dyn_cast<pto::TileBufType>(operand.getType())) {
+    auto memorySpace = tileBufType.getMemorySpace();
     if (!memorySpace)
       return std::nullopt;
-    if (auto memorySpaceAttr = dyn_cast<AddressSpaceAttr>(memorySpace))
-      return memorySpaceAttr;
-    return std::nullopt;
+    return dyn_cast<AddressSpaceAttr>(memorySpace);
   }
-
-  return std::nullopt;
-}
-
-// Return (alias_result, source) for generic view/alias ops.
-std::optional<std::pair<Value, Value>> getOperationAliasInfo(Operation *op) {
-  if (auto subViewOp = dyn_cast<memref::SubViewOp>(op)) {
-    return std::make_pair(subViewOp.getResult(), subViewOp.getViewSource());
-  } else if (auto extSliceOp = dyn_cast<tensor::ExtractSliceOp>(op)) {
-    return std::make_pair(extSliceOp.getResult(), extSliceOp.getSource());
-  } else if (auto collapseShapeOp = dyn_cast<memref::CollapseShapeOp>(op)) {
-    return std::make_pair(collapseShapeOp.getResult(),
-                          collapseShapeOp.getViewSource());
-  } else if (auto expandShapeOp = dyn_cast<memref::ExpandShapeOp>(op)) {
-    return std::make_pair(expandShapeOp.getResult(),
-                          expandShapeOp.getViewSource());
-  } else if (auto viewOp = dyn_cast<memref::ViewOp>(op)) {
-    return std::make_pair(viewOp.getResult(), viewOp.getViewSource());
-  } else if (auto reinterpretCastOp = dyn_cast<memref::ReinterpretCastOp>(op)) {
-    return std::make_pair(reinterpretCastOp.getResult(),
-                          reinterpretCastOp.getViewSource());
-  } else if (auto reshapeOp = dyn_cast<memref::ReshapeOp>(op)) {
-    return std::make_pair(reshapeOp.getResult(), reshapeOp.getViewSource());
-  } else if (auto castOp = dyn_cast<memref::CastOp>(op)) {
-    return std::make_pair(castOp.getResult(), castOp.getViewSource());
-  } else if (auto extractStridedMetadataOp =
-                 dyn_cast<memref::ExtractStridedMetadataOp>(op)) {
-    return std::make_pair(extractStridedMetadataOp.getBaseBuffer(),
-                          extractStridedMetadataOp.getViewSource());
-  } else if (auto toMemrefOp = dyn_cast<bufferization::ToMemrefOp>(op)) {
-    return std::make_pair(toMemrefOp.getResult(), toMemrefOp.getOperand());
-  } else if (auto toTensorOp = dyn_cast<bufferization::ToTensorOp>(op)) {
-    return std::make_pair(toTensorOp.getResult(), toTensorOp.getOperand());
+  if (isa<pto::TensorViewType, pto::PartitionTensorViewType>(operand.getType())) {
+    return AddressSpaceAttr::get(operand.getContext(), pto::AddressSpace::GM);
   }
   return std::nullopt;
 }
 
-// Single-step traceback through alias/view-like constructs.
-static Value tracebackImpl(Value memrefVal) {
-  // case 1: v is the iter_arg of a scf.for
-  if (auto arg = dyn_cast<BlockArgument>(memrefVal)) {
-    if (auto forOp =
-            dyn_cast<scf::ForOp>(arg.getParentRegion()->getParentOp())) {
+static Value tracebackOneStep(Value value) {
+  if (auto arg = dyn_cast<BlockArgument>(value)) {
+    if (auto forOp = dyn_cast<scf::ForOp>(arg.getParentRegion()->getParentOp())) {
       if (arg.getArgNumber() > 0 &&
           forOp.getInitArgs().size() > arg.getArgNumber() - 1) {
         return forOp.getInitArgs()[arg.getArgNumber() - 1];
@@ -129,233 +65,133 @@ static Value tracebackImpl(Value memrefVal) {
     }
   }
 
-  Value result;
-  Operation *def = memrefVal.getDefiningOp();
-  if (!def) {
-    // failed to trace back
-    return result;
-  }
+  Operation *def = value.getDefiningOp();
+  if (!def)
+    return Value{};
 
   if (auto aliasPair = getOperationAliasInfo(def)) {
     auto [aliasValue, sourceValue] = *aliasPair;
-    if (aliasValue == memrefVal) {
+    if (aliasValue == value)
       return sourceValue;
+  }
+
+  if (auto op = dyn_cast<UnrealizedConversionCastOp>(def))
+    return op.getOperand(cast<OpResult>(value).getResultNumber());
+  if (auto op = dyn_cast<scf::ForOp>(def))
+    return op.getInitArgs()[cast<OpResult>(value).getResultNumber()];
+
+  return Value{};
+}
+
+static Value tracebackToRoot(Value value) {
+  int loopBound = 256;
+  while (value) {
+    Value upward = tracebackOneStep(value);
+    if (!upward)
+      break;
+    value = upward;
+    if (loopBound-- < 0) {
+      LLVM_DEBUG(llvm::dbgs() << "tracebackToRoot exceeds loopBound(" << loopBound
+                              << ")!");
+      break;
     }
   }
-
-  // case 2: v is the result of cast-like ops
-  //  - memref.cast
-  //  - memref.collapse_shape
-  //  - memref.expand_shape
-  //  - memref.memory_space_cast
-  //  - memref.reinterpret_cast
-  //  - memref.reshape
-  //  - memref.transpose
-  if (auto op = dyn_cast<memref::CastOp>(def)) {
-    result = op.getSource();
-  } else if (auto op = dyn_cast<memref::CollapseShapeOp>(def)) {
-    result = op.getSrc();
-  } else if (auto op = dyn_cast<memref::ExpandShapeOp>(def)) {
-    result = op.getSrc();
-  } else if (auto op = dyn_cast<memref::MemorySpaceCastOp>(def)) {
-    result = op.getSource();
-  } else if (auto op = dyn_cast<memref::ReinterpretCastOp>(def)) {
-    result = op.getSource();
-  } else if (auto op = dyn_cast<memref::ReshapeOp>(def)) {
-    result = op.getSource();
-  } else if (auto op = dyn_cast<memref::TransposeOp>(def)) {
-    result = op.getIn();
-  } else if (auto op = dyn_cast<UnrealizedConversionCastOp>(def)) {
-    result = op.getOperand(cast<OpResult>(memrefVal).getResultNumber());
-  } else if (auto op = dyn_cast<scf::ForOp>(def)) {
-    // trace back memref.alloc support scf.for
-    result = op.getInitArgs()[cast<OpResult>(memrefVal).getResultNumber()];
-  }
-
-  if (result) {
-    return result;
-  }
-
-  // case 3: v is the result of the view-like ops
-  //  - memref::view
-  //  - memref::subview
-  if (auto op = dyn_cast<memref::ViewOp>(def)) {
-    result = op.getViewSource();
-  } else if (auto op = dyn_cast<memref::SubViewOp>(def)) {
-    result = op.getViewSource();
-  }
-
-  return result;
+  return value;
 }
 
-// Checks whether an operation is a heap/stack memref allocation.
-bool isAllocLikeOp(Operation *op) {
-  if (!op)
-    return false;
-  return isa<memref::AllocOp>(op) || isa<memref::AllocaOp>(op);
-}
-
-// Convenience overload for value-based alloc-like checks.
-bool isAllocLikeOp(Value val) {
-  return isAllocLikeOp(val.getDefiningOp());
-}
-
-// Computes total static element count for a ranked shape.
 std::optional<int64_t> getStaticTotalSize(const ArrayRef<int64_t> &shapes) {
   int64_t totalSize = 1;
-  for (const auto &shape : shapes) {
-    if (ShapedType::isDynamic(shape)) {
+  for (int64_t shape : shapes) {
+    if (ShapedType::isDynamic(shape))
       return std::nullopt;
-    }
-    totalSize = totalSize * shape;
+    totalSize *= shape;
   }
   return totalSize;
 }
 
-// Aligns `lhs` upward to the nearest multiple of `rhs`.
 uint64_t AlignUp(uint64_t lhs, uint64_t rhs) {
   if (rhs == 0)
     return lhs;
-  if (lhs % rhs != 0) {
+  if (lhs % rhs != 0)
     lhs += rhs - (lhs % rhs);
-  }
   return lhs;
 }
 
-// Traces memref values through view/cast/for chains until alloc-like root.
-Value tracebackMemRef(Value memrefVal) {
-  int loopBound = 256;
-  while (memrefVal && !isAllocLikeOp(memrefVal)) {
-    auto upward = tracebackImpl(memrefVal);
-    if (!upward) {
-      break;
-    }
-
-    memrefVal = upward;
-
-    // avoid infinite loop
-    if (loopBound-- < 0) {
-      LLVM_DEBUG(llvm::dbgs()
-                 << "tracebackMemRef exceeds loopBound(" << loopBound << ")!");
-      break;
-    }
-  }
-
-  return memrefVal;
+bool isFromFunctionArg(Value v) {
+  return tracebackToRoot(v).getDefiningOp() == nullptr;
 }
 
-// Traces a memref to `memref.alloc` when the root is alloc-like.
-std::optional<memref::AllocOp> tracebackMemRefToAlloc(Value memrefVal) {
-  auto tracedValue = tracebackMemRef(memrefVal);
-  return isAllocLikeOp(tracedValue)
-             ? tracedValue.getDefiningOp<memref::AllocOp>()
-             : std::optional<memref::AllocOp>();
-}
-
-/// trace value and judge if it is function argument
-bool isFromFunctionArg(mlir::Value v) {
-  return tracebackMemRef(v).getDefiningOp() == nullptr;
-}
-
-// Returns true when an address-space belongs to local on-chip memories.
 bool isLocalBuffer(std::optional<AddressSpaceAttr> memorySpaceAttr) {
-  if (!memorySpaceAttr.has_value()) {
+  if (!memorySpaceAttr.has_value())
     return false;
-  }
-
-  if (memorySpaceAttr.value().getAddressSpace() == pto::AddressSpace::GM) {
+  if (memorySpaceAttr->getAddressSpace() == pto::AddressSpace::GM)
     return false;
-  }
-  if (LocalBufferSpace.count(memorySpaceAttr.value().getAddressSpace())) {
+  if (LocalBufferSpace.count(memorySpaceAttr->getAddressSpace()))
     return true;
-  }
-  llvm_unreachable("Currently only support (UB | L1 | L0C) allocation");
+  llvm_unreachable("unsupported non-local address space");
 }
 
-// Collects all SSA buffers that an op reads/writes/produces.
-SmallVector<Value> getOpTouchBuffer(Operation *op) {
+static SmallVector<Value> getOpTouchBuffer(Operation *op) {
   SmallVector<Value> touchBuffer;
   touchBuffer.insert(touchBuffer.end(), op->getResults().begin(),
                      op->getResults().end());
-  for (OpOperand &operand : op->getOpOperands()) {
+  for (OpOperand &operand : op->getOpOperands())
     touchBuffer.push_back(operand.get());
-  }
   return touchBuffer;
 }
 
-// True when any touched SSA value resolves to local memory space.
 bool isOpTouchLocalBuffer(Operation *op) {
-  auto touchBuffer = getOpTouchBuffer(op);
-  for (Value buffer : touchBuffer) {
-    auto bufferSpace = GetBufferSpaceAttr(buffer);
-    if (isLocalBuffer(bufferSpace)) {
+  for (Value buffer : getOpTouchBuffer(op)) {
+    if (isLocalBuffer(GetBufferSpaceAttr(buffer)))
       return true;
-    }
   }
   return false;
 }
 
-// Returns the outermost module op that contains `op`.
 ModuleOp getTopLevelModuleOp(Operation *op) {
   ModuleOp moduleOp = op->getParentOfType<ModuleOp>();
-  while (moduleOp && moduleOp->getParentOp()) {
+  while (moduleOp && moduleOp->getParentOp())
     moduleOp = moduleOp->getParentOfType<ModuleOp>();
-  }
   return moduleOp;
 }
 
-/// Index of yielded value where is alias of targetVal.
-std::optional<int> getYieldValueIdx(Value targetVal, ValueRange yieldedValues) {
+static std::optional<int> getYieldValueIdx(Value targetVal, ValueRange yieldedValues) {
   auto it = std::find(yieldedValues.begin(), yieldedValues.end(), targetVal);
-  if (it != yieldedValues.end()) {
+  if (it != yieldedValues.end())
     return it - yieldedValues.begin();
-  }
-
   return std::nullopt;
 }
 
-// Finds the nearest loop owner for a value, accounting for yielded results.
 LoopLikeOpInterface getParentLoop(Value val) {
   if (!val.getDefiningOp())
     return nullptr;
 
-  // Firstly, get parent loop
   LoopLikeOpInterface parentLoop =
       val.getDefiningOp()->getParentOfType<LoopLikeOpInterface>();
-  if (!parentLoop) {
+  if (!parentLoop)
     return nullptr;
-  }
 
-  // Need to determine whether val is yielded by the loop.
   auto yieldedValues = parentLoop.getYieldedValues();
   if (yieldedValues.empty())
     return parentLoop;
 
   auto idxLoopRes = getYieldValueIdx(val, yieldedValues);
   if (idxLoopRes.has_value()) {
-    // The val is yielded by loop, so need to find parent of parent loop.
     auto res = parentLoop.getLoopResults().value()[*idxLoopRes];
     return getParentLoop(res);
   }
 
-  // Need to determine whether val is yielded by if/else.
   auto parentIf = val.getDefiningOp()->getParentOfType<scf::IfOp>();
   if (!parentIf || parentIf.getResults().empty())
     return parentLoop;
 
-  auto thenYieldOp = parentIf.thenYield();
-  auto thenYieldOpers = thenYieldOp.getOperands();
-
-  auto idxThenYielded = getYieldValueIdx(val, thenYieldOpers);
+  auto idxThenYielded = getYieldValueIdx(val, parentIf.thenYield().getOperands());
   if (idxThenYielded.has_value()) {
-    // The val is yielded by ifOp, need to find parent loop of ifOp's result
     auto res = parentIf.getResults()[*idxThenYielded];
     return getParentLoop(res);
   }
 
-  auto elseYieldOp = parentIf.elseYield();
-  auto elseYieldOpers = elseYieldOp.getOperands();
-  auto idxElseYielded = getYieldValueIdx(val, elseYieldOpers);
+  auto idxElseYielded = getYieldValueIdx(val, parentIf.elseYield().getOperands());
   if (idxElseYielded.has_value()) {
     auto res = parentIf.getResults()[*idxElseYielded];
     return getParentLoop(res);
@@ -364,5 +200,5 @@ LoopLikeOpInterface getParentLoop(Value val) {
   return parentLoop;
 }
 
-}
-}
+} // namespace pto
+} // namespace mlir

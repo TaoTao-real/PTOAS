@@ -1,9 +1,16 @@
 // RUN: ptoas --pto-arch=a5 %s | FileCheck %s
 
 module {
-  func.func @tsync_emitc(%src0: memref<32x32xf32, #pto.address_space<gm>>,
-                         %src1: memref<32x32xf32, #pto.address_space<gm>>) {
-    pto.tsync ins(%src0, %src1 : memref<32x32xf32, #pto.address_space<gm>>, memref<32x32xf32, #pto.address_space<gm>>)
+  func.func @tsync_emitc(%src0: !pto.ptr<f32>,
+                         %src1: !pto.ptr<f32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c32 = arith.constant 32 : index
+    %src0_tv = pto.make_tensor_view %src0, shape = [%c32, %c32], strides = [%c32, %c1] : !pto.tensor_view<32x32xf32>
+    %src1_tv = pto.make_tensor_view %src1, shape = [%c32, %c32], strides = [%c32, %c1] : !pto.tensor_view<32x32xf32>
+    %src0_pt = pto.partition_view %src0_tv, offsets = [%c0, %c0], sizes = [%c32, %c32] : !pto.tensor_view<32x32xf32> -> !pto.partition_tensor_view<32x32xf32>
+    %src1_pt = pto.partition_view %src1_tv, offsets = [%c0, %c0], sizes = [%c32, %c32] : !pto.tensor_view<32x32xf32> -> !pto.partition_tensor_view<32x32xf32>
+    pto.tsync ins(%src0_pt, %src1_pt : !pto.partition_tensor_view<32x32xf32>, !pto.partition_tensor_view<32x32xf32>)
 
     return
   }

@@ -14,7 +14,6 @@
 #include "PTO/Transforms/InsertSync/MemoryDependentAnalyzer.h"
 #include "PTO/Transforms/InsertSync/InsertSyncDebug.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "llvm/Support/Debug.h"
  
 #define DEBUG_TYPE "pto-inject-sync"
@@ -63,36 +62,22 @@ static Value GetRealRoot(Value v) {
         break; 
     }
  
-    if (auto op = dyn_cast<memref::CollapseShapeOp>(defOp)) {
-        if (trace)
-          llvm::errs() << "    -> Hit CollapseShapeOp. Peel off.\n";
-        v = op.getSrc();
-        continue;
-    }
-    if (auto op = dyn_cast<memref::ExpandShapeOp>(defOp)) {
-        if (trace)
-          llvm::errs() << "    -> Hit ExpandShapeOp. Peel off.\n";
-        v = op.getSrc();
-        continue;
-    }
-    if (auto op = dyn_cast<memref::ViewOp>(defOp)) {
-        if (trace)
-          llvm::errs() << "    -> Hit ViewOp. Peel off.\n";
-        v = op.getSource();
-        continue;
-    }
     if (auto view = dyn_cast<ViewLikeOpInterface>(defOp)) {
         if (trace)
           llvm::errs() << "    -> Hit ViewLikeInterface. Peel off.\n";
         v = view.getViewSource();
         continue;
     }
-    if (auto cast = dyn_cast<memref::CastOp>(defOp)) {
-        v = cast.getSource();
+    if (auto bind = dyn_cast<pto::BindTileOp>(defOp)) {
+        v = bind.getSource();
         continue;
     }
-    if (auto reCast = dyn_cast<memref::ReinterpretCastOp>(defOp)) {
-        v = reCast.getSource();
+    if (auto bitcast = dyn_cast<pto::BitcastOp>(defOp)) {
+        v = bitcast.getSrc();
+        continue;
+    }
+    if (auto reshape = dyn_cast<pto::TReshapeOp>(defOp)) {
+        v = reshape.getSrc();
         continue;
     }
  

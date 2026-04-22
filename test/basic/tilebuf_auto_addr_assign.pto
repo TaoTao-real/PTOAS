@@ -15,7 +15,7 @@ module {
 
 // PM: end PTO plan Mem!
 // PM: func.func @tilebuf_auto_addr_assign
-// PM-NOT: memref.alloc
+// PM-NOT: pto.alloc_tile
 // PM: pto.pointer_cast(
 
 // EMITC-LABEL: tilebuf_auto_addr_assign

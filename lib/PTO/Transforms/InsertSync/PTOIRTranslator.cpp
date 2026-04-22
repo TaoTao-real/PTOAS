@@ -13,7 +13,6 @@
 
 #include "PTO/Transforms/InsertSync/PTOIRTranslator.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/Matchers.h"
@@ -30,59 +29,58 @@ using namespace mlir::pto;
 // 返回值: pair<offsetInBytes, sizeInBytes>
 // 如果无法计算静态值，返回 {-1, -1} 表示这是动态的
 static std::pair<int64_t, int64_t> getStaticOffsetAndSize(Operation *op, Value src) {
-  auto srcType = dyn_cast<MemRefType>(src.getType());
+  auto srcType = dyn_cast<pto::TileBufType>(src.getType());
   if (!srcType) return {0, 0};
-  
-  int64_t elemSize = srcType.getElementType().getIntOrFloatBitWidth() / 8;
+
+  Type elemType = srcType.getElementType();
+  int64_t elemSize = 0;
+  if (auto intTy = dyn_cast<IntegerType>(elemType))
+    elemSize = intTy.getWidth() / 8;
+  else if (auto floatTy = dyn_cast<FloatType>(elemType))
+    elemSize = floatTy.getWidth() / 8;
   if (elemSize == 0) elemSize = 1;
- 
-  // === Case 1: memref.subview ===
-  if (auto subView = dyn_cast<memref::SubViewOp>(op)) {
-    int64_t baseOffset;
-    SmallVector<int64_t, 4> strides;
-    if (failed(mlir::getStridesAndOffset(srcType, strides, baseOffset))) {
-        return {-1, -1}; 
-    }
- 
+
+  if (auto subView = dyn_cast<pto::SubViewOp>(op)) {
+    auto shape = srcType.getShape();
+    if (shape.size() < 2)
+      return {-1, -1};
+    if (shape[1] == ShapedType::kDynamic)
+      return {-1, -1};
+
     int64_t newSize = 1;
-    for (int64_t s : subView.getStaticSizes()) {
-      if (s == ShapedType::kDynamic) return {-1, -1};
+    auto resultTy = dyn_cast<pto::TileBufType>(subView.getResult().getType());
+    if (!resultTy)
+      return {-1, -1};
+    for (int64_t s : resultTy.getShape()) {
+      if (s == ShapedType::kDynamic)
+        return {-1, -1};
       newSize *= s;
     }
     newSize *= elemSize;
- 
+
     int64_t totalOffset = 0;
-    auto staticOffsets = subView.getStaticOffsets();
-    
-    if (staticOffsets.empty()) return {-1, -1};
-    if (staticOffsets.size() > strides.size()) return {-1, -1}; 
- 
-    for (size_t i = 0; i < staticOffsets.size(); ++i) {
-      int64_t off = staticOffsets[i];
-      if (off == ShapedType::kDynamic) return {-1, -1};
-      
-      int64_t stride = 1; 
-      if (i < strides.size() && strides[i] != ShapedType::kDynamic) {
-          stride = strides[i];
-      } else {
-          return {-1, -1};
-      }
-      
-      totalOffset += off * stride;
+    auto offsets = subView.getOffsets();
+    if (offsets.empty() || offsets.size() > shape.size())
+      return {-1, -1};
+
+    SmallVector<int64_t, 4> strides(shape.size(), 1);
+    for (int i = static_cast<int>(shape.size()) - 2; i >= 0; --i) {
+      if (shape[i + 1] == ShapedType::kDynamic)
+        return {-1, -1};
+      strides[i] = strides[i + 1] * shape[i + 1];
     }
- 
+
+    for (size_t i = 0; i < offsets.size(); ++i) {
+      APInt offAttr;
+      if (!matchPattern(offsets[i], m_ConstantInt(&offAttr)))
+        return {-1, -1};
+      int64_t off = offAttr.getSExtValue();
+      totalOffset += off * strides[i];
+    }
+
     return {totalOffset * elemSize, newSize};
   }
- 
-  // === Case 2: memref.reinterpret_cast ===
-  if (auto castOp = dyn_cast<memref::ReinterpretCastOp>(op)) {
-    auto staticOffsets = castOp.getStaticOffsets();
-    if (staticOffsets.empty() || staticOffsets[0] == ShapedType::kDynamic) {
-        return {0, 0};
-    }
-    return {staticOffsets[0] * elemSize, 0}; 
-  }
- 
+
   return {0, 0};
 }
  
@@ -104,7 +102,7 @@ void PTOIRTranslator::UpdateKernelArgMemInfo() {
     Value funcArg = func_.getArgument(i);
     Type argType = funcArg.getType();
  
-    if (!isa<pto::PtrType>(argType) && !isa<MemRefType>(argType)) {
+    if (!isa<pto::PtrType>(argType)) {
       continue;
     }
  

@@ -635,14 +635,5 @@ MlirType mlirPTOGMTypeGet(MlirContext ctx, intptr_t rank, const int64_t *shape,
   auto *c = unwrap(ctx);
   auto elemTy = unwrap(elementType);
   llvm::ArrayRef<int64_t> shp(shape, static_cast<size_t>(rank));
-
-  llvm::SmallVector<int64_t, 8> strides(static_cast<size_t>(rank),
-                                        ShapedType::kDynamic);
-  if (rank > 0)
-    strides[static_cast<size_t>(rank) - 1] = 1;
-  auto layout =
-      StridedLayoutAttr::get(c, ShapedType::kDynamic, llvm::ArrayRef<int64_t>(strides));
-  auto memSpace = mlir::pto::AddressSpaceAttr::get(c, mlir::pto::AddressSpace::GM);
-
-  return wrap(MemRefType::get(shp, elemTy, layout, memSpace));
+  return wrap(mlir::pto::TensorViewType::get(c, shp, elemTy));
 }

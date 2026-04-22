@@ -36,7 +36,7 @@ LogicalResult AllocTileOpToPointerCastOpPattern::matchAndRewrite(
     return failure();
 
   // Keep config from the tile descriptor so lowering can generate the exact
-  // Tile<...> type token (layout/fractal/pad) without memref-side recovery.
+  // Tile<...> type token (layout/fractal/pad) without reconstructing it later.
   TileBufConfigAttr configAttr = tileType.getConfigAttr();
 
   constexpr uint64_t kAlign = 4096;

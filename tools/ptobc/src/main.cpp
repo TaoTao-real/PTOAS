@@ -11,7 +11,6 @@
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
-#include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/Dialect/SCF/IR/SCF.h>
 #include <mlir/IR/DialectRegistry.h>
 #include <mlir/IR/MLIRContext.h>
@@ -64,8 +63,8 @@ static std::optional<CommandLineOptions> parseCommandLine(int argc, char **argv)
 static mlir::DialectRegistry buildRegistry() {
   mlir::DialectRegistry registry;
   registry.insert<mlir::func::FuncDialect, mlir::arith::ArithDialect,
-                  mlir::affine::AffineDialect, mlir::memref::MemRefDialect,
-                  mlir::scf::SCFDialect, mlir::pto::PTODialect>();
+                  mlir::affine::AffineDialect, mlir::scf::SCFDialect,
+                  mlir::pto::PTODialect>();
   return registry;
 }
 
@@ -73,7 +72,6 @@ static void preloadDialects(mlir::MLIRContext &ctx) {
   (void)ctx.getOrLoadDialect<mlir::func::FuncDialect>();
   (void)ctx.getOrLoadDialect<mlir::arith::ArithDialect>();
   (void)ctx.getOrLoadDialect<mlir::affine::AffineDialect>();
-  (void)ctx.getOrLoadDialect<mlir::memref::MemRefDialect>();
   (void)ctx.getOrLoadDialect<mlir::scf::SCFDialect>();
   (void)ctx.getOrLoadDialect<mlir::pto::PTODialect>();
 }

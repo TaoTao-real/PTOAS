@@ -9,8 +9,22 @@
 PTO_IR = r"""
 
 module {
-  func.func @fragmentation_two_holes(%arg0: memref<16x256xf16, #pto.address_space<gm>>,
-                                     %arg1: memref<16x256xf16, #pto.address_space<gm>>) {
+  func.func @fragmentation_two_holes(%arg0: !pto.ptr<f16>,
+                                     %arg1: !pto.ptr<f16>) {
+    %c0_arg0 = arith.constant 0 : index
+    %c16_arg0_0 = arith.constant 16 : index
+    %c256_arg0_1 = arith.constant 256 : index
+    %c256_arg0_s0 = arith.constant 256 : index
+    %c1_arg0_s1 = arith.constant 1 : index
+    %arg0_tv = pto.make_tensor_view %arg0, shape = [%c16_arg0_0, %c256_arg0_1], strides = [%c256_arg0_s0, %c1_arg0_s1] : !pto.tensor_view<16x256xf16>
+    %arg0_pt = pto.partition_view %arg0_tv, offsets = [%c0_arg0, %c0_arg0], sizes = [%c16_arg0_0, %c256_arg0_1] : !pto.tensor_view<16x256xf16> -> !pto.partition_tensor_view<16x256xf16>
+    %c0_arg1 = arith.constant 0 : index
+    %c16_arg1_0 = arith.constant 16 : index
+    %c256_arg1_1 = arith.constant 256 : index
+    %c256_arg1_s0 = arith.constant 256 : index
+    %c1_arg1_s1 = arith.constant 1 : index
+    %arg1_tv = pto.make_tensor_view %arg1, shape = [%c16_arg1_0, %c256_arg1_1], strides = [%c256_arg1_s0, %c1_arg1_s1] : !pto.tensor_view<16x256xf16>
+    %arg1_pt = pto.partition_view %arg1_tv, offsets = [%c0_arg1, %c0_arg1], sizes = [%c16_arg1_0, %c256_arg1_1] : !pto.tensor_view<16x256xf16> -> !pto.partition_tensor_view<16x256xf16>
     // Tight + overlap:
     //   - Keep 22 UB buffers live (22 * 8192 = 180224 B), leaving 2 free slots.
     //   - Allocate 2 short-lived buffers with overlapping lifetimes twice.
@@ -39,120 +53,120 @@ module {
     %k21 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>
 
     // Touch all k-buffers early so their lifetimes start before the temps.
-    pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+    pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
              outs(%k0 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+    pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
              outs(%k1 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+    pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
              outs(%k2 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+    pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
              outs(%k3 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+    pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
              outs(%k4 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+    pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
              outs(%k5 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+    pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
              outs(%k6 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+    pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
              outs(%k7 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+    pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
              outs(%k8 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+    pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
              outs(%k9 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+    pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
              outs(%k10 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+    pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
              outs(%k11 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+    pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
              outs(%k12 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+    pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
              outs(%k13 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+    pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
              outs(%k14 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+    pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
              outs(%k15 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+    pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
              outs(%k16 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+    pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
              outs(%k17 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+    pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
              outs(%k18 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+    pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
              outs(%k19 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+    pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
              outs(%k20 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+    pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
              outs(%k21 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
 
     // Stage 1: two overlapping temps.
     %a0 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>
     %b0 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+    pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
              outs(%a0 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+    pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
              outs(%b0 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     pto.tstore ins(%a0 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+              outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
     pto.tstore ins(%b0 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+              outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
 
     // Stage 2: two overlapping temps again, which should reuse the same two slots.
     %a1 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>
     %b1 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+    pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
              outs(%a1 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tload ins(%arg0 : memref<16x256xf16, #pto.address_space<gm>>)
+    pto.tload ins(%arg0_pt : !pto.partition_tensor_view<16x256xf16>)
              outs(%b1 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     pto.tstore ins(%a1 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+              outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
     pto.tstore ins(%b1 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+              outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
 
     // Keep all k-buffers live until the end.
     pto.tstore ins(%k0 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+              outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
     pto.tstore ins(%k1 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+              outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
     pto.tstore ins(%k2 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+              outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
     pto.tstore ins(%k3 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+              outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
     pto.tstore ins(%k4 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+              outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
     pto.tstore ins(%k5 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+              outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
     pto.tstore ins(%k6 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+              outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
     pto.tstore ins(%k7 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+              outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
     pto.tstore ins(%k8 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+              outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
     pto.tstore ins(%k9 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+              outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
     pto.tstore ins(%k10 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+              outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
     pto.tstore ins(%k11 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+              outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
     pto.tstore ins(%k12 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+              outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
     pto.tstore ins(%k13 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+              outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
     pto.tstore ins(%k14 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+              outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
     pto.tstore ins(%k15 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+              outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
     pto.tstore ins(%k16 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+              outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
     pto.tstore ins(%k17 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+              outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
     pto.tstore ins(%k18 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+              outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
     pto.tstore ins(%k19 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+              outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
     pto.tstore ins(%k20 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+              outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
     pto.tstore ins(%k21 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=256, v_row=16, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%arg1 : memref<16x256xf16, #pto.address_space<gm>>)
+              outs(%arg1_pt : !pto.partition_tensor_view<16x256xf16>)
     return
   }
 }

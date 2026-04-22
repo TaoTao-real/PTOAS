@@ -51,7 +51,7 @@ def build_pingpong():
                 c32 = arith.ConstantOp(idx, 32).result
                 workspace = pto.AllocTileOp(ws_type).result
 
-                # Wrap GM memrefs as tensor_view and create full partitions
+                # Wrap GM pointers as tensor_view and create full partitions
                 tv_src = pto.MakeTensorViewOp(pto.TensorViewType.get(2, f32, ctx),
                                              gm_src, [c32, c32], [c32, c1]).result
                 tv_dst = pto.MakeTensorViewOp(pto.TensorViewType.get(2, f32, ctx),

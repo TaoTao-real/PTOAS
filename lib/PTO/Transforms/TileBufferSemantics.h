@@ -30,8 +30,7 @@ enum class TileViewKind {
   BindTile,
   Subset,
   Bitcast,
-  TReshape,
-  MemRefViewLike
+  TReshape
 };
 
 /// Normalized semantic payload consumed by PlanMemory.
@@ -56,7 +55,7 @@ struct TileBufferSemantics {
   int64_t constBits{0};
 };
 
-/// Reads PTO address-space from memref or tile values for planning.
+/// Reads PTO address-space from tile/view values for planning.
 std::optional<AddressSpaceAttr> getPlanningBufferSpaceAttr(Value operand);
 
 /// Returns (result, source) when `op` is an alias/view-like op for planning.

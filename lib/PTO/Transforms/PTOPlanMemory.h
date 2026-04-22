@@ -18,7 +18,6 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Analysis/Liveness.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "llvm/ADT/SmallSet.h"
 
 
@@ -342,7 +341,7 @@ private:
                                    BufferInfo &out);
 
   /// Populate `out` from tilebuf semantic inference in the target scope.
-  /// No memref fallback is allowed in tilebuf-only PlanMemory mode.
+  /// Legacy fallback paths are disallowed in tilebuf-only PlanMemory mode.
   LogicalResult GetBufferInfo(Operation *op, Value operand,
                               pto::AddressSpace bufferScope, BufferInfo &out);
 
@@ -499,7 +498,7 @@ private:
   /// Prepare the local tile-buffer address plan.
   PlanStatus PlanLocalMemAddress();
 
-  /// Prepare the memrefExt.alloc_workspace plan.
+  /// Prepare the global workspace plan.
   PlanStatus PlanWorkSpaceMemAddress();
 
   /// merge all storage entry to the first storage entry for WorkSpaceArg.
@@ -671,7 +670,7 @@ private:
   /// Report tensor life time for debug.
   void MemLifeDebugInfo(StorageEntry *storageEntry);
 
-  /// Report tensor which is defined by memref allco.
+  /// Report tensor defined by a disallowed legacy allocation op.
   void ReportCurEntryDebugInfo(const StorageEntry *curEntry);
 
   /// Report tensor allocate info.
@@ -705,7 +704,7 @@ private:
   /// Whether to adopt a split strategy.
   bool splitOutline{false};
 
-  /// map from memref buffer to plan memory address.
+  /// map from root buffer to plan memory address.
   DenseMap<Value, SmallVector<uint64_t>> buffer2Offsets;
 
   /// map from each scope to its root StorageEntry.

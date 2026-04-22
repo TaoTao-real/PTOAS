@@ -559,8 +559,8 @@ set_validshape(source, valid_row, valid_col)
 - `source` must have dynamic valid shape:
   - `v_row = ?`
   - `v_col = ?`
-- User-authored PTO IR must use the `pto.tile_buf` form; any memref form seen
-  later in the pipeline is compiler-internal lowering state only
+- User-authored PTO IR must stay in the `pto.tile_buf` / pointer / view form
+- Backend-only representation changes are not part of the public IR contract
 - If `valid_row` / `valid_col` are compile-time constants, they must be non-negative and not exceed the tile's static shape bounds
 
 **Hardware Mapping:**
@@ -741,15 +741,15 @@ op is modeled as writing the prefetched data into `dst`.
 
 | Name | Type | Description |
 |------|------|-------------|
-| `src` | `pto.partition_tensor_view` or lowered GM memref | Source global view |
-| `dst` | `pto.tile_buf` or lowered local memref | Destination local tile |
+| `src` | `pto.partition_tensor_view` | Source global view |
+| `dst` | `pto.tile_buf` | Destination local tile |
 
 **Results:** None. Writes into `dst` via DPS pattern.
 
 **Constraints & Verification:**
 
-- `src` must be a partition view before lowering, or the corresponding lowered ranked memref form after `PTOViewToMemref`.
-- `dst` must be a tile buffer before lowering, or the corresponding lowered ranked memref form after `PTOViewToMemref`.
+- `src` must be a partition view.
+- `dst` must be a tile buffer.
 - `dst` must use `loc=vec` or `loc=mat`.
 - Static source extents and static destination valid extents must be positive when known.
 - `src` and `dst` element types must have the same element size in bytes.
@@ -6615,7 +6615,7 @@ dst[i, j] = mem[idx[i, j]]
 
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
-| `mem` | `!pto.partition_tensor_view<...>` / GM memref | `NA` | Global source table |
+| `mem` | `!pto.partition_tensor_view<...>` | `NA` | Global source table |
 | `idx` | `pto.tile_buf` | `NA` | Index tile |
 | `dst` | `pto.tile_buf` | `NA` | Destination VEC tile |
 | `gatherOob` | `#pto<gather_oob ...>` | `undefined` | A5-only out-of-bounds mode (`undefined/clamp/wrap/zero`) |
@@ -6636,7 +6636,7 @@ dst[i, j] = mem[idx[i, j]]
 - **Shape**  
   - `dst row == idx row`.
   - `idx column == 1` or `idx column == dst column`.
-  - If `mem` is a rank-5 static GM memref, it must satisfy `<1, 1, 1, Rows, RowWidth>`.
+  - If `mem` is a rank-5 static GM view, it must satisfy `<1, 1, 1, Rows, RowWidth>`.
 
 - **Out-of-bounds mode**
   - Default `gatherOob = undefined` lowers to the default `MGATHER(dst, mem, idx)` overload.
@@ -6649,10 +6649,10 @@ dst[i, j] = mem[idx[i, j]]
 **Basic Example:**
 
 ```mlir
-pto.mgather ins(%mem, %idx : memref<...>, !pto.tile_buf<...>)
+pto.mgather ins(%mem, %idx : !pto.partition_tensor_view<...>, !pto.tile_buf<...>)
            outs(%dst : !pto.tile_buf<...>)
 
-pto.mgather ins(%mem, %idx : memref<...>, !pto.tile_buf<...>)
+pto.mgather ins(%mem, %idx : !pto.partition_tensor_view<...>, !pto.tile_buf<...>)
            outs(%dst : !pto.tile_buf<...>)
            {gatherOob = #pto<gather_oob zero>}
 ```
@@ -6675,7 +6675,7 @@ mem[idx[i, j]] = src[i, j]
 |------|------|---------|-------------|
 | `src` | `pto.tile_buf` | `NA` | Source VEC tile |
 | `idx` | `pto.tile_buf` | `NA` | Index tile |
-| `mem` | `!pto.partition_tensor_view<...>` / GM memref | `NA` | Global destination table |
+| `mem` | `!pto.partition_tensor_view<...>` | `NA` | Global destination table |
 | `scatterAtomicOp` | `#pto<scatter_atomic_op ...>` | `none` | A5-only atomic mode (`none/add/max/min`) |
 | `scatterOob` | `#pto<scatter_oob ...>` | `undefined` | A5-only out-of-bounds mode (`undefined/skip/clamp/wrap`) |
 
@@ -6695,7 +6695,7 @@ mem[idx[i, j]] = src[i, j]
 - **Shape**  
   - `src row == idx row`.
   - `idx column == 1` or `idx column == src column`.
-  - If `mem` is a rank-5 static GM memref, it must satisfy `<1, 1, 1, Rows, RowWidth>`.
+  - If `mem` is a rank-5 static GM view, it must satisfy `<1, 1, 1, Rows, RowWidth>`.
 
 - **Atomic modes**  
   - Default `scatterAtomicOp = none` lowers to the default `MSCATTER(mem, src, idx)` overload.
@@ -6715,14 +6715,14 @@ mem[idx[i, j]] = src[i, j]
 
 ```mlir
 pto.mscatter ins(%src, %idx : !pto.tile_buf<...>, !pto.tile_buf<...>)
-            outs(%mem : memref<...>)
+            outs(%mem : !pto.partition_tensor_view<...>)
 
 pto.mscatter ins(%src, %idx : !pto.tile_buf<...>, !pto.tile_buf<...>)
-            outs(%mem : memref<...>)
+            outs(%mem : !pto.partition_tensor_view<...>)
             {scatterAtomicOp = #pto<scatter_atomic_op add>}
 
 pto.mscatter ins(%src, %idx : !pto.tile_buf<...>, !pto.tile_buf<...>)
-            outs(%mem : memref<...>)
+            outs(%mem : !pto.partition_tensor_view<...>)
             {scatterAtomicOp = #pto<scatter_atomic_op add>,
              scatterOob = #pto<scatter_oob skip>}
 ```
@@ -7190,7 +7190,7 @@ result = src[offset]
 
 **Constraints & Verification:**
 
-- `src` must be a `!pto.tile_buf` or a `memref`.
+- `src` must be a `!pto.tile_buf`.
 - `src` must use `loc=vec`.
 - If `src` uses `loc=mat`, the current verifier rejects it explicitly because scalar reads from mat tiles are not supported.
 - Result type must exactly match the element type of `src`.
@@ -7438,7 +7438,7 @@ dst[...] = Convert(src[i, j]; fp)
 
 ```mlir
 pto.tstore_fp ins(%acc, %fp : !pto.tile_buf<...>, !pto.tile_buf<...>)
-             outs(%dst : memref<...>)
+             outs(%dst : !pto.partition_tensor_view<...>)
 ```
 
 ---

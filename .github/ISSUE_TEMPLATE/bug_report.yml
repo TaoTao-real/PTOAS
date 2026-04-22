@@ -32,7 +32,7 @@ body:
     attributes:
       label: Description
       description: Clear description of the bug
-      placeholder: e.g. "ptoas crashes when lowering pto.bind_tile after memref.subview"
+      placeholder: e.g. "ptoas crashes when lowering pto.bind_tile after pto.subview"
     validations:
       required: true
 
@@ -120,4 +120,3 @@ body:
         - level3
     validations:
       required: false
-

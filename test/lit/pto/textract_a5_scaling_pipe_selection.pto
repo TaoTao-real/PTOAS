@@ -3,12 +3,19 @@
 module attributes {"pto.target_arch" = "a5"} {
   // A5: textract mat->scaling follows TEXTRACT_M2LR data-movement path and
   // must be treated as PIPE_MTE1 in sync insertion.
-  func.func @textract_mat_scaling_sync(%in: memref<32x32xf16, #pto.address_space<gm>>) {
+  func.func @textract_mat_scaling_sync(%in: !pto.ptr<f16>) {
+    %c0_in = arith.constant 0 : index
+    %c32_in_0 = arith.constant 32 : index
+    %c32_in_1 = arith.constant 32 : index
+    %c32_in_s0 = arith.constant 32 : index
+    %c1_in_s1 = arith.constant 1 : index
+    %in_tv = pto.make_tensor_view %in, shape = [%c32_in_0, %c32_in_1], strides = [%c32_in_s0, %c1_in_s1] : !pto.tensor_view<32x32xf16>
+    %in_pt = pto.partition_view %in_tv, offsets = [%c0_in, %c0_in], sizes = [%c32_in_0, %c32_in_1] : !pto.tensor_view<32x32xf16> -> !pto.partition_tensor_view<32x32xf16>
     %c0 = arith.constant 0 : index
     %src = pto.alloc_tile : !pto.tile_buf<loc=mat, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=col_major, fractal=512, pad=0>
     %dst = pto.alloc_tile : !pto.tile_buf<loc=scaling, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=row_major, fractal=512, pad=0>
 
-    pto.tload ins(%in : memref<32x32xf16, #pto.address_space<gm>>)
+    pto.tload ins(%in_pt : !pto.partition_tensor_view<32x32xf16>)
               outs(%src : !pto.tile_buf<loc=mat, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=col_major, fractal=512, pad=0>)
     pto.textract ins(%src, %c0, %c0 : !pto.tile_buf<loc=mat, dtype=f16, rows=32, cols=32, v_row=32, v_col=32, blayout=row_major, slayout=col_major, fractal=512, pad=0>, index, index)
                 outs(%dst : !pto.tile_buf<loc=scaling, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=row_major, fractal=512, pad=0>)

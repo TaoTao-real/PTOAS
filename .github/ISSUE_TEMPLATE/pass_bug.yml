@@ -13,8 +13,8 @@ body:
     id: pass_name
     attributes:
       label: Pass / pipeline name
-      description: Exact pass name (e.g. `pto-view-to-memref`) or pipeline stage (e.g. `EmitC lowering`)
-      placeholder: e.g. pto-view-to-memref, plan-memory, pto-insert-sync, emit-pto-manual
+      description: Exact pass name (e.g. `pto-plan-memory`) or pipeline stage (e.g. `EmitC lowering`)
+      placeholder: e.g. pto-plan-memory, pto-insert-sync, emit-pto-manual
     validations:
       required: true
 
@@ -109,4 +109,3 @@ body:
       description: Anything else that helps (hardware, whether remote validation is involved, etc.)
     validations:
       required: false
-

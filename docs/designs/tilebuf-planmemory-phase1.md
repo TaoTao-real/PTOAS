@@ -8,7 +8,7 @@
   - New MultiBuffer capabilities
 
 ## Why
-PlanMemory previously consumed mainly memref-centric alias/shape/space signals.
+PlanMemory previously consumed mainly legacy buffer alias/shape/space signals.
 Tile metadata (`bind_tile/subset/bitcast/treshape`) was available but not normalized
 as a reusable semantic layer.
 
@@ -17,19 +17,18 @@ core planner (`MultiSpecPlan`, rollback/reuse) unchanged.
 
 ## Changes
 1. Unified tile semantic extraction in `Utils`:
-- alias unification: `bind_tile/subset/bitcast/treshape` + memref view-like ops
+- alias unification: `bind_tile/subset/bitcast/treshape` + view-like ops
 - root traceback: `tracebackBufferRoot(...)`
 - semantic record: `TileBufferSemantics` (root/scope/shape/valid/config/view-kind/bits)
 
 2. PlanMemory liveness/buffer info wiring:
 - `MemLivenessAnalysis` uses unified alias API
-- local buffer definition is `pto.alloc_tile` / `pto.declare_tile`; local
-  `memref.alloc` is intentionally rejected in this branch
+- local buffer definition is `pto.alloc_tile` / `pto.declare_tile`
 - `GetBufferInfo` consumes tile-native semantic extraction
 
 3. No algorithm rewrite:
 - Allocation/reuse/rollback algorithm unchanged
-- No memref-bridge fallback is kept in the user path
+- No legacy bridge fallback is kept in the user path
 
 ## Capability -> Test Mapping
 - Unified semantic smoke:

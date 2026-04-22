@@ -3,7 +3,14 @@
 module {
   func.func @subview_dynamic_offset_static_valid_regression(
       %arg0: index,
-      %dst: memref<1x64xf32, #pto.address_space<gm>>) {
+      %dst: !pto.ptr<f32>) {
+    %c0_dst = arith.constant 0 : index
+    %c1_dst_0 = arith.constant 1 : index
+    %c64_dst_1 = arith.constant 64 : index
+    %c64_dst_s0 = arith.constant 64 : index
+    %c1_dst_s1 = arith.constant 1 : index
+    %dst_tv = pto.make_tensor_view %dst, shape = [%c1_dst_0, %c64_dst_1], strides = [%c64_dst_s0, %c1_dst_s1] : !pto.tensor_view<1x64xf32>
+    %dst_pt = pto.partition_view %dst_tv, offsets = [%c0_dst, %c0_dst], sizes = [%c1_dst_0, %c64_dst_1] : !pto.tensor_view<1x64xf32> -> !pto.partition_tensor_view<1x64xf32>
     %c0 = arith.constant 0 : index
     %c64 = arith.constant 64 : index
     %off = arith.muli %arg0, %c64 : index
@@ -18,7 +25,7 @@ module {
       -> !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
 
     pto.tstore ins(%sub : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-              outs(%dst : memref<1x64xf32, #pto.address_space<gm>>)
+              outs(%dst_pt : !pto.partition_tensor_view<1x64xf32>)
     return
   }
 }

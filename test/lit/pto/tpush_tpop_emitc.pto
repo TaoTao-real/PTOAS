@@ -1,7 +1,7 @@
 // RUN: ptoas --pto-arch=a3 %s 2>&1 | FileCheck %s --check-prefix=A3
 
 module {
-  func.func @cube_push_gm(%gm_slot_buffer: memref<256xf32, #pto.address_space<gm>>,
+  func.func @cube_push_gm(%gm_slot_buffer: !pto.ptr<f32>,
                           %c2v_consumer_buf: i32) attributes {pto.kernel_kind = #pto.kernel_kind<cube>} {
     %pipe = pto.initialize_l2g2l_pipe {
       dir_mask = 1,
@@ -9,13 +9,13 @@ module {
       slot_num = 8,
       local_slot_num = 8,
       flag_base = 0
-    }(%gm_slot_buffer : memref<256xf32, #pto.address_space<gm>>, %c2v_consumer_buf : i32) -> !pto.pipe
+    }(%gm_slot_buffer : !pto.ptr<f32>, %c2v_consumer_buf : i32) -> !pto.pipe
     %acc_tile = pto.alloc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>
     pto.tpush(%acc_tile, %pipe : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>, !pto.pipe) {split = 0}
     return
   }
 
-  func.func @vector_pop_gm(%gm_slot_buffer: memref<256xf32, #pto.address_space<gm>>,
+  func.func @vector_pop_gm(%gm_slot_buffer: !pto.ptr<f32>,
                            %c2v_consumer_buf: i32) attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
     %pipe = pto.initialize_l2g2l_pipe {
       dir_mask = 1,
@@ -23,7 +23,7 @@ module {
       slot_num = 8,
       local_slot_num = 8,
       flag_base = 0
-    }(%gm_slot_buffer : memref<256xf32, #pto.address_space<gm>>, %c2v_consumer_buf : i32) -> !pto.pipe
+    }(%gm_slot_buffer : !pto.ptr<f32>, %c2v_consumer_buf : i32) -> !pto.pipe
     %fifo_tile = pto.declare_tile -> !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
     pto.tpop(%fifo_tile, %pipe : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=16, v_row=8, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.pipe) {split = 1}
     pto.tfree(%pipe : !pto.pipe) {split = 2}

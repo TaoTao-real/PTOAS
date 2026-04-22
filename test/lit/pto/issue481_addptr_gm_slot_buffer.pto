@@ -26,8 +26,8 @@ module {
     return
   }
 
-  func.func @call_both(%arg0: memref<256xi64>, %arg1: !pto.ptr<f32>, %arg2: !pto.ptr<f32>, %arg3: !pto.ptr<f32>) attributes {pto.entry} {
-    pto.set_ffts %arg0 : memref<256xi64>
+  func.func @call_both(%arg0: !pto.ptr<i64>, %arg1: !pto.ptr<f32>, %arg2: !pto.ptr<f32>, %arg3: !pto.ptr<f32>) attributes {pto.entry} {
+    pto.set_ffts %arg0 : !pto.ptr<i64>
     call @cube_kernel(%arg1, %arg2) : (!pto.ptr<f32>, !pto.ptr<f32>) -> ()
     call @vector_kernel(%arg1, %arg3) : (!pto.ptr<f32>, !pto.ptr<f32>) -> ()
     return

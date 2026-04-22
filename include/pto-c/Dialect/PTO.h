@@ -185,7 +185,7 @@ MLIR_CAPI_EXPORTED MlirAttribute mlirPTOQuantTypeAttrGet(MlirContext ctx, int32_
 MLIR_CAPI_EXPORTED bool mlirPTOAttrIsAQuantTypeAttr(MlirAttribute attr);
 MLIR_CAPI_EXPORTED int32_t mlirPTOQuantTypeAttrGetValue(MlirAttribute attr);
 
-// ---- MemRef helpers ----
+// ---- GM type helpers ----
 MLIR_CAPI_EXPORTED MlirType mlirPTOGMTypeGet(
     MlirContext ctx, intptr_t rank, const int64_t *shape, MlirType elementType);
 

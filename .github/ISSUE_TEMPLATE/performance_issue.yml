@@ -12,7 +12,7 @@ body:
     id: summary
     attributes:
       label: Summary
-      placeholder: e.g. "pto-view-to-memref takes 5x longer after PR ###"
+      placeholder: e.g. "pto-plan-memory takes 5x longer after PR ###"
     validations:
       required: true
 
@@ -69,4 +69,3 @@ body:
       placeholder: e.g. f04cde8a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d
     validations:
       required: true
-
