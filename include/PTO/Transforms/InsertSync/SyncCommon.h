@@ -217,6 +217,11 @@ private:
   std::optional<int> forEndIndex_{};
   unsigned depSyncIRIndex_{0};
 };
+
+SmallVector<const void *>
+canonicalizeSyncDepRoots(const SmallVector<Value> &roots);
+
+bool hasSameSyncDepRoots(const SyncOperation *lhs, const SyncOperation *rhs);
  
 using SyncOps = std::deque<SyncOperation *>;
  

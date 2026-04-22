@@ -24,12 +24,12 @@ on:
         type: string
         default: Ascend910
       device_id:
-        description: "aclrtSetDevice device id"
+        description: "TaskQueue device selector (`auto` or physical device id)"
         type: string
-        # NOTE: On our shared remote NPU host, device 0/1 may be unstable or
-        # occupied. Default to a higher id to reduce flakiness for scheduled
-        # runs. Override in workflow_dispatch if needed.
-        default: "2"
+        # NOTE: Shared A3 hosts now require task-submit queueing to obtain
+        # temporary device access. Use `auto` by default so the queue picks an
+        # allowed device and exposes it to the validation command.
+        default: "auto"
       skip_cases:
         description: "Comma/space separated testcase names to skip (e.g. scatter,mrgsort)"
         type: string
@@ -291,7 +291,7 @@ jobs:
           STAGE: ${{ github.event.inputs.stage || 'run' }}
           RUN_MODE: ${{ github.event.inputs.run_mode || 'npu' }}
           SOC_VERSION: ${{ github.event.inputs.soc_version || 'Ascend910' }}
-          DEVICE_ID: ${{ github.event.inputs.device_id || '2' }}
+          DEVICE_ID: ${{ github.event.inputs.device_id || 'auto' }}
           SKIP_CASES: ${{ github.event.inputs.skip_cases || '' }}
           RUN_ONLY_CASES: ${{ github.event.inputs.run_only_cases || '' }}
           PTO_ISA_REPO: ${{ github.event.inputs.pto_isa_repo || 'https://gitcode.com/cann/pto-isa.git' }}
@@ -408,12 +408,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ -z "${DEVICE_ID}" ]]; then
+            DEVICE_ID="auto"
+          fi
           ssh -p "${REMOTE_PORT}" "${REMOTE_USER}@${REMOTE_HOST}" \
             "set -euo pipefail; \
              cd '${REMOTE_DIR}'; \
              tar -xzf payload.tgz; \
-             STAGE='${STAGE}' RUN_MODE='${RUN_MODE}' SOC_VERSION='${SOC_VERSION}' PTO_ISA_REPO='${PTO_ISA_REPO}' PTO_ISA_COMMIT='${PTO_ISA_COMMIT}' DEVICE_ID='${DEVICE_ID}' SKIP_CASES='${SKIP_CASES}' RUN_ONLY_CASES='${RUN_ONLY_CASES}' \
-               bash ./test/npu_validation/scripts/run_remote_npu_validation.sh"
+             command -v task-submit >/dev/null 2>&1 || { echo 'ERROR: task-submit not found on remote host'; exit 1; }; \
+             task-submit --device '${DEVICE_ID}' --timeout 0 --max-time 0 \
+               --run \"cd '${REMOTE_DIR}' && STAGE='${STAGE}' RUN_MODE='${RUN_MODE}' SOC_VERSION='${SOC_VERSION}' PTO_ISA_REPO='${PTO_ISA_REPO}' PTO_ISA_COMMIT='${PTO_ISA_COMMIT}' DEVICE_ID=\\\${TASK_DEVICE:-${DEVICE_ID}} SKIP_CASES='${SKIP_CASES}' RUN_ONLY_CASES='${RUN_ONLY_CASES}' bash ./test/npu_validation/scripts/run_remote_npu_validation.sh\""
 
       - name: Fetch results
         if: always()

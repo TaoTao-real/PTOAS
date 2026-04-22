@@ -60,6 +60,14 @@ namespace mlir {
 using namespace mlir;
 using namespace mlir::pto;
 
+static std::string getElemTypeStringForGT(Type elemTy);
+static int64_t multiplyOrDynamic(int64_t lhs, int64_t rhs);
+static void buildGlobalTensorShapeAndStride(ArrayRef<int64_t> shape,
+                                            ArrayRef<int64_t> strides,
+                                            SmallVectorImpl<int64_t> &shape5D,
+                                            SmallVectorImpl<int64_t> &stride5D);
+static std::string joinIntTemplateParams(ArrayRef<int64_t> values);
+
 static const char *addrSpaceQualifier(pto::AddressSpace as) {
   switch (as) {
   case pto::AddressSpace::Zero:
@@ -2958,7 +2966,6 @@ static std::optional<Role> inferSubviewRoleFromUser(Operation *user, Value resul
   }
   return std::nullopt;
 }
-
 
 static std::string getElemTypeStringForGT(Type elemTy) {
   if (elemTy.isF16()) return "half";

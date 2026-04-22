@@ -200,11 +200,9 @@ struct Encoder {
     std::unordered_map<std::string, int> constCounts;
 
     for (uint64_t vid = 0; vid < valueById.size(); ++vid) {
-      mlir::Value v = valueById[vid];
-      std::string name = buildScalarConstantDebugName(v, constCounts)
-                             .value_or(std::to_string(vid));
-
-      uint64_t nameSid = file.strings.intern(name);
+      uint64_t nameSid = file.strings.intern(
+          buildScalarConstantDebugName(valueById[vid], constCounts)
+              .value_or(std::to_string(vid)));
       file.dbgValueNames.push_back(DebugValueNameEntry{funcId, vid, nameSid});
     }
   }
@@ -231,18 +229,20 @@ struct Encoder {
     return internConst(/*tag=*/0x01, p.bytes);
   }
 
-  uint64_t internConstIntBits(uint64_t typeId, const llvm::APInt &bits) {
+  uint64_t internConstBits(uint8_t tag, uint64_t typeId,
+                           const llvm::APInt &bits) {
     Buffer p;
     writeULEB128(typeId, p.bytes);
     appendAPIntBytesLE(p, bits);
-    return internConst(/*tag=*/0x04, p.bytes);
+    return internConst(tag, p.bytes);
+  }
+
+  uint64_t internConstIntBits(uint64_t typeId, const llvm::APInt &bits) {
+    return internConstBits(/*tag=*/0x04, typeId, bits);
   }
 
   uint64_t internConstFloatBits(uint64_t dtypeId, const llvm::APInt &bits) {
-    Buffer p;
-    writeULEB128(dtypeId, p.bytes);
-    appendAPIntBytesLE(p, bits);
-    return internConst(/*tag=*/0x02, p.bytes);
+    return internConstBits(/*tag=*/0x02, dtypeId, bits);
   }
 
   void resetForFunction(uint64_t fid) {

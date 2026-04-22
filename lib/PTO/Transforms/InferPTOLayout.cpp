@@ -137,6 +137,21 @@ static std::optional<Layout> inferMinor2DLayout(
   return dn ? Layout::DN : Layout::ND;
 }
 
+static std::optional<Layout> inferNZLayout(ArrayRef<int64_t> shape,
+                                           ArrayRef<int64_t> stride,
+                                           unsigned elemBytes) {
+  int64_t sh3 = shape[2];
+  int64_t sh4 = shape[3];
+  int64_t sh5 = shape[4];
+  int64_t st4 = stride[3];
+  int64_t st5 = stride[4];
+  bool alignMatch = (sh3 == 16) && (sh3 * sh4 * elemBytes == 512);
+  bool strideMatch = (st5 == 1) && (st4 == sh5);
+  if (alignMatch && strideMatch)
+    return Layout::NZ;
+  return std::nullopt;
+}
+
 static std::optional<Layout> inferLayout5D(ArrayRef<int64_t> shape,
                                            ArrayRef<int64_t> strides,
                                            unsigned elemBytes,
@@ -147,33 +162,19 @@ static std::optional<Layout> inferLayout5D(ArrayRef<int64_t> shape,
     return std::nullopt;
   if (isMinor2DAmbiguous)
     *isMinor2DAmbiguous = false;
-  if (auto padded = rightAlignTo5D(shape, strides)) {
-    auto &sh = padded->shape;
-    auto &st = padded->stride;
+  auto padded = rightAlignTo5D(shape, strides);
+  if (!padded)
+    return std::nullopt;
 
-    // NZ: 5D right-aligned, check middle dims (sh3/sh4/sh5 per spec)
-    int64_t sh3 = sh[2], sh4 = sh[3], sh5 = sh[4];
-    int64_t st4 = st[3], st5 = st[4];
-    bool alignMatch = (sh3 == 16) && (sh3 * sh4 * elemBytes == 512);
-    bool strideMatch = (st5 == 1) && (st4 == sh5);
-    if (alignMatch && strideMatch)
-      return Layout::NZ;
+  if (auto nz = inferNZLayout(padded->shape, padded->stride, elemBytes))
+    return nz;
 
-    // ND/DN are minor-2D layout hints for the last two dimensions
-    // (DIM_3 = rows, DIM_4 = cols). They are not a full 5D row/col-major tag.
-    //
-    // For vector-like shapes where one minor dim is 1, multiple stride patterns
-    // are semantically equivalent. Prefer:
-    //   - DN when cols == 1 (column vector)
-    //   - ND when rows == 1 (row vector)
-    const int64_t rows = sh[3];
-    const int64_t cols = sh[4];
-    const int64_t rowStride = st[3];
-    const int64_t colStride = st[4];
-    return inferMinor2DLayout(rows, cols, rowStride, colStride,
-                              preferredMinor2D, isMinor2DAmbiguous);
-  }
-  return std::nullopt;
+  const int64_t rows = padded->shape[3];
+  const int64_t cols = padded->shape[4];
+  const int64_t rowStride = padded->stride[3];
+  const int64_t colStride = padded->stride[4];
+  return inferMinor2DLayout(rows, cols, rowStride, colStride,
+                            preferredMinor2D, isMinor2DAmbiguous);
 }
 
 static std::optional<Layout> tileBLayoutToGlobalLayout(Type tileLikeTy) {
@@ -342,6 +343,32 @@ static LayoutPreference collectPreferredLayoutFromConsumers(Value tensorView) {
   return result;
 }
 
+static std::optional<Layout> inferMakeTensorViewLayout(
+    MakeTensorViewOp op, ArrayRef<int64_t> shape, ArrayRef<int64_t> strides,
+    bool &isAmbiguous) {
+  auto pref = collectPreferredLayoutFromConsumers(op.getResult());
+  auto preferredForAmbiguous =
+      (!pref.conflict && isMinorColsOne(shape)) ? pref.preferred
+                                                : std::nullopt;
+  return inferLayout5D(
+      shape, strides,
+      elemByteSize(
+          cast<TensorViewType>(op.getResult().getType()).getElementType()),
+      preferredForAmbiguous, &isAmbiguous);
+}
+
+static void reconcileAmbiguousTensorViewLayout(MakeTensorViewOp op,
+                                               ArrayRef<int64_t> shape) {
+  auto pref = collectPreferredLayoutFromConsumers(op.getResult());
+  if (!isMinorColsOne(shape))
+    return;
+  if (!op->getAttrOfType<BoolAttr>(kInferredLayoutAttrName))
+    return;
+  auto cur = op->getAttrOfType<LayoutAttr>(kLayoutAttrName);
+  if (cur && pref.preferred && *pref.preferred != cur.getLayout())
+    setLayoutAttr(op.getOperation(), *pref.preferred, /*inferred=*/true);
+}
+
 static bool getStaticShapeAndStride(MakeTensorViewOp op,
                                     SmallVectorImpl<int64_t> &shape,
                                     SmallVectorImpl<int64_t> &strides) {
@@ -399,6 +426,24 @@ static ResolvedLayoutInfo resolveLayoutFromViewValue(Value v) {
   return info;
 }
 
+template <typename SignalFailureFn>
+static void inferMakeTensorViewLayoutAttr(MakeTensorViewOp op,
+                                          SignalFailureFn signalFailure) {
+  SmallVector<int64_t> shape;
+  SmallVector<int64_t> strides;
+  if (!getStaticShapeAndStride(op, shape, strides)) {
+    verifyOrSetLayoutAttr(op.getOperation(), std::nullopt, signalFailure);
+    return;
+  }
+
+  bool isAmbiguous = false;
+  auto inferred = inferMakeTensorViewLayout(op, shape, strides, isAmbiguous);
+  verifyOrSetLayoutAttr(op.getOperation(), inferred, signalFailure,
+                        isAmbiguous);
+  if (isAmbiguous)
+    reconcileAmbiguousTensorViewLayout(op, shape);
+}
+
 struct InferPTOLayoutPass
     : public PassWrapper<InferPTOLayoutPass, OperationPass<func::FuncOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(InferPTOLayoutPass)
@@ -409,39 +454,7 @@ struct InferPTOLayoutPass
     // 1) pto.make_tensor_view (only if it still exists in the pipeline)
     // ------------------------------------------------------------------
     func.walk([&](MakeTensorViewOp op) {
-      SmallVector<int64_t> shape, strides;
-      if (!getStaticShapeAndStride(op, shape, strides)) {
-        verifyOrSetLayoutAttr(op.getOperation(), std::nullopt,
-                              [this] { signalPassFailure(); });
-        return;
-      }
-
-      auto pref = collectPreferredLayoutFromConsumers(op.getResult());
-      // Guard rail: only use consumer preference for minor-2D ambiguous
-      // "column-vector-like" outputs (cols == 1). This is the row-reduction
-      // case we need to repair; applying it more broadly can violate pto-isa
-      // static layout constraints (e.g. some GEMV/GEMM outputs).
-      auto preferredForAmbiguous =
-          (!pref.conflict && isMinorColsOne(shape)) ? pref.preferred
-                                                    : std::nullopt;
-      bool isAmbiguous = false;
-      auto inferred = inferLayout5D(
-          shape, strides,
-          elemByteSize(cast<TensorViewType>(op.getResult().getType())
-                           .getElementType()),
-          preferredForAmbiguous, &isAmbiguous);
-      verifyOrSetLayoutAttr(op.getOperation(), inferred,
-                            [this] { signalPassFailure(); }, isAmbiguous);
-
-      // If this make_tensor_view layout was inferred in an ambiguous ND/DN
-      // shape and a downstream tile has a clear BLayout preference, force-align
-      // to that preference to avoid GlobalTensor/Tile mismatch.
-      if (isAmbiguous && isMinorColsOne(shape) &&
-          op->getAttrOfType<BoolAttr>(kInferredLayoutAttrName)) {
-        auto cur = op->getAttrOfType<LayoutAttr>(kLayoutAttrName);
-        if (cur && pref.preferred && *pref.preferred != cur.getLayout())
-          setLayoutAttr(op.getOperation(), *pref.preferred, /*inferred=*/true);
-      }
+      inferMakeTensorViewLayoutAttr(op, [this] { signalPassFailure(); });
     });
 
     // ------------------------------------------------------------------

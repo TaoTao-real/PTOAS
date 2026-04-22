@@ -28,11 +28,11 @@ module {
       name = "c2v_fifo",
       peer_func = @round_trip_tpush_tpop_print_vector
     } -> i32
-    pto.aic_initialize_pipe {dir_mask = 3, slot_size = 1024}
+    pto.aic_initialize_pipe {id = 0, dir_mask = 3, slot_size = 1024}
       (c2v_consumer_buf = %c2v_import : i32,
        v2c_consumer_buf = %v2c_local : i32)
 
-    %mat_tile = pto.tpop_from_aiv {split = 0}
+    %mat_tile = pto.tpop_from_aiv {id = 0, split = 0}
       -> !pto.tile_buf<loc=mat, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=512, pad=0>
     %identity_mat = pto.alloc_tile : !pto.tile_buf<loc=mat, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=512, pad=0>
     %left_tile = pto.alloc_tile : !pto.tile_buf<loc=left, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=512, pad=0>
@@ -47,8 +47,8 @@ module {
     pto.tmov ins(%identity_mat : !pto.tile_buf<loc=mat, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=512, pad=0>) outs(%right_tile : !pto.tile_buf<loc=right, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=col_major, fractal=512, pad=0>)
     pto.tmatmul ins(%left_tile, %right_tile : !pto.tile_buf<loc=left, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=512, pad=0>, !pto.tile_buf<loc=right, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=col_major, fractal=512, pad=0>) outs(%acc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>)
 
-    pto.tpush_to_aiv(%acc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>) {split = 0}
-    pto.tfree_from_aiv {split = 0}
+    pto.tpush_to_aiv(%acc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>) {id = 0, split = 0}
+    pto.tfree_from_aiv {id = 0, split = 0}
     return
   }
 
@@ -69,7 +69,7 @@ module {
       name = "v2c_fifo",
       peer_func = @round_trip_tpush_tpop_print_cube
     } -> i32
-    pto.aiv_initialize_pipe {dir_mask = 3, slot_size = 1024}
+    pto.aiv_initialize_pipe {id = 0, dir_mask = 3, slot_size = 1024}
       (c2v_consumer_buf = %c2v_local : i32,
        v2c_consumer_buf = %v2c_import : i32)
 
@@ -81,13 +81,13 @@ module {
     %gm_src_tile_view = pto.partition_view %gm_src_view, offsets = [%c0, %c0], sizes = [%c16, %c16] : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<16x16xf32>
     pto.tload ins(%gm_src_tile_view : !pto.partition_tensor_view<16x16xf32>) outs(%src_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     pto.tmov ins(%src_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%src_tile_nz : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=512, pad=0>)
-    pto.tpush_to_aic(%src_tile_nz : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=512, pad=0>) {split = 0}
+    pto.tpush_to_aic(%src_tile_nz : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=512, pad=0>) {id = 0, split = 0}
 
-    %recv_tile = pto.tpop_from_aic {split = 0}
+    %recv_tile = pto.tpop_from_aic {id = 0, split = 0}
       -> !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
     pto.tmov ins(%recv_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%recv_tile_print : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
     pto.tprint ins(%recv_tile_print : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-    pto.tfree_from_aic {split = 0}
+    pto.tfree_from_aic {id = 0, split = 0}
     return
   }
 }

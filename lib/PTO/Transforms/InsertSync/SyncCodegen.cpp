@@ -78,6 +78,67 @@ static void MergeSyncList(SyncOps &dstList, const SyncOps &srcList) {
     }
   }
 }
+
+static Operation *resolveSyncInsertAnchor(Operation *op, SyncOperation *sync) {
+  if (!sync->isCompensation)
+    return op;
+
+  if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
+    if (!ifOp.elseBlock()) {
+      OpBuilder builder(ifOp.getContext());
+      Block *elseBlock = new Block();
+      ifOp.getElseRegion().push_back(elseBlock);
+      builder.setInsertionPointToEnd(elseBlock);
+      builder.create<scf::YieldOp>(ifOp.getLoc());
+    }
+    return ifOp.getElseRegion().front().getTerminator();
+  }
+
+  if (op->hasTrait<OpTrait::IsTerminator>())
+    return op;
+  return op->getBlock()->getTerminator();
+}
+
+static bool shouldInsertBefore(Operation *op, bool beforeInsert,
+                               const SyncOperation *sync) {
+  return beforeInsert || sync->isCompensation ||
+         op->hasTrait<OpTrait::IsTerminator>();
+}
+
+static void setSyncInsertionPoint(IRRewriter &rewriter, Operation *op,
+                                  bool insertBefore) {
+  if (insertBefore) {
+    rewriter.setInsertionPoint(op);
+    return;
+  }
+  rewriter.setInsertionPointAfter(op);
+}
+
+static bool hasNeighborBarrier(Block *block, Block::iterator ip,
+                               pto::PipeAttr pipeAttr, bool insertBefore) {
+  if (insertBefore) {
+    if (ip == block->begin())
+      return false;
+    auto prevBarrier = dyn_cast<pto::BarrierOp>(&*std::prev(ip));
+    return prevBarrier && prevBarrier.getPipe() == pipeAttr;
+  }
+
+  if (ip == block->end())
+    return false;
+  auto nextBarrier = dyn_cast<pto::BarrierOp>(&*ip);
+  return nextBarrier && nextBarrier.getPipe() == pipeAttr;
+}
+
+static void createSetOrWaitFlagOp(IRRewriter &rewriter, Operation *op,
+                                  SyncOperation *sync, pto::PipeAttr srcPipe,
+                                  pto::PipeAttr dstPipe,
+                                  pto::EventAttr eventId) {
+  if (sync->isSyncWaitType()) {
+    rewriter.create<pto::WaitFlagOp>(op->getLoc(), srcPipe, dstPipe, eventId);
+    return;
+  }
+  rewriter.create<pto::SetFlagOp>(op->getLoc(), srcPipe, dstPipe, eventId);
+}
  
 // ==============================================================================
 // 2. SyncCodegen Implementation
@@ -196,50 +257,11 @@ void SyncCodegen::updatePlaceHolderOpInsertSync(PlaceHolderInstanceElement *plac
  
 void SyncCodegen::SyncInsert(IRRewriter &rewriter, Operation *op,
                              SyncOperation *sync, bool beforeInsert) {
-  if (sync->uselessSync) return;
+  if (sync->uselessSync)
+    return;
 
-  // [Fix] 处理补偿逻辑的强制插入点
-  Operation *insertAnchorOp = op;
-  bool forceBefore = beforeInsert;
-
-  if (sync->isCompensation) {
-      // 策略：补偿指令必须插在控制流块的末尾（Terminator 之前）
-      
-      // Case 1: Anchor 是 scf.if (Virtual Else 的情况)
-      if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
-          // 我们需要确定是插在 Then 还是 Else。
-          // 通常 Analysis 会根据 context 知道，但这里 op 只是 anchor。
-          // 我们利用 SyncOperation 的上下文推断，或者更简单地：
-          // 如果是 Virtual Else，PTOIRTranslator 应该已经处理了 Block 创建。
-          // 如果这里还是 IfOp，说明我们必须进入 Else Region。
-          
-          if (!ifOp.elseBlock()) {
-              // 再次兜底：创建 Else Block
-              OpBuilder b(ifOp.getContext());
-              Block *elseBlock = new Block();
-              ifOp.getElseRegion().push_back(elseBlock);
-              b.setInsertionPointToEnd(elseBlock);
-              b.create<scf::YieldOp>(ifOp.getLoc());
-          }
-          
-          // 将插入点重定向到 Else Block 的 Yield
-          insertAnchorOp = ifOp.getElseRegion().front().getTerminator();
-      }
-      // Case 2: Anchor 已经是 Terminator (YieldOp)
-      else if (op->hasTrait<OpTrait::IsTerminator>()) {
-          insertAnchorOp = op;
-      }
-      // Case 3: 其他情况 (Anchor 指向了 Block 内的某条指令)
-      else {
-          // 找到该 Block 的 Terminator
-          insertAnchorOp = op->getBlock()->getTerminator();
-      }
-
-      // 强制在 Terminator 之前插入
-      forceBefore = true;
-  }
-
-  // 分发创建逻辑，传入修正后的 insertAnchorOp 和 forceBefore
+  Operation *insertAnchorOp = resolveSyncInsertAnchor(op, sync);
+  bool forceBefore = shouldInsertBefore(insertAnchorOp, beforeInsert, sync);
   if (sync->GetType() == SyncOperation::TYPE::PIPE_BARRIER) {
     CreateBarrierOp(rewriter, insertAnchorOp, sync, forceBefore);
   } else if (sync->isSyncSetType() || sync->isSyncWaitType()) {
@@ -268,42 +290,16 @@ void SyncCodegen::CreateBarrierOp(IRRewriter &rewriter, Operation *op,
     return;
   }
 
-  // [Fix] 判定是否需要前置插入：如果是显式 Before，或者 Op 是 Terminator (如 Yield)
   bool insertAtPos = beforeInsert || op->hasTrait<OpTrait::IsTerminator>();
- 
-  // 1. 设置插入点
-  if (insertAtPos) {
-    rewriter.setInsertionPoint(op);
-  } else {
-    rewriter.setInsertionPointAfter(op);
-  }
- 
-  // 2. 获取上下文
+  setSyncInsertionPoint(rewriter, op, insertAtPos);
   Block *block = rewriter.getInsertionBlock();
   Block::iterator ip = rewriter.getInsertionPoint();
   auto currentPipeAttr = getPipeAttr(rewriter, sync->GetActualSrcPipe());
- 
-  // 3. 窥孔优化 (双向检查)
-  // 注意：如果是 Terminator 导致的强制前置插入，我们也应该检查 Prev，因为它是插在末尾
-  if (insertAtPos) {
-    // PRE 插入：检查前一条指令
-    if (ip != block->begin()) {
-      if (auto prevBarrier = dyn_cast<pto::BarrierOp>(&*std::prev(ip))) {
-        if (prevBarrier.getPipe() == currentPipeAttr) return; // Dedup
-      }
-    }
-  } else {
-    // POST 插入：检查当前/下一条指令
-    if (ip != block->end()) {
-      if (auto nextBarrier = dyn_cast<pto::BarrierOp>(&*ip)) {
-        if (nextBarrier.getPipe() == currentPipeAttr) return; // Dedup
-      }
-    }
-  }
- 
-  // 4. 创建指令
-  auto barrier =
-      rewriter.create<pto::BarrierOp>(op->getLoc(), currentPipeAttr);
+
+  if (hasNeighborBarrier(block, ip, currentPipeAttr, insertAtPos))
+    return;
+
+  auto barrier = rewriter.create<pto::BarrierOp>(op->getLoc(), currentPipeAttr);
 
   (void)barrier;
 }
@@ -335,56 +331,27 @@ void SyncCodegen::CreateSetWaitOpForSingleBuffer(IRRewriter &rewriter,
                                                  Operation *op,
                                                  SyncOperation *sync,
                                                  bool beforeInsert) {
-  // [Fix] Terminator 强制前置插入
-  if (beforeInsert || op->hasTrait<OpTrait::IsTerminator>()) {
-      rewriter.setInsertionPoint(op);
-  } else {
-      rewriter.setInsertionPointAfter(op);
-  }
- 
+  setSyncInsertionPoint(rewriter, op,
+                        beforeInsert || op->hasTrait<OpTrait::IsTerminator>());
   auto srcPipe = getPipeAttr(rewriter, sync->GetActualSrcPipe());
   auto dstPipe = getPipeAttr(rewriter, sync->GetActualDstPipe());
   auto eventId = getEventAttr(rewriter, sync->eventIds[0]);
- 
-  if (sync->isSyncWaitType()) {
-    rewriter.create<pto::WaitFlagOp>(op->getLoc(), srcPipe, dstPipe, eventId);
-  } else {
-    rewriter.create<pto::SetFlagOp>(op->getLoc(), srcPipe, dstPipe, eventId);
-  }
+  createSetOrWaitFlagOp(rewriter, op, sync, srcPipe, dstPipe, eventId);
 }
  
 void SyncCodegen::CreateSetWaitOpForMultiBuffer(IRRewriter &rewriter,
                                                 Operation *op,
                                                 SyncOperation *sync,
                                                 bool beforeInsert) {
-  // 注意：GetBufferSelected 可能需要在插入 Set/Wait 之前调用，以确保 SSA 顺序
-  // 但这里只是获取 Value，不影响 InsertionPoint 的设定
   Value bufferSelected = GetBufferSelected(rewriter, op, sync);
-  (void)bufferSelected; 
-  
-  // [Fix] Terminator 强制前置插入
-  if (beforeInsert || op->hasTrait<OpTrait::IsTerminator>()) {
-      rewriter.setInsertionPoint(op);
-  } else {
-      rewriter.setInsertionPointAfter(op);
-  }
+  (void)bufferSelected;
  
   auto srcPipe = getPipeAttr(rewriter, sync->GetActualSrcPipe());
   auto dstPipe = getPipeAttr(rewriter, sync->GetActualDstPipe());
-  auto eventId = getEventAttr(rewriter, sync->eventIds[0]); // 注意：MultiBuffer可能需要特殊处理Attr
- 
-  // 这里假设 SetFlagOp/WaitFlagOp 支持动态 Value 作为 EventID，或者您有特殊的 Op
-  // 如果 PTO 定义只支持 Attribute，那么上面的 GetBufferSelected 逻辑需要配合修改 Op 定义
-  // 假设目前的 Op 定义如下：
-  if (sync->isSyncWaitType()) {
-    // 假设 WaitFlagOp 有支持 Value eventId 的重载或变体
-    // 如果没有，这行代码可能需要调整。但在您之前的 Double Buffer 测试中，看起来它是工作的？
-    // 或者您是否使用了 UpdateFlagOp (带 Value)?
-    // 这里保持原样，只修改 InsertionPoint
-    rewriter.create<pto::WaitFlagOp>(op->getLoc(), srcPipe, dstPipe, eventId);
-  } else {
-    rewriter.create<pto::SetFlagOp>(op->getLoc(), srcPipe, dstPipe, eventId);
-  }
+  auto eventId = getEventAttr(rewriter, sync->eventIds[0]);
+  setSyncInsertionPoint(rewriter, op,
+                        beforeInsert || op->hasTrait<OpTrait::IsTerminator>());
+  createSetOrWaitFlagOp(rewriter, op, sync, srcPipe, dstPipe, eventId);
 }
  
 Value SyncCodegen::GetBufferSelected(IRRewriter &rewriter, Operation *op,

@@ -1317,6 +1317,7 @@ def AicInitializePipeOp : PTO_Op<"aic_initialize_pipe"> {
   let summary = "Frontend Cube-kernel pipe initialization";
 
   let arguments = (ins
+      DefaultValuedOptionalAttr<I32Attr, "0">:$id,
       I8Attr:$dir_mask,
       I32Attr:$slot_size,
       OptionalAttr<BoolAttr>:$nosplit,
@@ -1329,7 +1330,8 @@ def AicInitializePipeOp : PTO_Op<"aic_initialize_pipe"> {
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    `{` `dir_mask` `=` $dir_mask `,`
+    `{` (`id` `=` $id^ `,`)?
+        `dir_mask` `=` $dir_mask `,`
         `slot_size` `=` $slot_size
         (`,` `nosplit` `=` $nosplit^)?
         `}`
@@ -1346,6 +1348,7 @@ def AivInitializePipeOp : PTO_Op<"aiv_initialize_pipe"> {
   let summary = "Frontend Vector-kernel pipe initialization";
 
   let arguments = (ins
+      DefaultValuedOptionalAttr<I32Attr, "0">:$id,
       I8Attr:$dir_mask,
       I32Attr:$slot_size,
       OptionalAttr<BoolAttr>:$nosplit,
@@ -1358,7 +1361,8 @@ def AivInitializePipeOp : PTO_Op<"aiv_initialize_pipe"> {
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    `{` `dir_mask` `=` $dir_mask `,`
+    `{` (`id` `=` $id^ `,`)?
+        `dir_mask` `=` $dir_mask `,`
         `slot_size` `=` $slot_size
         (`,` `nosplit` `=` $nosplit^)?
         `}`
@@ -1376,6 +1380,7 @@ def TPushToAivOp : PTO_TOp<"tpush_to_aiv"> {
 
   let arguments = (ins
       PTODpsType:$tile,
+      DefaultValuedOptionalAttr<I32Attr, "0">:$id,
       I8Attr:$split
   );
 
@@ -1384,7 +1389,7 @@ def TPushToAivOp : PTO_TOp<"tpush_to_aiv"> {
 
   let assemblyFormat = [{
     `(` $tile `:` qualified(type($tile)) `)`
-    `{` `split` `=` $split `}` attr-dict
+    `{` (`id` `=` $id^ `,`)? `split` `=` $split `}` attr-dict
   }];
 }
 
@@ -1393,6 +1398,7 @@ def TPushToAicOp : PTO_TOp<"tpush_to_aic"> {
 
   let arguments = (ins
       PTODpsType:$tile,
+      DefaultValuedOptionalAttr<I32Attr, "0">:$id,
       I8Attr:$split
   );
 
@@ -1401,7 +1407,7 @@ def TPushToAicOp : PTO_TOp<"tpush_to_aic"> {
 
   let assemblyFormat = [{
     `(` $tile `:` qualified(type($tile)) `)`
-    `{` `split` `=` $split `}` attr-dict
+    `{` (`id` `=` $id^ `,`)? `split` `=` $split `}` attr-dict
   }];
 }
 
@@ -1411,6 +1417,7 @@ def TPopFromAicOp : PTO_TOp<"tpop_from_aic", [AttrSizedOperandSegments]> {
   let arguments = (ins
       Optional<Index>:$valid_row,
       Optional<Index>:$valid_col,
+      DefaultValuedOptionalAttr<I32Attr, "0">:$id,
       I8Attr:$split
   );
 
@@ -1418,7 +1425,7 @@ def TPopFromAicOp : PTO_TOp<"tpop_from_aic", [AttrSizedOperandSegments]> {
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    (`(` $valid_row^ `,` $valid_col `)`)? `{` `split` `=` $split `}` attr-dict
+    (`(` $valid_row^ `,` $valid_col `)`)? `{` (`id` `=` $id^ `,`)? `split` `=` $split `}` attr-dict
     `->` qualified(type($tile))
   }];
 }
@@ -1429,6 +1436,7 @@ def TPopFromAivOp : PTO_TOp<"tpop_from_aiv", [AttrSizedOperandSegments]> {
   let arguments = (ins
       Optional<Index>:$valid_row,
       Optional<Index>:$valid_col,
+      DefaultValuedOptionalAttr<I32Attr, "0">:$id,
       I8Attr:$split
   );
 
@@ -1436,7 +1444,7 @@ def TPopFromAivOp : PTO_TOp<"tpop_from_aiv", [AttrSizedOperandSegments]> {
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    (`(` $valid_row^ `,` $valid_col `)`)? `{` `split` `=` $split `}` attr-dict
+    (`(` $valid_row^ `,` $valid_col `)`)? `{` (`id` `=` $id^ `,`)? `split` `=` $split `}` attr-dict
     `->` qualified(type($tile))
   }];
 }
@@ -1445,6 +1453,7 @@ def TFreeFromAicOp : PTO_TOp<"tfree_from_aic"> {
   let summary = "Frontend C2V consumer free in Vector kernel";
 
   let arguments = (ins
+      DefaultValuedOptionalAttr<I32Attr, "0">:$id,
       I8Attr:$split
   );
 
@@ -1452,7 +1461,7 @@ def TFreeFromAicOp : PTO_TOp<"tfree_from_aic"> {
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    `{` `split` `=` $split `}` attr-dict
+    `{` (`id` `=` $id^ `,`)? `split` `=` $split `}` attr-dict
   }];
 }
 
@@ -1460,6 +1469,7 @@ def TFreeFromAivOp : PTO_TOp<"tfree_from_aiv"> {
   let summary = "Frontend V2C consumer free in Cube kernel";
 
   let arguments = (ins
+      DefaultValuedOptionalAttr<I32Attr, "0">:$id,
       I8Attr:$split
   );
 
@@ -1467,7 +1477,7 @@ def TFreeFromAivOp : PTO_TOp<"tfree_from_aiv"> {
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    `{` `split` `=` $split `}` attr-dict
+    `{` (`id` `=` $id^ `,`)? `split` `=` $split `}` attr-dict
   }];
 }
 

@@ -29,36 +29,6 @@ static size_t getEventIdPoolSize(const SyncOperation *sync,
   return kTotalEventIdNum;
 }
 
-namespace {
-
-SmallVector<const void *> canonicalizeDepRoots(const SmallVector<Value> &roots) {
-  SmallVector<const void *> result;
-  result.reserve(roots.size());
-  for (Value v : roots) {
-    if (!v) {
-      continue;
-    }
-    result.push_back(v.getAsOpaquePointer());
-  }
-  llvm::sort(result);
-  result.erase(std::unique(result.begin(), result.end()), result.end());
-  return result;
-}
-
-bool hasSameDepRootsForWiden(const SyncOperation *lhs, const SyncOperation *rhs) {
-  if (!lhs || !rhs) {
-    return false;
-  }
-  if (lhs->depRootBuffers.empty() || rhs->depRootBuffers.empty()) {
-    // Missing signature => keep widening conservative to avoid cross-chain reuse.
-    return false;
-  }
-  return canonicalizeDepRoots(lhs->depRootBuffers) ==
-         canonicalizeDepRoots(rhs->depRootBuffers);
-}
-
-} // namespace
-
 void SyncEventIdAllocation::Allocate(uint32_t runNum) {
   // 1. 正常分配
   for (auto &element : syncIR_) {
@@ -727,7 +697,7 @@ SyncEventIdAllocation::FindWidenSync(const SyncOperation *setSync,
             setSame->eventIds.empty()) {
           continue;
         }
-        if (!hasSameDepRootsForWiden(setSame, setSync)) {
+        if (!hasSameSyncDepRoots(setSame, setSync)) {
           continue;
         }
  

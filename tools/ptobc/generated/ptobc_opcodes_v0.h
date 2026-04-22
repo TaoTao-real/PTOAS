@@ -163,6 +163,16 @@ inline constexpr OpInfo kOpTable[] = {
   {0x107B, "pto.tcolargmax", 0, 0x00, 0x00, 3, 0, 0, 0x00},
   {0x107C, "pto.tcolargmin", 0, 0x00, 0x00, 3, 0, 0, 0x00},
   {0x107D, "pto.tsync", 0, 0x00, 0x02, 0, 0, 0, 0x00},
+  {0x107E, "pto.reserve_buffer", 0, 0x01, 0x00, 0, 1, 0, 0x00},
+  {0x107F, "pto.import_reserved_buffer", 0, 0x01, 0x00, 0, 1, 0, 0x00},
+  {0x1080, "pto.aic_initialize_pipe", 0, 0x00, 0x02, 0, 0, 0, 0x00},
+  {0x1081, "pto.aiv_initialize_pipe", 0, 0x00, 0x02, 0, 0, 0, 0x00},
+  {0x1082, "pto.tpush_to_aiv", 0, 0x00, 0x00, 1, 0, 0, 0x00},
+  {0x1083, "pto.tpush_to_aic", 0, 0x00, 0x00, 1, 0, 0, 0x00},
+  {0x1084, "pto.tpop_from_aic", 0, 0x01, 0x02, 0, 1, 0, 0x00},
+  {0x1085, "pto.tpop_from_aiv", 0, 0x01, 0x02, 0, 1, 0, 0x00},
+  {0x1086, "pto.tfree_from_aic", 0, 0x00, 0x00, 0, 0, 0, 0x00},
+  {0x1087, "pto.tfree_from_aiv", 0, 0x00, 0x00, 0, 0, 0, 0x00},
   {0x2000, "arith.addi", 0, 0x01, 0x00, 2, 1, 0, 0x00},
   {0x2001, "arith.ceildivsi", 0, 0x01, 0x00, 2, 1, 0, 0x00},
   {0x2002, "arith.cmpi", 0, 0x01, 0x00, 2, 1, 0, 0x01},
@@ -337,6 +347,16 @@ inline std::optional<uint16_t> lookupOpcodeByName(llvm::StringRef name) {
     .Case("pto.tcolargmax", 0x107B)
     .Case("pto.tcolargmin", 0x107C)
     .Case("pto.tsync", 0x107D)
+    .Case("pto.reserve_buffer", 0x107E)
+    .Case("pto.import_reserved_buffer", 0x107F)
+    .Case("pto.aic_initialize_pipe", 0x1080)
+    .Case("pto.aiv_initialize_pipe", 0x1081)
+    .Case("pto.tpush_to_aiv", 0x1082)
+    .Case("pto.tpush_to_aic", 0x1083)
+    .Case("pto.tpop_from_aic", 0x1084)
+    .Case("pto.tpop_from_aiv", 0x1085)
+    .Case("pto.tfree_from_aic", 0x1086)
+    .Case("pto.tfree_from_aiv", 0x1087)
     .Case("scf.for", 0x4000)
     .Case("scf.if", 0x4001)
     .Case("scf.yield", 0x4002)
@@ -497,6 +517,16 @@ inline std::optional<OpcodeAndVariant> lookupOpcodeAndVariantByFullName(llvm::St
     .Case("pto.tcolargmax", OpcodeAndVariant{0x107B, 0, 0})
     .Case("pto.tcolargmin", OpcodeAndVariant{0x107C, 0, 0})
     .Case("pto.tsync", OpcodeAndVariant{0x107D, 0, 0})
+    .Case("pto.reserve_buffer", OpcodeAndVariant{0x107E, 0, 0})
+    .Case("pto.import_reserved_buffer", OpcodeAndVariant{0x107F, 0, 0})
+    .Case("pto.aic_initialize_pipe", OpcodeAndVariant{0x1080, 0, 0})
+    .Case("pto.aiv_initialize_pipe", OpcodeAndVariant{0x1081, 0, 0})
+    .Case("pto.tpush_to_aiv", OpcodeAndVariant{0x1082, 0, 0})
+    .Case("pto.tpush_to_aic", OpcodeAndVariant{0x1083, 0, 0})
+    .Case("pto.tpop_from_aic", OpcodeAndVariant{0x1084, 0, 0})
+    .Case("pto.tpop_from_aiv", OpcodeAndVariant{0x1085, 0, 0})
+    .Case("pto.tfree_from_aic", OpcodeAndVariant{0x1086, 0, 0})
+    .Case("pto.tfree_from_aiv", OpcodeAndVariant{0x1087, 0, 0})
     .Case("scf.for", OpcodeAndVariant{0x4000, 0, 0})
     .Case("scf.if", OpcodeAndVariant{0x4001, 0, 0})
     .Case("scf.yield", OpcodeAndVariant{0x4002, 0, 0})

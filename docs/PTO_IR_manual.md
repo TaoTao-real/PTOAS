@@ -7828,6 +7828,9 @@ generated IR. The detailed design document is:
   pipe.
 - When `dir_mask = 3`, one `id` denotes one DIR_BOTH physical pipe covering
   both logical directions.
+- Lowered pipe components consume hardware flag ids per function:
+  one single-direction pipe uses 2 ids, and one `dir_mask = 3` pipe uses 4 ids.
+  The total usage in one function must fit within 16 hardware flag ids.
 
 `nosplit` platform restrictions:
 
@@ -7963,6 +7966,8 @@ pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = true}
 - Must appear in Cube kernels
 - Multiple `pto.aic_initialize_pipe` ops are allowed in one Cube function, but
   `id` must be unique among frontend initialize ops in that function
+- The lowered pipes for one function must fit within 16 hardware flag ids in
+  total
 - If `nosplit = true`, all frontend data-transfer ops bound to the same logical
   pipe must use `split = 0`
 - If `nosplit = false`, all frontend data-transfer ops bound to the same
@@ -7997,6 +8002,8 @@ pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = true}
 - Must appear in Vector kernels
 - Multiple `pto.aiv_initialize_pipe` ops are allowed in one Vector function,
   but `id` must be unique among frontend initialize ops in that function
+- The lowered pipes for one function must fit within 16 hardware flag ids in
+  total
 - If `nosplit = true`, all frontend data-transfer ops bound to the same logical
   pipe must use `split = 0`
 - If `nosplit = false`, all frontend data-transfer ops bound to the same

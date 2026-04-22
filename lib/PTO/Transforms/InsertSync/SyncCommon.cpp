@@ -28,6 +28,30 @@
 using namespace mlir;
 using namespace mlir::pto;
  
+SmallVector<const void *>
+mlir::pto::canonicalizeSyncDepRoots(const SmallVector<Value> &roots) {
+  SmallVector<const void *> result;
+  result.reserve(roots.size());
+  for (Value value : roots) {
+    if (!value)
+      continue;
+    result.push_back(value.getAsOpaquePointer());
+  }
+  llvm::sort(result);
+  result.erase(std::unique(result.begin(), result.end()), result.end());
+  return result;
+}
+
+bool mlir::pto::hasSameSyncDepRoots(const SyncOperation *lhs,
+                                    const SyncOperation *rhs) {
+  if (!lhs || !rhs)
+    return false;
+  if (lhs->depRootBuffers.empty() || rhs->depRootBuffers.empty())
+    return false;
+  return canonicalizeSyncDepRoots(lhs->depRootBuffers) ==
+         canonicalizeSyncDepRoots(rhs->depRootBuffers);
+}
+
 bool SyncOperation::operator==(const SyncOperation &other) const {
   if (this->GetDstPipe() == other.GetDstPipe()) {
     if (this->GetSrcPipe() == other.GetSrcPipe()) {

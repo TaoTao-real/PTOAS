@@ -6,12 +6,12 @@ module {
       name = "c2v_fifo",
       peer_func = @vector_kernel
     } -> i32
-    pto.aic_initialize_pipe {dir_mask = 1, slot_size = 1024, nosplit = false}
+    pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = false}
       (c2v_consumer_buf = %c2v_import : i32,
        v2c_consumer_buf = %c2v_import : i32)
 
     %acc_tile = pto.alloc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>
-    pto.tpush_to_aiv(%acc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>) {split = 0}
+    pto.tpush_to_aiv(%acc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=row_major, fractal=1024, pad=0>) {id = 0, split = 0}
     return
   }
 
@@ -22,13 +22,13 @@ module {
       location = #pto.address_space<vec>,
       auto = true
     } -> i32
-    pto.aiv_initialize_pipe {dir_mask = 1, slot_size = 1024, nosplit = false}
+    pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = false}
       (c2v_consumer_buf = %c2v_local : i32,
        v2c_consumer_buf = %c2v_local : i32)
 
-    %recv_tile = pto.tpop_from_aic {split = 0}
+    %recv_tile = pto.tpop_from_aic {id = 0, split = 0}
       -> !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    pto.tfree_from_aic {split = 0}
+    pto.tfree_from_aic {id = 0, split = 0}
     return
   }
 }

@@ -21,37 +21,6 @@
 using namespace mlir;
 using namespace mlir::pto;
 
-namespace {
-
-SmallVector<const void *> canonicalizeDepRoots(const SmallVector<Value> &roots) {
-  SmallVector<const void *> result;
-  result.reserve(roots.size());
-  for (Value v : roots) {
-    if (!v) {
-      continue;
-    }
-    result.push_back(v.getAsOpaquePointer());
-  }
-  llvm::sort(result);
-  result.erase(std::unique(result.begin(), result.end()), result.end());
-  return result;
-}
-
-bool hasSameDepRoots(const SyncOperation *lhs, const SyncOperation *rhs) {
-  if (!lhs || !rhs) {
-    return false;
-  }
-  if (lhs->depRootBuffers.empty() || rhs->depRootBuffers.empty()) {
-    // Missing dependency signature => be conservative and keep sync.
-    return false;
-  }
-  auto lhsRoots = canonicalizeDepRoots(lhs->depRootBuffers);
-  auto rhsRoots = canonicalizeDepRoots(rhs->depRootBuffers);
-  return lhsRoots == rhsRoots;
-}
-
-} // namespace
- 
 void RemoveRedundantSync::Run() {
   // 1. 收集所有成对的同步指令 (Set/Wait)
   std::vector<std::pair<SyncOperation *, SyncOperation *>> syncOps;
@@ -100,7 +69,7 @@ void RemoveRedundantSync::Run() {
     if (setFlag->isCompensation || waitFlag->isCompensation) {
       continue;
     }
-    if (!hasSameDepRoots(setFlag, waitFlag)) {
+    if (!hasSameSyncDepRoots(setFlag, waitFlag)) {
       continue;
     }
 
@@ -277,7 +246,8 @@ bool RemoveRedundantSync::CanMatchedSync(SmallVector<bool> &syncFinder,
   if (relatedSync->eventIdNum != setFlag->eventIdNum) return false;
   if (relatedSync->GetForEndIndex() != setFlag->GetForEndIndex()) return false;
   if (relatedSync->isCompensation || setFlag->isCompensation) return false;
-  if (!hasSameDepRoots(relatedSync, setFlag)) return false;
+  if (!hasSameSyncDepRoots(relatedSync, setFlag))
+    return false;
   
   // Pipe 检查：内部同步必须也是解决同样的 Src -> Dst 依赖
   if (relatedSync->GetSrcPipe() != setFlag->GetSrcPipe()) return false;
