@@ -1,20 +1,27 @@
 // RUN: ptoas --pto-arch=a3 --enable-insert-sync %s | FileCheck %s
 //
-// Regression guard for nested loops sharing the same pipe pair (Issue #454 risk point):
-// - Outer loop-carried and inner loop-carried syncs on PIPE_M -> PIPE_MTE1 must coexist.
-// - Inner-loop and outer-loop event chains must both keep their set/wait handshake.
+// Regression guard for nested loops sharing the same loop-carried dependency
+// pair (Issue #454 risk point):
+// - Under slot-proof-driven fallback, non-proven multibuffer loops stay on a
+//   conservative single-slot chain.
+// - Outer-loop and inner-loop FIX -> MTE1 handshakes must both survive.
+// - The loop-local seed/drain waits must still correspond to real body waits.
 //
 // CHECK-LABEL: __global__ AICORE void nested_loop_same_pipe_pair()
-// CHECK: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[OUT:[0-9]+]]);
-// CHECK: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[IN:[0-9]+]]);
+// CHECK: set_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID[[OUT:[0-9]+]]);
+// CHECK-NEXT: set_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID[[IN:[0-9]+]]);
+// CHECK: set_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID[[INIT:[0-9]+]]);
+// CHECK: wait_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID[[INIT]]);
 // CHECK: for (size_t
-// CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[OUT]]);
+// CHECK: wait_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID[[OUT]]);
+// CHECK: set_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID[[MID:[0-9]+]]);
+// CHECK: wait_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID[[MID]]);
 // CHECK: for (size_t
-// CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[IN]]);
-// CHECK: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[IN]]);
-// CHECK: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[OUT]]);
-// CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[OUT]]);
-// CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[IN]]);
+// CHECK: wait_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID[[IN]]);
+// CHECK: set_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID[[IN]]);
+// CHECK: set_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID[[OUT]]);
+// CHECK: wait_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID[[OUT]]);
+// CHECK: wait_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID[[IN]]);
 // CHECK: ptoas_auto_sync_tail(PTOAutoSyncTailMode::kBarrierAll);
 
 module {

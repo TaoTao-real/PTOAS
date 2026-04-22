@@ -7,25 +7,38 @@
 // 3. The kernel tail must still drain the outstanding M/MTE1 + FIX/M events
 //    before the auto tail barrier helper runs.
 // 4. The second independent loop must keep its loop-head waits *inside* loop
-//    after preheat sets are emitted.
+//    after preheat sets are emitted, but event numbering is now slot-proof-
+//    driven rather than hard-coded to the previous widened IDs.
 //
 // CHECK-LABEL: tri_inv_block2x2_fp16(
-// CHECK: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID2);
-// CHECK-NEXT: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID3);
+// CHECK: wait_flag(PIPE_FIX, PIPE_M, EVENT_ID[[FIRST_PRE:[0-9]+]]);
+// CHECK-NEXT: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[FIRST_A:[0-9]+]]);
+// CHECK-NEXT: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[FIRST_B:[0-9]+]]);
 // CHECK-NEXT: for (size_t
-// CHECK-NEXT: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID2);
-// CHECK-NEXT: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID3);
-// CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID2);
-// CHECK-NEXT: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID3);
-// CHECK-NEXT: wait_flag(PIPE_M, PIPE_FIX, EVENT_ID4);
-// CHECK: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
-// CHECK-NEXT: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID1);
+// CHECK-NEXT: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[FIRST_A]]);
+// CHECK-NEXT: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[FIRST_B]]);
+// CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[FIRST_A]]);
+// CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[FIRST_B]]);
+// CHECK: wait_flag(PIPE_M, PIPE_FIX, EVENT_ID[[FIRST_FIX:[0-9]+]]);
+// CHECK: TSTORE(
+// CHECK-NEXT: set_flag(PIPE_FIX, PIPE_M, EVENT_ID[[SECOND_PRELOAD:[0-9]+]]);
+// CHECK: wait_flag(PIPE_FIX, PIPE_M, EVENT_ID[[SECOND_PRELOAD]]);
+// CHECK: TMATMUL(
+// CHECK-NEXT: set_flag(PIPE_M, PIPE_FIX, EVENT_ID[[SECOND_BOOT:[0-9]+]]);
+// CHECK-NEXT: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[SECOND_GATE:[0-9]+]]);
+// CHECK-NEXT: wait_flag(PIPE_M, PIPE_FIX, EVENT_ID[[SECOND_BOOT]]);
+// CHECK-NEXT: TMOV(
+// CHECK-NEXT: set_flag(PIPE_FIX, PIPE_M, EVENT_ID[[SECOND_PRE:[0-9]+]]);
+// CHECK-NEXT: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[SECOND_GATE]]);
+// CHECK-NEXT: wait_flag(PIPE_FIX, PIPE_M, EVENT_ID[[SECOND_PRE]]);
+// CHECK-NEXT: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[SECOND_B:[0-9]+]]);
+// CHECK-NEXT: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[SECOND_C:[0-9]+]]);
 // CHECK-NEXT: for (size_t
-// CHECK-NEXT: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
-// CHECK-NEXT: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID1);
-// CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
-// CHECK-NEXT: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID1);
-// CHECK-NEXT: wait_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+// CHECK-NEXT: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[SECOND_C]]);
+// CHECK-NEXT: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[SECOND_B]]);
+// CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[SECOND_B]]);
+// CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[SECOND_C]]);
+// CHECK: wait_flag(PIPE_M, PIPE_FIX, EVENT_ID[[SECOND_FIX:[0-9]+]]);
 // CHECK: ptoas_auto_sync_tail(PTOAutoSyncTailMode::kBarrierAll);
 
 module {
