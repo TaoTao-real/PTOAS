@@ -407,12 +407,21 @@ process_one_dir() {
     # tcvt.py intentionally exercises the new pto.tcvt(tmp, sat_mode) form for
     # sample/board coverage. ptobc v0 still assumes the legacy 2-operand shape
     # and currently fails with "operand count mismatch for op: pto.tcvt".
+    #
+    # The selector-style multibuffer samples use `scf.if` result tiles that are
+    # later consumed outside the branch. ptobc v0 currently fails to roundtrip
+    # these SSA patterns during decode with "operand value_id out of range".
+    # Keep the autosync/ptoas regression coverage, but bypass bytecode
+    # roundtrip until ptobc catches up.
     # Keep the sample in runop coverage, but bypass the bytecode roundtrip until
     # ptobc learns the expanded operand layout.
     if [[ "$base" == "test_tmov_col_major_16x1_align_a5" || \
           "$base" == "test_tmov_row_major_1x16_control_a5" || \
           "$base" == "decode_projection_incore_0" || \
           "$base" == "rmsnorm_incore_0" || \
+          "$base" == "test_inject_sync_multibuf_subset_group_selector" || \
+          "$base" == "test_inject_sync_multibuf_subset_group_mixed_selector" || \
+          "$base" == "test_inject_sync_multibuf_subset_three_slot_selector" || \
           "$base" == "tcvt" ]]; then
       sample_use_ptobc_roundtrip=0
     fi
