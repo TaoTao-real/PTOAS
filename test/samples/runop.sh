@@ -473,6 +473,16 @@ process_one_dir() {
       continue
     fi
 
+    local sync_debug_log=""
+    ensure_insert_sync_debug_log() {
+      if [[ -n "${sync_debug_log}" && -f "${sync_debug_log}" ]]; then
+        return 0
+      fi
+      sync_debug_log="${out_subdir}/${base}-insert-sync.debug.txt"
+      local -a ptoas_debug_cmd=("${ptoas_cmd_base[@]}" --pto-insert-sync-debug=3 "$pto_input")
+      "${ptoas_debug_cmd[@]}" >"${sync_debug_log}" 2>&1
+    }
+
     # Regression guard: SubViewOp valid-shape inference must not produce 0.
     # This breaks downstream NPU compilation (e.g. vadd_pto_pingpong workspace ping/pong).
     if [[ "$base" == "vadd_pto_pingpong" ]]; then
@@ -648,6 +658,21 @@ process_one_dir() {
         overall=1
         continue
       fi
+      if ! ensure_insert_sync_debug_log; then
+        echo -e "${A}(${base}.py)\tFAIL\tfailed to capture insert-sync debug log"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*slotMode=SINGLE" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\tsubview ping/pong is missing slot-aware SINGLE sync metadata"
+        overall=1
+        continue
+      fi
+      if grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*eventIdNum=2" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\tsubview ping/pong unexpectedly widened branch-local sync into eventIdNum=2"
+        overall=1
+        continue
+      fi
       local subset_wait_ids subset_set_ids
       subset_wait_ids="$(grep -Eo 'wait_flag\(PIPE_MTE3, PIPE_MTE2, EVENT_ID[0-9]+\)' "$cpp" | sort -u | wc -l | tr -d ' ')"
       subset_set_ids="$(grep -Eo 'set_flag\(PIPE_MTE3, PIPE_MTE2, EVENT_ID[0-9]+\)' "$cpp" | sort -u | wc -l | tr -d ' ')"
@@ -684,6 +709,26 @@ process_one_dir() {
         overall=1
         continue
       fi
+      if ! ensure_insert_sync_debug_log; then
+        echo -e "${A}(${base}.py)\tFAIL\tfailed to capture insert-sync debug log"
+        overall=1
+        continue
+      fi
+      if grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*slotMode=" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\toverlap case unexpectedly carries slot-aware sync metadata"
+        overall=1
+        continue
+      fi
+      if grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*eventIdNum=2" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\toverlap case unexpectedly widened into multibuffer eventIdNum=2"
+        overall=1
+        continue
+      fi
+      if grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*eventIds=\\[[0-9]+,[0-9]+\\]" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\toverlap case unexpectedly assigned multi-lane event ids to one sync edge"
+        overall=1
+        continue
+      fi
     fi
 
     if [[ "$base" == "test_inject_sync_multibuf_subset_no_attr" ]]; then
@@ -704,6 +749,26 @@ process_one_dir() {
       fi
       if grep -Eq "set_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
         echo -e "${A}(${base}.py)\tFAIL\tmissing-attr case unexpectedly emitted dynamic set_flag"
+        overall=1
+        continue
+      fi
+      if ! ensure_insert_sync_debug_log; then
+        echo -e "${A}(${base}.py)\tFAIL\tfailed to capture insert-sync debug log"
+        overall=1
+        continue
+      fi
+      if grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*slotMode=" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing-attr case unexpectedly carries slot-aware sync metadata"
+        overall=1
+        continue
+      fi
+      if grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*eventIdNum=2" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing-attr case unexpectedly widened into multibuffer eventIdNum=2"
+        overall=1
+        continue
+      fi
+      if grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*eventIds=\\[[0-9]+,[0-9]+\\]" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing-attr case unexpectedly assigned multi-lane event ids to one sync edge"
         overall=1
         continue
       fi
@@ -730,6 +795,26 @@ process_one_dir() {
         overall=1
         continue
       fi
+      if ! ensure_insert_sync_debug_log; then
+        echo -e "${A}(${base}.py)\tFAIL\tfailed to capture insert-sync debug log"
+        overall=1
+        continue
+      fi
+      if grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*slotMode=" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\tdynamic-offset case unexpectedly carries slot-aware sync metadata"
+        overall=1
+        continue
+      fi
+      if grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*eventIdNum=2" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\tdynamic-offset case unexpectedly widened into multibuffer eventIdNum=2"
+        overall=1
+        continue
+      fi
+      if grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*eventIds=\\[[0-9]+,[0-9]+\\]" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\tdynamic-offset case unexpectedly assigned multi-lane event ids to one sync edge"
+        overall=1
+        continue
+      fi
     fi
 
     if [[ "$base" == "multibuffer_subset_pingpong_a3" ]]; then
@@ -745,6 +830,21 @@ process_one_dir() {
       fi
       if grep -Eq "set_flag\\(PIPE_MTE3, PIPE_MTE2, v[0-9]+\\)" "$cpp"; then
         echo -e "${A}(${base}.py)\tFAIL\tA3 subview sample unexpectedly emitted dynamic set_flag"
+        overall=1
+        continue
+      fi
+      if ! ensure_insert_sync_debug_log; then
+        echo -e "${A}(${base}.py)\tFAIL\tfailed to capture insert-sync debug log"
+        overall=1
+        continue
+      fi
+      if ! grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*slotMode=SINGLE" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\tA3 subview sample is missing slot-aware SINGLE sync metadata"
+        overall=1
+        continue
+      fi
+      if grep -Eq "PIPE_MTE3 -> PIPE_MTE2>.*eventIdNum=2" "$sync_debug_log"; then
+        echo -e "${A}(${base}.py)\tFAIL\tA3 subview sample unexpectedly widened branch-local sync into eventIdNum=2"
         overall=1
         continue
       fi

@@ -116,6 +116,20 @@ static llvm::StringRef getMemScopeName(pto::AddressSpace scope) {
   return "SCOPE_UNKNOWN";
 }
 
+static llvm::StringRef getSlotModeName(MultibufferSlotMode mode) {
+  switch (mode) {
+  case MultibufferSlotMode::NONE:
+    return "NONE";
+  case MultibufferSlotMode::SINGLE:
+    return "SINGLE";
+  case MultibufferSlotMode::BRANCH:
+    return "BRANCH";
+  case MultibufferSlotMode::PARITY:
+    return "PARITY";
+  }
+  return "UNKNOWN";
+}
+
 static void dumpEventIds(llvm::raw_ostream &os,
                          const SmallVector<int> &eventIds) {
   os << "[";
@@ -144,6 +158,16 @@ static void dumpSyncOp(llvm::raw_ostream &os, const SyncOperation *op,
 
   if (op->eventIdNum != 1)
     os << " eventIdNum=" << op->eventIdNum;
+
+  if (op->slotMode != MultibufferSlotMode::NONE) {
+    os << " slotMode=" << getSlotModeName(op->slotMode);
+    if (op->slotCount != 1)
+      os << " slotCount=" << op->slotCount;
+    if (op->ownerLoopBeginId >= 0 || op->ownerLoopEndId >= 0) {
+      os << " ownerLoop=[" << op->ownerLoopBeginId << ","
+         << op->ownerLoopEndId << "]";
+    }
+  }
 
   if (op->isCompensation)
     os << " compensation";
