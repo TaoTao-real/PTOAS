@@ -1,0 +1,67 @@
+// RUN: ptoas --enable-insert-sync --pto-insert-sync-debug=3 %s 2>&1 | FileCheck %s
+//
+// Issue #517 regression guard:
+// 1. Hand-written subview ping/pong may also appear as an unrolled loop body
+//    that sequentially uses ping and pong in the same iteration.
+// 2. This form should still preserve slot-local back-edge reuse, but each
+//    concrete loop-carried dependency remains single-slot, so autosync should
+//    allocate one fixed event id per slot instead of emitting selector-mode
+//    dynamic event-id selection.
+// 3. Final InsertSync IR must therefore use static MTE3->MTE2 wait/set pairs
+//    for EVENT_ID0 and EVENT_ID1, and must not emit `*_dyn`.
+//
+// CHECK: // === [PTOInsertSync Debug] After EventId Allocation === //
+// CHECK: [   0] LOOP LOOP_BEGIN (begin=0, end=5)
+// CHECK: PRE : set_flag <PIPE_MTE3 -> PIPE_MTE2> idx=7 forEnd=5 slotMode=SINGLE eventIds=[0]
+// CHECK: PRE : set_flag <PIPE_MTE3 -> PIPE_MTE2> idx=8 forEnd=5 slotMode=SINGLE eventIds=[1]
+// CHECK: [   1] COMPOUND pto.tload [PIPE_MTE2]
+// CHECK-NEXT:      def=[%0(VEC)]
+// CHECK-NEXT:      use=[%arg0(GM)]
+// CHECK-NEXT:      PRE : wait_flag <PIPE_MTE3 -> PIPE_MTE2> idx=3 forEnd=5 slotMode=SINGLE eventIds=[0]
+// CHECK: [   2] COMPOUND pto.tstore [PIPE_MTE3]
+// CHECK:      POST: set_flag <PIPE_MTE3 -> PIPE_MTE2> idx=3 forEnd=5 slotMode=SINGLE eventIds=[0]
+// CHECK: [   3] COMPOUND pto.tload [PIPE_MTE2]
+// CHECK-NEXT:      def=[%0(VEC)]
+// CHECK-NEXT:      use=[%arg0(GM)]
+// CHECK-NEXT:      PRE : wait_flag <PIPE_MTE3 -> PIPE_MTE2> idx=5 forEnd=5 slotMode=SINGLE eventIds=[1]
+// CHECK: [   4] COMPOUND pto.tstore [PIPE_MTE3]
+// CHECK:      POST: set_flag <PIPE_MTE3 -> PIPE_MTE2> idx=5 forEnd=5 slotMode=SINGLE eventIds=[1]
+// CHECK: POST: wait_flag <PIPE_MTE3 -> PIPE_MTE2> idx=7 forEnd=5 slotMode=SINGLE eventIds=[0]
+// CHECK: POST: wait_flag <PIPE_MTE3 -> PIPE_MTE2> idx=8 forEnd=5 slotMode=SINGLE eventIds=[1]
+// CHECK-NOT: slotMode=SELECTOR
+// CHECK: // ========================================= //
+// CHECK: // === [PTOInsertSync] Final Result === //
+// CHECK: pto.set_flag[<PIPE_MTE3>, <PIPE_MTE2>, <EVENT_ID0>]
+// CHECK: pto.wait_flag[<PIPE_MTE3>, <PIPE_MTE2>, <EVENT_ID0>]
+// CHECK: pto.set_flag[<PIPE_MTE3>, <PIPE_MTE2>, <EVENT_ID1>]
+// CHECK: pto.wait_flag[<PIPE_MTE3>, <PIPE_MTE2>, <EVENT_ID1>]
+// CHECK-NOT: pto.wait_flag_dyn
+// CHECK-NOT: pto.set_flag_dyn
+// CHECK: // === [PTOInsertSync] End === //
+
+module {
+  func.func @test_inject_sync_multibuf_subset_unrolled_pingpong(%arg0: !pto.ptr<f16>, %arg1: !pto.ptr<f16>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %c16 = arith.constant 16 : index
+    %0 = pto.make_tensor_view %arg0, shape = [%c16, %c16], strides = [%c16, %c1] : !pto.tensor_view<?x?xf16>
+    %1 = pto.make_tensor_view %arg1, shape = [%c16, %c16], strides = [%c16, %c1] : !pto.tensor_view<?x?xf16>
+    %2 = pto.partition_view %0, offsets = [%c0, %c0], sizes = [%c16, %c16] : !pto.tensor_view<?x?xf16> -> !pto.partition_tensor_view<16x16xf16>
+    %3 = pto.partition_view %1, offsets = [%c0, %c0], sizes = [%c16, %c16] : !pto.tensor_view<?x?xf16> -> !pto.partition_tensor_view<16x16xf16>
+    %4 = pto.alloc_tile : !pto.tile_buf<vec, 16x32xf16>
+    %5 = pto.subview %4[%c0, %c0] sizes [16, 16]
+      {pto.multi_buffer_factor = 2 : i32, pto.multi_buffer_slot = 0 : i32}
+      : !pto.tile_buf<vec, 16x32xf16> -> !pto.tile_buf<vec, 16x16xf16>
+    %6 = pto.subview %4[%c0, %c16] sizes [16, 16]
+      {pto.multi_buffer_factor = 2 : i32, pto.multi_buffer_slot = 1 : i32}
+      : !pto.tile_buf<vec, 16x32xf16> -> !pto.tile_buf<vec, 16x16xf16>
+    scf.for %arg2 = %c0 to %c4 step %c1 {
+      pto.tload ins(%2 : !pto.partition_tensor_view<16x16xf16>) outs(%5 : !pto.tile_buf<vec, 16x16xf16>)
+      pto.tstore ins(%5 : !pto.tile_buf<vec, 16x16xf16>) outs(%3 : !pto.partition_tensor_view<16x16xf16>)
+      pto.tload ins(%2 : !pto.partition_tensor_view<16x16xf16>) outs(%6 : !pto.tile_buf<vec, 16x16xf16>)
+      pto.tstore ins(%6 : !pto.tile_buf<vec, 16x16xf16>) outs(%3 : !pto.partition_tensor_view<16x16xf16>)
+    }
+    return
+  }
+}
