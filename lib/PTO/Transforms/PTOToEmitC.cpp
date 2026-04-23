@@ -869,6 +869,22 @@ static Attribute getFFTSModeCodegenArg(ConversionPatternRewriter &rewriter,
   return emitc::OpaqueAttr::get(ctx, std::to_string(fftsMode));
 }
 
+static Value createFFTSMsg(ConversionPatternRewriter &rewriter, Location loc,
+                           Value eventI32, int64_t fftsMode) {
+  auto *ctx = rewriter.getContext();
+  auto msgTy = emitc::OpaqueType::get(ctx, "uint16_t");
+  auto msgArgs = rewriter.getArrayAttr({
+      getFFTSModeCodegenArg(rewriter, fftsMode),
+      IntegerAttr::get(IndexType::get(ctx), 0),
+  });
+  return rewriter
+      .create<emitc::CallOpaqueOp>(loc, msgTy, "getFFTSMsg",
+                                   /*args=*/msgArgs,
+                                   /*templateArgs=*/ArrayAttr{},
+                                   /*operands=*/ValueRange{eventI32})
+      .getResult(0);
+}
+
 static InterCoreSyncCallDesc buildInterCoreSyncSetCall(
     ConversionPatternRewriter &rewriter, Location loc, PTOArch targetArch,
     pto::PipeAttr pipeAttr, IntegerAttr eventIdAttr, int64_t fftsMode) {
@@ -879,19 +895,7 @@ static InterCoreSyncCallDesc buildInterCoreSyncSetCall(
     auto i32Ty = emitc::OpaqueType::get(ctx, "int32_t");
     Value eventVal =
         makeEmitCIntConstant(rewriter, loc, i32Ty, eventIdAttr.getInt());
-
-    auto msgTy = emitc::OpaqueType::get(ctx, "uint16_t");
-    auto msgArgs = rewriter.getArrayAttr({
-        getFFTSModeCodegenArg(rewriter, fftsMode),
-        IntegerAttr::get(IndexType::get(ctx), 0),
-    });
-    Value msgVal =
-        rewriter
-            .create<emitc::CallOpaqueOp>(loc, msgTy, "getFFTSMsg",
-                                         /*args=*/msgArgs,
-                                         /*templateArgs=*/ArrayAttr{},
-                                         /*operands=*/ValueRange{eventVal})
-            .getResult(0);
+    Value msgVal = createFFTSMsg(rewriter, loc, eventVal, fftsMode);
 
     InterCoreSyncCallDesc desc;
     desc.callee = "ffts_cross_core_sync";
@@ -918,18 +922,7 @@ static InterCoreSyncCallDesc buildInterCoreSyncSetCallDyn(
   Value eventI32 = castInterCoreEventIdToI32(rewriter, loc, eventIdVal);
 
   if (targetArch == PTOArch::A3) {
-    auto msgTy = emitc::OpaqueType::get(ctx, "uint16_t");
-    auto msgArgs = rewriter.getArrayAttr({
-        getFFTSModeCodegenArg(rewriter, fftsMode),
-        IntegerAttr::get(IndexType::get(ctx), 0),
-    });
-    Value msgVal =
-        rewriter
-            .create<emitc::CallOpaqueOp>(loc, msgTy, "getFFTSMsg",
-                                         /*args=*/msgArgs,
-                                         /*templateArgs=*/ArrayAttr{},
-                                         /*operands=*/ValueRange{eventI32})
-            .getResult(0);
+    Value msgVal = createFFTSMsg(rewriter, loc, eventI32, fftsMode);
 
     InterCoreSyncCallDesc desc;
     desc.callee = "ffts_cross_core_sync";

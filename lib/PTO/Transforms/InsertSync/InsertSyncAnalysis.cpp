@@ -202,8 +202,10 @@ unsigned InsertSyncAnalysis::InsertLoopSync(
     unsigned newEnd = index;
     InsertSeqSync(nowCompound, syncElement, static_cast<int>(newBegin),
                   static_cast<int>(newEnd), syncRecordForList, forEndIndex);
-    // Conservatively assume loop bodies are executed and keep the updated state.
-    syncRecordList = std::move(syncRecordForList);
+    // A loop may execute zero iterations at runtime. Keep correctness for both
+    // paths by not promoting any loop-body-derived sync state into the outer
+    // state. In particular, syncFinder participates in alreadySync inference
+    // later, so propagating it would still be unsound under zero-trip loops.
     return (loopElement->endId - loopElement->beginId);
   }
   return 0;
