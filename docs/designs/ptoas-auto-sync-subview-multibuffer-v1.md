@@ -283,6 +283,6 @@ codegen 时：
 2. 前置 pass 负责扩 workspace、生成 leaf subview、改写 selector/control-flow。
 3. `PTOInsertSync` 继续消费统一的 slot 元数据。
 
-也就是说，未来如果要做类似 AscendNPU-IR 的自动 multibuffer 改造，应该新增前置规范化/materialization pass，而不是重新发明一套 autosync 语义。
+也就是说，未来如果要做更自动化的 multibuffer 改造，应该新增前置规范化/materialization pass，而不是重新发明一套 autosync 语义。
 
 但那不在本 PR 范围内。
