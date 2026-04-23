@@ -214,6 +214,44 @@ codegen 阶段只保留显式 subview 这条 multibuffer 路径：
 
 当前 `GetBufferSelected()` 不再对“无显式 slot metadata 的多地址 buffer”做 selector 推断。
 
+### 5.7 同步指令的分层建模原则
+
+从工程实践和后续扩展性看，`set_flag/wait_flag` 与
+`set_flag_dyn/wait_flag_dyn` 不应在核心 IR 里强行合并成一个 op，
+而应采用“前端统一、IR 分流、后端再统一”的分层设计：
+
+- 前端 API 统一
+  - 用户接口可以只暴露 `pto.set_flag` / `pto.wait_flag`
+  - 如果 `event_id` 是静态常量，就构造静态 op
+  - 如果 `event_id` 是 SSA 值，就构造动态 op
+- 核心 IR 分流
+  - `pto.set_flag` / `pto.wait_flag` 表示 event id 已在编译期确定
+  - `pto.set_flag_dyn` / `pto.wait_flag_dyn` 表示 event id 需要运行时选择
+  - 这种区分本身就是 autosync 分析结果的一部分，不只是语法差异
+- 后端 lowering 再统一
+  - EmitC / runtime 层最终都可以落到同一个底层 `set_flag` / `wait_flag`
+    调用约定
+
+这样做的原因是：
+
+- 对 `SINGLE` / `BRANCH` 这类固定槽位依赖，静态 sync op 能直接表达
+  “event lane 已确定”，IR 更清晰，也更利于后续优化和排障。
+- 对 `SELECTOR` 这类运行时轮转槽位依赖，动态 sync op 能直接表达
+  “lane 需要按 slot 选择”，不用把运行时语义伪装成静态常量。
+- 如果在核心 IR 层强行只保留一个统一 op，那么很多 pass 都必须重新
+  判断 event id 是“静态常量”还是“动态 SSA 值”，会把当前明确的
+  语义边界重新模糊掉。
+
+因此当前 multibuffer 方案推荐的方向是：
+
+- 用户接口可以继续保持统一风格
+- autosync 在中端 IR 里继续区分静态 / 动态 sync op
+- 如果未来 `*_dyn` 的 `event_id` 被证明为常量，可以再通过 canonicalize
+  折叠回静态 op
+
+也就是说，统一应该主要发生在用户入口和后端运行时接口上，而不是抹平
+中间 IR 里“静态 lane”和“动态 lane”的语义差异。
+
 ## 6. 一个典型 ping/pong 的中间状态
 
 用户 IR：
