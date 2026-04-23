@@ -9,9 +9,11 @@
 //===- PTOToEmitC.cpp - PTO to EmitC conversion pass ----------------------===//
 //===----------------------------------------------------------------------===//
 
+#include <cassert>
 #include <climits>
 
 #include "PTO/IR/PTO.h"
+#include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/IR/PTOSyncUtils.h"
 #include "PTO/Transforms/Passes.h"
 
@@ -52,6 +54,9 @@
 #include <string>
 #include <type_traits>
 #include <utility>
+
+#define DEBUG_TYPE "pto-emitc"
+
 namespace mlir {
 #define GEN_PASS_DEF_EMITPTOMANUAL
 #include "PTO/Transforms/Passes.h.inc"
@@ -341,11 +346,19 @@ static Value getTileLikeEmitCValue(Value value) {
 }
 
 static std::string getEmitCScalarTypeToken(Type elemTy) {
-  if (elemTy.isFloat8E4M3() || elemTy.isFloat8E4M3FN() ||
-      elemTy.isFloat8E4M3FNUZ() || elemTy.isFloat8E4M3B11FNUZ())
+  if (pto::isPTOFloat8Type(elemTy) &&
+      (elemTy.isFloat8E4M3() || elemTy.isFloat8E4M3FN() ||
+       elemTy.isFloat8E4M3FNUZ() || elemTy.isFloat8E4M3B11FNUZ()))
     return "float8_e4m3_t";
-  if (elemTy.isFloat8E5M2() || elemTy.isFloat8E5M2FNUZ())
+  if (pto::isPTOFloat8Type(elemTy) &&
+      (elemTy.isFloat8E5M2() || elemTy.isFloat8E5M2FNUZ()))
     return "float8_e5m2_t";
+  if (isa<pto::HiF8Type>(elemTy))
+    return "hifloat8_t";
+  if (isa<pto::F4E1M2x2Type>(elemTy))
+    return "float4_e1m2x2_t";
+  if (isa<pto::F4E2M1x2Type>(elemTy))
+    return "float4_e2m1x2_t";
   if (elemTy.isF16())
     return "half";
   if (elemTy.isBF16())
@@ -371,10 +384,7 @@ static std::string getEmitCScalarTypeToken(Type elemTy) {
 }
 
 static int64_t getEmitCScalarByteWidth(Type elemTy) {
-  if (elemTy.isFloat8E4M3() || elemTy.isFloat8E4M3FN() ||
-      elemTy.isFloat8E4M3FNUZ() || elemTy.isFloat8E4M3B11FNUZ() ||
-      elemTy.isFloat8E5M2() || elemTy.isFloat8E5M2FNUZ() ||
-      elemTy.isInteger(8))
+  if (pto::getPTOStorageElemByteSize(elemTy) == 1)
     return 1;
   if (elemTy.isF16() || elemTy.isBF16() || elemTy.isInteger(16))
     return 2;
@@ -407,6 +417,16 @@ public:
       if (type.isF64()) return emitc::OpaqueType::get(Ctx, "double");
       llvm::errs() << "[Debug] Unsupported FloatType: " << type << "\n";
       return Type{};
+    });
+
+    addConversion([Ctx](pto::HiF8Type) -> Type {
+      return emitc::OpaqueType::get(Ctx, "hifloat8_t");
+    });
+    addConversion([Ctx](pto::F4E1M2x2Type) -> Type {
+      return emitc::OpaqueType::get(Ctx, "float4_e1m2x2_t");
+    });
+    addConversion([Ctx](pto::F4E2M1x2Type) -> Type {
+      return emitc::OpaqueType::get(Ctx, "float4_e2m1x2_t");
     });
 
     addConversion([Ctx](IntegerType type) -> Type {
@@ -3473,6 +3493,24 @@ static std::string tileBufPadToken(pto::TileBufConfigAttr configAttr) {
   return padTok;
 }
 
+static pto::BLayout getTileBufBLayoutValue(pto::TileBufConfigAttr configAttr) {
+  if (auto blAttr = dyn_cast<BLayoutAttr>(configAttr.getBLayout()))
+    return blAttr.getValue();
+  return pto::BLayout::RowMajor;
+}
+
+static int64_t renderTileTemplateDim(int64_t rawDim, Type elemTy,
+                                     pto::BLayout blayout, int dimIdx) {
+  assert(dimIdx >= 0 && dimIdx < 2 &&
+         "renderTileTemplateDim expects a rank-2 rows/cols dimension index");
+  if (rawDim == ShapedType::kDynamic)
+    return rawDim;
+  if (!pto::isPTOFloat4PackedType(elemTy))
+    return rawDim;
+  int packedDim = blayout == pto::BLayout::ColMajor ? 0 : 1;
+  return dimIdx == packedDim ? rawDim * 2 : rawDim;
+}
+
 static FailureOr<Value> buildAsyncScratchTileValue(
     ConversionPatternRewriter &rewriter, Location loc, Value originalScratch,
     Value emittedScratch) {
@@ -3508,13 +3546,18 @@ static FailureOr<Value> buildAsyncScratchTileValue(
   if (auto frAttr = dyn_cast<IntegerAttr>(configAttr.getSFractalSize()))
     fractal = frAttr.getInt();
 
-  std::string elemTypeStr = getEmitCScalarTypeToken(scratchTy.getElementType());
+  Type elemTy = scratchTy.getElementType();
+  pto::BLayout blayout = getTileBufBLayoutValue(configAttr);
+  int64_t templateRows = renderTileTemplateDim(rows, elemTy, blayout, 0);
+  int64_t templateCols = renderTileTemplateDim(cols, elemTy, blayout, 1);
+  std::string elemTypeStr = getEmitCScalarTypeToken(elemTy);
   std::string tileTypeStr =
-      "Tile<TileType::Vec, " + elemTypeStr + ", " + std::to_string(rows) +
-      ", " + std::to_string(cols) + ", " + tileBufBLayoutToken(configAttr) +
-      ", " + std::to_string(rows) + ", " + std::to_string(cols) + ", " +
-      tileBufSLayoutToken(configAttr) + ", " + std::to_string(fractal) + ", " +
-      tileBufPadToken(configAttr) + ">";
+      "Tile<TileType::Vec, " + elemTypeStr + ", " +
+      std::to_string(templateRows) + ", " + std::to_string(templateCols) +
+      ", " + tileBufBLayoutToken(configAttr) + ", " +
+      std::to_string(templateRows) + ", " + std::to_string(templateCols) +
+      ", " + tileBufSLayoutToken(configAttr) + ", " +
+      std::to_string(fractal) + ", " + tileBufPadToken(configAttr) + ">";
 
   Value tile = rewriter
                    .create<emitc::VariableOp>(
@@ -3781,14 +3824,14 @@ struct PointerCastConversion : public OpConversionPattern<pto::PointerCastOp> {
     std::string elemTypeStr = getEmitCScalarTypeToken(elemType);
 
     std::string dimStr;
-    auto dimToString = [](int64_t dim, const char* symbol) -> std::string {
-        return (dim == ShapedType::kDynamic) ? std::string(symbol) : std::to_string(dim);
+    pto::BLayout blayout = pto::BLayout::RowMajor;
+    auto dimToString = [&](int64_t dim, const char *symbol,
+                           int dimIdx) -> std::string {
+        if (dim == ShapedType::kDynamic)
+          return std::string(symbol);
+        return std::to_string(renderTileTemplateDim(dim, elemType, blayout,
+                                                    dimIdx));
     };
-
-    if (role == TileRole::Left) dimStr = dimToString(shape[0], "M") + ", " + dimToString(shape[1], "K");
-    else if (role == TileRole::Right) dimStr = dimToString(shape[0], "K") + ", " + dimToString(shape[1], "N");
-    else if (role == TileRole::Bias) dimStr = "1, " + dimToString(shape[1], "N");
-    else dimStr = dimToString(shape[0], "M") + ", " + dimToString(shape[1], "N");
 
     // 3. Role Token
     const char *roleTok = "TileType::Vec";
@@ -3812,6 +3855,7 @@ struct PointerCastConversion : public OpConversionPattern<pto::PointerCastOp> {
             blVal = static_cast<int32_t>(attr.getValue());
  
         if (blVal == 1) layoutParams = "BLayout::ColMajor";
+        blayout = blVal == 1 ? pto::BLayout::ColMajor : pto::BLayout::RowMajor;
 
         int32_t slVal = 0;
         if (auto attr = dyn_cast<SLayoutAttr>(config.getSLayout()))
@@ -3851,6 +3895,18 @@ struct PointerCastConversion : public OpConversionPattern<pto::PointerCastOp> {
         extraParams = ", SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null";
     }
 
+    if (role == TileRole::Left)
+      dimStr = dimToString(shape[0], "M", 0) + ", " +
+               dimToString(shape[1], "K", 1);
+    else if (role == TileRole::Right)
+      dimStr = dimToString(shape[0], "K", 0) + ", " +
+               dimToString(shape[1], "N", 1);
+    else if (role == TileRole::Bias)
+      dimStr = "1, " + dimToString(shape[1], "N", 1);
+    else
+      dimStr = dimToString(shape[0], "M", 0) + ", " +
+               dimToString(shape[1], "N", 1);
+
     // [核心修改] Valid Dims 处理逻辑 (支持混合静态/动态)
     std::string vrowTok, vcolTok;
     bool useConstructor = false;
@@ -3876,41 +3932,59 @@ struct PointerCastConversion : public OpConversionPattern<pto::PointerCastOp> {
       return makeEmitCIntConstant(
           rewriter, loc, emitc::OpaqueType::get(ctx, "int32_t"), fallback);
     };
+    auto maybeScaleDynamicValid = [&](Value emitted, int dimIdx) -> Value {
+      if (!emitted || !pto::isPTOFloat4PackedType(elemType))
+        return emitted;
+      int packedDim = blayout == pto::BLayout::ColMajor ? 0 : 1;
+      if (dimIdx != packedDim)
+        return emitted;
+      auto i32Ty = emitc::OpaqueType::get(ctx, "int32_t");
+      Value two = makeEmitCIntConstant(rewriter, loc, i32Ty, 2);
+      return rewriter.create<emitc::MulOp>(loc, i32Ty, emitted, two).getResult();
+    };
 
     if (forceDynamicValid) {
       vrowTok = "-1";
       vcolTok = "-1";
       useConstructor = true;
       constructorArgs.push_back(
-          makeCtorDimValue(vRowEmitC, rowIsConst ? cRow : shape[0]));
+          makeCtorDimValue(maybeScaleDynamicValid(vRowEmitC, 0),
+                           renderTileTemplateDim(rowIsConst ? cRow : shape[0],
+                                                 elemType, blayout, 0)));
       constructorArgs.push_back(
-          makeCtorDimValue(vColEmitC, colIsConst ? cCol : shape[1]));
+          makeCtorDimValue(maybeScaleDynamicValid(vColEmitC, 1),
+                           renderTileTemplateDim(colIsConst ? cCol : shape[1],
+                                                 elemType, blayout, 1)));
     } else {
       if (rowIsConst) {
-        vrowTok = std::to_string(cRow);
+        vrowTok = std::to_string(
+            renderTileTemplateDim(cRow, elemType, blayout, 0));
       } else if (vRow) {
         vrowTok = "-1";
         rowIsDynamic = true;
         useConstructor = true;
       } else {
-        vrowTok = std::to_string(shape[0]);
+        vrowTok = std::to_string(
+            renderTileTemplateDim(shape[0], elemType, blayout, 0));
       }
 
       if (colIsConst) {
-        vcolTok = std::to_string(cCol);
+        vcolTok = std::to_string(
+            renderTileTemplateDim(cCol, elemType, blayout, 1));
       } else if (vCol) {
         vcolTok = "-1";
         colIsDynamic = true;
         useConstructor = true;
       } else {
-        vcolTok = std::to_string(shape[1]);
+        vcolTok = std::to_string(
+            renderTileTemplateDim(shape[1], elemType, blayout, 1));
       }
 
       if (useConstructor) {
         if (rowIsDynamic && vRowEmitC)
-          constructorArgs.push_back(vRowEmitC);
+          constructorArgs.push_back(maybeScaleDynamicValid(vRowEmitC, 0));
         if (colIsDynamic && vColEmitC)
-          constructorArgs.push_back(vColEmitC);
+          constructorArgs.push_back(maybeScaleDynamicValid(vColEmitC, 1));
       }
     }
 
@@ -6259,7 +6333,11 @@ struct PTOTCIToEmitC : public OpConversionPattern<pto::TCIOp> {
     // scalar type, not the converted EmitC value type.
     std::string scalarTok = "int32_t";
     if (auto it = dyn_cast<IntegerType>(op->getOperand(0).getType())) {
-      scalarTok = (it.getWidth() == 16) ? "int16_t" : "int32_t";
+      bool isUnsigned = it.isUnsigned();
+      if (it.getWidth() == 16)
+        scalarTok = isUnsigned ? "uint16_t" : "int16_t";
+      else
+        scalarTok = isUnsigned ? "uint32_t" : "int32_t";
     }
 
     // descending -> "0"/"1"
@@ -9339,6 +9417,7 @@ struct PTOBindTileToEmitC : public OpConversionPattern<pto::BindTileOp> {
         if (static_cast<int32_t>(blAttr.getValue()) == 1)
           blTok = "BLayout::ColMajor";
       }
+      pto::BLayout blayout = getTileBufBLayoutValue(configAttr);
 
       std::string slTok = "SLayout::NoneBox";
       if (auto slAttr = dyn_cast<SLayoutAttr>(configAttr.getSLayout())) {
@@ -9406,47 +9485,70 @@ struct PTOBindTileToEmitC : public OpConversionPattern<pto::BindTileOp> {
         return makeEmitCIntConstant(
             rewriter, loc, emitc::OpaqueType::get(ctx, "int32_t"), fallback);
       };
+      auto maybeScaleDynamicValid = [&](Value emitted, int dimIdx) -> Value {
+        if (!emitted || !pto::isPTOFloat4PackedType(elemTy))
+          return emitted;
+        int packedDim = blayout == pto::BLayout::ColMajor ? 0 : 1;
+        if (dimIdx != packedDim)
+          return emitted;
+        auto i32Ty = emitc::OpaqueType::get(ctx, "int32_t");
+        Value two = makeEmitCIntConstant(rewriter, loc, i32Ty, 2);
+        return rewriter.create<emitc::MulOp>(loc, i32Ty, emitted, two).getResult();
+      };
 
       if (forceDynamicValid) {
         vrowTok = "-1";
         vcolTok = "-1";
         useConstructor = true;
         constructorArgs.push_back(
-            makeCtorDimValue(vRowEmitC, rowIsConst ? cRow : rows));
+            makeCtorDimValue(maybeScaleDynamicValid(vRowEmitC, 0),
+                             renderTileTemplateDim(rowIsConst ? cRow : rows,
+                                                   elemTy, blayout, 0)));
         constructorArgs.push_back(
-            makeCtorDimValue(vColEmitC, colIsConst ? cCol : cols));
+            makeCtorDimValue(maybeScaleDynamicValid(vColEmitC, 1),
+                             renderTileTemplateDim(colIsConst ? cCol : cols,
+                                                   elemTy, blayout, 1)));
       } else {
         if (rowIsConst) {
-          vrowTok = std::to_string(cRow);
+          vrowTok = std::to_string(
+              renderTileTemplateDim(cRow, elemTy, blayout, 0));
         } else if (vRow) {
           vrowTok = "-1";
           rowIsDynamic = true;
           useConstructor = true;
         } else {
-          vrowTok = std::to_string(rows);
+          vrowTok = std::to_string(
+              renderTileTemplateDim(rows, elemTy, blayout, 0));
         }
 
         if (colIsConst) {
-          vcolTok = std::to_string(cCol);
+          vcolTok = std::to_string(
+              renderTileTemplateDim(cCol, elemTy, blayout, 1));
         } else if (vCol) {
           vcolTok = "-1";
           colIsDynamic = true;
           useConstructor = true;
         } else {
-          vcolTok = std::to_string(cols);
+          vcolTok = std::to_string(
+              renderTileTemplateDim(cols, elemTy, blayout, 1));
         }
 
         if (useConstructor) {
           if (rowIsDynamic && vRowEmitC)
-            constructorArgs.push_back(vRowEmitC);
+            constructorArgs.push_back(maybeScaleDynamicValid(vRowEmitC, 0));
           if (colIsDynamic && vColEmitC)
-            constructorArgs.push_back(vColEmitC);
+            constructorArgs.push_back(maybeScaleDynamicValid(vColEmitC, 1));
         }
       }
 
       std::string tileTypeStr = std::string("Tile<") + roleTok + ", " +
-                                elemTypeStr + ", " + std::to_string(rows) +
-                                ", " + std::to_string(cols) + ", " + blTok +
+                                elemTypeStr + ", " +
+                                std::to_string(renderTileTemplateDim(
+                                    rows, elemTy, blayout, 0)) +
+                                ", " +
+                                std::to_string(renderTileTemplateDim(
+                                    cols, elemTy, blayout, 1)) +
+                                ", " + blTok +
                                 ", " + vrowTok + ", " + vcolTok + ", " + slTok +
                                 ", " + std::to_string(fractal) + ", " + padTok +
                                 ", " + compactTok +
@@ -10604,7 +10706,7 @@ struct EmitPTOManualPass
   }
 
   void runOnOperation() override {
-    llvm::errs() << "DEBUG: Start PTOToEmitC Pass\n";
+    LLVM_DEBUG(llvm::dbgs() << "DEBUG: Start PTOToEmitC Pass\n");
     MLIRContext *ctx = &getContext();
     ModuleOp mop = getOperation();
 

@@ -585,6 +585,39 @@ static void bindPTOModule(pybind11::module &m) {
             },
             py::arg("cls"), py::arg("context") = py::none());
 
+    mlir_type_subclass(
+        m, "HiF8Type",
+        [](MlirType type) -> bool { return mlirPTOTypeIsAHiF8Type(type); })
+        .def_classmethod(
+            "get",
+            [](py::object cls, MlirContext context) -> py::object {
+                MlirType t = mlirPTOHiF8TypeGet(context);
+                return cls.attr("__call__")(t);
+            },
+            py::arg("cls"), py::arg("context") = py::none());
+
+    mlir_type_subclass(
+        m, "F4E1M2x2Type",
+        [](MlirType type) -> bool { return mlirPTOTypeIsAF4E1M2x2Type(type); })
+        .def_classmethod(
+            "get",
+            [](py::object cls, MlirContext context) -> py::object {
+                MlirType t = mlirPTOF4E1M2x2TypeGet(context);
+                return cls.attr("__call__")(t);
+            },
+            py::arg("cls"), py::arg("context") = py::none());
+
+    mlir_type_subclass(
+        m, "F4E2M1x2Type",
+        [](MlirType type) -> bool { return mlirPTOTypeIsAF4E2M1x2Type(type); })
+        .def_classmethod(
+            "get",
+            [](py::object cls, MlirContext context) -> py::object {
+                MlirType t = mlirPTOF4E2M1x2TypeGet(context);
+                return cls.attr("__call__")(t);
+            },
+            py::arg("cls"), py::arg("context") = py::none());
+
     // --------------------------------------------------------------------------
     // !pto.tensor_view<shape x elem>
     // --------------------------------------------------------------------------

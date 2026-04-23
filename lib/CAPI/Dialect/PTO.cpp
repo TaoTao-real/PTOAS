@@ -81,6 +81,30 @@ MlirType mlirPTOAsyncEventTypeGet(MlirContext ctx) {
   return wrap(mlir::pto::AsyncEventType::get(unwrap(ctx)));
 }
 
+bool mlirPTOTypeIsAHiF8Type(MlirType type) {
+  return isa<mlir::pto::HiF8Type>(unwrap(type));
+}
+
+MlirType mlirPTOHiF8TypeGet(MlirContext ctx) {
+  return wrap(mlir::pto::HiF8Type::get(unwrap(ctx)));
+}
+
+bool mlirPTOTypeIsAF4E1M2x2Type(MlirType type) {
+  return isa<mlir::pto::F4E1M2x2Type>(unwrap(type));
+}
+
+MlirType mlirPTOF4E1M2x2TypeGet(MlirContext ctx) {
+  return wrap(mlir::pto::F4E1M2x2Type::get(unwrap(ctx)));
+}
+
+bool mlirPTOTypeIsAF4E2M1x2Type(MlirType type) {
+  return isa<mlir::pto::F4E2M1x2Type>(unwrap(type));
+}
+
+MlirType mlirPTOF4E2M1x2TypeGet(MlirContext ctx) {
+  return wrap(mlir::pto::F4E2M1x2Type::get(unwrap(ctx)));
+}
+
 bool mlirPTOAttrIsAAddressSpaceAttr(MlirAttribute attr) {
   return mlir::isa<mlir::pto::AddressSpaceAttr>(unwrap(attr));
 }

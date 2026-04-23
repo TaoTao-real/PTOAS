@@ -1,4 +1,4 @@
-// RUN: ptoas %s 2>&1 1>/dev/null | FileCheck %s
+// RUN: ptoas --mlir-print-ir-after=pto-plan-memory %s 2>&1 1>/dev/null | FileCheck %s
 
 
 module {
@@ -42,7 +42,7 @@ module {
 // After matching the loop header, require at least one planned buffer inside
 // the loop body (the inner alloc becomes a pointer_cast).
 
-// CHECK: end PTO plan Mem!
+// CHECK: IR Dump After PlanMemory
 // CHECK: func.func @for_iter_args_yield
 // CHECK: scf.for
 // After matching the loop header, require at least one planned buffer inside

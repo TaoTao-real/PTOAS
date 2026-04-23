@@ -1,4 +1,4 @@
-// RUN: ptoas %s 2>&1 1>/dev/null | FileCheck %s
+// RUN: ptoas --mlir-print-ir-after=pto-plan-memory %s 2>&1 1>/dev/null | FileCheck %s
 
 
 module {
@@ -210,7 +210,7 @@ module {
 // before and after planning).
 // Expect at least two distinct allocations to reuse offset 0.
 
-// CHECK: end PTO plan Mem!
+// CHECK: IR Dump After PlanMemory
 // CHECK: func.func @reuse_sequential
 // Expect at least two distinct allocations to reuse offset 0.
 // CHECK: %c0_i64 = arith.constant 0 : i64

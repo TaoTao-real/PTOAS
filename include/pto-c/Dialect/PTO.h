@@ -34,6 +34,14 @@ MlirType mlirPTOAsyncSessionTypeGet(MlirContext ctx);
 bool mlirPTOTypeIsAAsyncEventType(MlirType type);
 MlirType mlirPTOAsyncEventTypeGet(MlirContext ctx);
 
+// ---- !pto.hif8 / !pto.f4E1M2x2 / !pto.f4E2M1x2 ----
+bool mlirPTOTypeIsAHiF8Type(MlirType type);
+MlirType mlirPTOHiF8TypeGet(MlirContext ctx);
+bool mlirPTOTypeIsAF4E1M2x2Type(MlirType type);
+MlirType mlirPTOF4E1M2x2TypeGet(MlirContext ctx);
+bool mlirPTOTypeIsAF4E2M1x2Type(MlirType type);
+MlirType mlirPTOF4E2M1x2TypeGet(MlirContext ctx);
+
 // ---- #pto.address_space<...> ----
 bool mlirPTOAttrIsAAddressSpaceAttr(MlirAttribute attr);
 

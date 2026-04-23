@@ -52,6 +52,9 @@ register_dialect = _pto_mod.register_dialect
 PtrType = _pto_mod.PtrType
 AsyncSessionType = _pto_mod.AsyncSessionType
 AsyncEventType = _pto_mod.AsyncEventType
+HiF8Type = _pto_mod.HiF8Type
+F4E1M2x2Type = _pto_mod.F4E1M2x2Type
+F4E2M1x2Type = _pto_mod.F4E2M1x2Type
 TensorViewType = _pto_mod.TensorViewType
 PartitionTensorViewType = _pto_mod.PartitionTensorViewType
 TileType = _pto_mod.TileType
@@ -97,6 +100,9 @@ __all__ = [
     "PtrType",
     "AsyncSessionType",
     "AsyncEventType",
+    "HiF8Type",
+    "F4E1M2x2Type",
+    "F4E2M1x2Type",
     "TensorViewType",
     "PartitionTensorViewType",
     "TileType",

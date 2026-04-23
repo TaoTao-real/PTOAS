@@ -1,4 +1,4 @@
-// RUN: ptoas %s 2>&1 1>/dev/null | FileCheck %s
+// RUN: ptoas --mlir-print-ir-after=pto-plan-memory %s 2>&1 1>/dev/null | FileCheck %s
 
 
 module {
@@ -46,7 +46,7 @@ module {
 
 // Expect a loop, and two planned buffers at distinct offsets.
 
-// CHECK: end PTO plan Mem!
+// CHECK: IR Dump After PlanMemory
 // CHECK: func.func @loop_outer_live
 // Expect a loop, and two planned buffers at distinct offsets.
 // CHECK-DAG: %c0_i64 = arith.constant 0 : i64

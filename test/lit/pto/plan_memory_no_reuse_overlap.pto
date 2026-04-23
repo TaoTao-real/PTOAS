@@ -1,4 +1,4 @@
-// RUN: ptoas %s 2>&1 1>/dev/null | FileCheck %s
+// RUN: ptoas --mlir-print-ir-after=pto-plan-memory %s 2>&1 1>/dev/null | FileCheck %s
 
 
 module {
@@ -37,7 +37,7 @@ module {
 
 // With overlapping lifetimes, offsets must differ.
 
-// CHECK: end PTO plan Mem!
+// CHECK: IR Dump After PlanMemory
 // CHECK: func.func @no_reuse_overlap
 // With overlapping lifetimes, offsets must differ.
 // CHECK-DAG: %c0_i64 = arith.constant 0 : i64

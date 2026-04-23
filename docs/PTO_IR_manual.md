@@ -71,6 +71,34 @@ Element type constraints are operation-specific:
 
 In addition, memory layout and address space do not change the element type semantics; they only affect placement and access patterns.
 
+#### Low-Precision Types
+
+PTO IR currently recognizes the following low-precision element types:
+
+- `f8E4M3FN` (corresponding C++ type name: `float8_e4m3_t`)
+- `f8E5M2` (corresponding C++ type name: `float8_e5m2_t`)
+
+- `!pto.hif8`
+- `!pto.f4E1M2x2`
+- `!pto.f4E2M1x2`
+
+These types are recognized by the parser/printer, CAPI/Python bindings, and
+basic storage-size plumbing. Their storage size is currently modeled as:
+
+- `f8E4M3FN`: 1 byte per element
+- `f8E5M2`: 1 byte per element
+- `!pto.hif8`: 1 byte per element
+- `!pto.f4E1M2x2`: 1 byte per packed pair of FP4 values
+- `!pto.f4E2M1x2`: 1 byte per packed pair of FP4 values
+
+For the packed FP4 PTO dialect types, `tile_buf` shape/valid-shape dimensions
+describe the physical packed extent, i.e. the number of packed FP4 pairs
+(equivalently the number of bytes in the packed dimension), not the logical
+number of scalar FP4 elements.
+
+Operation support is still opt-in. Defining the type in PTO IR does not by
+itself imply that any particular operation accepts it.
+
 ### 2.2 `!pto.ptr<elementType>`
 
 A pointer to global memory.
@@ -116,7 +144,7 @@ A logical partition (slice) of a `tensor_view`. Holds shape and stride informati
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `loc` | keyword (`vec/mat/left/right/acc/bias`) | Local memory domain (`vec` maps to UB; use `vec` in textual IR) |
-| `dtype` | `element-type(i1/i8/i16/i32/f16/f32/bf16...)` | Element data type |
+| `dtype` | `element-type(i1/i8/i16/i32/f16/f32/bf16/!pto.hif8/!pto.f4E1M2x2/!pto.f4E2M1x2...)` | Element data type |
 | `rows` | `int64` | Physical row count |
 | `cols` | `int64` | Physical column count |
 | `v_row` | `int64` or `?` | Valid row count |
@@ -127,6 +155,10 @@ A logical partition (slice) of a `tensor_view`. Holds shape and stride informati
 | `pad` | `PadValue` mnemonic or integer literal | Padding policy/value selector (tests commonly use `pad=0`) |
 
 Here, `?` denotes a dynamic symbol resolved at runtime.
+
+For `dtype=!pto.f4E1M2x2` and `dtype=!pto.f4E2M1x2`, the `rows`/`cols` and
+`v_row`/`v_col` values are physical packed extents. In other words, the packed
+dimension counts FP4 pairs stored per byte, not logical scalar FP4 elements.
 
 **Syntax:**
 ```mlir
@@ -7291,7 +7323,7 @@ pto.tget_scale_addr ins(<src> : <src_type>)
 **Basic Example:**
 
 ```mlir
-pto.tget_scale_addr ins(%src : !pto.tile_buf<loc=left, dtype=f8E4M3, rows=1, cols=128,
+pto.tget_scale_addr ins(%src : !pto.tile_buf<loc=left, dtype=f8E4M3FN, rows=1, cols=128,
                         v_row=1, v_col=128, blayout=col_major, slayout=row_major,
                         fractal=512, pad=0>)
                     outs(%scale : !pto.tile_buf<loc=scaling, dtype=f16, rows=1, cols=128,

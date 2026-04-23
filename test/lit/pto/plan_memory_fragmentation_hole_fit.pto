@@ -1,4 +1,4 @@
-// RUN: ptoas %s 2>&1 1>/dev/null | FileCheck %s
+// RUN: ptoas --mlir-print-ir-after=pto-plan-memory %s 2>&1 1>/dev/null | FileCheck %s
 
 
 module {
@@ -159,7 +159,7 @@ module {
 // With 23 live UB buffers, there is exactly one remaining 8192B slot. The two
 // short-lived buffers must reuse that slot (offset 23*8192 = 188416).
 
-// CHECK: end PTO plan Mem!
+// CHECK: IR Dump After PlanMemory
 // CHECK: func.func @fragmentation_hole_fit
 // With 23 live UB buffers, there is exactly one remaining 8192B slot. The two
 // short-lived buffers must reuse that slot (offset 23*8192 = 188416).

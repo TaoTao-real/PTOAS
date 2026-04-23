@@ -1,0 +1,20 @@
+// RUN: ptoas --pto-arch=a3 %s 2>&1 | FileCheck %s --check-prefix=A3
+
+module {
+  func.func @tci_ui32_kernel(%dst: !pto.ptr<ui32>) {
+    %c5_i32 = arith.constant 5 : i32
+    %c5_ui32 = builtin.unrealized_conversion_cast %c5_i32 : i32 to ui32
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c32 = arith.constant 32 : index
+    %view = pto.make_tensor_view %dst, shape = [%c1, %c32], strides = [%c32, %c1] : !pto.tensor_view<1x32xui32>
+    %src = pto.partition_view %view, offsets = [%c0, %c0], sizes = [%c1, %c32] : !pto.tensor_view<1x32xui32> -> !pto.partition_tensor_view<1x32xui32>
+    %tile = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=ui32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    pto.tci ins(%c5_ui32 : ui32) outs(%tile : !pto.tile_buf<loc=vec, dtype=ui32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tstore ins(%tile : !pto.tile_buf<loc=vec, dtype=ui32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%src : !pto.partition_tensor_view<1x32xui32>)
+    return
+  }
+}
+
+// A3: TCI<{{.*}}, uint32_t, 0>(
+// A3-NOT: TCI<{{.*}}, int32_t, 0>(

@@ -10,6 +10,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "PTO/IR/PTO.h"
+#include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/IR/PTOSyncUtils.h"
 
 #include "mlir/AsmParser/AsmParser.h"
@@ -263,6 +264,55 @@ bool mlir::pto::isTargetArchA3(Operation *op) {
 
 bool mlir::pto::isTargetArchA5(Operation *op) {
   return getTargetArch(op) == PTOArch::A5;
+}
+
+static llvm::TypeSize getOneByteTypeSize() {
+  return llvm::TypeSize::getFixed(8);
+}
+
+llvm::TypeSize mlir::pto::HiF8Type::getTypeSizeInBits(
+    const DataLayout &, DataLayoutEntryListRef) const {
+  return getOneByteTypeSize();
+}
+
+uint64_t mlir::pto::HiF8Type::getABIAlignment(const DataLayout &,
+                                              DataLayoutEntryListRef) const {
+  return 1;
+}
+
+uint64_t mlir::pto::HiF8Type::getPreferredAlignment(
+    const DataLayout &, DataLayoutEntryListRef) const {
+  return 1;
+}
+
+llvm::TypeSize mlir::pto::F4E1M2x2Type::getTypeSizeInBits(
+    const DataLayout &, DataLayoutEntryListRef) const {
+  return getOneByteTypeSize();
+}
+
+uint64_t mlir::pto::F4E1M2x2Type::getABIAlignment(
+    const DataLayout &, DataLayoutEntryListRef) const {
+  return 1;
+}
+
+uint64_t mlir::pto::F4E1M2x2Type::getPreferredAlignment(
+    const DataLayout &, DataLayoutEntryListRef) const {
+  return 1;
+}
+
+llvm::TypeSize mlir::pto::F4E2M1x2Type::getTypeSizeInBits(
+    const DataLayout &, DataLayoutEntryListRef) const {
+  return getOneByteTypeSize();
+}
+
+uint64_t mlir::pto::F4E2M1x2Type::getABIAlignment(
+    const DataLayout &, DataLayoutEntryListRef) const {
+  return 1;
+}
+
+uint64_t mlir::pto::F4E2M1x2Type::getPreferredAlignment(
+    const DataLayout &, DataLayoutEntryListRef) const {
+  return 1;
 }
 
 static VerifierTargetArch getVerifierTargetArch(Operation *op) {
@@ -822,11 +872,7 @@ static std::optional<int64_t> getConstIndexValue(Value v) {
 }
 
 static unsigned getElemByteSize(Type ty) {
-  if (auto f = dyn_cast<FloatType>(ty))
-    return f.getWidth() / 8;
-  if (auto i = dyn_cast<IntegerType>(ty))
-    return i.getWidth() / 8;
-  return 0;
+  return getPTOStorageElemByteSize(ty);
 }
 
 static bool isSupportedLoadStoreElemTypeA2A3(Type ty) {
@@ -1346,6 +1392,11 @@ void mlir::pto::annotatePTOEntryFunctions(ModuleOp module) {
 
 LogicalResult AllocTileOp::verify() {
   auto ty = getResult().getType(); // TileBufType
+
+  Type elemTy = ty.getElementType();
+  if (isPTOLowPrecisionType(elemTy))
+    return emitOpError() << "result dtype " << elemTy
+                         << " is not supported by pto.alloc_tile yet";
 
   // op 上有没有传 operands
   bool hasVR = getValidRow() != nullptr;
@@ -2037,6 +2088,10 @@ static LogicalResult verifyTileBufCommon(Operation *op, Type ty, StringRef name)
     return op->emitOpError() << "expects " << name << " to be a !pto.tile_buf";
   if (tb.getRank() != 2)
     return op->emitOpError() << "expects " << name << " to be a rank-2 tile_buf";
+  Type elemTy = tb.getElementType();
+  if (isPTOLowPrecisionType(elemTy))
+    return op->emitOpError() << name << ": dtype " << elemTy
+                             << " is not supported by this op yet";
 
   auto validShape = getValidShapeVec(ty);
   if (validShape.size() != 2)
@@ -9723,7 +9778,11 @@ void TPReluOp::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   PTO_ADD_READ(getSrc0Mutable());
   PTO_ADD_READ(getSrc1Mutable());
-  PTO_ADD_WRITE(getTmpMutable());
+  // A5 pto-isa TPRELU implementation does not consume tmp; modeling tmp as a
+  // write-only scratch on A5 incorrectly inflates local-memory planning and
+  // can trigger false vec-overflow diagnostics.
+  if (getTargetArch(getOperation()) != PTOArch::A5)
+    PTO_ADD_WRITE(getTmpMutable());
   PTO_ADD_WRITE(getDstMutable());
 }
 

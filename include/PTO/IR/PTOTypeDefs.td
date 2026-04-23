@@ -13,6 +13,8 @@
 
 //===- PTOTypeDefs.td --------------------------------------------------*- tablegen -*-===//
 include "mlir/IR/AttrTypeBase.td"
+include "mlir/IR/BuiltinTypeInterfaces.td"
+include "mlir/Interfaces/DataLayoutInterfaces.td"
 include "PTO/IR/PTODialect.td"
 include "PTO/IR/PTOAttrs.td"
 
@@ -232,4 +234,35 @@ def AsyncSessionType : TypeDef<PTO_Dialect, "AsyncSession"> {
 def AsyncEventType : TypeDef<PTO_Dialect, "AsyncEvent"> {
   let mnemonic = "async_event";
   let summary = "Opaque async DMA event handle type";
+}
+
+// ---- !pto.hif8 ---- Corresponding type name: hifloat8_t (1 byte)
+def HiF8Type : TypeDef<PTO_Dialect, "HiF8", [
+    DeclareTypeInterfaceMethods<DataLayoutTypeInterface,
+      ["getTypeSizeInBits", "getABIAlignment", "getPreferredAlignment"]>
+]> {
+  let mnemonic = "hif8";
+  let summary = "Ascend A5 HiFloat8 (8-bit, 1 byte per element).";
+}
+
+// ---- !pto.f4E1M2x2 ---- Corresponding type name: float4_e1m2x2_t (1 byte = 2 FP4 packed)
+def F4E1M2x2Type : TypeDef<PTO_Dialect, "F4E1M2x2", [
+    DeclareTypeInterfaceMethods<DataLayoutTypeInterface,
+      ["getTypeSizeInBits", "getABIAlignment", "getPreferredAlignment"]>
+]> {
+  let mnemonic = "f4E1M2x2";
+  let summary =
+      "Packed pair of FP4 values (E1M2 format, 2-per-byte). "
+      "tile_buf shape counts pairs; each pair occupies 1 byte.";
+}
+
+// ---- !pto.f4E2M1x2 ---- Corresponding type name: float4_e2m1x2_t (1 byte = 2 FP4 packed)
+def F4E2M1x2Type : TypeDef<PTO_Dialect, "F4E2M1x2", [
+    DeclareTypeInterfaceMethods<DataLayoutTypeInterface,
+      ["getTypeSizeInBits", "getABIAlignment", "getPreferredAlignment"]>
+]> {
+  let mnemonic = "f4E2M1x2";
+  let summary =
+      "Packed pair of FP4 values (E2M1 format, 2-per-byte). "
+      "tile_buf shape counts pairs; each pair occupies 1 byte.";
 }

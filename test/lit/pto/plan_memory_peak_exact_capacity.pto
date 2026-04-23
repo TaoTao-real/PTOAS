@@ -1,4 +1,4 @@
-// RUN: ptoas %s 2>&1 1>/dev/null | FileCheck %s
+// RUN: ptoas --mlir-print-ir-after=pto-plan-memory %s 2>&1 1>/dev/null | FileCheck %s
 
 
 module {
@@ -149,7 +149,7 @@ module {
 
 // 24 live buffers implies a max offset of 23*8192 = 188416 bytes.
 
-// CHECK: end PTO plan Mem!
+// CHECK: IR Dump After PlanMemory
 // CHECK: func.func @peak_exact_capacity
 // 24 live buffers implies a max offset of 23*8192 = 188416 bytes.
 // CHECK: %[[O188416:.*]] = arith.constant 188416 : i64
