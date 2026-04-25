@@ -22,12 +22,19 @@
 #include <memory>
 #include <utility>
 #include <map>
- 
+
 #define DEBUG_TYPE "pto-inject-sync"
- 
+
 using namespace mlir;
 using namespace mlir::pto;
- 
+
+namespace {
+constexpr size_t kSingleUnitFlagCondition = 1;
+constexpr size_t kDualUnitFlagConditions = 2;
+constexpr size_t kFirstConditionIndex = 0;
+constexpr size_t kSecondConditionIndex = 1;
+} // namespace
+
 SmallVector<const void *>
 mlir::pto::canonicalizeSyncDepRoots(const SmallVector<Value> &roots) {
   SmallVector<const void *> result;
@@ -62,7 +69,7 @@ bool SyncOperation::operator==(const SyncOperation &other) const {
   }
   return false;
 }
- 
+
 std::string SyncOperation::TypeName(SyncOperation::TYPE t) {
   static std::map<TYPE, std::string> typeNameMap = {
       {TYPE::SET_EVENT, "set_flag"},
@@ -81,7 +88,7 @@ std::string SyncOperation::TypeName(SyncOperation::TYPE t) {
   llvm_unreachable("Not supported sync type");
   return "";
 }
- 
+
 std::string SyncOperation::GetCoreTypeName(TCoreType t) const {
   static std::map<TCoreType, std::string> coreTypeNameMap = {
       {TCoreType::CUBE, "CUBE"},
@@ -95,7 +102,7 @@ std::string SyncOperation::GetCoreTypeName(TCoreType t) const {
   llvm_unreachable("Not supported sync type");
   return "";
 }
- 
+
 std::unique_ptr<SyncOperation>
 SyncOperation::GetMatchSync(unsigned index) const {
   TYPE newType{TYPE::PIPE_BARRIER};
@@ -111,7 +118,7 @@ SyncOperation::GetMatchSync(unsigned index) const {
   if (syncIt != syncPair.cend()) {
     newType = syncIt->second;
   }
- 
+
   auto res =
       std::make_unique<SyncOperation>(newType, this->srcPipe_, this->dstPipe_,
                                       kSyncIndex_, index, this->forEndIndex_);
@@ -122,7 +129,7 @@ SyncOperation::GetMatchSync(unsigned index) const {
   res->SetDepSyncIRIndex(this->GetDepSyncIRIndex());
   return res;
 }
- 
+
 void SyncOperation::SetPipeAll() {
   // set current sync to pipe_all
   this->type_ = TYPE::PIPE_BARRIER;
@@ -130,23 +137,23 @@ void SyncOperation::SetPipeAll() {
   this->srcPipe_ = PipelineType::PIPE_ALL;
   this->dstPipe_ = PipelineType::PIPE_ALL;
 }
- 
+
 bool SyncOperation::isSyncSetType() const {
   auto type = this->GetType();
   return type == TYPE::SET_EVENT || type == TYPE::SYNC_BLOCK_SET;
 }
- 
+
 bool SyncOperation::isSyncWaitType() const {
   auto type = this->GetType();
   return type == TYPE::WAIT_EVENT || type == TYPE::SYNC_BLOCK_WAIT;
 }
- 
+
 bool SyncOperation::isBarrierType() const {
   auto type = this->GetType();
   return type == TYPE::PIPE_BARRIER || type == TYPE::PIPE_BARRIER_CUBE ||
          type == TYPE::PIPE_BARRIER_VECTOR;
 }
- 
+
 bool InstanceElement::RemoveSync(SyncOps &syncVector,
                                  const SyncOperation *sync) {
   auto it = std::find(syncVector.begin(), syncVector.end(), sync);
@@ -156,7 +163,7 @@ bool InstanceElement::RemoveSync(SyncOps &syncVector,
   syncVector.erase(it);
   return true;
 }
- 
+
 std::unique_ptr<InstanceElement>
 LoopInstanceElement::CloneFor(KindOfLoop loopKind) const {
   unsigned index =
@@ -168,7 +175,7 @@ LoopInstanceElement::CloneFor(KindOfLoop loopKind) const {
   res->elementOp = elementOp;
   return res;
 }
- 
+
 std::unique_ptr<BranchInstanceElement>
 BranchInstanceElement::CloneBranch(KindOfBranch branchKind) const {
   if (branchKind == KindOfBranch::ELSE_BEGIN) {
@@ -190,37 +197,37 @@ BranchInstanceElement::CloneBranch(KindOfBranch branchKind) const {
   res->elementOp = elementOp;
   return res;
 }
- 
+
 std::unique_ptr<PlaceHolderInstanceElement>
 PlaceHolderInstanceElement::Clone() const {
   return std::make_unique<PlaceHolderInstanceElement>(this->kIndex,
                                                       this->parentScopeId);
 }
- 
+
 bool LoopInstanceElement::classof(const InstanceElement *e) {
   checkCondition(e != nullptr,
                  "give a nullptr for LoopInstanceElement'sconst classof");
   return e->GetKind() == KindTy::LOOP;
 }
- 
+
 bool CompoundInstanceElement::classof(const InstanceElement *e) {
   checkCondition(e != nullptr,
                  "give a nullptr for CompoundInstanceElement's classof");
   return e->GetKind() == KindTy::COMPOUND;
 }
- 
+
 bool BranchInstanceElement::classof(const InstanceElement *e) {
   checkCondition(e != nullptr,
                  "give a nullptr for BranchInstanceElement's classof");
   return e->GetKind() == KindTy::BRANCH;
 }
- 
+
 bool PlaceHolderInstanceElement::classof(const InstanceElement *e) {
   checkCondition(e != nullptr,
                  "give a nullptr for PlaceHolderInstanceElement's classof");
   return e->GetKind() == KindTy::PLACE_HOLDER;
 }
- 
+
 UNIT_FLAG CompoundInstanceElement::getUnitFlagMode() const {
   static DenseMap<std::pair<UNIT_FLAG, UNIT_FLAG>, UNIT_FLAG> possibleStates = {
       {std::make_pair(UNIT_FLAG::DISABLED, UNIT_FLAG::DISABLED),
@@ -253,7 +260,7 @@ UNIT_FLAG CompoundInstanceElement::getUnitFlagMode() const {
   }
   return it->second;
 }
- 
+
 Value getIsNotDeadLoopValue(scf::ForOp forOp, Location loc,
                             OpBuilder &rewriter) {
   Value upperBound = forOp.getUpperBound();
@@ -261,12 +268,12 @@ Value getIsNotDeadLoopValue(scf::ForOp forOp, Location loc,
   return rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt,
                                         lowerBound, upperBound);
 }
- 
+
 std::optional<mlir::Value>
 CompoundInstanceElement::getUnitFlagCond(Location loc, OpBuilder &rewriter) {
   OpBuilder::InsertionGuard guard(rewriter);
   SmallVector<Value> conditions;
-  
+
   if (linkedUnitFlagCompAsWait &&
       (linkedUnitFlagCompAsWait->unitFlagModeAsSet ==
            UNIT_FLAG::ENABLED_ONLY_LAST_ITER ||
@@ -291,21 +298,22 @@ CompoundInstanceElement::getUnitFlagCond(Location loc, OpBuilder &rewriter) {
       conditions.push_back(cond);
     }
   }
- 
+
   if (conditions.empty()) {
     return nullptr;
-  } else if (conditions.size() == 1) {
-    return conditions[0];
-  } else if (conditions.size() == 2) {
+  } else if (conditions.size() == kSingleUnitFlagCondition) {
+    return conditions[kFirstConditionIndex];
+  } else if (conditions.size() == kDualUnitFlagConditions) {
     rewriter.setInsertionPoint(elementOp);
-    return rewriter.create<arith::OrIOp>(loc, conditions[0], conditions[1]);
+    return rewriter.create<arith::OrIOp>(
+        loc, conditions[kFirstConditionIndex], conditions[kSecondConditionIndex]);
   } else {
     llvm_unreachable("unexpected/unhandled number of unit-flag conditions.");
   }
 }
- 
+
 namespace mlir::pto {
- 
+
 bool checkAllParentLoopsAreForLoops(Operation *op) {
   while ((op = op->getParentOfType<LoopLikeOpInterface>())) {
     if (!isa<scf::ForOp>(op)) {
@@ -314,17 +322,17 @@ bool checkAllParentLoopsAreForLoops(Operation *op) {
   }
   return true;
 }
- 
+
 void checkSyncIRIndex(const SyncIRs &syncIR, int index) {
   if (index < 0 || index >= static_cast<int>(syncIR.size())) {
     llvm_unreachable("index out of bounds when accessing syncIR");
   }
 }
- 
+
 void checkCondition(bool condition, const std::string &message) {
   if (!condition) {
     llvm_unreachable(message.c_str());
   }
 }
- 
+
 } // namespace mlir::pto

@@ -13,6 +13,10 @@
 using namespace mlir;
 using namespace mlir::pto;
 
+namespace {
+constexpr unsigned kBitsPerByte = 8;
+} // namespace
+
 bool mlir::pto::isPTOFloat8Type(Type t) {
   return t.isFloat8E4M3() || t.isFloat8E4M3FN() || t.isFloat8E4M3FNUZ() ||
          t.isFloat8E4M3B11FNUZ() || t.isFloat8E5M2() || t.isFloat8E5M2FNUZ();
@@ -32,8 +36,8 @@ unsigned mlir::pto::getPTOStorageElemByteSize(Type t) {
   if (isPTOLowPrecisionType(t))
     return 1;
   if (auto floatTy = dyn_cast<FloatType>(t))
-    return floatTy.getWidth() / 8;
+    return floatTy.getWidth() / kBitsPerByte;
   if (auto intTy = dyn_cast<IntegerType>(t))
-    return intTy.getWidth() / 8;
+    return intTy.getWidth() / kBitsPerByte;
   return 0;
 }

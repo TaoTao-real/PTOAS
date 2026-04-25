@@ -39,6 +39,12 @@ using namespace mlir::pto;
 
 namespace {
 
+constexpr size_t kMinPeerPipeInitCount = 2;
+constexpr int8_t kC2VDirMask = 1;
+constexpr int8_t kV2CDirMask = 2;
+constexpr int8_t kBidirectionalDirMask = 3;
+constexpr unsigned kVisitedInitReserveSize = 16;
+
 struct PipePeerKey {
   std::string ownerFunc;
   std::string reserveName;
@@ -241,10 +247,10 @@ struct PTOInferValidatePipeInitPass
         keyedInits[*key].push_back(info.op);
       };
 
-      if (info.dirMask == 3) {
-        recordAddr(getLocalAddrOperand(initOp), /*c2v=*/1);
+      if (info.dirMask == kBidirectionalDirMask) {
+        recordAddr(getLocalAddrOperand(initOp), kC2VDirMask);
         if (Value peerAddr = initOp.getPeerLocalAddr())
-          recordAddr(peerAddr, /*v2c=*/2);
+          recordAddr(peerAddr, kV2CDirMask);
         return;
       }
 
@@ -260,7 +266,7 @@ struct PTOInferValidatePipeInitPass
         if (std::find(uniqueOps.begin(), uniqueOps.end(), op) == uniqueOps.end())
           uniqueOps.push_back(op);
       }
-      if (uniqueOps.size() < 2)
+      if (uniqueOps.size() < kMinPeerPipeInitCount)
         continue;
 
       for (size_t i = 0; i < uniqueOps.size(); ++i) {
@@ -276,7 +282,7 @@ struct PTOInferValidatePipeInitPass
       infoByOp[info.op] = &info;
 
     OpBuilder builder(moduleOp.getContext());
-    llvm::SmallPtrSet<Operation *, 16> visited;
+    llvm::SmallPtrSet<Operation *, kVisitedInitReserveSize> visited;
     for (PipeInitInfo &rootInfo : initInfos) {
       if (!visited.insert(rootInfo.op).second)
         continue;

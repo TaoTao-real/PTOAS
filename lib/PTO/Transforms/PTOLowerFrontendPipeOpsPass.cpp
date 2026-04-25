@@ -27,6 +27,12 @@ using namespace mlir::pto;
 
 namespace {
 
+constexpr int8_t kC2VDirMask = 1;
+constexpr int8_t kV2CDirMask = 2;
+constexpr int8_t kBidirectionalDirMask = 3;
+constexpr int32_t kSingleDirectionSlotNum = 8;
+constexpr int32_t kBidirectionalSlotNum = 4;
+
 struct FrontendPipeHandles {
   Value c2vPipe;
   Value v2cPipe;
@@ -64,7 +70,9 @@ static FailureOr<Value> createFrontendPipe(InitOpT initOp, IRRewriter &rewriter,
   if (failed(requireFrontendGmSlotBuffer(initOp)))
     return failure();
 
-  auto localSlotNumAttr = rewriter.getI32IntegerAttr(slotNum);
+  IntegerAttr localSlotNumAttr = initOp.getLocalSlotNumAttr();
+  if (!localSlotNumAttr)
+    localSlotNumAttr = rewriter.getI32IntegerAttr(slotNum);
   auto pipe = rewriter.create<InitializeL2G2LPipeOp>(
       loc, pipeTy, dirAttr, slotSizeAttr, slotNumAttr, localSlotNumAttr,
       IntegerAttr{}, noSplitAttr, initOp.getGmSlotBuffer(), localAddr,
@@ -78,13 +86,13 @@ lowerSingleDirectionFrontendInit(InitOpT initOp, IRRewriter &rewriter,
                                  PTOArch arch, Type pipeTy, int8_t dirMask,
                                  Value localAddr) {
   auto pipeOr =
-      createFrontendPipe(initOp, rewriter, arch, pipeTy, dirMask, /*slotNum=*/8,
-                         localAddr);
+      createFrontendPipe(initOp, rewriter, arch, pipeTy, dirMask,
+                         kSingleDirectionSlotNum, localAddr);
   if (failed(pipeOr))
     return failure();
 
   FrontendPipeHandles handles;
-  if (dirMask == 1)
+  if (dirMask == kC2VDirMask)
     handles.c2vPipe = *pipeOr;
   else
     handles.v2cPipe = *pipeOr;
@@ -97,7 +105,8 @@ static FailureOr<FrontendPipeHandles>
 lowerBidirectionalFrontendInit(InitOpT initOp, IRRewriter &rewriter,
                                PTOArch arch, Type pipeTy) {
   auto pipeOr = createFrontendPipe(initOp, rewriter, arch, pipeTy,
-                                   /*dirMask=*/3, /*slotNum=*/4,
+                                   kBidirectionalDirMask,
+                                   kBidirectionalSlotNum,
                                    initOp.getC2vConsumerBuf(),
                                    initOp.getV2cConsumerBuf());
   if (failed(pipeOr))
@@ -118,15 +127,15 @@ static FailureOr<FrontendPipeHandles> lowerFrontendInitOp(InitOpT initOp,
   PTOArch arch = getTargetArch(initOp.getOperation());
 
   switch (initOp.getDirMask()) {
-  case 1:
+  case kC2VDirMask:
     return lowerSingleDirectionFrontendInit(initOp, rewriter, arch, pipeTy,
-                                            /*dirMask=*/1,
+                                            kC2VDirMask,
                                             initOp.getC2vConsumerBuf());
-  case 2:
+  case kV2CDirMask:
     return lowerSingleDirectionFrontendInit(initOp, rewriter, arch, pipeTy,
-                                            /*dirMask=*/2,
+                                            kV2CDirMask,
                                             initOp.getV2cConsumerBuf());
-  case 3:
+  case kBidirectionalDirMask:
     return lowerBidirectionalFrontendInit(initOp, rewriter, arch, pipeTy);
   default:
     return FrontendPipeHandles{};

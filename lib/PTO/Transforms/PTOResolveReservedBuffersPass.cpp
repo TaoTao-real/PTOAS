@@ -39,6 +39,15 @@ using namespace mlir::pto;
 namespace {
 
 constexpr int32_t kMaxHardwareFlagIds = 16;
+constexpr size_t kPeerPipeInitOpCount = 2;
+constexpr size_t kPeerPipeParticipantCount = 2;
+constexpr int32_t kFlagAlignment = 2;
+constexpr int8_t kC2VDirMask = 1;
+constexpr int8_t kV2CDirMask = 2;
+constexpr int8_t kBidirectionalDirMask = 3;
+constexpr unsigned kSingleDirectionFlagWidth = 2;
+constexpr unsigned kBidirectionalFlagWidth = 4;
+constexpr unsigned kVisitedInitReserveSize = 16;
 
 struct PipePeerKey {
   std::string ownerFunc;
@@ -164,10 +173,10 @@ static LogicalResult collectPeerAwareInit(InitOpT initOp,
   };
 
   bool recorded = false;
-  if (info.dirMask == 3) {
+  if (info.dirMask == kBidirectionalDirMask) {
     Value peerAddr = initOp.getPeerLocalAddr();
-    recorded = recordAddr(getLocalAddrOperand(initOp), /*c2v=*/1);
-    recorded = (peerAddr && recordAddr(peerAddr, /*v2c=*/2)) || recorded;
+    recorded = recordAddr(getLocalAddrOperand(initOp), kC2VDirMask);
+    recorded = (peerAddr && recordAddr(peerAddr, kV2CDirMask)) || recorded;
   } else {
     recorded = recordAddr(getLocalAddrOperand(initOp), info.dirMask);
   }
@@ -230,7 +239,7 @@ buildPeerAwareComponents(const SmallVectorImpl<PipeInitInfo> &initInfos,
   }
 
   SmallVector<PipeComponent> components;
-  llvm::SmallPtrSet<Operation *, 16> visited;
+  llvm::SmallPtrSet<Operation *, kVisitedInitReserveSize> visited;
   for (const PipeInitInfo &rootInfo : initInfos) {
     if (!visited.insert(rootInfo.op).second)
       continue;
@@ -246,7 +255,7 @@ buildPeerAwareComponents(const SmallVectorImpl<PipeInitInfo> &initInfos,
       }
     }
 
-    if (component.ops.size() != 2) {
+    if (component.ops.size() != kPeerPipeInitOpCount) {
       return rootInfo.op->emitOpError(
           "requires a complete compatible peer init pair when local_addr comes "
           "from pto.reserve_buffer or pto.import_reserved_buffer");
@@ -263,7 +272,9 @@ buildPeerAwareComponents(const SmallVectorImpl<PipeInitInfo> &initInfos,
     component.slotSize = lhs.slotSize;
     component.slotNum = lhs.slotNum;
     component.localSlotNum = lhs.localSlotNum;
-    component.flagWidth = component.dirMask == 3 ? 4u : 2u;
+    component.flagWidth = component.dirMask == kBidirectionalDirMask
+                              ? kBidirectionalFlagWidth
+                              : kSingleDirectionFlagWidth;
 
     for (Operation *op : component.ops) {
       const PipeInitInfo &info = *infoByOp[op];
@@ -277,7 +288,7 @@ buildPeerAwareComponents(const SmallVectorImpl<PipeInitInfo> &initInfos,
         component.explicitFlagBase = flagBaseAttr.getInt();
       }
     }
-    if (component.participants.size() != 2) {
+    if (component.participants.size() != kPeerPipeParticipantCount) {
       return component.ops.front()->emitOpError(
           "requires a complete compatible peer init pair when local_addr comes "
           "from pto.reserve_buffer or pto.import_reserved_buffer");
@@ -294,7 +305,7 @@ static bool overlaps(const FlagInterval &lhs, const FlagInterval &rhs) {
 }
 
 static int32_t alignToEven(int32_t value) {
-  return value % 2 == 0 ? value : value + 1;
+  return value % kFlagAlignment == 0 ? value : value + (kFlagAlignment - 1);
 }
 
 static LogicalResult reserveComponentFlagBase(const PipeComponent &component,
