@@ -1,4 +1,4 @@
-// RUN: ptoas %s 2>&1 1>/dev/null | FileCheck %s
+// RUN: ptoas %s 2>&1 | FileCheck %s
 
 module {
   func.func @tilebuf_root_trace(%arg0: !pto.ptr<f16>,
@@ -22,9 +22,11 @@ module {
     %base = pto.alloc_tile
       : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16,
                       blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    %sub = pto.subset %base[%c0, %c0] sizes [16, 16]
-      : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16,
-                      blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %sub = pto.subview %base[%c0, %c0] sizes [16, 16] :
+      !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16,
+                    blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      -> !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16,
+                       blayout=row_major, slayout=none_box, fractal=512, pad=0>
     %cast = pto.bitcast %sub
       : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16,
                       blayout=row_major, slayout=none_box, fractal=512, pad=0>
@@ -41,7 +43,8 @@ module {
   }
 }
 
-// CHECK: end PTO plan Mem!
-// CHECK: func.func @tilebuf_root_trace
-// CHECK-NOT: PlanMemory Fail : Unrecognized type of Operation touches local buffer!
-// CHECK: pto.pointer_cast(
+// CHECK: __global__ AICORE void tilebuf_root_trace
+// CHECK: Tile<TileType::Vec, half, 16, 16, BLayout::RowMajor, 16, 16, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null> {{v[0-9]+}};
+// CHECK: Tile<TileType::Vec, int16_t, 16, 16, BLayout::RowMajor, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null> {{v[0-9]+}};
+// CHECK: reinterpret_cast<uint64_t>
+// CHECK: TSTORE(

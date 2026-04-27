@@ -108,21 +108,6 @@ static Value peelUnrealized(Value v) {
   return v;
 }
 
-// Returns true if `value` is a constant integer-like zero.
-static bool isConstZeroIndexLike(Value value) {
-  if (!value)
-    return false;
-  if (auto cst = value.getDefiningOp<arith::ConstantOp>()) {
-    if (auto intAttr = dyn_cast<IntegerAttr>(cst.getValue()))
-      return intAttr.getInt() == 0;
-  }
-  if (auto cst = value.getDefiningOp<arith::ConstantIndexOp>())
-    return cst.value() == 0;
-  if (auto castOp = value.getDefiningOp<arith::IndexCastOp>())
-    return isConstZeroIndexLike(castOp.getIn());
-  return false;
-}
-
 static std::optional<int64_t> getConstIndexLikeValue(Value value) {
   value = peelUnrealized(value);
   if (!value)
@@ -283,29 +268,73 @@ static FailureOr<Value> materializeTileSubviewByteOffset(
       .getResult();
 }
 
+static SmallVector<Value> materializeShiftedPointerCastAddrs(
+    ConversionPatternRewriter &rewriter, Location loc, ValueRange addrs,
+    Value byteOffset) {
+  if (!byteOffset) {
+    SmallVector<Value> copied(addrs.begin(), addrs.end());
+    return copied;
+  }
+  if (auto cst = getConstIndexLikeValue(byteOffset)) {
+    if (*cst == 0) {
+      SmallVector<Value> copied(addrs.begin(), addrs.end());
+      return copied;
+    }
+  }
+
+  SmallVector<Value> shiftedAddrs;
+  shiftedAddrs.reserve(addrs.size());
+  for (Value addr : addrs) {
+    if (auto cst = getConstIndexLikeValue(byteOffset)) {
+      Value byteOffsetCst =
+          rewriter.create<arith::ConstantIntOp>(loc, *cst, 64);
+      shiftedAddrs.push_back(
+          rewriter.create<arith::AddIOp>(loc, addr, byteOffsetCst));
+      continue;
+    }
+    shiftedAddrs.push_back(
+        rewriter.create<arith::AddIOp>(loc, addr, byteOffset));
+  }
+  return shiftedAddrs;
+}
+
 // Traces view-like source to the defining pointer_cast and returns its addrs.
-// WIP constraint: subset hops are only supported when all offsets are zero.
 static FailureOr<SmallVector<Value>>
-tracePointerCastAddrsFromSource(Value source) {
+tracePointerCastAddrsFromSource(ConversionPatternRewriter &rewriter, Location loc,
+                                Value source) {
   source = peelUnrealized(source);
+  Value accumulatedByteOffset;
   int depthGuard = 64;
   while (source && depthGuard-- > 0) {
     if (auto allocOp = source.getDefiningOp<pto::AllocTileOp>()) {
       if (allocOp.getAddr())
-        return SmallVector<Value>{allocOp.getAddr()};
+        return materializeShiftedPointerCastAddrs(
+            rewriter, loc, SmallVector<Value>{allocOp.getAddr()},
+            accumulatedByteOffset);
       return failure();
     }
     if (auto srcCast = source.getDefiningOp<pto::PointerCastOp>()) {
       SmallVector<Value> addrs(srcCast.getAddrs().begin(), srcCast.getAddrs().end());
       if (addrs.empty())
         return failure();
-      return addrs;
+      return materializeShiftedPointerCastAddrs(rewriter, loc, addrs,
+                                               accumulatedByteOffset);
     }
     if (auto subviewOp = source.getDefiningOp<pto::SubViewOp>()) {
-      for (Value offset : subviewOp.getOffsets()) {
-        if (!isConstZeroIndexLike(offset))
-          return failure();
-      }
+      auto srcType = dyn_cast<pto::TileBufType>(subviewOp.getSource().getType());
+      if (!srcType)
+        return failure();
+      FailureOr<Value> byteOffset = materializeTileSubviewByteOffset(
+          rewriter, loc, srcType, subviewOp.getOffsets());
+      if (failed(byteOffset))
+        return failure();
+      if (!accumulatedByteOffset)
+        accumulatedByteOffset = *byteOffset;
+      else
+        accumulatedByteOffset = rewriter
+                                    .create<arith::AddIOp>(
+                                        loc, accumulatedByteOffset, *byteOffset)
+                                    .getResult();
       source = peelUnrealized(subviewOp.getSource());
       continue;
     }
@@ -3702,7 +3731,8 @@ struct PTOBitcastToPointerCast : public OpConversionPattern<pto::BitcastOp> {
     if (!dstType)
       return failure();
 
-    FailureOr<SmallVector<Value>> addrs = tracePointerCastAddrsFromSource(op.getSrc());
+    FailureOr<SmallVector<Value>> addrs =
+        tracePointerCastAddrsFromSource(rewriter, op.getLoc(), op.getSrc());
     if (failed(addrs))
       return rewriter.notifyMatchFailure(op, "expects bitcast source from pointer_cast");
 
@@ -3726,9 +3756,9 @@ struct PTOTReshapeToPointerCast : public OpConversionPattern<pto::TReshapeOp> {
 
     Value remappedSrc = adaptor.getSrc() ? adaptor.getSrc() : op.getSrc();
     FailureOr<SmallVector<Value>> addrs =
-        tracePointerCastAddrsFromSource(remappedSrc);
+        tracePointerCastAddrsFromSource(rewriter, op.getLoc(), remappedSrc);
     if (failed(addrs))
-      addrs = tracePointerCastAddrsFromSource(op.getSrc());
+      addrs = tracePointerCastAddrsFromSource(rewriter, op.getLoc(), op.getSrc());
     if (failed(addrs))
       return rewriter.notifyMatchFailure(op, "expects treshape source from pointer_cast");
 
@@ -3755,7 +3785,7 @@ struct PTOSubViewToPointerCast : public OpConversionPattern<pto::SubViewOp> {
                                          "expects tile_buf source on subview");
 
     FailureOr<SmallVector<Value>> addrs =
-        tracePointerCastAddrsFromSource(op.getSource());
+        tracePointerCastAddrsFromSource(rewriter, op.getLoc(), op.getSource());
     if (failed(addrs))
       return rewriter.notifyMatchFailure(op, "expects subview source from pointer_cast");
 
@@ -3765,19 +3795,8 @@ struct PTOSubViewToPointerCast : public OpConversionPattern<pto::SubViewOp> {
       return rewriter.notifyMatchFailure(
           op, "failed to materialize byte offset for tile subview");
 
-    SmallVector<Value> shiftedAddrs;
-    shiftedAddrs.reserve(addrs->size());
-    for (Value addr : *addrs) {
-      if (auto cst = getConstIndexLikeValue(*byteOffset)) {
-        Value byteOffsetCst =
-            rewriter.create<arith::ConstantIntOp>(op.getLoc(), *cst, 64);
-        shiftedAddrs.push_back(
-            rewriter.create<arith::AddIOp>(op.getLoc(), addr, byteOffsetCst));
-        continue;
-      }
-      shiftedAddrs.push_back(
-          rewriter.create<arith::AddIOp>(op.getLoc(), addr, *byteOffset));
-    }
+    SmallVector<Value> shiftedAddrs = materializeShiftedPointerCastAddrs(
+        rewriter, op.getLoc(), *addrs, *byteOffset);
 
     Value vRow = adaptor.getValidRow();
     Value vCol = adaptor.getValidCol();
