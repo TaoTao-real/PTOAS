@@ -1,0 +1,42 @@
+// RUN: ptoas --pto-arch=a3 --enable-insert-sync %s | FileCheck %s
+//
+// Regression guard for no-else zero-trip correctness:
+// - Then branch may be skipped at runtime.
+// - The post-if vector op must still be protected by MTE2->V sync that executes
+//   on all paths (hoisted before `if`).
+//
+// CHECK-LABEL: __global__ AICORE void if_no_else_zero_trip_sync_guard(
+// CHECK: wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID[[PRE:[0-9]+]]);
+// CHECK-NEXT: if (
+// CHECK: TADD(
+// CHECK: }
+// CHECK: TADD(
+
+module attributes {pto.target_arch = "a2a3"} {
+  func.func @if_no_else_zero_trip_sync_guard(%arg0: !pto.ptr<f16>, %arg1: !pto.ptr<f16>, %cond: i1) attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c16 = arith.constant 16 : index
+
+    %tv_in = pto.make_tensor_view %arg0, shape = [%c16, %c16], strides = [%c16, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<?x?xf16>
+    %tv_out = pto.make_tensor_view %arg1, shape = [%c16, %c16], strides = [%c16, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<?x?xf16>
+
+    %sv_in = pto.partition_view %tv_in, offsets = [%c0, %c0], sizes = [%c16, %c16] : !pto.tensor_view<?x?xf16> -> !pto.partition_tensor_view<16x16xf16>
+    %sv_out = pto.partition_view %tv_out, offsets = [%c0, %c0], sizes = [%c16, %c16] : !pto.tensor_view<?x?xf16> -> !pto.partition_tensor_view<16x16xf16>
+
+    %ub0 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %ub1 = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    pto.tload ins(%sv_in : !pto.partition_tensor_view<16x16xf16>) outs(%ub0 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tload ins(%sv_in : !pto.partition_tensor_view<16x16xf16>) outs(%ub1 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+
+    scf.if %cond {
+      pto.tadd ins(%ub0, %ub0 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%ub1 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    }
+
+    pto.tadd ins(%ub1, %ub0 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%ub1 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+
+    pto.tstore ins(%ub1 : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%sv_out : !pto.partition_tensor_view<16x16xf16>)
+    return
+  }
+}

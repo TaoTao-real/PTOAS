@@ -22,7 +22,7 @@
 namespace mlir {
 namespace pto {
  
-struct SyncRecord {
+struct SyncRecordState {
   // Record pipes that have already been waited for (per multi-buffer slot).
   //
   // Use PIPE_LAST + 1 to keep indices stable even if PIPE_UNASSIGNED (99)
@@ -33,6 +33,13 @@ struct SyncRecord {
   // Record the pairing status of set/wait within a syncIndex.
   llvm::DenseMap<int, bool> syncFinder;
 };
+
+struct SyncRecord {
+  // Facts that hold on all feasible paths reaching current scan point.
+  SyncRecordState must;
+  // Facts that hold on at least one feasible path reaching current scan point.
+  SyncRecordState may;
+};
  
 using SyncRecordList = std::array<SyncRecord, MAX_MULTI_BUFFER_NUM>;
  
@@ -42,12 +49,14 @@ public:
                      MemoryDependentAnalyzer &memDepAnalyzer,
                      SyncOperations &syncOperations, func::FuncOp func,
                      SyncAnalysisMode syncAnalysisMode =
-                         SyncAnalysisMode::NORMALSYNC)
+                         SyncAnalysisMode::NORMALSYNC,
+                     bool assumeAliveLoops = false)
       : syncIR_(syncIR), 
         memAnalyzer_(memDepAnalyzer),
         syncOperations_(syncOperations), 
         func_(func),
-        syncAnalysisMode_(syncAnalysisMode) {}
+        syncAnalysisMode_(syncAnalysisMode),
+        assumeAliveLoops_(assumeAliveLoops) {}
  
   ~InsertSyncAnalysis() = default;
  
@@ -62,6 +71,7 @@ private:
   SyncOperations &syncOperations_;
   func::FuncOp func_;
   SyncAnalysisMode syncAnalysisMode_;
+  bool assumeAliveLoops_{false};
   
   // 全局同步索引计数
   unsigned syncIndex_{0};

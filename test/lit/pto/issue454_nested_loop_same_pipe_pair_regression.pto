@@ -1,8 +1,13 @@
 // RUN: ptoas --pto-arch=a3 --enable-insert-sync %s | FileCheck %s
+// RUN: ptoas --pto-arch=a3 --enable-insert-sync %s > %t.default
+// RUN: ptoas --pto-arch=a3 --enable-insert-sync --insert-sync-assume-alive-loops %s > %t.alive
+// RUN: test $(grep -c "wait_flag(PIPE_M, PIPE_MTE1" %t.alive) -lt $(grep -c "wait_flag(PIPE_M, PIPE_MTE1" %t.default)
 //
 // Regression guard for nested loops sharing the same pipe pair (Issue #454 risk point):
 // - Outer loop-carried and inner loop-carried syncs on PIPE_M -> PIPE_MTE1 must coexist.
 // - Inner-loop and outer-loop event chains must both keep their set/wait handshake.
+// - When assume-alive-loops is enabled, loop-body sync state propagation should reduce
+//   conservative post-loop PIPE_M -> PIPE_MTE1 waits.
 //
 // CHECK-LABEL: __global__ AICORE void nested_loop_same_pipe_pair()
 // CHECK: for (size_t

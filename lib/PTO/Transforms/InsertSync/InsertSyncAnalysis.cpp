@@ -36,6 +36,57 @@ static bool isValidPipeIndex(PipelineType pipe) {
   return static_cast<unsigned>(pipe) < kPipeStateSize;
 }
 
+static bool getFinderValue(const llvm::DenseMap<int, bool> &finder, int key) {
+  auto it = finder.find(key);
+  return it != finder.end() && it->second;
+}
+
+static llvm::DenseMap<int, bool>
+intersectFinder(const llvm::DenseMap<int, bool> &lhs,
+                const llvm::DenseMap<int, bool> &rhs) {
+  llvm::DenseMap<int, bool> out;
+  for (const auto &kv : lhs) {
+    if (kv.second && getFinderValue(rhs, kv.first)) {
+      out[kv.first] = true;
+    }
+  }
+  return out;
+}
+
+static llvm::DenseMap<int, bool>
+unionFinder(const llvm::DenseMap<int, bool> &lhs,
+            const llvm::DenseMap<int, bool> &rhs) {
+  llvm::DenseMap<int, bool> out = lhs;
+  for (const auto &kv : rhs) {
+    if (kv.second) {
+      out[kv.first] = true;
+    }
+  }
+  return out;
+}
+
+static void intersectAlreadySync(
+    std::array<bool, static_cast<unsigned>(PipelineType::PIPE_LAST) + 1U> &out,
+    const std::array<bool, static_cast<unsigned>(PipelineType::PIPE_LAST) + 1U>
+        &lhs,
+    const std::array<bool, static_cast<unsigned>(PipelineType::PIPE_LAST) + 1U>
+        &rhs) {
+  for (size_t pipeIdx = 0; pipeIdx < kPipeStateSize; ++pipeIdx) {
+    out[pipeIdx] = lhs[pipeIdx] && rhs[pipeIdx];
+  }
+}
+
+static void unionAlreadySync(
+    std::array<bool, static_cast<unsigned>(PipelineType::PIPE_LAST) + 1U> &out,
+    const std::array<bool, static_cast<unsigned>(PipelineType::PIPE_LAST) + 1U>
+        &lhs,
+    const std::array<bool, static_cast<unsigned>(PipelineType::PIPE_LAST) + 1U>
+        &rhs) {
+  for (size_t pipeIdx = 0; pipeIdx < kPipeStateSize; ++pipeIdx) {
+    out[pipeIdx] = lhs[pipeIdx] || rhs[pipeIdx];
+  }
+}
+
 // ==============================================================================
 // 1. Entry Point
 // ==============================================================================
@@ -197,19 +248,24 @@ unsigned InsertSyncAnalysis::InsertLoopSync(
     SyncRecordList &syncRecordList,
     const std::optional<unsigned> &forEndIndex) {
   if (loopElement->getLoopKind() == KindOfLoop::LOOP_END) {
+    SyncRecordList syncRecordBaseList = syncRecordList;
     SyncRecordList syncRecordForList = syncRecordList;
     unsigned newBegin =
         std::max(begin, index - (loopElement->endId - loopElement->beginId));
     unsigned newEnd = index;
     InsertSeqSync(nowCompound, syncElement, static_cast<int>(newBegin),
                   static_cast<int>(newEnd), syncRecordForList, forEndIndex);
-    // A loop may execute zero iterations at runtime. Keep correctness for both
-    // paths by not promoting alreadySync from the loop-body traversal into the
-    // outer state. We only carry syncFinder updates, matching no-else branch
-    // behavior in InsertBranchSync.
-    for (size_t bufferIdx = 0; bufferIdx < syncRecordList.size(); bufferIdx++)
-      syncRecordList[bufferIdx].syncFinder =
-          syncRecordForList[bufferIdx].syncFinder;
+    // Loops are treated as may-zero by default:
+    //   must_out = must_in ∩ must_body_exit
+    //   may_out  = may_in  ∪ may_body_exit
+    //
+    // Optional aggressive mode keeps legacy "assume alive loop" behavior and
+    // promotes full state from body exit.
+    if (assumeAliveLoops_) {
+      syncRecordList = std::move(syncRecordForList);
+    } else {
+      MergeAlreadySync(syncRecordList, syncRecordBaseList, syncRecordForList);
+    }
     return (loopElement->endId - loopElement->beginId);
   }
   return 0;
@@ -221,6 +277,7 @@ unsigned InsertSyncAnalysis::InsertBranchSync(
     SyncRecordList &syncRecordList,
     const std::optional<unsigned> &forEndIndex) {
   if (branchElement->getBranchKind() == KindOfBranch::IF_END) {
+    SyncRecordList syncRecordBaseList = syncRecordList;
     SyncRecordList syncRecordIfList = syncRecordList;
 
     // The indices here are positions in `syncElement` (which may be a slice
@@ -240,10 +297,9 @@ unsigned InsertSyncAnalysis::InsertBranchSync(
                     static_cast<int>(branchEnd), syncRecordElseList, forEndIndex);
       MergeAlreadySync(syncRecordList, syncRecordIfList, syncRecordElseList);
     } else {
-      // No else-branch: do not promote `alreadySync`, but keep syncFinder
-      // updates from the then-branch.
-      for (size_t bufferIdx = 0; bufferIdx < syncRecordList.size(); bufferIdx++)
-        syncRecordList[bufferIdx].syncFinder = syncRecordIfList[bufferIdx].syncFinder;
+      // No else branch has two paths: execute-then vs bypass-then.
+      // Merge must/may against the bypass baseline.
+      MergeAlreadySync(syncRecordList, syncRecordIfList, syncRecordBaseList);
     }
     return (branchElement->endId - branchElement->beginId);
   } else if (branchElement->getBranchKind() == KindOfBranch::ELSE_BEGIN &&
@@ -258,12 +314,18 @@ void InsertSyncAnalysis::MergeAlreadySync(
     SyncRecordList &syncRecordList, const SyncRecordList &syncRecordIfList,
     const SyncRecordList &syncRecordElseList) {
   for (size_t bufferIdx = 0; bufferIdx < syncRecordList.size(); bufferIdx++) {
-    for (size_t pipeIdx = 0; pipeIdx < kPipeStateSize; pipeIdx++) {
-      if (syncRecordIfList[bufferIdx].alreadySync[pipeIdx] &&
-          syncRecordElseList[bufferIdx].alreadySync[pipeIdx]) {
-        syncRecordList[bufferIdx].alreadySync[pipeIdx] = true;
-      }
-    }
+    auto &out = syncRecordList[bufferIdx];
+    const auto &lhs = syncRecordIfList[bufferIdx];
+    const auto &rhs = syncRecordElseList[bufferIdx];
+
+    // Must facts must hold on all paths. May facts hold on any path.
+    intersectAlreadySync(out.must.alreadySync, lhs.must.alreadySync,
+                         rhs.must.alreadySync);
+    out.must.syncFinder = intersectFinder(lhs.must.syncFinder, rhs.must.syncFinder);
+
+    unionAlreadySync(out.may.alreadySync, lhs.may.alreadySync,
+                     rhs.may.alreadySync);
+    out.may.syncFinder = unionFinder(lhs.may.syncFinder, rhs.may.syncFinder);
   }
 }
 
@@ -404,7 +466,7 @@ bool InsertSyncAnalysis::isAlreadySync(
   if (recordListIndex >= syncRecordList.size()) return false;
   if (!isValidPipeIndex(frontPipe)) return false;
   return syncRecordList[recordListIndex]
-      .alreadySync[static_cast<unsigned>(frontPipe)];
+      .must.alreadySync[static_cast<unsigned>(frontPipe)];
 }
 
 void InsertSyncAnalysis::UpdateAlreadySync(const SyncOps &syncVector,
@@ -438,32 +500,37 @@ void InsertSyncAnalysis::UpdateSyncRecord(const SyncOperation *sync,
     return;
   }
 
-  auto &recordAlready = syncRecord.alreadySync;
-  auto &recordFinder = syncRecord.syncFinder;
+  auto updateState = [&](SyncRecordState &state) {
+    auto &recordAlready = state.alreadySync;
+    auto &recordFinder = state.syncFinder;
 
-  bool barrierFinder =
-      (nowPipeValue == waitPipeValue) &&
-      (sync->GetType() == SyncOperation::TYPE::PIPE_BARRIER);
-  if (barrierFinder) {
-    recordAlready[static_cast<unsigned>(nowPipeValue)] = true;
-    return;
-  }
+    bool barrierFinder =
+        (nowPipeValue == waitPipeValue) &&
+        (sync->GetType() == SyncOperation::TYPE::PIPE_BARRIER);
+    if (barrierFinder) {
+      recordAlready[static_cast<unsigned>(nowPipeValue)] = true;
+      return;
+    }
 
-  bool canTransitivelyEliminate =
-      recordAlready[static_cast<unsigned>(waitPipeValue)] ||
-      (nowPipeValue == waitPipeValue);
-  if (!canTransitivelyEliminate) return;
+    bool canTransitivelyEliminate =
+        recordAlready[static_cast<unsigned>(waitPipeValue)] ||
+        (nowPipeValue == waitPipeValue);
+    if (!canTransitivelyEliminate) return;
 
-  if (recordFinder[sync->GetSyncIndex()] &&
-      (sync->GetType() == SyncOperation::TYPE::SET_EVENT ||
-       sync->GetType() == SyncOperation::TYPE::SYNC_BLOCK_SET)) {
-    recordAlready[static_cast<unsigned>(setPipeValue)] = true;
-  }
+    if (recordFinder[sync->GetSyncIndex()] &&
+        (sync->GetType() == SyncOperation::TYPE::SET_EVENT ||
+         sync->GetType() == SyncOperation::TYPE::SYNC_BLOCK_SET)) {
+      recordAlready[static_cast<unsigned>(setPipeValue)] = true;
+    }
 
-  if (sync->GetType() == SyncOperation::TYPE::WAIT_EVENT ||
-      sync->GetType() == SyncOperation::TYPE::SYNC_BLOCK_WAIT) {
-    recordFinder[sync->GetSyncIndex()] = true;
-  }
+    if (sync->GetType() == SyncOperation::TYPE::WAIT_EVENT ||
+        sync->GetType() == SyncOperation::TYPE::SYNC_BLOCK_WAIT) {
+      recordFinder[sync->GetSyncIndex()] = true;
+    }
+  };
+
+  updateState(syncRecord.must);
+  updateState(syncRecord.may);
 }
 
 void InsertSyncAnalysis::UpdateSyncRecordInfo(
@@ -479,8 +546,9 @@ void InsertSyncAnalysis::UpdateSyncRecordInfo(
       continue;
     }
     if (!isValidPipeIndex(newSync->GetSrcPipe())) continue;
-    syncRecordList[bufferIdx]
-        .alreadySync[static_cast<unsigned>(newSync->GetSrcPipe())] = true;
+    const unsigned srcPipe = static_cast<unsigned>(newSync->GetSrcPipe());
+    syncRecordList[bufferIdx].must.alreadySync[srcPipe] = true;
+    syncRecordList[bufferIdx].may.alreadySync[srcPipe] = true;
   }
 }
 

@@ -31,6 +31,12 @@ def PTOInsertSync : Pass<"pto-insert-sync", "func::FuncOp"> {
   // Declare the constructor function name
   let constructor = "mlir::pto::createPTOInsertSyncPass()";
 
+  let options = [
+    Option<"assumeAliveLoops", "assume-alive-loops", "bool",
+           /*default=*/"false",
+           "Assume loops execute at least one iteration so loop-body sync state can be propagated">
+  ];
+
   let dependentDialects = [
     "mlir::pto::PTODialect",
     "mlir::memref::MemRefDialect",

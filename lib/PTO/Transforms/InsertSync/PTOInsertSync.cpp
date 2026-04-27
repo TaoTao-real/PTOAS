@@ -60,6 +60,9 @@ static bool hasGatherScatterLikeOps(func::FuncOp func) {
 }
  
 struct PTOInsertSyncPass : public mlir::pto::impl::PTOInsertSyncBase<PTOInsertSyncPass> {
+  PTOInsertSyncPass() = default;
+  explicit PTOInsertSyncPass(const mlir::pto::PTOInsertSyncOptions &options)
+      : PTOInsertSyncBase(options) {}
   
   void runOnOperation() override {
     func::FuncOp func = getOperation();
@@ -101,7 +104,8 @@ struct PTOInsertSyncPass : public mlir::pto::impl::PTOInsertSyncBase<PTOInsertSy
  
     // 2. Analyzer: 依赖分析与插入逻辑 Sync
     InsertSyncAnalysis analyzer(syncIR, memAnalyzer, syncOpsStorage, func,
-                                SyncAnalysisMode::NORMALSYNC);
+                                SyncAnalysisMode::NORMALSYNC,
+                                this->assumeAliveLoops);
     analyzer.Run(/*insertBarAllAtLast=*/true);
  
     dumpInsertSyncPhase("After Analysis", syncIR, syncOpsStorage,
@@ -149,4 +153,9 @@ struct PTOInsertSyncPass : public mlir::pto::impl::PTOInsertSyncBase<PTOInsertSy
  
 std::unique_ptr<Pass> mlir::pto::createPTOInsertSyncPass() {
   return std::make_unique<PTOInsertSyncPass>();
+}
+
+std::unique_ptr<Pass> mlir::pto::createPTOInsertSyncPass(
+    const PTOInsertSyncOptions &insertSyncOptions) {
+  return std::make_unique<PTOInsertSyncPass>(insertSyncOptions);
 }
