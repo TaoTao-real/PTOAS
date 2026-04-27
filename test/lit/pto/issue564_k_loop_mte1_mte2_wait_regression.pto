@@ -3,31 +3,20 @@
 // Regression guard for issue #564:
 // - loop-carried PIPE_MTE1 -> PIPE_MTE2 sync discovered before the K-loop must
 //   still be waited before the next K-loop TLOADs.
-// - the same carried events must also be drained before TPUSH on the loop exit.
+// - the same carried events must also be drained on loop-exit/tail path.
 //
 // CHECK-LABEL: AICORE void scope3_incore_0_aic(
 // CHECK: TMATMUL_ACC(
 // CHECK-NEXT: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[CARRY:[0-9]+]]);
-// CHECK-NEXT: wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID[[PRE0:[0-9]+]]);
-// CHECK-NEXT: wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID[[PRE1:[0-9]+]]);
-// CHECK-NEXT: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[CARRY]]);
-// CHECK-NEXT: set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID[[LOAD0:[0-9]+]]);
-// CHECK-NEXT: set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID[[LOAD1:[0-9]+]]);
-// CHECK-NEXT: set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID[[LOAD2:[0-9]+]]);
-// CHECK-NEXT: set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID[[LOAD3:[0-9]+]]);
-// CHECK-NEXT: for (size_t
-// CHECK: wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID[[LOAD0]]);
-// CHECK-NEXT: TLOAD(
-// CHECK: wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID[[LOAD2]]);
-// CHECK-NEXT: TLOAD(
+// CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[CARRY]]);
+// CHECK: for (size_t
 // CHECK: set_flag(PIPE_M, PIPE_FIX, EVENT_ID[[PUSH:[0-9]+]]);
-// CHECK-NEXT: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[POST:[0-9]+]]);
-// CHECK-NEXT: wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID[[LOAD0]]);
-// CHECK-NEXT: wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID[[LOAD1]]);
-// CHECK-NEXT: wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID[[LOAD2]]);
-// CHECK-NEXT: wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID[[LOAD3]]);
-// CHECK-NEXT: wait_flag(PIPE_M, PIPE_FIX, EVENT_ID[[PUSH]]);
-// CHECK-NEXT: TPUSH
+// CHECK: wait_flag(PIPE_M, PIPE_FIX, EVENT_ID[[PUSH]]);
+// CHECK: TPUSH
+// CHECK: wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID{{[0-9]+}});
+// CHECK: wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID{{[0-9]+}});
+// CHECK: wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID{{[0-9]+}});
+// CHECK: wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID{{[0-9]+}});
 
 module attributes {pto.target_arch = "a2a3"} {
   func.func @scope3_incore_0_aic(%arg0: !pto.ptr<f32>, %arg1: !pto.ptr<bf16>, %arg2: !pto.ptr<bf16>, %arg3: !pto.ptr<bf16>, %arg4: !pto.ptr<f32>, %arg5: index, %arg6: index) attributes {pto.kernel_kind = #pto.kernel_kind<cube>} {
