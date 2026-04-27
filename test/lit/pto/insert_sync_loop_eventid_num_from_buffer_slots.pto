@@ -1,0 +1,63 @@
+// RUN: ptoas --pto-arch=a3 --pto-level=level3 --enable-insert-sync %s | FileCheck %s
+//
+// Loop-carried sync only needs multiple event IDs when the dependent local
+// buffer really has multiple physical address slots. Local MAT/VEC scope alone
+// must not force eventIdNum=2.
+
+module {
+  func.func @singlebuf_loop(%arg0: memref<16x16xf16, #pto.address_space<gm>>,
+                            %arg1: memref<16x16xf16, #pto.address_space<gm>>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %a0 = arith.constant 0 : i64
+    %buf = pto.pointer_cast(%a0) : memref<16x16xf16, #pto.address_space<vec>>
+    scf.for %i = %c0 to %c4 step %c1 {
+      pto.tload ins(%arg0 : memref<16x16xf16, #pto.address_space<gm>>)
+                outs(%buf : memref<16x16xf16, #pto.address_space<vec>>)
+      pto.tstore ins(%buf : memref<16x16xf16, #pto.address_space<vec>>)
+                 outs(%arg1 : memref<16x16xf16, #pto.address_space<gm>>)
+    }
+    return
+  }
+
+  func.func @multibuf_loop(%arg0: memref<16x16xf16, #pto.address_space<gm>>,
+                           %arg1: memref<16x16xf16, #pto.address_space<gm>>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %a0 = arith.constant 0 : i64
+    %a1 = arith.constant 4096 : i64
+    %buf = pto.pointer_cast(%a0, %a1) : memref<16x16xf16, #pto.address_space<vec>>
+    scf.for %i = %c0 to %c4 step %c1 {
+      pto.tload ins(%arg0 : memref<16x16xf16, #pto.address_space<gm>>)
+                outs(%buf : memref<16x16xf16, #pto.address_space<vec>>)
+      pto.tstore ins(%buf : memref<16x16xf16, #pto.address_space<vec>>)
+                 outs(%arg1 : memref<16x16xf16, #pto.address_space<gm>>)
+    }
+    return
+  }
+}
+
+// CHECK-LABEL: AICORE void singlebuf_loop
+// CHECK: set_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID0);
+// CHECK-NOT: set_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID1);
+// CHECK: for (size_t
+// CHECK: wait_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID0);
+// CHECK-NOT: wait_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID1);
+// CHECK: set_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID0);
+// CHECK-NOT: set_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID1);
+// CHECK: wait_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID0);
+// CHECK-NOT: wait_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID1);
+
+// CHECK-LABEL: AICORE void multibuf_loop
+// CHECK: set_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID0);
+// CHECK-NEXT: set_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID1);
+// CHECK: for (size_t
+// CHECK: int32_t [[SEL:v[0-9]+]] =
+// CHECK: event_t [[WAIT:v[0-9]+]] = (event_t) [[SEL]];
+// CHECK-NEXT: wait_flag(PIPE_MTE3, PIPE_MTE2, [[WAIT]]);
+// CHECK: event_t [[SET:v[0-9]+]] = (event_t) [[SEL]];
+// CHECK-NEXT: set_flag(PIPE_MTE3, PIPE_MTE2, [[SET]]);
+// CHECK: wait_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID0);
+// CHECK-NEXT: wait_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID1);

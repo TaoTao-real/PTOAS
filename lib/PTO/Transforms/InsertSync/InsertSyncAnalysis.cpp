@@ -536,16 +536,20 @@ SmallVector<Value> InsertSyncAnalysis::GetMemInfoBuffers(
 
 int InsertSyncAnalysis::GetEventIdNum(
     const DepBaseMemInfoPairVec &depBaseMemInfosVec) {
+  auto getBufferSlotNum = [](const BaseMemInfo *info) -> int {
+    if (!info || info->baseAddresses.size() <= 1)
+      return 1;
+    // Current codegen supports ping-pong selection. Larger N-buffer local
+    // memory planning is not enabled in PTOPlanMemory yet.
+    return 2;
+  };
+
+  int eventIdNum = 1;
   for (const auto &pair : depBaseMemInfosVec) {
-    bool isLocalA =
-        pair.first && (pair.first->scope == pto::AddressSpace::MAT ||
-                       pair.first->scope == pto::AddressSpace::VEC);
-    bool isLocalB =
-        pair.second && (pair.second->scope == pto::AddressSpace::MAT ||
-                        pair.second->scope == pto::AddressSpace::VEC);
-    if (isLocalA || isLocalB) return 2;
+    eventIdNum = std::max(eventIdNum, getBufferSlotNum(pair.first));
+    eventIdNum = std::max(eventIdNum, getBufferSlotNum(pair.second));
   }
-  return 1;
+  return eventIdNum;
 }
 
 bool InsertSyncAnalysis::IsGMHazard(

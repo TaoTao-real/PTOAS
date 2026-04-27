@@ -277,6 +277,18 @@ LogicalResult PTOIRTranslator::UpdatePointerCastOpMemInfo(pto::PointerCastOp op)
     return op.emitError("PointerCast must have at least one address operand");
   }
   Value rootSrc = op.getAddrs().front(); 
+  SmallVector<uint64_t> baseAddresses;
+  baseAddresses.reserve(op.getAddrs().size());
+  for (Value addr : op.getAddrs()) {
+    llvm::APInt apIntValue;
+    if (matchPattern(addr, m_ConstantInt(&apIntValue))) {
+      baseAddresses.push_back(static_cast<uint64_t>(apIntValue.getSExtValue()));
+      continue;
+    }
+    // Keep one conservative slot for each dynamic address. The exact address
+    // is unknown, but the slot count is still needed by loop-carried sync.
+    baseAddresses.push_back(0);
+  }
  
   uint64_t sizeInBytes = 0;
   if (memRefType.hasStaticShape()) {
@@ -294,12 +306,7 @@ LogicalResult PTOIRTranslator::UpdatePointerCastOpMemInfo(pto::PointerCastOp op)
   }
  
   auto newMemInfo = std::make_unique<BaseMemInfo>(
-      res,          
-      rootSrc,      
-      space,
-      SmallVector<uint64_t>{0}, 
-      sizeInBytes
-  );
+      res, rootSrc, space, std::move(baseAddresses), sizeInBytes);
  
   buffer2MemInfoMap_[res].emplace_back(newMemInfo->clone());
   return success();
@@ -569,9 +576,11 @@ void PTOIRTranslator::UpdateAliasBufferInfo(Value result, Value source) {
     auto newInfo = parentInfo->clone(result);
  
     if (!newInfo->baseAddresses.empty()) {
-        newInfo->baseAddresses[0] += deltaOffset;
+      for (uint64_t &baseAddress : newInfo->baseAddresses) {
+        baseAddress += deltaOffset;
+      }
     } else {
-        newInfo->baseAddresses.push_back(deltaOffset);
+      newInfo->baseAddresses.push_back(deltaOffset);
     }
  
     if (newSize > 0) {

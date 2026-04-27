@@ -139,6 +139,17 @@ static void createSetOrWaitFlagOp(IRRewriter &rewriter, Operation *op,
   }
   rewriter.create<pto::SetFlagOp>(op->getLoc(), srcPipe, dstPipe, eventId);
 }
+
+static void createSetOrWaitFlagOp(IRRewriter &rewriter, Operation *op,
+                                  SyncOperation *sync, pto::PipeAttr srcPipe,
+                                  pto::PipeAttr dstPipe, Value eventId) {
+  if (sync->isSyncWaitType()) {
+    rewriter.create<pto::WaitFlagDynOp>(op->getLoc(), srcPipe, dstPipe,
+                                        eventId);
+    return;
+  }
+  rewriter.create<pto::SetFlagDynOp>(op->getLoc(), srcPipe, dstPipe, eventId);
+}
  
 // ==============================================================================
 // 2. SyncCodegen Implementation
@@ -344,13 +355,17 @@ void SyncCodegen::CreateSetWaitOpForMultiBuffer(IRRewriter &rewriter,
                                                 SyncOperation *sync,
                                                 bool beforeInsert) {
   Value bufferSelected = GetBufferSelected(rewriter, op, sync);
-  (void)bufferSelected;
  
   auto srcPipe = getPipeAttr(rewriter, sync->GetActualSrcPipe());
   auto dstPipe = getPipeAttr(rewriter, sync->GetActualDstPipe());
-  auto eventId = getEventAttr(rewriter, sync->eventIds[0]);
   setSyncInsertionPoint(rewriter, op,
                         beforeInsert || op->hasTrait<OpTrait::IsTerminator>());
+  if (bufferSelected) {
+    createSetOrWaitFlagOp(rewriter, op, sync, srcPipe, dstPipe,
+                          bufferSelected);
+    return;
+  }
+  auto eventId = getEventAttr(rewriter, sync->eventIds[0]);
   createSetOrWaitFlagOp(rewriter, op, sync, srcPipe, dstPipe, eventId);
 }
  
@@ -360,6 +375,9 @@ Value SyncCodegen::GetBufferSelected(IRRewriter &rewriter, Operation *op,
     return SyncIndex2SelectBuffer[sync->GetSyncIndex()];
   }
  
+  if (sync->eventIds.size() != 2)
+    return nullptr;
+
   auto parentLoop = op->getParentOfType<scf::ForOp>();
   if (!parentLoop) return nullptr;
  
