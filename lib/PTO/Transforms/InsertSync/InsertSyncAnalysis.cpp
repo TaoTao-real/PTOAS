@@ -255,17 +255,16 @@ unsigned InsertSyncAnalysis::InsertLoopSync(
     unsigned newEnd = index;
     InsertSeqSync(nowCompound, syncElement, static_cast<int>(newBegin),
                   static_cast<int>(newEnd), syncRecordForList, forEndIndex);
-    // Loops are treated as may-zero by default:
+    // Keep loop merge may-safe for correctness:
     //   must_out = must_in ∩ must_body_exit
     //   may_out  = may_in  ∪ may_body_exit
     //
-    // Optional aggressive mode keeps legacy "assume alive loop" behavior and
-    // promotes full state from body exit.
-    if (assumeAliveLoops_) {
-      syncRecordList = std::move(syncRecordForList);
-    } else {
-      MergeAlreadySync(syncRecordList, syncRecordBaseList, syncRecordForList);
-    }
+    // NOTE:
+    // even under "assume alive loops", full state promotion from loop body is
+    // unsound with the current pipe-granularity alreadySync model. Body-local
+    // sync facts can otherwise suppress independent outer sync chains.
+    (void)assumeAliveLoops_;
+    MergeAlreadySync(syncRecordList, syncRecordBaseList, syncRecordForList);
     return (loopElement->endId - loopElement->beginId);
   }
   return 0;
