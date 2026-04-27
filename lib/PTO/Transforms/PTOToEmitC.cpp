@@ -160,26 +160,101 @@ materializeStaticValidDims(ConversionPatternRewriter &rewriter, Location loc,
 
 static int64_t getEmitCScalarByteWidth(Type elemTy);
 
+static FailureOr<std::pair<int64_t, int64_t>>
+getTileBufPhysicalStrides(pto::TileBufType tileType) {
+  auto shape = tileType.getShape();
+  if (shape.size() != 2 || shape[0] == ShapedType::kDynamic ||
+      shape[1] == ShapedType::kDynamic)
+    return failure();
+
+  auto configAttr = tileType.getConfigAttr();
+  if (!configAttr)
+    return failure();
+
+  int32_t blVal = 0;
+  if (auto blAttr = dyn_cast<BLayoutAttr>(configAttr.getBLayout()))
+    blVal = static_cast<int32_t>(blAttr.getValue());
+  else if (auto intAttr = dyn_cast<IntegerAttr>(configAttr.getBLayout()))
+    blVal = static_cast<int32_t>(intAttr.getInt());
+
+  int32_t slVal = 0;
+  if (auto slAttr = dyn_cast<SLayoutAttr>(configAttr.getSLayout()))
+    slVal = static_cast<int32_t>(slAttr.getValue());
+  else if (auto intAttr = dyn_cast<IntegerAttr>(configAttr.getSLayout()))
+    slVal = static_cast<int32_t>(intAttr.getInt());
+
+  int64_t rows = shape[0];
+  int64_t cols = shape[1];
+  bool boxed = slVal != 0;
+  int64_t innerRows = 1;
+  int64_t innerCols = 1;
+  if (boxed) {
+    int32_t fractal = 512;
+    if (auto frAttr = dyn_cast<IntegerAttr>(configAttr.getSFractalSize()))
+      fractal = static_cast<int32_t>(frAttr.getInt());
+
+    unsigned elemBytes = pto::getPTOStorageElemByteSize(tileType.getElementType());
+    if (elemBytes == 0)
+      return failure();
+
+    switch (fractal) {
+    case 1024:
+      innerRows = 16;
+      innerCols = 16;
+      break;
+    case 32:
+      innerRows = 16;
+      innerCols = 2;
+      break;
+    case 512:
+      if (slVal == 1) {
+        innerRows = 16;
+        innerCols = 32 / elemBytes;
+      } else if (slVal == 2) {
+        innerRows = 32 / elemBytes;
+        innerCols = 16;
+      } else {
+        return failure();
+      }
+      break;
+    default:
+      return failure();
+    }
+    if (innerRows <= 0 || innerCols <= 0)
+      return failure();
+  }
+
+  if (!boxed) {
+    if (blVal == 1)
+      return std::pair<int64_t, int64_t>(/*rowStride=*/1, /*colStride=*/rows);
+    return std::pair<int64_t, int64_t>(/*rowStride=*/cols, /*colStride=*/1);
+  }
+
+  if (blVal == 1) {
+    if (slVal != 1)
+      return failure();
+    return std::pair<int64_t, int64_t>(/*rowStride=*/innerCols,
+                                       /*colStride=*/rows);
+  }
+
+  return std::pair<int64_t, int64_t>(/*rowStride=*/cols,
+                                     /*colStride=*/innerRows);
+}
+
 static FailureOr<Value> materializeTileSubviewByteOffset(
     ConversionPatternRewriter &rewriter, Location loc, pto::TileBufType srcType,
     ValueRange offsets) {
   if (srcType.getShape().size() != 2 || offsets.size() != 2)
     return failure();
 
-  auto shape = srcType.getShape();
-  if (shape[0] == ShapedType::kDynamic || shape[1] == ShapedType::kDynamic)
+  FailureOr<std::pair<int64_t, int64_t>> strides =
+      getTileBufPhysicalStrides(srcType);
+  if (failed(strides))
     return failure();
 
-  auto configAttr = srcType.getConfigAttr();
-  if (!configAttr)
+  int64_t elemBytes = pto::getPTOStorageElemByteSize(srcType.getElementType());
+  if (elemBytes <= 0)
     return failure();
-
-  int64_t elemBytes = getEmitCScalarByteWidth(srcType.getElementType());
-  int64_t majorStride = shape[1];
-  if (auto blAttr = dyn_cast<BLayoutAttr>(configAttr.getBLayout())) {
-    if (blAttr.getValue() == pto::BLayout::ColMajor)
-      majorStride = shape[0];
-  }
 
   auto asIndex = [&](Value v) -> Value {
     v = peelUnrealized(v);
@@ -191,19 +266,17 @@ static FailureOr<Value> materializeTileSubviewByteOffset(
 
   Value row = asIndex(offsets[0]);
   Value col = asIndex(offsets[1]);
-  Value strideCst = rewriter.create<arith::ConstantIndexOp>(loc, majorStride);
+  Value rowStrideCst =
+      rewriter.create<arith::ConstantIndexOp>(loc, strides->first);
+  Value colStrideCst =
+      rewriter.create<arith::ConstantIndexOp>(loc, strides->second);
   Value elemBytesCst = rewriter.create<arith::ConstantIndexOp>(loc, elemBytes);
-  Value linearOffset;
-  if (auto blAttr = dyn_cast<BLayoutAttr>(configAttr.getBLayout());
-      blAttr && blAttr.getValue() == pto::BLayout::ColMajor) {
-    linearOffset = rewriter.create<arith::AddIOp>(
-        loc,
-        rewriter.create<arith::MulIOp>(loc, col, strideCst).getResult(), row);
-  } else {
-    linearOffset = rewriter.create<arith::AddIOp>(
-        loc,
-        rewriter.create<arith::MulIOp>(loc, row, strideCst).getResult(), col);
-  }
+  Value rowOffset =
+      rewriter.create<arith::MulIOp>(loc, row, rowStrideCst).getResult();
+  Value colOffset =
+      rewriter.create<arith::MulIOp>(loc, col, colStrideCst).getResult();
+  Value linearOffset =
+      rewriter.create<arith::AddIOp>(loc, rowOffset, colOffset).getResult();
   Value byteOffset =
       rewriter.create<arith::MulIOp>(loc, linearOffset, elemBytesCst).getResult();
   return rewriter.create<arith::IndexCastOp>(loc, rewriter.getI64Type(), byteOffset)
@@ -3706,7 +3779,14 @@ struct PTOSubViewToPointerCast : public OpConversionPattern<pto::SubViewOp> {
           rewriter.create<arith::AddIOp>(op.getLoc(), addr, *byteOffset));
     }
 
-    auto [vRow, vCol] = materializeStaticValidDims(rewriter, op.getLoc(), dstType);
+    Value vRow = adaptor.getValidRow();
+    Value vCol = adaptor.getValidCol();
+    auto [staticVRow, staticVCol] =
+        materializeStaticValidDims(rewriter, op.getLoc(), dstType);
+    if (!vRow)
+      vRow = staticVRow;
+    if (!vCol)
+      vCol = staticVCol;
     auto newCast = rewriter.create<pto::PointerCastOp>(
         op.getLoc(), dstType, shiftedAddrs, vRow ? vRow : Value(),
         vCol ? vCol : Value(),

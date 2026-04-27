@@ -1,0 +1,43 @@
+// RUN: ptoas %s 2>&1 | FileCheck %s
+
+module {
+  func.func @subview_col_major_runtime_offset(
+      %src: !pto.ptr<f32>,
+      %dst: !pto.ptr<f32>) {
+    %c0_src = arith.constant 0 : index
+    %c16_src_0 = arith.constant 16 : index
+    %c16_src_1 = arith.constant 16 : index
+    %c16_src_s0 = arith.constant 16 : index
+    %c1_src_s1 = arith.constant 1 : index
+    %src_tv = pto.make_tensor_view %src, shape = [%c16_src_0, %c16_src_1], strides = [%c16_src_s0, %c1_src_s1] : !pto.tensor_view<16x16xf32>
+    %src_pt = pto.partition_view %src_tv, offsets = [%c0_src, %c0_src], sizes = [%c16_src_0, %c16_src_1] : !pto.tensor_view<16x16xf32> -> !pto.partition_tensor_view<16x16xf32>
+
+    %c0_dst = arith.constant 0 : index
+    %c8_dst_0 = arith.constant 8 : index
+    %c8_dst_1 = arith.constant 8 : index
+    %c8_dst_s0 = arith.constant 8 : index
+    %c1_dst_s1 = arith.constant 1 : index
+    %dst_tv = pto.make_tensor_view %dst, shape = [%c8_dst_0, %c8_dst_1], strides = [%c8_dst_s0, %c1_dst_s1] : !pto.tensor_view<8x8xf32>
+    %dst_pt = pto.partition_view %dst_tv, offsets = [%c0_dst, %c0_dst], sizes = [%c8_dst_0, %c8_dst_1] : !pto.tensor_view<8x8xf32> -> !pto.partition_tensor_view<8x8xf32>
+
+    %c0 = arith.constant 0 : index
+    %c8 = arith.constant 8 : index
+
+    %tile = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=none_box, fractal=512, pad=0>
+    pto.tload ins(%src_pt : !pto.partition_tensor_view<16x16xf32>)
+             outs(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=none_box, fractal=512, pad=0>)
+
+    %sub = pto.subview %tile[%c8, %c0] sizes [8, 8] :
+      !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=col_major, slayout=none_box, fractal=512, pad=0>
+      -> !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=8, v_row=8, v_col=8, blayout=col_major, slayout=none_box, fractal=512, pad=0>
+
+    pto.tstore ins(%sub : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=8, v_row=8, v_col=8, blayout=col_major, slayout=none_box, fractal=512, pad=0>)
+              outs(%dst_pt : !pto.partition_tensor_view<8x8xf32>)
+    return
+  }
+}
+
+// CHECK-DAG: const int32_t [[ROWOFF:v[0-9]+]] = 8;
+// CHECK-DAG: const int32_t [[COLOFF:v[0-9]+]] = 0;
+// CHECK-DAG: const int32_t [[ELEMSZ:v[0-9]+]] = 4;
+// CHECK: int64_t {{.*}} = (int64_t) ((int32_t) (uint32_t) ((int32_t) (uint32_t) [[ROWOFF]] + (uint32_t) [[COLOFF]]) * (uint32_t) [[ELEMSZ]]);

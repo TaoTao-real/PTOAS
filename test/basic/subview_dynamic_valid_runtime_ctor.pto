@@ -1,0 +1,29 @@
+// RUN: ptoas %s 2>&1 | FileCheck %s
+
+module {
+  func.func @subview_dynamic_valid_runtime_ctor(
+      %vr: index, %vc: index, %dst: !pto.ptr<f32>) {
+    %c0 = arith.constant 0 : index
+    %c2 = arith.constant 2 : index
+
+    %tile = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=4, cols=4, v_row=4, v_col=4, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %sub = pto.subview %tile[%c2, %c2] sizes [2, 2] valid [%vr, %vc] :
+      !pto.tile_buf<loc=vec, dtype=f32, rows=4, cols=4, v_row=4, v_col=4, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      -> !pto.tile_buf<loc=vec, dtype=f32, rows=2, cols=2, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    %c0_dst = arith.constant 0 : index
+    %c2_dst_0 = arith.constant 2 : index
+    %c2_dst_1 = arith.constant 2 : index
+    %c2_dst_s0 = arith.constant 2 : index
+    %c1_dst_s1 = arith.constant 1 : index
+    %dst_tv = pto.make_tensor_view %dst, shape = [%c2_dst_0, %c2_dst_1], strides = [%c2_dst_s0, %c1_dst_s1] : !pto.tensor_view<2x2xf32>
+    %dst_pt = pto.partition_view %dst_tv, offsets = [%c0_dst, %c0_dst], sizes = [%c2_dst_0, %c2_dst_1] : !pto.tensor_view<2x2xf32> -> !pto.partition_tensor_view<2x2xf32>
+
+    pto.tstore ins(%sub : !pto.tile_buf<loc=vec, dtype=f32, rows=2, cols=2, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+              outs(%dst_pt : !pto.partition_tensor_view<2x2xf32>)
+    return
+  }
+}
+
+// CHECK: Tile<TileType::Vec, float, 2, 2, BLayout::RowMajor, -1, -1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null> {{v[0-9]+}} = Tile<TileType::Vec, float, 2, 2, BLayout::RowMajor, -1, -1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>({{v[0-9]+}}, {{v[0-9]+}});
+// CHECK-NOT: Tile<TileType::Vec, float, 2, 2, BLayout::RowMajor, 2, 2, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>

@@ -1,0 +1,25 @@
+// RUN: ptoas --pto-arch=a5 %s 2>&1 | FileCheck %s
+
+module {
+  func.func @subview_boxed_runtime_offset_a5()
+      attributes {pto.kernel_kind = #pto.kernel_kind<cube>} {
+    %c0 = arith.constant 0 : index
+    %c128 = arith.constant 128 : index
+
+    %lhs = pto.alloc_tile : !pto.tile_buf<loc=left, dtype=f32, rows=32, cols=64, v_row=32, v_col=64, blayout=col_major, slayout=row_major, fractal=512, pad=0>
+    %rhs = pto.alloc_tile : !pto.tile_buf<loc=right, dtype=f32, rows=64, cols=256, v_row=64, v_col=256, blayout=row_major, slayout=col_major, fractal=512, pad=0>
+    %acc = pto.alloc_tile : !pto.tile_buf<loc=acc, dtype=f32, rows=32, cols=128, v_row=32, v_col=128, blayout=col_major, slayout=row_major, fractal=1024, pad=0>
+
+    %rhs_hi = pto.subview %rhs[%c0, %c128] sizes [64, 128] :
+      !pto.tile_buf<loc=right, dtype=f32, rows=64, cols=256, v_row=64, v_col=256, blayout=row_major, slayout=col_major, fractal=512, pad=0>
+      -> !pto.tile_buf<loc=right, dtype=f32, rows=64, cols=128, v_row=64, v_col=128, blayout=row_major, slayout=col_major, fractal=512, pad=0>
+
+    pto.tmatmul ins(%lhs, %rhs_hi : !pto.tile_buf<loc=left, dtype=f32, rows=32, cols=64, v_row=32, v_col=64, blayout=col_major, slayout=row_major, fractal=512, pad=0>, !pto.tile_buf<loc=right, dtype=f32, rows=64, cols=128, v_row=64, v_col=128, blayout=row_major, slayout=col_major, fractal=512, pad=0>) outs(%acc : !pto.tile_buf<loc=acc, dtype=f32, rows=32, cols=128, v_row=32, v_col=128, blayout=col_major, slayout=row_major, fractal=1024, pad=0>)
+    return
+  }
+}
+
+// CHECK-DAG: const int32_t [[ROWOFF:v[0-9]+]] = 0;
+// CHECK-DAG: const int32_t [[COLOFF:v[0-9]+]] = 1024;
+// CHECK-DAG: const int32_t [[ELEMSZ:v[0-9]+]] = 4;
+// CHECK: int64_t {{.*}} = (int64_t) ((int32_t) (uint32_t) ((int32_t) (uint32_t) [[ROWOFF]] + (uint32_t) [[COLOFF]]) * (uint32_t) [[ELEMSZ]]);
