@@ -1,0 +1,57 @@
+// RUN: ptoas --pto-arch=a3 --pto-level=level3 --enable-insert-sync --pto-insert-sync-debug=2 %s -o - 2>&1 | FileCheck %s
+//
+// Nested-loop reproducer for current main-branch loop syncFinder escape:
+// - A top-level MTE2->V chain feeds a top-level V producer.
+// - A nested may-path consumes that V result with MTE3.
+// - A post-loop MTE3 consumer still directly depends on the original MTE2 result.
+// - Correct zero-trip handling would keep a direct MTE2->MTE3 sync for the
+//   post-loop tstore, because outer-loop may execute zero times.
+// - Current main drops that direct sync during After Analysis after loop
+//   syncFinder escape rebuilds a hidden MTE2->V->MTE3 chain at top level.
+//
+// CHECK: // === [PTOInsertSync Debug] After Analysis === //
+// CHECK: [   0] COMPOUND pto.tload [PIPE_MTE2]
+// CHECK: POST: set_flag <PIPE_MTE2 -> PIPE_V> idx=0
+// CHECK: [   1] COMPOUND pto.tadd [PIPE_V]
+// CHECK: PRE : wait_flag <PIPE_MTE2 -> PIPE_V> idx=0
+// CHECK: POST: set_flag <PIPE_V -> PIPE_MTE3> idx=1
+// CHECK: [   4] COMPOUND pto.tstore [PIPE_MTE3]
+// CHECK: PRE : wait_flag <PIPE_V -> PIPE_MTE3> idx=1
+// CHECK: [   7] COMPOUND pto.tstore [PIPE_MTE3]
+// CHECK-NOT: wait_flag <PIPE_MTE2 -> PIPE_MTE3>
+// CHECK: PRE : pipe_barrier <PIPE_MTE3 -> PIPE_MTE3>
+
+module attributes {pto.target_arch = "a2a3"} {
+  func.func @syncfinder_zero_trip_nested_loop(%arg0: !pto.ptr<f32>, %arg1: !pto.ptr<f32>, %outer: index, %inner: index) attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0_i64 = arith.constant 0 : i64
+    %c4096_i64 = arith.constant 4096 : i64
+    %c16 = arith.constant 16 : index
+    %c1 = arith.constant 1 : index
+    %c0 = arith.constant 0 : index
+
+    %src_view = pto.make_tensor_view %arg0, shape = [%c16, %c16], strides = [%c16, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<?x?xf32>
+    %dst_view = pto.make_tensor_view %arg1, shape = [%c16, %c16], strides = [%c16, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<?x?xf32>
+    %src_pview = pto.partition_view %src_view, offsets = [%c0, %c0], sizes = [%c16, %c16] : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<16x16xf32>
+    %dst_pview = pto.partition_view %dst_view, offsets = [%c0, %c0], sizes = [%c16, %c16] : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<16x16xf32>
+
+    %ub0 = pto.alloc_tile addr = %c0_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %ub1 = pto.alloc_tile addr = %c4096_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    // i0: top-level producer on PIPE_MTE2
+    pto.tload ins(%src_pview : !pto.partition_tensor_view<16x16xf32>) outs(%ub0 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    // i1: top-level bridge producer on PIPE_V
+    pto.tadd ins(%ub0, %ub0 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%ub1 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+
+    // nested may-path: old V->MTE3 sync only lives inside the loops
+    scf.for %o = %c0 to %outer step %c1 {
+      scf.for %i = %c0 to %inner step %c1 {
+        pto.tstore ins(%ub1 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%dst_pview : !pto.partition_tensor_view<16x16xf32>)
+      }
+    }
+
+    // post-loop consumer: directly depends on ub0, so zero-trip-safe handling
+    // should keep a direct MTE2->MTE3 wait here.
+    pto.tstore ins(%ub0 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%dst_pview : !pto.partition_tensor_view<16x16xf32>)
+    return
+  }
+}
