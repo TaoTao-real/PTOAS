@@ -36,6 +36,26 @@ static std::vector<int64_t> toInt64Vector(const py::sequence &seq) {
   return out;
 }
 
+static std::vector<int64_t> toShapeVectorOrDynamicRank(py::object shapeOrRank) {
+  if (py::isinstance<py::int_>(shapeOrRank)) {
+    auto rank = shapeOrRank.cast<int64_t>();
+    if (rank < 0)
+      throw py::value_error("rank must be non-negative");
+    return std::vector<int64_t>(static_cast<size_t>(rank),
+                                mlir::ShapedType::kDynamic);
+  }
+  return toInt64Vector(shapeOrRank.cast<py::sequence>());
+}
+
+static MlirContext inferContextFromElementType(MlirContext context,
+                                               MlirType elementType) {
+  if (!mlirContextIsNull(context))
+    return context;
+  if (mlirTypeIsNull(elementType))
+    throw py::value_error("context is required when element_type is null");
+  return mlirTypeGetContext(elementType);
+}
+
 static py::list shapeToPyList(const int64_t *data, intptr_t n) {
   py::list lst;
   for (intptr_t i = 0; i < n; ++i)
@@ -153,6 +173,31 @@ static void bindPTOModule(pybind11::module &m) {
       .value("NormalRelu", mlir::pto::ReluPreMode::NormalRelu)
       .export_values();
 
+    py::enum_<mlir::pto::AtomicType>(m, "AtomicType")
+      .value("AtomicNone", mlir::pto::AtomicType::AtomicNone)
+      .value("AtomicAdd", mlir::pto::AtomicType::AtomicAdd)
+      .export_values();
+
+    py::enum_<mlir::pto::NotifyOp>(m, "NotifyOp")
+      .value("AtomicAdd", mlir::pto::NotifyOp::AtomicAdd)
+      .value("Set", mlir::pto::NotifyOp::Set)
+      .export_values();
+
+    py::enum_<mlir::pto::WaitCmp>(m, "WaitCmp")
+      .value("EQ", mlir::pto::WaitCmp::EQ)
+      .value("NE", mlir::pto::WaitCmp::NE)
+      .value("GT", mlir::pto::WaitCmp::GT)
+      .value("GE", mlir::pto::WaitCmp::GE)
+      .value("LT", mlir::pto::WaitCmp::LT)
+      .value("LE", mlir::pto::WaitCmp::LE)
+      .export_values();
+
+    py::enum_<mlir::pto::ReduceOp>(m, "ReduceOp")
+      .value("Sum", mlir::pto::ReduceOp::Sum)
+      .value("Max", mlir::pto::ReduceOp::Max)
+      .value("Min", mlir::pto::ReduceOp::Min)
+      .export_values();
+
     py::enum_<mlir::pto::SyncOpType>(m, "SyncOpType")
       .value("TLOAD", mlir::pto::SyncOpType::TLOAD)
       .value("TSTORE_ACC", mlir::pto::SyncOpType::TSTORE_ACC)
@@ -262,6 +307,58 @@ static void bindPTOModule(pybind11::module &m) {
             "get",
             [](py::object cls, mlir::pto::ReluPreMode value, MlirContext ctx) -> py::object {
             MlirAttribute a = mlirPTOReluPreModeAttrGet(ctx, static_cast<int32_t>(value));
+            if (mlirAttributeIsNull(a)) return py::none();
+            return cls(a);
+            },
+            py::arg("cls"), py::arg("value"), py::arg("context") = py::none());
+
+    mlir_attribute_subclass(m, "AtomicTypeAttr",
+                            [](MlirAttribute a) -> bool {
+                            return mlirPTOAttrIsAAtomicTypeAttr(a);
+                            })
+        .def_classmethod(
+            "get",
+            [](py::object cls, mlir::pto::AtomicType value, MlirContext ctx) -> py::object {
+            MlirAttribute a = mlirPTOAtomicTypeAttrGet(ctx, static_cast<int32_t>(value));
+            if (mlirAttributeIsNull(a)) return py::none();
+            return cls(a);
+            },
+            py::arg("cls"), py::arg("value"), py::arg("context") = py::none());
+
+    mlir_attribute_subclass(m, "NotifyOpAttr",
+                            [](MlirAttribute a) -> bool {
+                            return mlirPTOAttrIsANotifyOpAttr(a);
+                            })
+        .def_classmethod(
+            "get",
+            [](py::object cls, mlir::pto::NotifyOp value, MlirContext ctx) -> py::object {
+            MlirAttribute a = mlirPTONotifyOpAttrGet(ctx, static_cast<int32_t>(value));
+            if (mlirAttributeIsNull(a)) return py::none();
+            return cls(a);
+            },
+            py::arg("cls"), py::arg("value"), py::arg("context") = py::none());
+
+    mlir_attribute_subclass(m, "WaitCmpAttr",
+                            [](MlirAttribute a) -> bool {
+                            return mlirPTOAttrIsAWaitCmpAttr(a);
+                            })
+        .def_classmethod(
+            "get",
+            [](py::object cls, mlir::pto::WaitCmp value, MlirContext ctx) -> py::object {
+            MlirAttribute a = mlirPTOWaitCmpAttrGet(ctx, static_cast<int32_t>(value));
+            if (mlirAttributeIsNull(a)) return py::none();
+            return cls(a);
+            },
+            py::arg("cls"), py::arg("value"), py::arg("context") = py::none());
+
+    mlir_attribute_subclass(m, "ReduceOpAttr",
+                            [](MlirAttribute a) -> bool {
+                            return mlirPTOAttrIsAReduceOpAttr(a);
+                            })
+        .def_classmethod(
+            "get",
+            [](py::object cls, mlir::pto::ReduceOp value, MlirContext ctx) -> py::object {
+            MlirAttribute a = mlirPTOReduceOpAttrGet(ctx, static_cast<int32_t>(value));
             if (mlirAttributeIsNull(a)) return py::none();
             return cls(a);
             },
@@ -585,6 +682,39 @@ static void bindPTOModule(pybind11::module &m) {
             },
             py::arg("cls"), py::arg("context") = py::none());
 
+    mlir_type_subclass(
+        m, "HiF8Type",
+        [](MlirType type) -> bool { return mlirPTOTypeIsAHiF8Type(type); })
+        .def_classmethod(
+            "get",
+            [](py::object cls, MlirContext context) -> py::object {
+                MlirType t = mlirPTOHiF8TypeGet(context);
+                return cls.attr("__call__")(t);
+            },
+            py::arg("cls"), py::arg("context") = py::none());
+
+    mlir_type_subclass(
+        m, "F4E1M2x2Type",
+        [](MlirType type) -> bool { return mlirPTOTypeIsAF4E1M2x2Type(type); })
+        .def_classmethod(
+            "get",
+            [](py::object cls, MlirContext context) -> py::object {
+                MlirType t = mlirPTOF4E1M2x2TypeGet(context);
+                return cls.attr("__call__")(t);
+            },
+            py::arg("cls"), py::arg("context") = py::none());
+
+    mlir_type_subclass(
+        m, "F4E2M1x2Type",
+        [](MlirType type) -> bool { return mlirPTOTypeIsAF4E2M1x2Type(type); })
+        .def_classmethod(
+            "get",
+            [](py::object cls, MlirContext context) -> py::object {
+                MlirType t = mlirPTOF4E2M1x2TypeGet(context);
+                return cls.attr("__call__")(t);
+            },
+            py::arg("cls"), py::arg("context") = py::none());
+
     // --------------------------------------------------------------------------
     // !pto.tensor_view<shape x elem>
     // --------------------------------------------------------------------------
@@ -594,13 +724,8 @@ static void bindPTOModule(pybind11::module &m) {
         .def_classmethod(
             "get",
             [](py::object cls, py::object shape_or_rank, MlirType elementType, MlirContext context) -> py::object {
-                std::vector<int64_t> shp;
-                if (py::isinstance<py::int_>(shape_or_rank)) {
-                    auto rank = shape_or_rank.cast<int64_t>();
-                    shp.assign(static_cast<size_t>(rank), mlir::ShapedType::kDynamic);
-                } else {
-                    shp = toInt64Vector(shape_or_rank.cast<py::sequence>());
-                }
+                std::vector<int64_t> shp = toShapeVectorOrDynamicRank(shape_or_rank);
+                context = inferContextFromElementType(context, elementType);
                 MlirType t = mlirPTOTensorViewTypeGet(
                     context, (intptr_t)shp.size(), shp.data(), elementType);
                 return cls.attr("__call__")(t);
@@ -630,15 +755,16 @@ static void bindPTOModule(pybind11::module &m) {
         [](MlirType t) -> bool { return mlirPTOTypeIsAPartitionTensorViewType(t); })
     .def_classmethod(
         "get",
-        [](py::object cls, py::sequence shape, MlirType elementType, MlirContext context) -> py::object {
-        auto shp = toInt64Vector(shape);
+        [](py::object cls, py::object shape_or_rank, MlirType elementType, MlirContext context) -> py::object {
+        std::vector<int64_t> shp = toShapeVectorOrDynamicRank(shape_or_rank);
+        context = inferContextFromElementType(context, elementType);
         MlirType t = mlirPTOPartitionTensorViewTypeGet(context,
                                             (intptr_t)shp.size(),
                                             shp.data(),
                                             elementType);
         return cls.attr("__call__")(t);
         },
-        py::arg("cls"), py::arg("shape"), py::arg("element_type"),
+        py::arg("cls"), py::arg("shape_or_rank"), py::arg("element_type"),
         py::arg("context") = py::none())
     .def_property_readonly(
         "rank",
@@ -761,7 +887,7 @@ static void bindPTOModule(pybind11::module &m) {
                 throw std::runtime_error("valid_shape rank must match shape rank");
             }
             validShape.resize(lst.size());
-            for (ssize_t i = 0; i < lst.size(); ++i) {
+            for (py::ssize_t i = 0; i < static_cast<py::ssize_t>(lst.size()); ++i) {
                 py::object e = lst[i];
                 if (e.is_none()) {
                 validShape[i] = -1;  // None -> dynamic

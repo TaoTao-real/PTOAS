@@ -71,6 +71,34 @@ Element type constraints are operation-specific:
 
 In addition, memory layout and address space do not change the element type semantics; they only affect placement and access patterns.
 
+#### Low-Precision Types
+
+PTO IR currently recognizes the following low-precision element types:
+
+- `f8E4M3FN` (corresponding C++ type name: `float8_e4m3_t`)
+- `f8E5M2` (corresponding C++ type name: `float8_e5m2_t`)
+
+- `!pto.hif8`
+- `!pto.f4E1M2x2`
+- `!pto.f4E2M1x2`
+
+These types are recognized by the parser/printer, CAPI/Python bindings, and
+basic storage-size plumbing. Their storage size is currently modeled as:
+
+- `f8E4M3FN`: 1 byte per element
+- `f8E5M2`: 1 byte per element
+- `!pto.hif8`: 1 byte per element
+- `!pto.f4E1M2x2`: 1 byte per packed pair of FP4 values
+- `!pto.f4E2M1x2`: 1 byte per packed pair of FP4 values
+
+For the packed FP4 PTO dialect types, `tile_buf` shape/valid-shape dimensions
+describe the physical packed extent, i.e. the number of packed FP4 pairs
+(equivalently the number of bytes in the packed dimension), not the logical
+number of scalar FP4 elements.
+
+Operation support is still opt-in. Defining the type in PTO IR does not by
+itself imply that any particular operation accepts it.
+
 ### 2.2 `!pto.ptr<elementType>`
 
 A pointer to global memory.
@@ -116,7 +144,7 @@ A logical partition (slice) of a `tensor_view`. Holds shape and stride informati
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `loc` | keyword (`vec/mat/left/right/acc/bias`) | Local memory domain (`vec` maps to UB; use `vec` in textual IR) |
-| `dtype` | `element-type(i1/i8/i16/i32/f16/f32/bf16...)` | Element data type |
+| `dtype` | `element-type(i1/i8/i16/i32/f16/f32/bf16/!pto.hif8/!pto.f4E1M2x2/!pto.f4E2M1x2...)` | Element data type |
 | `rows` | `int64` | Physical row count |
 | `cols` | `int64` | Physical column count |
 | `v_row` | `int64` or `?` | Valid row count |
@@ -127,6 +155,10 @@ A logical partition (slice) of a `tensor_view`. Holds shape and stride informati
 | `pad` | `PadValue` mnemonic or integer literal | Padding policy/value selector (tests commonly use `pad=0`) |
 
 Here, `?` denotes a dynamic symbol resolved at runtime.
+
+For `dtype=!pto.f4E1M2x2` and `dtype=!pto.f4E2M1x2`, the `rows`/`cols` and
+`v_row`/`v_col` values are physical packed extents. In other words, the packed
+dimension counts FP4 pairs stored per byte, not logical scalar FP4 elements.
 
 **Syntax:**
 ```mlir
@@ -765,58 +797,6 @@ pto.tprefetch ins(%pv : !pto.partition_tensor_view<16x16xf16>)
               outs(%tb : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16,
                     v_row=16, v_col=16, blayout=row_major, slayout=none_box,
                     fractal=512, pad=0>)
-```
-
----
-
-##### `pto.tpack` - Pack a Wider Vec Tile into a Narrower Vec Tile
-
-**Summary:** A5-only vector packing operation that narrows a source VEC tile into
-a destination VEC tile of the same valid shape.
-
-**Semantics:**
-
-```
-TPACK(dst, src)
-```
-
-Supported packing directions follow PTO-ISA:
-- `b32 -> b16`
-- `b32 -> b8`
-- `b16 -> b8`
-
-**Arguments:**
-
-| Name | Type | Description |
-|------|------|-------------|
-| `src` | `pto.tile_buf` | Source VEC tile with wider element type |
-| `dst` | `pto.tile_buf` | Destination VEC tile with narrower element type |
-
-**Results:** None. Writes into `dst` via DPS pattern.
-
-**Constraints & Verification:**
-
-- `pto.tpack` is only supported on **A5** targets.
-- `src` and `dst` must both be VEC tiles (`loc=vec`) with row-major layout.
-- `src` and `dst` must have the same `valid_shape`.
-- Supported element-size pairs are exactly:
-  - `4 -> 2` bytes
-  - `4 -> 1` bytes
-  - `2 -> 1` bytes
-
-**Hardware Mapping:**
-
-- Executes on the **Vector pipeline** (`PIPE_V`)
-
-**Basic Example:**
-
-```mlir
-pto.tpack ins(%src : !pto.tile_buf<loc=vec, dtype=i32, rows=128, cols=128,
-              v_row=128, v_col=128, blayout=row_major, slayout=none_box,
-              fractal=512, pad=0>)
-          outs(%dst : !pto.tile_buf<loc=vec, dtype=i16, rows=128, cols=128,
-               v_row=128, v_col=128, blayout=row_major, slayout=none_box,
-               fractal=512, pad=0>)
 ```
 
 ---
@@ -6387,6 +6367,61 @@ pto.tconcat ins(%a, %b : !pto.tile_buf<...>, !pto.tile_buf<...>)
 
 ---
 
+##### `pto.tconcatidx` - Indexed Tile Concatenation
+
+**Summary:** Concatenates two source tiles along the column dimension with per-row index control, where two additional index tiles specify the number of columns to copy from each source on a per-row basis.
+
+**Semantics:**
+
+For each row \(i\):
+- Read `idx0_num = src0Idx[i, 0]` and `idx1_num = src1Idx[i, 0]` as element counts
+- Copy the first `min(idx0_num, src0_valid_col, dst_valid_col)` columns from `src0` to `dst`
+- Copy the first `min(idx1_num, src1_valid_col, dst_valid_col - copied_from_src0)` columns from `src1` to `dst`
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `src0` | `pto.tile_buf` | First source tile |
+| `src1` | `pto.tile_buf` | Second source tile |
+| `src0Idx` | `pto.tile_buf` | Per-row index for `src0` (column count to copy) |
+| `src1Idx` | `pto.tile_buf` | Per-row index for `src1` (column count to copy) |
+| `dst` | `pto.tile_buf` | Destination tile |
+
+**Results:** None. Writes into `dst` via DPS pattern.
+
+**Assembly Format:**
+
+```
+pto.tconcatidx ins(<src0>, <src1>, <src0Idx>, <src1Idx> :
+                   <src0_type>, <src1_type>, <src0Idx_type>, <src1Idx_type>)
+               outs(<dst> : <dst_type>)
+```
+
+**Constraints & Verification:**
+
+- `dst`, `src0`, `src1` must have the same data type, and must be one of: `i8/i16/i32/f16/f32/bf16`
+- `src0Idx`, `src1Idx` must have the same index type, and must be one of: `i8/i16/i32`
+- All tiles must use `loc=vec` and row-major layout
+- `validRow(src0) == validRow(src1) == validRow(dst)`
+- `validRow(src0Idx) == validRow(src1Idx) == validRow(dst)`
+- Index tile must have `valid_col >= 1`
+
+**Hardware Mapping:**
+
+- Executes on the **Vector pipeline** (`PIPE_V`)
+- Operates on data in the **VEC (UB)** memory space
+
+**Basic Example:**
+
+```mlir
+pto.tconcatidx ins(%src0, %src1, %idx0, %idx1 :
+  !pto.tile_buf<...>, !pto.tile_buf<...>, !pto.tile_buf<...>, !pto.tile_buf<...>)
+  outs(%dst : !pto.tile_buf<...>)
+```
+
+---
+
 ##### `pto.tgather` - Gather/Select Elements
 
 **Summary:** Gathers elements from a source tile using one of three PTO-ISA-compatible forms:
@@ -6795,7 +6830,8 @@ dst[i + indexRow, j + indexCol] = src[i, j]
 **Hardware Mapping:**
 
 - Lowers to **`TINSERT(dst, src, indexRow, indexCol)`**
-- Uses target data-movement pipeline (MTE1 by default; A5 UB->L1 path uses MTE3)
+- Uses the target data-movement pipeline: `Vec -> Vec` uses `PIPE_V`, A5
+  `Vec -> Mat` uses `PIPE_MTE3`, and regular `Acc -> Mat` uses `PIPE_FIX`.
 
 **Basic Example:**
 
@@ -6830,6 +6866,7 @@ dst[i, j] = src[i + indexRow, j + indexCol]
 
 - **Implementation checks (A2A3)**
   - `dst` element type must match `src` element type and must be one of: `i8`, `f16`, `bf16`, `f32`.
+  - `Vec -> Vec` extraction is supported for matching element types.
   - Source layout/fractal must satisfy one of the target-supported combinations: `slayout=col_major` with `blayout=row_major`, or `slayout=row_major`.
   - Runtime bounds checks:
     - `indexRow + dst.rows <= src.rows`
@@ -6877,8 +6914,7 @@ For padded elements: dst = PadVal(dst)
 - `dst.pad` must not be `null`.
 - `src` and `dst` element sizes must match, and the element size must be `1`, `2`, or `4` bytes.
 - `dst.rows/cols` must match `src.rows/cols`.
-- `dst.rows >= src.rows` and `dst.cols >= src.cols`.
-- For `mat` tiles, the current implementation only supports `blayout=col_major`, `slayout=row_major`, and `pad=zero`.
+- For `loc=mat`, `src` and `dst` must be lowerable to the same `TFILLPAD` tile specialization, i.e. `validShape` and `pad` must be identical.
 
 **Hardware Mapping:**
 
@@ -6915,7 +6951,8 @@ Constraint: dst.rows >= src.rows and dst.cols >= src.cols
 
 **Constraints & Verification:**
 
-- The operation has a custom verifier
+- The operation has a custom verifier.
+- For `loc=mat`, cross-layer behavior with heterogeneous (`src`/`dst`) expand shape is not finalized in this release; `tfillpad_expand` is not covered by the `tfillpad`-specific lowerability check.
 
 **Hardware Mapping:**
 
@@ -7291,7 +7328,7 @@ pto.tget_scale_addr ins(<src> : <src_type>)
 **Basic Example:**
 
 ```mlir
-pto.tget_scale_addr ins(%src : !pto.tile_buf<loc=left, dtype=f8E4M3, rows=1, cols=128,
+pto.tget_scale_addr ins(%src : !pto.tile_buf<loc=left, dtype=f8E4M3FN, rows=1, cols=128,
                         v_row=1, v_col=128, blayout=col_major, slayout=row_major,
                         fractal=512, pad=0>)
                     outs(%scale : !pto.tile_buf<loc=scaling, dtype=f16, rows=1, cols=128,
@@ -7797,8 +7834,9 @@ pto.section.vector {
 ### 4.18 Frontend Pipe Communication Operations
 
 PTOAS exposes a frontend-facing pipe communication interface for Cube/Vector
-FIFO-style tile exchange. These operations are intended for frontend/framework
-generated IR. The detailed design document is:
+FIFO-style exchange. A pipe entry can be either a local tile buffer or a
+GlobalTensor-like GM view descriptor. These operations are intended for
+frontend/framework generated IR. The detailed design document is:
 
 - `docs/designs/ptoas-tpush-tpop-design.md`
 
@@ -7810,14 +7848,46 @@ generated IR. The detailed design document is:
   - `3`: both directions at frontend level
 - `id` is a compile-time integer attribute used to bind
   `pto.aic_initialize_pipe` / `pto.aiv_initialize_pipe` with the matching
-  `pto.tpush_*` / `pto.tpop_*` / `pto.tfree_*` ops in the same function.
-- `slot_size` is expressed in bytes and uses the pre-split logical tile size.
+  `pto.talloc_*` / `pto.tpush_*` / `pto.tpop_*` / `pto.tfree_*` ops in the same
+  function.
+- `slot_size` is expressed in bytes and uses the pre-split logical pipe-entry
+  size.
+- `local_slot_num` is an optional compile-time integer attribute on
+  `pto.aic_initialize_pipe` / `pto.aiv_initialize_pipe`.
+  On A2/A3 it overrides the default consumer-side local FIFO slot count only
+  when the pipe uses a local consumer FIFO buffer. Global-only GM FIFO pipes
+  omit it.
 - `nosplit` is an optional compile-time boolean attribute on
   `pto.aic_initialize_pipe` / `pto.aiv_initialize_pipe`.
 - `split` is a compile-time attribute, not a runtime SSA operand.
 - `split = 0/1/2` corresponds to `TILE_NO_SPLIT`, `TILE_UP_DOWN`, and
   `TILE_LEFT_RIGHT`.
 - `pto.tpop_from_aic` and `pto.tpop_from_aiv` are result-valued frontend ops.
+- Pipe entries support two forms:
+  - tile entry: `!pto.tile_buf<...>` or the equivalent local memref after view
+    lowering.
+  - global entry: `!pto.tensor_view<...>` or the equivalent GM descriptor after
+    lowering. This maps to pto-isa `GlobalTensor` overloads and only manages
+    FIFO synchronization plus GM slot address assignment. Use
+    `pto.partition_view` to derive a `!pto.partition_tensor_view<...>` window
+    when a `pto.tload` / `pto.tstore` needs a sub-view of the entry.
+- Global-entry pipe communication currently applies to the A2/A3 GM FIFO path
+  (`pto.initialize_l2g2l_pipe`). It does not implicitly execute `pto.tstore` or
+  `pto.tload`; callers move data explicitly before `tpush` or after `tpop`.
+- When every transfer op bound to one pipe id uses a global entry, the pipe is
+  a global-only GM FIFO. Its frontend initialize op carries only
+  `gm_slot_tensor`; `gm_slot_buffer`, `c2v_consumer_buf`, `v2c_consumer_buf`, `local_slot_num`,
+  `pto.reserve_buffer`, and `pto.import_reserved_buffer` are not used.
+- For global entries, the matched initialize op's `gm_slot_tensor` describes
+  one FIFO slot entry, not the full multi-slot FIFO buffer. Its dtype, shape,
+  stride, and layout must match the `tensor_view` returned by `talloc` /
+  `tpop` and form the pto-isa `GlobalData` template argument. `TILE_UP_DOWN` and
+  `TILE_LEFT_RIGHT` split modes derive sub-core GM address offsets from that
+  single-slot descriptor's static rows, columns, and element dtype.
+- If a global-entry result op does not carry explicit stride/layout metadata,
+  PTOAS treats it as a row-major contiguous GM view. Non-contiguous cases must
+  preserve stride/layout through the producing op metadata, the source view, or
+  the lowered GM memref layout.
 - A single logical pipe cannot mix `split = 0` with `split = 1` / `2`.
   `nosplit = true` requires all bound data-transfer ops to use `split = 0`;
   `nosplit = false` requires all bound data-transfer ops to use `split = 1`
@@ -7838,15 +7908,18 @@ generated IR. The detailed design document is:
   may execute the pipe sequence on a single vector core.
 - On A2/A3, `nosplit` follows the hardware `1C:2V` synchronization
   configuration. The two vector cores must run the same code for the same
-  logical pipe, and the `tpush` / `tpop` / `tfree` sequence for that pipe must
-  be identical in order on both vector cores. They do not need to reach each
-  operation at the same time; only the relative order must remain consistent.
+  logical pipe, and the `talloc` / `tpush` / `tpop` / `tfree` sequence for that
+  pipe must be identical in order on both vector cores. They do not need to
+  reach each operation at the same time; only the relative order must remain
+  consistent.
 
 ##### `pto.reserve_buffer` - Reserve Local Consumer FIFO Buffer
 
 **Summary:** Declares a local reserved FIFO buffer region for the consumer side
-of one frontend logical pipe. The valid way to write this op depends on
-whether the active PTOAS compilation flow enables local address planning.
+of one frontend logical pipe when that pipe uses a local consumer FIFO buffer.
+Global-only GM FIFO pipes do not use this op. The valid way to write this op
+depends on whether the active PTOAS compilation flow enables local address
+planning.
 
 **Syntax:**
 
@@ -7900,7 +7973,8 @@ When the address is already fixed in the input IR:
 ##### `pto.import_reserved_buffer` - Import Peer Reserved FIFO Buffer
 
 **Summary:** Imports the resolved local FIFO base address from the peer
-function's reserved buffer declaration.
+function's reserved buffer declaration. Global-only GM FIFO pipes do not use
+this op.
 
 **Syntax:**
 
@@ -7937,10 +8011,17 @@ function's reserved buffer declaration.
 
 ```mlir
 // A2/A3 (with GM slot buffer):
-pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
+pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, local_slot_num = 1}
   (gm_slot_buffer = %gm_buf : !pto.ptr<f32>,
    c2v_consumer_buf = %c2v_import : i32,
    v2c_consumer_buf = %c0_i32 : i32)
+
+// A2/A3 global-only GM FIFO (GlobalTensor pipe entry):
+%gm_slots = pto.make_tensor_view %gm_slot_buffer,
+  shape = [%c16, %c16], strides = [%c16, %c1]
+  : !pto.tensor_view<16x16xf32>
+pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
+  (gm_slot_tensor = %gm_slots : !pto.tensor_view<16x16xf32>)
 
 // A5 (without GM slot buffer):
 pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = true}
@@ -7954,10 +8035,20 @@ pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = true}
   the same function
 - `dir_mask`: communication direction encoding
 - `slot_size`: logical slot size in bytes
+- `local_slot_num`: optional A2/A3-only local FIFO slot count override for the
+  lowered `pto.initialize_l2g2l_pipe`; omitted for global-only GM FIFO
 - `nosplit`: optional compile-time boolean controlling no-split pipe mode
-- `gm_slot_buffer`: optional GM pointer (`!pto.ptr<T>`), required on A2/A3, omitted on A5
-- `c2v_consumer_buf`: C2V consumer local base address
-- `v2c_consumer_buf`: V2C consumer local base address
+- `gm_slot_buffer`: optional GM pointer (`!pto.ptr<T>`), used by A2/A3 GM FIFO
+  paths that also use a local consumer FIFO buffer
+- `gm_slot_tensor`: optional single-slot entry descriptor
+  (`!pto.tensor_view<...>`), required by global-only GM FIFO. Its type describes
+  the `tensor_view` returned by `talloc` / `tpop`. This descriptor is retained
+  in IR for entry type validation; EmitC lowers the `TPipe` constructor
+  argument to only the GM FIFO start address
+- `c2v_consumer_buf`: optional C2V consumer local base address; omitted for
+  global-only GM FIFO
+- `v2c_consumer_buf`: optional V2C consumer local base address; omitted for
+  global-only GM FIFO
 
 **Results:** None.
 
@@ -7966,6 +8057,16 @@ pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = true}
 - Must appear in Cube kernels
 - Multiple `pto.aic_initialize_pipe` ops are allowed in one Cube function, but
   `id` must be unique among frontend initialize ops in that function
+- If `local_slot_num` is present, it must be greater than `0` and no greater
+  than the legacy slot count implied by `dir_mask`
+  (`8` for `dir_mask = 1/2`, `4` for `dir_mask = 3`)
+- A global-only GM FIFO initialize carries only `gm_slot_tensor`; it must not
+  carry `gm_slot_buffer`, `local_slot_num`, `c2v_consumer_buf`, or
+  `v2c_consumer_buf`
+- For global-only GM FIFO, `slot_size` must match the byte size of
+  `gm_slot_tensor`
+- Global-entry `talloc` / `tpush` / `tpop` / `tfree` entry types must match the
+  `gm_slot_tensor` descriptor in element type, rank, static shape, and byte size
 - The lowered pipes for one function must fit within 16 hardware flag ids in
   total
 - If `nosplit = true`, all frontend data-transfer ops bound to the same logical
@@ -7981,10 +8082,17 @@ pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = true}
 
 ```mlir
 // A2/A3 (with GM slot buffer):
-pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
+pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, local_slot_num = 1}
   (gm_slot_buffer = %gm_buf : !pto.ptr<f32>,
    c2v_consumer_buf = %c2v_local : i32,
    v2c_consumer_buf = %c0_i32 : i32)
+
+// A2/A3 global-only GM FIFO (GlobalTensor pipe entry):
+%gm_slots = pto.make_tensor_view %gm_slot_buffer,
+  shape = [%c16, %c16], strides = [%c16, %c1]
+  : !pto.tensor_view<16x16xf32>
+pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
+  (gm_slot_tensor = %gm_slots : !pto.tensor_view<16x16xf32>)
 
 // A5 (without GM slot buffer):
 pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = true}
@@ -8009,19 +8117,144 @@ pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = true}
 - If `nosplit = false`, all frontend data-transfer ops bound to the same
   logical pipe must use `split = 1` or `split = 2`
 
+**Basic Example: GlobalTensor Pipe Entry Without Reserve/Import**
+
+This C2V global-only GM FIFO example intentionally has no
+`pto.reserve_buffer` and no `pto.import_reserved_buffer`. Both function
+signatures keep the FIFO buffer as `!pto.ptr<f32>`, then use
+`pto.make_tensor_view` before initialize_pipe to build the `gm_slot_tensor`
+descriptor for one FIFO slot entry.
+
+```mlir
+func.func @cube_kernel(%gm_slot_buffer : !pto.ptr<f32>,
+                       %src : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=1024, pad=0>)
+    attributes {pto.kernel_kind = #pto.kernel_kind<cube>} {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c16 = arith.constant 16 : index
+  %gm_slots = pto.make_tensor_view %gm_slot_buffer,
+    shape = [%c16, %c16], strides = [%c16, %c1]
+    : !pto.tensor_view<16x16xf32>
+  pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
+    (gm_slot_tensor = %gm_slots : !pto.tensor_view<16x16xf32>)
+
+  %entry = pto.talloc_to_aiv {id = 0, split = 0}
+    -> !pto.tensor_view<16x16xf32>
+  %entry_partition = pto.partition_view %entry,
+    offsets = [%c0, %c0], sizes = [%c16, %c16]
+    : !pto.tensor_view<16x16xf32> -> !pto.partition_tensor_view<16x16xf32>
+  pto.tstore ins(%src : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=1024, pad=0>)
+             outs(%entry_partition : !pto.partition_tensor_view<16x16xf32>)
+  pto.tpush_to_aiv(%entry : !pto.tensor_view<16x16xf32>) {id = 0, split = 0}
+  func.return
+}
+
+func.func @vector_kernel(%gm_slot_buffer : !pto.ptr<f32>,
+                         %dst : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=1024, pad=0>)
+    attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c16 = arith.constant 16 : index
+  %gm_slots = pto.make_tensor_view %gm_slot_buffer,
+    shape = [%c16, %c16], strides = [%c16, %c1]
+    : !pto.tensor_view<16x16xf32>
+  pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
+    (gm_slot_tensor = %gm_slots : !pto.tensor_view<16x16xf32>)
+
+  %entry = pto.tpop_from_aic {id = 0, split = 0}
+    -> !pto.tensor_view<16x16xf32>
+  %entry_partition = pto.partition_view %entry,
+    offsets = [%c0, %c0], sizes = [%c16, %c16]
+    : !pto.tensor_view<16x16xf32> -> !pto.partition_tensor_view<16x16xf32>
+  pto.tload ins(%entry_partition : !pto.partition_tensor_view<16x16xf32>)
+            outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=1024, pad=0>)
+  pto.tfree_from_aic(%entry : !pto.tensor_view<16x16xf32>) {id = 0, split = 0}
+  func.return
+}
+```
+
+##### `pto.talloc_to_aiv` - Frontend C2V Producer Global Entry Allocate
+
+**Summary:** Allocates the next C2V GM FIFO slot for a GlobalTensor-like entry
+in a Cube kernel.
+
+**Syntax:**
+
+```mlir
+%entry = pto.talloc_to_aiv {id = 0, split = 1}
+  -> !pto.tensor_view<128x512xf32>
+```
+
+**Arguments:**
+
+- compile-time `id` attribute
+- compile-time `split` attribute
+
+**Results:** one `!pto.tensor_view<...>` global entry describing the
+currently allocated FIFO slot.
+
+**Constraints & Verification:**
+
+- Must appear in Cube kernels
+- Represents producer-side allocation for a C2V global-entry transaction
+- `id` must match exactly one frontend initialize_pipe op in the same function
+  with `dir_mask = 1` or `dir_mask = 3`
+- Requires the matched pipe to lower to the A2/A3 GM FIFO path
+- The result type must match the single-slot descriptor derived from the matched
+  initialize op's `gm_slot_tensor`; element type, rank, static shape, and byte
+  size are checked against the initialize op
+- Does not write data and does not notify the consumer; callers must write the
+  returned GM entry explicitly before the matching `pto.tpush_to_aiv`
+
+##### `pto.talloc_to_aic` - Frontend V2C Producer Global Entry Allocate
+
+**Summary:** Allocates the next V2C GM FIFO slot for a GlobalTensor-like entry
+in a Vector kernel.
+
+**Syntax:**
+
+```mlir
+%entry = pto.talloc_to_aic {id = 0, split = 1}
+  -> !pto.tensor_view<128x512xf32>
+```
+
+**Arguments:**
+
+- compile-time `id` attribute
+- compile-time `split` attribute
+
+**Results:** one `!pto.tensor_view<...>` global entry describing the
+currently allocated FIFO slot.
+
+**Constraints & Verification:**
+
+- Must appear in Vector kernels
+- Represents producer-side allocation for a V2C global-entry transaction
+- `id` must match exactly one frontend initialize_pipe op in the same function
+  with `dir_mask = 2` or `dir_mask = 3`
+- Requires the matched pipe to lower to the A2/A3 GM FIFO path
+- The result type must match the single-slot descriptor derived from the matched
+  initialize op's `gm_slot_tensor`; element type, rank, static shape, and byte
+  size are checked against the initialize op
+- Does not write data and does not notify the consumer; callers must write the
+  returned GM entry explicitly before the matching `pto.tpush_to_aic`
+
 ##### `pto.tpush_to_aiv` - Frontend C2V Producer Push
 
-**Summary:** Pushes one tile from a Cube kernel to the C2V logical pipe.
+**Summary:** Pushes one C2V pipe entry from a Cube kernel. For tile entries this
+keeps the existing tile-transfer behavior; for global entries this commits a GM
+FIFO slot previously allocated by `pto.talloc_to_aiv`.
 
 **Syntax:**
 
 ```mlir
 pto.tpush_to_aiv(%tile : !pto.tile_buf<...>) {id = 0, split = 1}
+pto.tpush_to_aiv(%entry : !pto.tensor_view<...>) {id = 0, split = 1}
 ```
 
 **Arguments:**
 
-- one tile operand
+- one pipe-entry operand: either a tile entry or a global entry
 - compile-time `id` attribute
 - compile-time `split` attribute
 
@@ -8033,20 +8266,28 @@ pto.tpush_to_aiv(%tile : !pto.tile_buf<...>) {id = 0, split = 1}
 - Represents the producer side of a C2V transfer
 - `id` must match exactly one frontend initialize_pipe op in the same function
   with `dir_mask = 1` or `dir_mask = 3`
+- A global-entry operand requires a dominating matching `pto.talloc_to_aiv`
+- A global-entry operand type must match the single-slot descriptor derived from
+  the matched initialize op's `gm_slot_tensor`
+- A global-entry push does not perform `TSTORE`; it only notifies the consumer
+  that the GM FIFO slot is ready
 
 ##### `pto.tpush_to_aic` - Frontend V2C Producer Push
 
-**Summary:** Pushes one tile from a Vector kernel to the V2C logical pipe.
+**Summary:** Pushes one V2C pipe entry from a Vector kernel. For tile entries
+this keeps the existing tile-transfer behavior; for global entries this commits
+a GM FIFO slot previously allocated by `pto.talloc_to_aic`.
 
 **Syntax:**
 
 ```mlir
 pto.tpush_to_aic(%tile : !pto.tile_buf<...>) {id = 0, split = 1}
+pto.tpush_to_aic(%entry : !pto.tensor_view<...>) {id = 0, split = 1}
 ```
 
 **Arguments:**
 
-- one tile operand
+- one pipe-entry operand: either a tile entry or a global entry
 - compile-time `id` attribute
 - compile-time `split` attribute
 
@@ -8058,20 +8299,31 @@ pto.tpush_to_aic(%tile : !pto.tile_buf<...>) {id = 0, split = 1}
 - Represents the producer side of a V2C transfer
 - `id` must match exactly one frontend initialize_pipe op in the same function
   with `dir_mask = 2` or `dir_mask = 3`
+- A global-entry operand requires a dominating matching `pto.talloc_to_aic`
+- A global-entry operand type must match the single-slot descriptor derived from
+  the matched initialize op's `gm_slot_tensor`
+- A global-entry push does not perform `TSTORE`; it only notifies the consumer
+  that the GM FIFO slot is ready
 
 ##### `pto.tpop_from_aic` - Frontend C2V Consumer Pop
 
-**Summary:** Pops one tile from a C2V logical pipe in a Vector kernel.
+**Summary:** Pops one C2V pipe entry in a Vector kernel. For tile entries this
+keeps the existing tile-pop behavior; for global entries this waits for producer
+ready and assigns the current GM FIFO slot address into the returned
+GlobalTensor-like descriptor.
 
 **Syntax:**
 
 ```mlir
 %tile = pto.tpop_from_aic {id = 0, split = 1} -> !pto.tile_buf<...>
+%entry = pto.tpop_from_aic {id = 0, split = 1}
+  -> !pto.tensor_view<128x512xf32>
 ```
 
 **Arguments:** compile-time `id` and `split` attributes.
 
-**Results:** one `!pto.tile_buf<...>` result tile.
+**Results:** one pipe entry. The result may be a `!pto.tile_buf<...>` tile entry
+or a GlobalTensor-like `!pto.tensor_view<...>` GM entry.
 
 **Constraints & Verification:**
 
@@ -8079,20 +8331,32 @@ pto.tpush_to_aic(%tile : !pto.tile_buf<...>) {id = 0, split = 1}
 - Represents the consumer side of a C2V transfer
 - `id` must match exactly one frontend initialize_pipe op in the same function
   with `dir_mask = 1` or `dir_mask = 3`
+- A global-entry result requires the matched pipe to lower to the A2/A3 GM FIFO
+  path
+- A global-entry result type must match the single-slot descriptor derived from
+  the matched initialize op's `gm_slot_tensor`
+- A global-entry pop does not perform `TLOAD`; callers explicitly load from the
+  returned GM entry or from views derived from it
 
 ##### `pto.tpop_from_aiv` - Frontend V2C Consumer Pop
 
-**Summary:** Pops one tile from a V2C logical pipe in a Cube kernel.
+**Summary:** Pops one V2C pipe entry in a Cube kernel. For tile entries this
+keeps the existing tile-pop behavior; for global entries this waits for producer
+ready and assigns the current GM FIFO slot address into the returned
+GlobalTensor-like descriptor.
 
 **Syntax:**
 
 ```mlir
 %tile = pto.tpop_from_aiv {id = 0, split = 1} -> !pto.tile_buf<...>
+%entry = pto.tpop_from_aiv {id = 0, split = 1}
+  -> !pto.tensor_view<128x512xf32>
 ```
 
 **Arguments:** compile-time `id` and `split` attributes.
 
-**Results:** one `!pto.tile_buf<...>` result tile.
+**Results:** one pipe entry. The result may be a `!pto.tile_buf<...>` tile entry
+or a GlobalTensor-like `!pto.tensor_view<...>` GM entry.
 
 **Constraints & Verification:**
 
@@ -8100,6 +8364,12 @@ pto.tpush_to_aic(%tile : !pto.tile_buf<...>) {id = 0, split = 1}
 - Represents the consumer side of a V2C transfer
 - `id` must match exactly one frontend initialize_pipe op in the same function
   with `dir_mask = 2` or `dir_mask = 3`
+- A global-entry result requires the matched pipe to lower to the A2/A3 GM FIFO
+  path
+- A global-entry result type must match the single-slot descriptor derived from
+  the matched initialize op's `gm_slot_tensor`
+- A global-entry pop does not perform `TLOAD`; callers explicitly load from the
+  returned GM entry or from views derived from it
 
 ##### `pto.tfree_from_aic` - Frontend C2V Consumer Free
 
@@ -8109,9 +8379,11 @@ pto.tpush_to_aic(%tile : !pto.tile_buf<...>) {id = 0, split = 1}
 
 ```mlir
 pto.tfree_from_aic {id = 0, split = 1}
+pto.tfree_from_aic(%entry : !pto.tensor_view<...>) {id = 0, split = 1}
 ```
 
-**Arguments:** compile-time `id` and `split` attributes.
+**Arguments:** compile-time `id` and `split` attributes. A global-entry free
+also carries the entry descriptor returned by the matching `pto.tpop_from_aic`.
 
 **Results:** None.
 
@@ -8121,6 +8393,11 @@ pto.tfree_from_aic {id = 0, split = 1}
 - Represents the consumer free side of a C2V transfer
 - `id` must match exactly one frontend initialize_pipe op in the same function
   with `dir_mask = 1` or `dir_mask = 3`
+- Tile-entry frees use the no-operand form
+- Global-entry frees use the entry operand and must run after all explicit reads
+  from that GM FIFO slot are complete; the entry operand type must match the
+  single-slot descriptor derived from the matched initialize op's
+  `gm_slot_tensor`
 
 ##### `pto.tfree_from_aiv` - Frontend V2C Consumer Free
 
@@ -8130,9 +8407,11 @@ pto.tfree_from_aic {id = 0, split = 1}
 
 ```mlir
 pto.tfree_from_aiv {id = 0, split = 1}
+pto.tfree_from_aiv(%entry : !pto.tensor_view<...>) {id = 0, split = 1}
 ```
 
-**Arguments:** compile-time `id` and `split` attributes.
+**Arguments:** compile-time `id` and `split` attributes. A global-entry free
+also carries the entry descriptor returned by the matching `pto.tpop_from_aiv`.
 
 **Results:** None.
 
@@ -8142,6 +8421,11 @@ pto.tfree_from_aiv {id = 0, split = 1}
 - Represents the consumer free side of a V2C transfer
 - `id` must match exactly one frontend initialize_pipe op in the same function
   with `dir_mask = 2` or `dir_mask = 3`
+- Tile-entry frees use the no-operand form
+- Global-entry frees use the entry operand and must run after all explicit reads
+  from that GM FIFO slot are complete; the entry operand type must match the
+  single-slot descriptor derived from the matched initialize op's
+  `gm_slot_tensor`
 
 ---
 
@@ -8392,6 +8676,293 @@ trap(); // does not return
 // Debug-only guard, e.g. in a lowered assertion.
 pto.trap
 ```
+
+---
+
+### 4.21 Communication Operations
+
+This section documents PTO communication primitives. PTOAS currently exposes:
+
+- Synchronous point-to-point ops: `pto.comm.tput`, `pto.comm.tget`
+- Synchronous signal ops: `pto.comm.tnotify`, `pto.comm.twait`, `pto.comm.ttest`
+- Synchronous collective ops: `pto.comm.tbroadcast`, `pto.comm.comm_tgather`, `pto.comm.comm_tscatter`, `pto.comm.treduce`
+- Asynchronous communication/session ops: `pto.comm.build_async_session`, `pto.comm.tput_async`, `pto.comm.tget_async`, `pto.comm.wait_async_event`, `pto.comm.test_async_event`
+
+##### `pto.comm.build_async_session` - Create Async DMA Session
+
+**Summary:** Creates an async DMA session handle used by `pto.comm.tput_async` and `pto.comm.tget_async`.
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `scratch` | `pto.tile_buf` / local memref | Local scratch/staging buffer used by the async runtime |
+| `workspace` | `!pto.ptr<...>` / GM memref | Global workspace backing the async session |
+| `sync_id` | optional `i32` attr | Session synchronization ID |
+| `block_bytes` | optional `i64` attr | Communication block size in bytes |
+| `comm_block_offset` | optional `i64` attr | Per-block GM offset in bytes |
+| `queue_num` | optional `i32` attr | Queue count hint |
+| `channel_group_idx` | optional `i64` attr | Communication channel-group selector |
+
+**Results:** `!pto.async_session`
+
+**Constraints & Verification:**
+
+- `scratch` must be tile-like local storage.
+- `workspace` must be a GM pointer/memref.
+- Optional attrs are forwarded as session configuration and must use the declared integer types.
+
+**Basic Example:**
+
+```mlir
+%session = pto.comm.build_async_session(%scratch, %workspace : !pto.tile_buf<loc=vec, dtype=i8, rows=1, cols=256, v_row=1, v_col=256, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.ptr<i8>) {sync_id = 0 : i32} -> !pto.async_session
+```
+
+---
+
+##### `pto.comm.tput_async` - Asynchronous Remote Write
+
+**Summary:** Starts an asynchronous remote write from local GM to remote GM and returns an async event handle.
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `dst` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Remote destination buffer |
+| `src` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Local source buffer |
+| `session` | `!pto.async_session` | Async DMA session |
+
+**Results:** `!pto.async_event`
+
+**Constraints & Verification:**
+
+- `dst` / `src` must be GM-shaped values with identical element type and static shape.
+- Current lowering only supports flat contiguous logical-1D transfers for async GM operands.
+- `session` must come from `pto.comm.build_async_session`.
+
+**Basic Example:**
+
+```mlir
+%event = pto.comm.tput_async(%dst, %src, %session : !pto.partition_tensor_view<128xf32>, !pto.partition_tensor_view<128xf32>, !pto.async_session) -> !pto.async_event
+```
+
+---
+
+##### `pto.comm.tget_async` - Asynchronous Remote Read
+
+**Summary:** Starts an asynchronous remote read from remote GM to local GM and returns an async event handle.
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `dst` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Local destination buffer |
+| `src` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Remote source buffer |
+| `session` | `!pto.async_session` | Async DMA session |
+
+**Results:** `!pto.async_event`
+
+**Constraints & Verification:**
+
+- Same operand constraints as `pto.comm.tput_async`.
+- `session` must be compatible with the transfer workspace and staging configuration.
+
+**Basic Example:**
+
+```mlir
+%event = pto.comm.tget_async(%dst, %src, %session : !pto.partition_tensor_view<128xf32>, !pto.partition_tensor_view<128xf32>, !pto.async_session) -> !pto.async_event
+```
+
+---
+
+##### `pto.comm.wait_async_event` / `pto.comm.test_async_event` - Async Event Completion
+
+**Summary:** Consume an async event produced by `pto.comm.tput_async` / `pto.comm.tget_async`.
+
+**Arguments:**
+
+| Op | Operands | Result | Description |
+|----|----------|--------|-------------|
+| `pto.comm.wait_async_event` | `event`, `session` | `i1` | Blocking wait for completion |
+| `pto.comm.test_async_event` | `event`, `session` | `i1` | Non-blocking completion test |
+
+**Constraints & Verification:**
+
+- `event` must have type `!pto.async_event`.
+- `session` must have type `!pto.async_session`.
+- The event/session pair is expected to come from the same async communication flow.
+
+**Basic Example:**
+
+```mlir
+%done0 = pto.comm.wait_async_event(%event0, %session : !pto.async_event, !pto.async_session) -> i1
+%done1 = pto.comm.test_async_event(%event1, %session : !pto.async_event, !pto.async_session) -> i1
+```
+
+---
+
+##### `pto.comm.tput` - Synchronous Remote Write
+
+**Summary:** Lowers to `pto::comm::TPUT(...)` and copies data from local GM to remote GM through a VEC staging tile.
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `dst` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Remote destination buffer |
+| `src` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Local source buffer |
+| `ping` | `pto.tile_buf` / local VEC memref | Required staging tile |
+| `pong` | `pto.tile_buf` / local VEC memref | Optional second staging tile for ping-pong transfer |
+| `atomicType` | `#pto.atomic_type<...>` | Atomic mode, default `atomic_none` |
+
+**Constraints & Verification:**
+
+- `dst` / `src` must be GM-shaped values with positive static shapes.
+- `dst` and `src` must have the same element type and static shape.
+- `ping` / `pong` must be local VEC tile-like values whose element type matches `src`.
+
+**Basic Example:**
+
+```mlir
+pto.comm.tput %dst, %src, %ping {atomicType = #pto.atomic_type<atomic_none>} :
+  !pto.partition_tensor_view<128xf32>, !pto.partition_tensor_view<128xf32>, !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=128, v_row=1, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+pto.comm.tput %dst, %src, %ping, %pong {atomicType = #pto.atomic_type<atomic_add>} :
+  !pto.partition_tensor_view<128xf32>, !pto.partition_tensor_view<128xf32>, !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=128, v_row=1, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=128, v_row=1, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+```
+
+---
+
+##### `pto.comm.tget` - Synchronous Remote Read
+
+**Summary:** Lowers to `pto::comm::TGET(...)` and copies data from remote GM to local GM through a VEC staging tile.
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `dst` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Local destination buffer |
+| `src` | GM memref / `pto.tensor_view` / `pto.partition_tensor_view` | Remote source buffer |
+| `ping` | `pto.tile_buf` / local VEC memref | Required staging tile |
+| `pong` | `pto.tile_buf` / local VEC memref | Optional second staging tile for ping-pong transfer |
+
+**Constraints & Verification:**
+
+- Same GM/global-like and staging constraints as `pto.comm.tput`.
+- `dst` and `src` must have the same element type and static shape.
+
+**Basic Example:**
+
+```mlir
+pto.comm.tget %dst, %src, %ping :
+  !pto.partition_tensor_view<128xf32>, !pto.partition_tensor_view<128xf32>, !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=128, v_row=1, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+```
+
+---
+
+##### `pto.comm.tnotify` / `pto.comm.twait` / `pto.comm.ttest` - Communication Signal Ops
+
+**Summary:** Lower to `pto::comm::TNOTIFY/TWAIT/TTEST` for GM `i32` signal buffers.
+
+**Arguments:**
+
+| Op | Operands | Attributes | Result |
+|----|----------|------------|--------|
+| `pto.comm.tnotify` | `signal`, `value` | `notifyOp = #pto.notify_op<atomic_add/set>` | none |
+| `pto.comm.twait` | `signal`, `cmpValue` | `cmp = #pto.wait_cmp<eq/ne/gt/ge/lt/le>` | none |
+| `pto.comm.ttest` | `signal`, `cmpValue` | `cmp = #pto.wait_cmp<eq/ne/gt/ge/lt/le>` | `i1` |
+
+**Constraints & Verification:**
+
+- `signal` must be a GM-shaped value with element type `i32`.
+- `value` / `cmpValue` must be signless integer scalars.
+
+**Basic Example:**
+
+```mlir
+pto.comm.tnotify %sig, %v {notifyOp = #pto.notify_op<set>} : !pto.partition_tensor_view<1xi32>, i32
+pto.comm.twait %sig, %v {cmp = #pto.wait_cmp<ge>} : !pto.partition_tensor_view<1xi32>, i32
+%ok = pto.comm.ttest %sig, %v {cmp = #pto.wait_cmp<eq>} : !pto.partition_tensor_view<1xi32>, i32 -> i1
+```
+
+---
+
+##### `pto.comm.tbroadcast` - Collective Broadcast
+
+**Summary:** Lowers to `pto::comm::TBROADCAST(...)`.
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `src` | GM-shaped value | Root source buffer |
+| `ping` / `pong` | local VEC tile-like values | Staging tiles |
+| `group` | variadic GM-shaped values | Parallel group members |
+| `root` | `i32` attr | Root rank index inside `group` |
+
+**Constraints & Verification:**
+
+- `group` must be non-empty and all members must have identical types.
+- `src` must have the same type as each `group` member.
+- `root` must be in range `[0, group.size)`.
+
+**Basic Example:**
+
+```mlir
+pto.comm.tbroadcast %src, %ping, %g0, %g1, %g2 {root = 1, operandSegmentSizes = array<i32: 1, 1, 0, 3>} :
+  !pto.partition_tensor_view<128xf32>, !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=128, v_row=1, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.partition_tensor_view<128xf32>, !pto.partition_tensor_view<128xf32>, !pto.partition_tensor_view<128xf32>
+```
+
+---
+
+##### `pto.comm.comm_tgather` - Collective Gather
+
+**Summary:** Communication collective that lowers to `pto::comm::TGATHER(...)`. This op is distinct from tile-level `pto.tgather`.
+
+**Arguments:** `dst`, `ping`, optional `pong`, variadic `group`, `root`
+
+**Constraints & Verification:**
+
+- `group` must be non-empty and all members must have identical types.
+- `dst` element type must match the group element type.
+- `ping` / `pong` must be local VEC tile-like values with matching element type.
+
+---
+
+##### `pto.comm.comm_tscatter` - Collective Scatter
+
+**Summary:** Communication collective that lowers to `pto::comm::TSCATTER(...)`. This op is distinct from tile-level `pto.tscatter`.
+
+**Arguments:** `src`, `ping`, optional `pong`, variadic `group`, `root`
+
+**Constraints & Verification:**
+
+- `group` must be non-empty and all members must have identical types.
+- `src` element type must match the group element type.
+- `ping` / `pong` must be local VEC tile-like values with matching element type.
+
+---
+
+##### `pto.comm.treduce` - Collective Reduce
+
+**Summary:** Lowers to `pto::comm::TREDUCE(...)`.
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `dst` | GM-shaped value | Root destination buffer |
+| `acc` | local VEC tile-like value | Accumulation tile |
+| `recvPing` / `recvPong` | local VEC tile-like values | Receive staging tiles |
+| `group` | variadic GM-shaped values | Parallel group members |
+| `reduceOp` | `#pto.reduce_op<sum/max/min>` | Reduction mode |
+| `root` | `i32` attr | Root rank index inside `group` |
+
+**Constraints & Verification:**
+
+- `group` must be non-empty and all members must have identical types.
+- `dst` element type must match the group element type.
+- `acc` and `recvPing` / `recvPong` must be local VEC tile-like values whose element type matches `dst`.
 
 ---
 

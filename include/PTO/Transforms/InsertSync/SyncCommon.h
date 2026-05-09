@@ -199,6 +199,7 @@ public:
   Operation *branchSelectorRepresentativeOp{nullptr};
   int reuseCntForWiden{0};
   bool reallocatedLoopHeadTailSync{false};
+  bool autoSyncTailBarrier{false};
   TCoreType syncCoreType{TCoreType::CUBE_OR_VECTOR};
   Value block_sync_event_value{nullptr};
  
@@ -244,6 +245,8 @@ public:
  
   // 设置为 PipeAll (用于资源耗尽时的降级)
   void SetPipeAll();
+  bool IsAutoSyncTailBarrier() const { return autoSyncTailBarrier; }
+  void MarkAutoSyncTailBarrier() { autoSyncTailBarrier = true; }
  
 private:
   TYPE type_;

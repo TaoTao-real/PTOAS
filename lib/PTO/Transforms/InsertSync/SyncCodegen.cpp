@@ -46,6 +46,8 @@ static bool IsSameSyncSignature(const SyncOperation *existing,
     return false;
   if (existing->GetActualDstPipe() != candidate->GetActualDstPipe())
     return false;
+  if (existing->IsAutoSyncTailBarrier() != candidate->IsAutoSyncTailBarrier())
+    return false;
   if (candidate->isSyncSetType() || candidate->isSyncWaitType())
     return existing->eventIds == candidate->eventIds;
   return true;
@@ -320,9 +322,10 @@ void SyncCodegen::CreateBarrierOp(IRRewriter &rewriter, Operation *op,
     return;
   }
 
-  // Compiler-inserted tail clean barrier must be anchored at function tail.
-  if (sync->GetActualSrcPipe() == PipelineType::PIPE_ALL &&
-      sync->GetActualDstPipe() == PipelineType::PIPE_ALL) {
+  // Only the compiler-inserted tail clean barrier is deferred to function tail.
+  // Other PIPE_ALL barriers, including event-id-exhaustion fallbacks, must stay
+  // at their original program point to preserve local ordering.
+  if (sync->IsAutoSyncTailBarrier()) {
     pendingAutoSyncTailBarrier_ = true;
     return;
   }

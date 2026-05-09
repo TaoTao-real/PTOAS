@@ -26,6 +26,12 @@ using namespace mlir::pto;
 namespace {} // namespace
 
 namespace {
+constexpr uint64_t kDefaultAllocAlignmentBytes = 4096;
+constexpr uint64_t kF16ByteSize = 2;
+constexpr uint64_t kF32ByteSize = 4;
+constexpr unsigned kBitsPerByte = 8;
+constexpr size_t kDynamicValidShapeRank = 2;
+
 static TileBufConfigAttr inferBindTileConfig(memref::AllocOp op) {
   TileBufConfigAttr configAttr;
   for (Operation *user : op.getResult().getUsers()) {
@@ -49,7 +55,6 @@ static SmallVector<uint64_t> getAllocatedOffsets(memref::AllocOp op,
                                                  BaseMemRefType memRefType,
                                                  const DenseMap<Value, SmallVector<uint64_t>> &buffer2Offsets,
                                                  uint64_t &fallbackNextOffset) {
-  constexpr uint64_t kAlign = 4096;
   auto iter = buffer2Offsets.find(op.getResult());
   SmallVector<uint64_t> offsets;
   if (iter != buffer2Offsets.end())
@@ -58,16 +63,16 @@ static SmallVector<uint64_t> getAllocatedOffsets(memref::AllocOp op,
   if (offsets.empty()) {
     // Estimate buffer size (best-effort). Most PTO tile buffers are 32x32 and
     // naturally align to 4096 bytes.
-    uint64_t bytes = kAlign;
+    uint64_t bytes = kDefaultAllocAlignmentBytes;
     if (auto memrefTy = dyn_cast<MemRefType>(memRefType)) {
       uint64_t elemBytes = 0;
       Type elemTy = memrefTy.getElementType();
       if (elemTy.isF16())
-        elemBytes = 2;
+        elemBytes = kF16ByteSize;
       else if (elemTy.isF32())
-        elemBytes = 4;
+        elemBytes = kF32ByteSize;
       else if (auto it = dyn_cast<IntegerType>(elemTy))
-        elemBytes = it.getWidth() / 8;
+        elemBytes = it.getWidth() / kBitsPerByte;
 
       if (elemBytes != 0) {
         uint64_t numel = 1;
@@ -83,9 +88,12 @@ static SmallVector<uint64_t> getAllocatedOffsets(memref::AllocOp op,
           bytes = numel * elemBytes;
       }
     }
-    uint64_t stride = ((bytes + kAlign - 1) / kAlign) * kAlign;
+    uint64_t stride = ((bytes + kDefaultAllocAlignmentBytes - 1) /
+                       kDefaultAllocAlignmentBytes) *
+                      kDefaultAllocAlignmentBytes;
     uint64_t off = fallbackNextOffset;
-    fallbackNextOffset += std::max<uint64_t>(stride, kAlign);
+    fallbackNextOffset +=
+        std::max<uint64_t>(stride, kDefaultAllocAlignmentBytes);
     offsets.push_back(off);
   }
   return offsets;
@@ -95,7 +103,7 @@ static std::pair<Value, Value> getDynamicValidShapeValues(memref::AllocOp op) {
   Value vRow;
   Value vCol;
   auto dynSizes = op.getDynamicSizes();
-  if (dynSizes.size() >= 2) {
+  if (dynSizes.size() >= kDynamicValidShapeRank) {
     vRow = dynSizes[0];
     vCol = dynSizes[1];
   } else if (dynSizes.size() == 1) {

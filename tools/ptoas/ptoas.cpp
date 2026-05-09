@@ -183,6 +183,20 @@ static llvm::cl::opt<bool> enableInsertSync("enable-insert-sync",
                                             llvm::cl::desc("Enable automatic synchronization insertion pass"),
                                             llvm::cl::init(false));
 
+static llvm::cl::opt<bool> enableGraphSyncSolver(
+    "enable-graph-sync-solver",
+    llvm::cl::desc("Enable the graph-based intra-core sync solver "
+                   "(experimental). Mutually exclusive with "
+                   "--enable-insert-sync."),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<int> graphSyncSolverEventIdMax(
+    "graph-sync-solver-event-id-max",
+    llvm::cl::desc(
+        "Maximum EVENT_ID slots for the graph sync solver (default 8). "
+        "Lower values exercise the PIPE_ALL coloring fallback sooner."),
+    llvm::cl::init(8));
+
 static llvm::cl::opt<bool> disableInferLayout(
     "disable-infer-layout",
     llvm::cl::desc("Disable PTO layout inference pass (static-only)"),
@@ -191,6 +205,11 @@ static llvm::cl::opt<bool> disableInferLayout(
 static llvm::cl::opt<bool> emitAddPtrTrace(
     "emit-addptr-trace",
     llvm::cl::desc("Emit addptr trace comments in generated C++ output"),
+    llvm::cl::init(false));
+
+static llvm::cl::opt<bool> emitMlirIR(
+    "emit-pto-ir",
+    llvm::cl::desc("Emit PTO IR after lowering instead of C++"),
     llvm::cl::init(false));
 
 static llvm::cl::opt<std::string> ptoTargetArch(
@@ -919,7 +938,13 @@ int main(int argc, char **argv) {
     }
   }
 
+  // Register all passes so that --mlir-print-ir-after/before can resolve
+  // pass names like 'cse' at option-parse time.
+  mlir::registerAllPasses();
+  registerPTOPasses();
+
   // Parse command line options
+  mlir::registerPassManagerCLOptions();
   llvm::cl::ParseCommandLineOptions(argc, argv, "PTO Assembler (ptoas)\n");
 
   // Read whole input first (so we can auto-detect .ptobc by magic).
@@ -1058,6 +1083,17 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  if (enableInsertSync && enableGraphSyncSolver) {
+    llvm::errs() << "Error: --enable-insert-sync and "
+                    "--enable-graph-sync-solver are mutually exclusive.\n";
+    return 1;
+  }
+  if (hasTAssign && enableGraphSyncSolver) {
+    llvm::errs() << "Error: pto.tassign requires --enable-graph-sync-solver "
+                    "to be disabled.\n";
+    return 1;
+  }
+
   if (effectiveLevel == PTOBuildLevel::Level3) {
     bool missing = false;
     module->walk([&](pto::AllocTileOp op) {
@@ -1081,16 +1117,11 @@ int main(int argc, char **argv) {
       return 1;
   }
 
-  // [Fix] ToolOutputFile Usage
-  std::error_code ec;
-  llvm::ToolOutputFile outputFile(outputFilename, ec, llvm::sys::fs::OF_None);
-  if (ec) {
-    llvm::errs() << ec.message() << "\n";
-    return 1;
-  }
-
   // Main PassManager
   PassManager pm(&context);
+
+  if (failed(applyPassManagerCLOptions(pm)))
+    return 1;
   
   pm.addNestedPass<mlir::func::FuncOp>(
       pto::createPTOAssignDefaultFrontendPipeIdPass());
@@ -1114,9 +1145,36 @@ int main(int argc, char **argv) {
   }
   pm.addPass(pto::createPTOResolveReservedBuffersPass());
 
-  // Conditionally add Sync pass based on flag.
+  // Conditionally add Sync pass based on flag. The two solvers are mutually
+  // exclusive (validated above); GraphSyncSolver is the experimental new
+  // path that lives next to PTOInsertSync.
   if (enableInsertSync)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertSyncPass());
+  else if (enableGraphSyncSolver) {
+    PTOGraphSyncSolverOptions graphSyncOpts;
+    graphSyncOpts.eventIdNumMax = graphSyncSolverEventIdMax;
+    pm.addNestedPass<mlir::func::FuncOp>(
+        pto::createPTOGraphSyncSolverPass(graphSyncOpts));
+  }
+
+  
+
+  // [Fix] ToolOutputFile Usage
+  std::error_code ec;
+  llvm::ToolOutputFile outputFile(outputFilename, ec, llvm::sys::fs::OF_None);
+  if (ec) {
+    llvm::errs() << ec.message() << "\n";
+    return 1;
+  }
+
+  if (emitMlirIR) {
+    if (failed(pm.run(*module))) {
+      llvm::errs() << "Error: Pass execution failed.\n";
+      return 1;
+    }
+    module->print(outputFile.os());
+    return 0;
+  }
 
   pm.addPass(createCSEPass());
   if (arch == "a3") {
@@ -1159,6 +1217,7 @@ int main(int argc, char **argv) {
   rewriteAddPtrTraceMarkers(cppOutput, emitAddPtrTrace);
   rewriteScalarConstantDecls(cppOutput);
   rewriteHoistedGlobalTensorDecls(cppOutput);
+  
   outputFile.os() << cppOutput;
 
   outputFile.keep(); // Success, keep the file

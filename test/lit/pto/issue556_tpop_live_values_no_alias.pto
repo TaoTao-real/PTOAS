@@ -1,0 +1,65 @@
+// RUN: ptoas --pto-arch=a3 %s 2>&1 | FileCheck %s
+
+module {
+  func.func @issue556_tpop_live_values_no_alias(%gm_slot_buffer: !pto.ptr<f16>)
+      attributes {pto.kernel_kind = #pto.kernel_kind<cube>} {
+    %c2v_import = pto.import_reserved_buffer {
+      name = "c2v_fifo",
+      peer_func = @issue556_peer_vector
+    } -> i32
+    %v2c_local = pto.reserve_buffer {
+      name = "v2c_fifo",
+      size = 4096,
+      location = #pto.address_space<mat>,
+      auto = true
+    } -> i32
+    pto.aic_initialize_pipe {id = 0, dir_mask = 2, slot_size = 512}
+      (gm_slot_buffer = %gm_slot_buffer : !pto.ptr<f16>,
+       c2v_consumer_buf = %c2v_import : i32,
+       v2c_consumer_buf = %v2c_local : i32)
+
+    %pop0 = pto.tpop_from_aiv {id = 0, split = 1}
+      -> !pto.tile_buf<loc=mat, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %pop1 = pto.tpop_from_aiv {id = 0, split = 1}
+      -> !pto.tile_buf<loc=mat, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    %left = pto.alloc_tile : !pto.tile_buf<loc=left, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=row_major, fractal=512, pad=0>
+    %right = pto.alloc_tile : !pto.tile_buf<loc=right, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=col_major, fractal=512, pad=0>
+
+    pto.tmov ins(%pop0 : !pto.tile_buf<loc=mat, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+             outs(%left : !pto.tile_buf<loc=left, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=row_major, fractal=512, pad=0>)
+    pto.tmov ins(%pop1 : !pto.tile_buf<loc=mat, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+             outs(%right : !pto.tile_buf<loc=right, dtype=f16, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=col_major, fractal=512, pad=0>)
+
+    pto.tfree_from_aiv {id = 0, split = 1}
+    pto.tfree_from_aiv {id = 0, split = 1}
+    return
+  }
+
+  func.func private @issue556_peer_vector(%gm_slot_buffer: !pto.ptr<f16>)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c2v_local = pto.reserve_buffer {
+      name = "c2v_fifo",
+      size = 4096,
+      location = #pto.address_space<vec>,
+      auto = true
+    } -> i32
+    %v2c_import = pto.import_reserved_buffer {
+      name = "v2c_fifo",
+      peer_func = @issue556_tpop_live_values_no_alias
+    } -> i32
+    pto.aiv_initialize_pipe {id = 0, dir_mask = 2, slot_size = 512}
+      (gm_slot_buffer = %gm_slot_buffer : !pto.ptr<f16>,
+       c2v_consumer_buf = %c2v_local : i32,
+       v2c_consumer_buf = %v2c_import : i32)
+    return
+  }
+}
+
+// CHECK-LABEL: AICORE void issue556_tpop_live_values_no_alias(
+// CHECK: Tile<TileType::Mat, half, 16, 16, BLayout::RowMajor, 16, 16, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null> [[POP0:v[0-9]+]];
+// CHECK: TPOP<TPipe<0, Direction::DIR_V2C, 512, 8, 8, false>, Tile<TileType::Mat, half, 16, 16, BLayout::RowMajor, 16, 16, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>, TileSplitAxis::TILE_UP_DOWN>({{v[0-9]+}}, [[POP0]]);
+// CHECK: Tile<TileType::Mat, half, 16, 16, BLayout::RowMajor, 16, 16, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null> [[POP1:v[0-9]+]];
+// CHECK: TPOP<TPipe<0, Direction::DIR_V2C, 512, 8, 8, false>, Tile<TileType::Mat, half, 16, 16, BLayout::RowMajor, 16, 16, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>, TileSplitAxis::TILE_UP_DOWN>({{v[0-9]+}}, [[POP1]]);
+// CHECK: TMOV({{v[0-9]+}}, [[POP0]]);
+// CHECK: TMOV({{v[0-9]+}}, [[POP1]]);

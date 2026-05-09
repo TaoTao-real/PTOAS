@@ -454,8 +454,13 @@ unsigned InsertSyncAnalysis::InsertLoopSync(
     unsigned newEnd = index;
     InsertSeqSync(nowCompound, syncElement, static_cast<int>(newBegin),
                   static_cast<int>(newEnd), syncRecordForList, forEndIndex);
-    // Conservatively assume loop bodies are executed and keep the updated state.
-    syncRecordList = std::move(syncRecordForList);
+    // A loop may execute zero iterations at runtime. Keep correctness for both
+    // paths by not promoting alreadySync from the loop-body traversal into the
+    // outer state. We only carry syncFinder updates, matching no-else branch
+    // behavior in InsertBranchSync.
+    for (size_t bufferIdx = 0; bufferIdx < syncRecordList.size(); bufferIdx++)
+      syncRecordList[bufferIdx].syncFinder =
+          syncRecordForList[bufferIdx].syncFinder;
     return (loopElement->endId - loopElement->beginId);
   }
   return 0;
@@ -751,6 +756,7 @@ void InsertSyncAnalysis::InsertLastPipeAll() {
     auto barrierOp = std::make_unique<SyncOperation>(
         SyncOperation::TYPE::PIPE_BARRIER, PipelineType::PIPE_ALL,
         PipelineType::PIPE_ALL, syncIndex_, element->GetIndex(), std::nullopt);
+    barrierOp->MarkAutoSyncTailBarrier();
 
     SyncOperation *barrierRawPtr = barrierOp.get();
     SmallVector<std::unique_ptr<SyncOperation>> syncGroup;

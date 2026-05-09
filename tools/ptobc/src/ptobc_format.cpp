@@ -21,6 +21,16 @@
 
 namespace ptobc {
 
+namespace {
+constexpr unsigned kBitsPerByte = 8;
+constexpr uint32_t kByteMask = 0xffu;
+constexpr unsigned kU32SecondByteShift = kBitsPerByte;
+constexpr unsigned kU32ThirdByteShift = 2 * kBitsPerByte;
+constexpr unsigned kU32FourthByteShift = 3 * kBitsPerByte;
+constexpr char kPTOBCMagic[] = {'P', 'T', 'O', 'B', 'C', '\0'};
+constexpr size_t kPTOBCMagicSize = sizeof(kPTOBCMagic);
+} // namespace
+
 void Buffer::append(const void* p, size_t n) {
   const uint8_t* b = reinterpret_cast<const uint8_t*>(p);
   bytes.insert(bytes.end(), b, b + n);
@@ -29,15 +39,15 @@ void Buffer::append(const void* p, size_t n) {
 void Buffer::appendU8(uint8_t v) { bytes.push_back(v); }
 
 void Buffer::appendU16LE(uint16_t v) {
-  bytes.push_back(uint8_t(v & 0xff));
-  bytes.push_back(uint8_t((v >> 8) & 0xff));
+  bytes.push_back(uint8_t(v & kByteMask));
+  bytes.push_back(uint8_t((v >> kU32SecondByteShift) & kByteMask));
 }
 
 void Buffer::appendU32LE(uint32_t v) {
-  bytes.push_back(uint8_t(v & 0xff));
-  bytes.push_back(uint8_t((v >> 8) & 0xff));
-  bytes.push_back(uint8_t((v >> 16) & 0xff));
-  bytes.push_back(uint8_t((v >> 24) & 0xff));
+  bytes.push_back(uint8_t(v & kByteMask));
+  bytes.push_back(uint8_t((v >> kU32SecondByteShift) & kByteMask));
+  bytes.push_back(uint8_t((v >> kU32ThirdByteShift) & kByteMask));
+  bytes.push_back(uint8_t((v >> kU32FourthByteShift) & kByteMask));
 }
 
 uint64_t StringTable::intern(const std::string& s) {
@@ -176,8 +186,7 @@ std::vector<uint8_t> PTOBCFile::serialize() const {
   }
 
   Buffer out;
-  const char magic[6] = {'P','T','O','B','C','\0'};
-  out.append(magic, 6);
+  out.append(kPTOBCMagic, kPTOBCMagicSize);
   out.appendU16LE(kVersionV0);
   out.appendU16LE(kFlagsV0);
   out.appendU32LE(uint32_t(payload.size()));

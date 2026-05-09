@@ -52,6 +52,9 @@ register_dialect = _pto_mod.register_dialect
 PtrType = _pto_mod.PtrType
 AsyncSessionType = _pto_mod.AsyncSessionType
 AsyncEventType = _pto_mod.AsyncEventType
+HiF8Type = _pto_mod.HiF8Type
+F4E1M2x2Type = _pto_mod.F4E1M2x2Type
+F4E2M1x2Type = _pto_mod.F4E2M1x2Type
 TensorViewType = _pto_mod.TensorViewType
 PartitionTensorViewType = _pto_mod.PartitionTensorViewType
 TileType = _pto_mod.TileType
@@ -71,6 +74,14 @@ AccToVecMode = _pto_mod.AccToVecMode
 AccToVecModeAttr = _pto_mod.AccToVecModeAttr
 ReluPreMode = _pto_mod.ReluPreMode
 ReluPreModeAttr = _pto_mod.ReluPreModeAttr
+AtomicType = _pto_mod.AtomicType
+AtomicTypeAttr = _pto_mod.AtomicTypeAttr
+NotifyOp = _pto_mod.NotifyOp
+NotifyOpAttr = _pto_mod.NotifyOpAttr
+WaitCmp = _pto_mod.WaitCmp
+WaitCmpAttr = _pto_mod.WaitCmpAttr
+ReduceOp = _pto_mod.ReduceOp
+ReduceOpAttr = _pto_mod.ReduceOpAttr
 RoundMode = _pto_mod.RoundMode
 RoundModeAttr = _pto_mod.RoundModeAttr
 SaturationMode = _pto_mod.SaturationMode
@@ -97,6 +108,9 @@ __all__ = [
     "PtrType",
     "AsyncSessionType",
     "AsyncEventType",
+    "HiF8Type",
+    "F4E1M2x2Type",
+    "F4E2M1x2Type",
     "TensorViewType",
     "PartitionTensorViewType",
     "TileType",
@@ -115,6 +129,14 @@ __all__ = [
     "AccToVecModeAttr",
     "ReluPreMode",
     "ReluPreModeAttr",
+    "AtomicType",
+    "AtomicTypeAttr",
+    "NotifyOp",
+    "NotifyOpAttr",
+    "WaitCmp",
+    "WaitCmpAttr",
+    "ReduceOp",
+    "ReduceOpAttr",
     "RoundMode",
     "RoundModeAttr",
     "SaturationMode",
@@ -575,6 +597,103 @@ class TileConfig:
     fractalABSize = 512
     fractalCSize = 1024
     fractalMxSize = 32
+
+
+_PARTITION_VIEW_UNSET = object()
+_GeneratedPartitionViewOp = PartitionViewOp
+
+
+class PartitionViewOp(_GeneratedPartitionViewOp):
+    """Compatibility wrapper for inferred-result partition_view builders."""
+
+    def __init__(
+        self,
+        *args,
+        result=_PARTITION_VIEW_UNSET,
+        source=_PARTITION_VIEW_UNSET,
+        offsets=_PARTITION_VIEW_UNSET,
+        sizes=_PARTITION_VIEW_UNSET,
+        loc=None,
+        ip=None,
+    ):
+        if result is not _PARTITION_VIEW_UNSET:
+            if source is _PARTITION_VIEW_UNSET:
+                if not args:
+                    raise TypeError("missing required argument: source")
+                source, *args = args
+            self._init_explicit(result, source, offsets, sizes, args, loc, ip)
+            return
+
+        if source is not _PARTITION_VIEW_UNSET:
+            self._init_inferred(source, offsets, sizes, args, loc, ip)
+            return
+
+        if len(args) == 4 and offsets is _PARTITION_VIEW_UNSET and sizes is _PARTITION_VIEW_UNSET:
+            result, source, offsets, sizes = args
+            self._init_explicit(result, source, offsets, sizes, (), loc, ip)
+            return
+
+        if len(args) == 2 and offsets is not _PARTITION_VIEW_UNSET and sizes is not _PARTITION_VIEW_UNSET:
+            result, source = args
+            self._init_explicit(result, source, offsets, sizes, (), loc, ip)
+            return
+
+        kwargs = {}
+        if offsets is not _PARTITION_VIEW_UNSET:
+            kwargs["offsets"] = offsets
+        if sizes is not _PARTITION_VIEW_UNSET:
+            kwargs["sizes"] = sizes
+        super().__init__(*args, **kwargs, loc=loc, ip=ip)
+
+    def _init_inferred(self, source, offsets, sizes, args, loc, ip):
+        if offsets is _PARTITION_VIEW_UNSET:
+            if not args:
+                raise TypeError("missing required argument: offsets")
+            offsets, *args = args
+        if sizes is _PARTITION_VIEW_UNSET:
+            if not args:
+                raise TypeError("missing required argument: sizes")
+            sizes, *args = args
+        if args:
+            raise TypeError(f"too many positional arguments: {len(args)}")
+        source_value = _pto_ops_gen._get_op_result_or_value(source)
+        source_type = source_value.type
+        result = PartitionTensorViewType.get(source_type.rank, source_type.element_type)
+        self._init_explicit(result, source_value, offsets, sizes, (), loc, ip)
+
+    def _init_explicit(self, result, source, offsets, sizes, args, loc, ip):
+        if offsets is _PARTITION_VIEW_UNSET:
+            if not args:
+                raise TypeError("missing required argument: offsets")
+            offsets, *args = args
+        if sizes is _PARTITION_VIEW_UNSET:
+            if not args:
+                raise TypeError("missing required argument: sizes")
+            sizes, *args = args
+        if args:
+            raise TypeError(f"too many positional arguments: {len(args)}")
+        operands = [
+            _pto_ops_gen._get_op_result_or_value(source),
+            _pto_ops_gen._get_op_results_or_values(offsets),
+            _pto_ops_gen._get_op_results_or_values(sizes),
+        ]
+        op = self.build_generic(
+            attributes={},
+            results=[result],
+            operands=operands,
+            successors=None,
+            regions=None,
+            loc=loc,
+            ip=ip,
+        )
+        _ods_ir.OpView.__init__(self, op)
+
+
+def partition_view(*args, **kwargs) -> _ods_ir.Value:
+    return PartitionViewOp(*args, **kwargs).result
+
+
+PartitionView = PartitionViewOp
 
 
 # -----------------------------------------------------------------------------

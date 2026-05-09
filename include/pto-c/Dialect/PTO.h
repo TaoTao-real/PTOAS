@@ -34,6 +34,14 @@ MlirType mlirPTOAsyncSessionTypeGet(MlirContext ctx);
 bool mlirPTOTypeIsAAsyncEventType(MlirType type);
 MlirType mlirPTOAsyncEventTypeGet(MlirContext ctx);
 
+// ---- !pto.hif8 / !pto.f4E1M2x2 / !pto.f4E2M1x2 ----
+bool mlirPTOTypeIsAHiF8Type(MlirType type);
+MlirType mlirPTOHiF8TypeGet(MlirContext ctx);
+bool mlirPTOTypeIsAF4E1M2x2Type(MlirType type);
+MlirType mlirPTOF4E1M2x2TypeGet(MlirContext ctx);
+bool mlirPTOTypeIsAF4E2M1x2Type(MlirType type);
+MlirType mlirPTOF4E2M1x2TypeGet(MlirContext ctx);
+
 // ---- #pto.address_space<...> ----
 bool mlirPTOAttrIsAAddressSpaceAttr(MlirAttribute attr);
 
@@ -98,6 +106,18 @@ MLIR_CAPI_EXPORTED int32_t mlirPTOAccToVecModeAttrGetValue(MlirAttribute attr);
 MLIR_CAPI_EXPORTED bool mlirPTOAttrIsAReluPreModeAttr(MlirAttribute attr);
 MLIR_CAPI_EXPORTED MlirAttribute mlirPTOReluPreModeAttrGet(MlirContext ctx, int32_t value);
 MLIR_CAPI_EXPORTED int32_t mlirPTOReluPreModeAttrGetValue(MlirAttribute attr);
+MLIR_CAPI_EXPORTED bool mlirPTOAttrIsAAtomicTypeAttr(MlirAttribute attr);
+MLIR_CAPI_EXPORTED MlirAttribute mlirPTOAtomicTypeAttrGet(MlirContext ctx, int32_t value);
+MLIR_CAPI_EXPORTED int32_t mlirPTOAtomicTypeAttrGetValue(MlirAttribute attr);
+MLIR_CAPI_EXPORTED bool mlirPTOAttrIsANotifyOpAttr(MlirAttribute attr);
+MLIR_CAPI_EXPORTED MlirAttribute mlirPTONotifyOpAttrGet(MlirContext ctx, int32_t value);
+MLIR_CAPI_EXPORTED int32_t mlirPTONotifyOpAttrGetValue(MlirAttribute attr);
+MLIR_CAPI_EXPORTED bool mlirPTOAttrIsAWaitCmpAttr(MlirAttribute attr);
+MLIR_CAPI_EXPORTED MlirAttribute mlirPTOWaitCmpAttrGet(MlirContext ctx, int32_t value);
+MLIR_CAPI_EXPORTED int32_t mlirPTOWaitCmpAttrGetValue(MlirAttribute attr);
+MLIR_CAPI_EXPORTED bool mlirPTOAttrIsAReduceOpAttr(MlirAttribute attr);
+MLIR_CAPI_EXPORTED MlirAttribute mlirPTOReduceOpAttrGet(MlirContext ctx, int32_t value);
+MLIR_CAPI_EXPORTED int32_t mlirPTOReduceOpAttrGetValue(MlirAttribute attr);
 MLIR_CAPI_EXPORTED MlirAttribute mlirPTORoundModeAttrGet(MlirContext ctx, int32_t value);
 MLIR_CAPI_EXPORTED bool mlirPTOAttrIsARoundModeAttr(MlirAttribute attr);
 MLIR_CAPI_EXPORTED int32_t mlirPTORoundModeAttrGetValue(MlirAttribute attr);
