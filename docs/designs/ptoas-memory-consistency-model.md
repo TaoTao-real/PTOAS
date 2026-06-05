@@ -18,6 +18,74 @@ cacheable scalar/SIMT 访问、write-back/write-through 策略、DMA/MTE 访问�
 表明确要求某些 hazard 除了 pipe sync 以外，还需要 `dcci`、`dsb`、`mem_bar`
 或 pipe-local barrier。
 
+### 1.1 Rank 与跨 rank 可见性
+
+本文中的 rank 指通信语义中的一个逻辑参与者。它可以映射到不同 block、不同 AICore、
+不同 device，或者 collective/remote communication runtime 中定义的 peer。对内存一致性
+而言，关键不是 rank 的具体调度单位，而是 producer 和 consumer 是否处在同一个本地执行
+与可见性域中。
+
+如果 producer 和 consumer 在同一个本地 pipe/组件域内，某些 `pipe_barrier` 或
+`set_flag/wait_flag` 可以保证本地执行顺序。例如本核的 `PIPE_MTE3` store 在本核后续
+scalar signal store 之前被 drain。
+
+但跨 rank 场景不同。producer rank 写 payload，随后写 signal；consumer rank 通过
+`TWait` 观察 signal，再读取 payload。payload 和 signal 通常是两个不同地址，甚至可能
+走不同的硬件路径：
+
+```text
+producer rank:
+  payload write through MTE3/DMA
+  signal write through scalar/comm path
+
+consumer rank:
+  wait signal
+  read payload
+```
+
+这里的危险是：signal 对 consumer rank 可见，不代表 payload write 已经进入
+consumer 能观察到的 GM/DDR visibility domain。也就是说，`pipe_barrier(PIPE_MTE3)`
+只能说明本地 MTE3 pipe 不再继续乱序执行前面的 store，并不能自动推出 remote rank
+之后的 load 一定能读到这笔 store 的结果。
+
+### 1.2 与 CPU cache coherence 的类比
+
+在常见 CPU 多核系统里，cacheable memory 通常由硬件 cache coherence 协议维护，例如
+MESI/MOESI。一个 core 对 cacheable memory 的 store，即使先落在本 core cache 中，也会
+通过 coherence 协议与其它 core 的 cache 状态建立一致性关系。程序通常仍然需要
+release/acquire 或 fence 来建立顺序，但数据可见性本身是在统一 coherent memory model
+下被硬件维护的。
+
+一个典型 CPU publish/consume 例子是：
+
+```cpp
+payload = value;
+flag.store(1, memory_order_release);
+
+while (flag.load(memory_order_acquire) != 1) {}
+use(payload);
+```
+
+release/acquire 建立 happens-before 后，consumer 看到 flag 时，也应看到 release 前的
+payload write。
+
+Ascend AICore 场景不能直接套用这个直觉。AICore 内部有 scalar、SIMT/SIMD vector、
+MTE2/MTE3/DMA 等多个访问组件，UB/GM 也可能通过不同组件访问。硬件资料明确说明
+UB 和 GM 被多个 AICore component 访问时不保证天然 cache coherence，尤其是
+NDDMA/SIMT/SU 等对 UB/GM 的访问，需要 cache operation、memory barrier 或 pipe
+synchronization 才能避免 data hazard。
+
+因此，在 Ascend 上：
+
+- `set_flag/wait_flag` 更偏向“执行 pipe 间顺序”。
+- `pipe_barrier` 更偏向“本地 pipe drain/order”。
+- `dcci` 处理 cache line 的 clean/invalidate 等 cache maintenance。
+- `dsb(DSB_DDR)` 处理 GM/DDR visibility domain 的 release/acquire 类顺序。
+
+跨 rank notify/wait 类似 CPU 的 flag publish/consume，但它不会自动继承 CPU coherent
+cache 的语义。PTOAS 必须显式为 `payload write -> signal publish` 建模 release fence，
+必要时也要为 `signal consume -> payload read` 建模 acquire fence。
+
 近期 issue #711 和 #744 暴露了这个缺口：
 
 - #711：`pto.comm.tnotify` 的 signal store 发生在内部 trailing
