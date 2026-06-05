@@ -48,7 +48,62 @@ consumer 能观察到的 GM/DDR visibility domain。也就是说，`pipe_barrier
 只能说明本地 MTE3 pipe 不再继续乱序执行前面的 store，并不能自动推出 remote rank
 之后的 load 一定能读到这笔 store 的结果。
 
-### 1.2 与 CPU cache coherence 的类比
+### 1.2 Signal 与 payload
+
+在通信同步语义里，payload 和 signal 是两个不同角色：
+
+- Payload：真正要被 consumer 使用的数据，例如 `TSTORE` 写出的结果 tensor、通信 op
+  写入的 GM 数据块、或者某个 rank 生产出的中间结果。
+- Signal：用于通知 consumer “payload 已经可以被消费”的控制值，通常是一个较小的
+  GM 标志位、计数器或状态字。`pto.comm.tnotify` 写 signal，`pto.comm.twait` 读
+  signal 并等待其达到指定条件。
+
+可以把 publish/consume 抽象成：
+
+```text
+producer rank:
+  write payload_data
+  make payload_data visible
+  write signal
+
+consumer rank:
+  wait signal
+  make payload_data observable
+  read payload_data
+```
+
+在这个模型中，signal 不是 payload 本身。signal 只是控制路径上的“ready”标记。
+payload 是数据路径上的真实数据。因此 payload buffer 和 signal buffer 通常不会 alias。
+这也是为什么普通 MemoryEffects alias 分析无法自动发现
+`payload write -> signal write` 这条依赖。
+
+例如：
+
+```cpp
+// producer
+TSTORE(payload_gm, ub_result);
+pipe_barrier(PIPE_MTE3);
+dsb(DSB_DDR);
+pto::comm::TNOTIFY(signal_gm, 1, pto::comm::NotifyOp::Set);
+
+// consumer
+pto::comm::TWAIT(signal_gm, 1, pto::comm::WaitCmp::GE);
+TLOAD(ub_result, payload_gm);
+```
+
+这里 `payload_gm` 和 `signal_gm` 是两个不同地址。`TWAIT` 返回只能说明 consumer
+已经观察到 signal 条件满足；如果 producer 没有在写 signal 前做 release fence，
+consumer 仍可能读不到最新 payload。
+
+文中还会使用“signal”描述 `set_flag/wait_flag` 的 event signal。需要区分两类 signal：
+
+- Pipeline event signal：`set_flag/wait_flag` 使用的 event id，用于本地 pipe 间顺序。
+- Communication signal：`TNotify/TWait` 使用的 GM signal buffer，用于 rank 间
+  publish/consume。
+
+本文讨论跨 rank 可见性时，signal 默认指 communication signal。
+
+### 1.3 与 CPU cache coherence 的类比
 
 在常见 CPU 多核系统里，cacheable memory 通常由硬件 cache coherence 协议维护，例如
 MESI/MOESI。一个 core 对 cacheable memory 的 store，即使先落在本 core cache 中，也会
@@ -85,6 +140,47 @@ synchronization 才能避免 data hazard。
 跨 rank notify/wait 类似 CPU 的 flag publish/consume，但它不会自动继承 CPU coherent
 cache 的语义。PTOAS 必须显式为 `payload write -> signal publish` 建模 release fence，
 必要时也要为 `signal consume -> payload read` 建模 acquire fence。
+
+### 1.4 建议学习路径
+
+这些概念来自几层材料，建议按下面顺序补充：
+
+1. PTOAS 自动同步模型。
+
+   先阅读 `docs/designs/ptoas-auto-sync-design.md`，理解 InsertSync 如何从
+   MemoryEffects、alias 和 pipe pair 生成 `set_flag/wait_flag/pipe_barrier`。
+   这能解释“当前 PTOAS 已经解决了什么”。
+
+2. PTO pipeline sync 与 UB memory barrier。
+
+   阅读 `docs/isa/micro-isa/01-pipeline-sync.md`，重点看 `set_flag/wait_flag`、
+   `pipe_barrier`、`get_buf/rls_buf`、`mem_bar`。这能解释 pipe 顺序同步和 UB
+   memory barrier 的差异。
+
+3. PTO/Ascend 硬件 memory consistency 表。
+
+   这是 Ascend 特有约束的来源。重点看 GM/UB 的 RAW/WAR/WAW 表，理解为什么有些
+   hazard 不能只插 event sync，还需要 `dcci`、`dsb`、`mem_bar` 或 pipe-local
+   barrier。
+
+4. PTO communication op。
+
+   结合 `pto.comm.tnotify` / `pto.comm.twait` 的 op 定义、lowering 和 PTO-ISA
+   实现，理解 signal buffer、wait condition、notify operation 以及内部是否已有
+   release/acquire 语义。
+
+5. CPU/C++ memory model。
+
+   用 C++ `std::memory_order` 学习 release/acquire、happens-before 和 publish/consume
+   的通用概念：https://en.cppreference.com/w/cpp/atomic/memory_order
+
+6. Linux kernel memory barrier 文档。
+
+   用它补充理解 compiler barrier、CPU barrier、cache coherence、DMA visibility
+   之间的区别：https://www.kernel.org/doc/html/latest/core-api/wrappers/memory-barriers.html
+
+学习时要注意：CPU 材料提供的是理解框架，不是 Ascend 的硬件规则。PTOAS 最终要遵守的
+仍然是 Ascend 硬件 consistency 表和 PTO-ISA runtime 实现。
 
 近期 issue #711 和 #744 暴露了这个缺口：
 
