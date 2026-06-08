@@ -141,7 +141,62 @@ synchronization 才能避免 data hazard。
 cache 的语义。PTOAS 必须显式为 `payload write -> signal publish` 建模 release fence，
 必要时也要为 `signal consume -> payload read` 建模 acquire fence。
 
-### 1.4 建议学习路径
+### 1.4 抽象内存层级
+
+下图是 PTOAS 做同步分析时需要区分的抽象层级。它不是某一代 Ascend 的完整物理结构图，
+而是用于说明 consistency action 的作用边界：
+
+```mermaid
+flowchart TB
+  Host["Host / other kernel / other rank"]
+  GM["GM / DDR / HBM<br/>global visibility domain"]
+
+  L2["GM cache / L2 cache domain<br/>cache policy controlled"]
+  SCache["Scalar/SIMT data cache<br/>cacheable GM ldg/stg"]
+
+  S["PIPE_S / scalar"]
+  SIMT["SIMT workitems"]
+  V["PIPE_V<br/>vector compute and UB memory ops"]
+  MTE2["PIPE_MTE2<br/>TLoad: GM -> UB/L1"]
+  MTE3["PIPE_MTE3<br/>TStore: UB/L1 -> GM"]
+  M["PIPE_M / cube"]
+  FIX["PIPE_FIX"]
+
+  UB["UB<br/>local scratchpad"]
+  L1["L1 / CBUF<br/>tile staging"]
+  L0["L0A/L0B/L0C/ACC<br/>matrix-local storage"]
+
+  Host <--> GM
+  GM <--> L2
+  L2 <--> SCache
+  SCache <--> S
+  SCache <--> SIMT
+
+  GM <--> MTE2
+  MTE2 --> UB
+  MTE2 --> L1
+  UB --> MTE3
+  L1 --> MTE3
+  MTE3 --> GM
+
+  UB <--> V
+  L1 --> M
+  L0 <--> M
+  M --> L0
+  L0 --> FIX
+  FIX --> UB
+```
+
+因此需要区分几类边界：
+
+- GM cacheable path 与 MTE/DMA/remote visibility path 之间，需要考虑 `dcci`、
+  `dsb(DSB_DDR)` 或对应 cache-control/fence。
+- UB 上的 V/S/SIMT memory op 之间，需要考虑 `mem_bar` 或 workitem fence。
+- UB/L1/L0/ACC 这类片上 scratchpad/staging 数据流，通常是 pipe order、local barrier、
+  bufid 或 event id 生命周期问题，不是 GM cache clean 问题。
+- 纯寄存器计算没有 memory side effect，不应插入 memory consistency action。
+
+### 1.5 建议学习路径
 
 这些概念来自几层材料，建议按下面顺序补充：
 
@@ -231,7 +286,10 @@ contract。PTOAS 需要引入显式的内存一致性建模能力。
 
    `TPut/TGet/TGather/TScatter/TBroadcast/TReduce` 等复杂 op 可能在内部经过 MTE2、
    MTE3、V、S 等多个 component phase。若只把 op 建模成一个 pipe，就可能漏掉内部
-   component 与外部 op 之间的 consistency action。
+   component 与外部 op 之间的 consistency action。当前 Sync Macro Model 已经为这些
+   op 提供了 pipe/def-use/hidden-event 建模；后续仍需要将 phase 接入 access
+   descriptor，使 TNotify release、UB `mem_bar` 或 GM cache action 能识别 macro
+   内部真实访问路径。
 
 ## 3. 目标
 
@@ -265,7 +323,30 @@ contract。PTOAS 需要引入显式的内存一致性建模能力。
 
 第一阶段应优先保证正确性，并让模型结构可扩展，后续再做精细化和性能优化。
 
+### 4.1 不需要自动补 consistency action 的场景
+
+为避免把问题范围扩大化，以下场景不应作为第一阶段自动插入 memory action 的目标：
+
+- 纯寄存器计算，例如 vector register 到 vector register 的算术 op。
+- 本地 MTE-only `TLoad/TStore` 数据流中的额外 cache clean。MTE/DMA 访问自身通常不
+  需要 `dcci`；它仍然需要现有 pipe order 同步。
+- 没有 memory alias、没有 publish/consume 语义、也没有共享资源生命周期的普通计算。
+- 已经由库实现内部保证完成的封闭 macro op 内部同步。PTOAS 只需要为其外部可见
+  def/use、hidden event id 和 publish/consume 边界建模。
+
 ## 5. 需求拆解
+
+### 5.0 需要处理的问题类别
+
+PTOAS 需要覆盖的 consistency 问题可以收敛成五类：
+
+| 类别 | 典型动作 | 当前状态 |
+| --- | --- | --- |
+| 跨 pipe 执行顺序 | `set_flag/wait_flag`、`pipe_barrier` | 现有 InsertSync 主要覆盖 |
+| UB/shared memory ordering | `mem_bar(VST_VLD)`、`mem_bar(ST_VLD)` 等 | 目前多为手写或模板插入，尚未统一自动生成 |
+| GM cacheable path visibility | `dcci`、`dsb`、`threadfence`、cache-control | 尚未进入 InsertSync access model |
+| Communication publish/consume | `TNotify` 前 release、`TWait` 后 acquire | 已局部覆盖 MTE2/MTE3 drain 与 MTE3 DDR release |
+| Macro op 内部 phase | Sync Macro Model、hidden event reserve、phase descriptor | pipe/alias/event-id 已建模，memory descriptor 待扩展 |
 
 ### 5.1 访问描述模型
 
@@ -367,6 +448,8 @@ TNotify(signal)
 - pending MTE3：`pipe_barrier(PIPE_MTE3); dsb(DSB_DDR)`。
 - scalar/SIMT/SIMD GM write：需要按 cache policy 查询 matrix，决定是否补
   `dcci`、`dsb` 或其它 fence。
+- macro op 内部 MTE2/MTE3 phase：`TNotify` release 分析不能只看 op 自身的 pipe，
+  还应识别 Sync Macro Model 暴露的 phase。
 
 Consumer 侧：
 
@@ -379,9 +462,20 @@ payload read
 需要确认 `TWAIT_IMPL` 或硬件 wait 是否已经提供 acquire 语义。如果没有，需要为
 `TWait -> GM read` 建模 acquire fence。
 
+当前实现状态：
+
+| 场景 | 当前支持情况 |
+| --- | --- |
+| `TNotify` 前存在 pending MTE2 | 已支持，插 `pipe_barrier(PIPE_MTE2)` |
+| `TNotify` 前存在 pending MTE3 | 已支持，插 `pipe_barrier(PIPE_MTE3); dsb(DSB_DDR)` |
+| `TNotify` 前存在 scalar/SIMT cacheable GM store | 未支持，需要 access descriptor 与 cache action |
+| `TNotify` 前存在 macro op 内部 MTE2/MTE3 phase | 当前可能未覆盖，需要让 release scan 识别 Sync Macro Model |
+| `TWait` 后 payload read 的 acquire 语义 | 待硬件/runtime 确认 |
+
 ### 5.6 Macro op 建模
 
-对于内部包含多个 component phase 的 op，应通过 Sync Macro Model 暴露内部访问：
+对于内部包含多个 component phase 的 op，应通过 Sync Macro Model 暴露内部访问。当前
+PTOAS 已经为已知通信和复杂 tile op 建立了基础模型：
 
 ```text
 phase 0: MTE2 read/write staging
@@ -390,8 +484,20 @@ phase 2: MTE3 writeback
 hidden events / reserved event ids
 ```
 
-每个 phase 都应带 access descriptor，而不只是 def/use。这样外部 op 与 macro 内部
-phase 的 hazard 能查到正确 consistency action。
+已完成的部分包括：
+
+- `TPut/TGet/TGather/TScatter/TBroadcast/TReduce` 等 comm macro 的 MTE2/MTE3/V phase。
+- indexed `TScatter` 与 compare `TGather` 等特殊 lowering 的 V/S phase。
+- macro 内部固定或 hidden event id 的 reserve，避免外部自动分配 event id 冲突。
+
+仍需扩展的部分包括：
+
+- 每个 phase 都应带 access descriptor，而不只是 def/use。
+- `TNotify` release 分析应能识别 macro phase 中的 MTE2/MTE3。
+- 如果某个 macro 内部未来引入 scalar/SIMT cacheable GM path，需要能触发对应
+  `dcci/dsb/threadfence`。
+- 如果 macro 内部 V/S phase 的 UB hazard 不由库实现自行保证，则需要在展开或
+  consistency matrix 中生成 `mem_bar`。
 
 ## 6. 对现有 PTOAS 的影响
 
@@ -463,6 +569,7 @@ event id 分配只处理 event action。`dsb/dcci/mem_bar/pipe_barrier` 不应�
 
 - 已覆盖 MTE2/MTE3 pending drain。
 - 已覆盖 MTE3 publish 前 `dsb(DSB_DDR)`。
+- 补齐 macro op 内部 MTE2/MTE3 phase 的 pending drain 识别。
 - 继续补齐 scalar/SIMT/SIMD GM write -> TNotify 的 release action。
 
 ### 阶段 3：Access Descriptor 基础设施
@@ -498,6 +605,7 @@ event id 分配只处理 event action。`dsb/dcci/mem_bar/pipe_barrier` 不应�
 
 - `MTE3 store -> TNotify`：检查 `pipe_barrier(PIPE_MTE3); dsb(DSB_DDR)`。
 - `MTE2 load -> TNotify`：检查不插 DDR fence。
+- `macro MTE3 phase -> TNotify`：检查 release scan 能识别 Sync Macro Model phase。
 - `scalar cacheable GM store -> scalar/SIMT/MTE read`：检查 `dcci/dsb`。
 - `SIMT write-back GM store -> MTE2/scalar read`：检查 cache maintenance。
 - `UB SIMD write -> SIMD read/write`：检查 `mem_bar`。
