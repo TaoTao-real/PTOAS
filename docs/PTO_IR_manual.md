@@ -7723,7 +7723,7 @@ dst[i, j] = S + linear_index(i, j)   // or descending if requested
 
 **Hardware Mapping:**
 
-- Executes on the **Vector pipeline** (`PIPE_V`)
+- Executes on the **Scalar pipeline** (`PIPE_S`)
 
 **Basic Example:**
 
