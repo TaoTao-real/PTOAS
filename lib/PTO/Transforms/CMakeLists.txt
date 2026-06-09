@@ -69,6 +69,7 @@ add_mlir_dialect_library(PTOTransforms
   BufidSync/BufidSyncAnalysis.cpp
   BufidSync/BufidSyncIdAlloc.cpp
   BufidSync/BufidSyncCodegen.cpp
+  MemoryConsistency/MemoryAccessDesc.cpp
   GraphSyncSolver/PTOGraphSyncSolver.cpp
   GraphSyncSolver/SyncSolverIR.cpp
   GraphSyncSolver/SyncSolverIRTranslator.cpp
