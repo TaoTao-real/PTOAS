@@ -1,8 +1,8 @@
-# PTOAS 自动同步内存一致性建模需求与设计说明
+# PTOAS 内存一致性建模需求与设计说明
 
 ## 1. 背景
 
-PTOAS 的自动同步当前主要围绕两类信息工作：
+PTOAS 现有 InsertSync 主要围绕两类信息工作：
 
 - op 所属的执行 pipe，例如 `PIPE_MTE2`、`PIPE_V`、`PIPE_MTE3`、`PIPE_S`。
 - op 的 MemoryEffects 与 alias 关系，用于判断 RAW、WAR、WAW 数据依赖。
@@ -200,11 +200,11 @@ flowchart TB
 
 这些概念来自几层材料，建议按下面顺序补充：
 
-1. PTOAS 自动同步模型。
+1. PTOAS InsertSync 模型。
 
    先阅读 `docs/designs/ptoas-auto-sync-design.md`，理解 InsertSync 如何从
    MemoryEffects、alias 和 pipe pair 生成 `set_flag/wait_flag/pipe_barrier`。
-   这能解释“当前 PTOAS 已经解决了什么”。
+   这能解释现有 pipe order 同步已经解决了什么。
 
 2. PTO pipeline sync 与 UB memory barrier。
 
@@ -293,8 +293,8 @@ contract。PTOAS 需要引入显式的内存一致性建模能力。
 
 ## 3. 目标
 
-本需求的目标是为 PTOAS 建立一套可扩展的自动内存一致性模型，使自动同步能够正确
-处理硬件 RAW/WAR/WAW 表中要求的 pipe sync、cache maintenance 和 memory fence。
+本需求的目标是为 PTOAS 建立一套可扩展的内存一致性模型，使 PTOAS 能够正确处理
+硬件 RAW/WAR/WAW 表中要求的 pipe sync、cache maintenance 和 memory fence。
 
 具体目标包括：
 
@@ -786,9 +786,9 @@ event id 分配只处理 event action。`dsb/dcci/mem_bar/pipe_barrier` 不应�
 
 ## 10. 当前结论
 
-PTOAS 现有自动同步模型解决了大部分“同一 buffer 上跨 pipe 的执行顺序”问题，但不能完整
-覆盖硬件 memory consistency contract。后续需要把自动同步从单一的 event/barrier 模型
-扩展为：
+PTOAS 现有 InsertSync 模型解决了大部分“同一 buffer 上跨 pipe 的执行顺序”问题，但不能
+完整覆盖硬件 memory consistency contract。后续需要将内存一致性作为独立模型接入，
+与 InsertSync 共享 MemoryEffects、alias 和 pipe 信息，并扩展为：
 
 ```text
 alias/memory-effect analysis
