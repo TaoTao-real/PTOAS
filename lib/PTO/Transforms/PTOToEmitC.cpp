@@ -7103,9 +7103,10 @@ struct PTOEventIdArrayGetToEmitC
       return rewriter.notifyMatchFailure(op,
                                          "failed to map eventid_array get result type");
 
-    auto load =
-        rewriter.create<emitc::SubscriptOp>(op.getLoc(), resultTy, array, index);
-    rewriter.replaceOp(op, load.getResult());
+    auto subscript = rewriter.create<emitc::SubscriptOp>(
+        op.getLoc(), emitc::LValueType::get(resultTy), array,
+        ValueRange{index});
+    rewriter.replaceOpWithNewOp<emitc::LoadOp>(op, resultTy, subscript);
     return success();
   }
 };
@@ -7122,9 +7123,12 @@ struct PTOEventIdArraySetToEmitC
     Value index = peelUnrealized(adaptor.getIndex());
     Value value = peelUnrealized(adaptor.getValue());
 
-    rewriter.create<emitc::CallOpaqueOp>(
-        op.getLoc(), TypeRange{}, "PTOAS__EVENTID_ARRAY_STORE",
-        ArrayAttr{}, ArrayAttr{}, ValueRange{array, index, value});
+    Value slot = rewriter
+                     .create<emitc::SubscriptOp>(
+                         op.getLoc(), emitc::LValueType::get(value.getType()),
+                         array, ValueRange{index})
+                     .getResult();
+    rewriter.create<emitc::AssignOp>(op.getLoc(), slot, value);
     rewriter.eraseOp(op);
     return success();
   }
@@ -7181,16 +7185,8 @@ struct PTOLocalArrayGetToEmitC
       indices.push_back(peelUnrealized(index));
 
     auto sub = rewriter.create<emitc::SubscriptOp>(
-        op.getLoc(), resultTy, array, indices);
-    auto snapshot =
-        rewriter
-            .create<emitc::VariableOp>(
-                op.getLoc(), getEmitCVariableResultType(resultTy),
-                emitc::OpaqueAttr::get(rewriter.getContext(), ""))
-            .getResult();
-    rewriter.create<emitc::AssignOp>(op.getLoc(), snapshot, sub.getResult());
-    rewriter.replaceOp(
-        op, loadEmitCVariableIfNeeded(rewriter, op.getLoc(), snapshot));
+        op.getLoc(), emitc::LValueType::get(resultTy), array, indices);
+    rewriter.replaceOpWithNewOp<emitc::LoadOp>(op, resultTy, sub);
     return success();
   }
 };
@@ -7210,9 +7206,9 @@ struct PTOLocalArraySetToEmitC
     Type elemTy = value.getType();
 
     Value slot = rewriter
-                     .create<emitc::SubscriptOp>(op.getLoc(), elemTy,
-                                                 adaptor.getArray(),
-                                                 adaptor.getIndices())
+                     .create<emitc::SubscriptOp>(
+                         op.getLoc(), emitc::LValueType::get(elemTy),
+                         adaptor.getArray(), adaptor.getIndices())
                      .getResult();
     rewriter.create<emitc::AssignOp>(op.getLoc(), slot, value);
     rewriter.eraseOp(op);

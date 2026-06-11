@@ -23,5 +23,5 @@ module {
 
 // CHECK-LABEL: AICORE void bias_tile_subview_emitc_pointer_type()
 // CHECK: __gm__ float* {{v[0-9]+}} = reinterpret_cast<__gm__ float*>({{v[0-9]+}});
-// CHECK: __gm__ float* {{v[0-9]+}} = {{v[0-9]+}} + ({{v[0-9]+}} + {{v[0-9]+}} * {{v[0-9]+}} + {{v[0-9]+}} * {{v[0-9]+}});
+// CHECK: __gm__ float* {{v[0-9]+}} = {{v[0-9]+}} + (({{v[0-9]+}} + {{v[0-9]+}} * {{v[0-9]+}}) + {{v[0-9]+}} * {{v[0-9]+}});
 // CHECK-NOT: __gm__ float**
