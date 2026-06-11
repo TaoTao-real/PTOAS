@@ -31,6 +31,7 @@ extern llvm::cl::opt<bool> emitMlirIR;
 extern llvm::cl::opt<std::string> ptoTargetArch;
 extern llvm::cl::opt<std::string> ptoBackend;
 extern llvm::cl::opt<bool> emitVPTO;
+extern llvm::cl::opt<bool> emitVPTOLLVMIR;
 extern llvm::cl::opt<bool> ptoPrintSeamIR;
 extern llvm::cl::opt<std::string> ptoSeamIRFile;
 

@@ -989,16 +989,33 @@ static mlir::LogicalResult applyVPTOLLVMABINames(llvm::Module &module,
   return mlir::success();
 }
 
-mlir::LogicalResult mlir::pto::emitVPTOVectorDeviceObject(
-    llvm::Module &module, llvm::StringRef llPath, llvm::StringRef outObjPath,
-    const CANNToolchain &toolchain, llvm::StringRef stderrPath,
-    llvm::raw_ostream &diagOS) {
+mlir::LogicalResult mlir::pto::emitVPTOVectorLLVMIR(
+    llvm::Module &module, llvm::StringRef llPath,
+    const CANNToolchain &toolchain, llvm::raw_ostream &diagOS) {
   if (failed(applyVPTOLLVMABINames(
           module,
           toolchain.vptoPublicABISuffix(ObjectEmissionDeviceTarget::Vector),
           diagOS)))
     return failure();
-  if (failed(writeLLVMModule(module, llPath, diagOS)))
+  return writeLLVMModule(module, llPath, diagOS);
+}
+
+mlir::LogicalResult mlir::pto::emitVPTOCubeLLVMIR(
+    llvm::Module &module, llvm::StringRef llPath,
+    const CANNToolchain &toolchain, llvm::raw_ostream &diagOS) {
+  if (failed(applyVPTOLLVMABINames(
+          module,
+          toolchain.vptoPublicABISuffix(ObjectEmissionDeviceTarget::Cube),
+          diagOS)))
+    return failure();
+  return writeLLVMModule(module, llPath, diagOS);
+}
+
+mlir::LogicalResult mlir::pto::emitVPTOVectorDeviceObject(
+    llvm::Module &module, llvm::StringRef llPath, llvm::StringRef outObjPath,
+    const CANNToolchain &toolchain, llvm::StringRef stderrPath,
+    llvm::raw_ostream &diagOS) {
+  if (failed(emitVPTOVectorLLVMIR(module, llPath, toolchain, diagOS)))
     return failure();
   return compileLLVMToDeviceObject(llPath, outObjPath,
                                    ObjectEmissionDeviceTarget::Vector,
@@ -1009,12 +1026,7 @@ mlir::LogicalResult mlir::pto::emitVPTOCubeDeviceObject(
     llvm::Module &module, llvm::StringRef llPath, llvm::StringRef outObjPath,
     const CANNToolchain &toolchain, llvm::StringRef stderrPath,
     llvm::raw_ostream &diagOS) {
-  if (failed(applyVPTOLLVMABINames(
-          module,
-          toolchain.vptoPublicABISuffix(ObjectEmissionDeviceTarget::Cube),
-          diagOS)))
-    return failure();
-  if (failed(writeLLVMModule(module, llPath, diagOS)))
+  if (failed(emitVPTOCubeLLVMIR(module, llPath, toolchain, diagOS)))
     return failure();
   return compileLLVMToDeviceObject(llPath, outObjPath,
                                    ObjectEmissionDeviceTarget::Cube,
