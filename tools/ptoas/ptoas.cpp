@@ -883,8 +883,8 @@ getEmitCDenseIntElementsAttrLiteral(DenseIntElementsAttr attr) {
   return literal;
 }
 
-static Attribute normalizeEmitCPrintedIntAttrForCppEmission(MLIRContext *ctx,
-                                                            Attribute attr) {
+static Attribute normalizeEmitCPrintedAttrForCppEmission(MLIRContext *ctx,
+                                                         Attribute attr) {
   if (auto intAttr = dyn_cast<IntegerAttr>(attr))
     return emitc::OpaqueAttr::get(ctx, getEmitCIntegerAttrLiteral(intAttr));
 
@@ -892,6 +892,20 @@ static Attribute normalizeEmitCPrintedIntAttrForCppEmission(MLIRContext *ctx,
     if (std::optional<std::string> literal =
             getEmitCDenseIntElementsAttrLiteral(denseAttr))
       return emitc::OpaqueAttr::get(ctx, *literal);
+  }
+
+  if (auto arrayAttr = dyn_cast<ArrayAttr>(attr)) {
+    SmallVector<Attribute> normalized;
+    normalized.reserve(arrayAttr.size());
+    bool changed = false;
+    for (Attribute element : arrayAttr) {
+      Attribute normalizedElement =
+          normalizeEmitCPrintedAttrForCppEmission(ctx, element);
+      changed |= normalizedElement != element;
+      normalized.push_back(normalizedElement);
+    }
+    if (changed)
+      return ArrayAttr::get(ctx, normalized);
   }
 
   return attr;
@@ -921,14 +935,14 @@ static ArrayAttr normalizeEmitCCallArgsForCppEmission(MLIRContext *ctx,
       }
 
       Attribute normalizedAttr =
-          normalizeEmitCPrintedIntAttrForCppEmission(ctx, attr);
+          normalizeEmitCPrintedAttrForCppEmission(ctx, attr);
       changed |= normalizedAttr != attr;
       normalized.push_back(normalizedAttr);
       continue;
     }
 
     Attribute normalizedAttr =
-        normalizeEmitCPrintedIntAttrForCppEmission(ctx, attr);
+        normalizeEmitCPrintedAttrForCppEmission(ctx, attr);
     changed |= normalizedAttr != attr;
     normalized.push_back(normalizedAttr);
   }
@@ -944,7 +958,7 @@ static ArrayAttr normalizeEmitCTemplateArgsForCppEmission(MLIRContext *ctx,
 
   for (Attribute attr : args) {
     Attribute normalizedAttr =
-        normalizeEmitCPrintedIntAttrForCppEmission(ctx, attr);
+        normalizeEmitCPrintedAttrForCppEmission(ctx, attr);
     changed |= normalizedAttr != attr;
     normalized.push_back(normalizedAttr);
   }
@@ -958,7 +972,7 @@ static void normalizeEmitCIntegerAttrsForCppEmission(Operation *rootOp) {
     if (auto constant = dyn_cast<emitc::ConstantOp>(op)) {
       Attribute value = constant.getValue();
       Attribute normalized =
-          normalizeEmitCPrintedIntAttrForCppEmission(ctx, value);
+          normalizeEmitCPrintedAttrForCppEmission(ctx, value);
       if (normalized != value)
         constant.getProperties().setValue(normalized);
       return;
@@ -967,7 +981,7 @@ static void normalizeEmitCIntegerAttrsForCppEmission(Operation *rootOp) {
     if (auto variable = dyn_cast<emitc::VariableOp>(op)) {
       Attribute value = variable.getValue();
       Attribute normalized =
-          normalizeEmitCPrintedIntAttrForCppEmission(ctx, value);
+          normalizeEmitCPrintedAttrForCppEmission(ctx, value);
       if (normalized != value)
         variable.getProperties().setValue(normalized);
       return;
@@ -978,7 +992,7 @@ static void normalizeEmitCIntegerAttrsForCppEmission(Operation *rootOp) {
       if (!initialValue)
         return;
       Attribute normalized =
-          normalizeEmitCPrintedIntAttrForCppEmission(ctx, *initialValue);
+          normalizeEmitCPrintedAttrForCppEmission(ctx, *initialValue);
       if (normalized != *initialValue)
         global.getProperties().setInitialValue(normalized);
       return;

@@ -2570,6 +2570,11 @@ static Value makeEmitCIntConstant(ConversionPatternRewriter &rewriter,
   return makeEmitCOpaqueConstant(rewriter, loc, type, std::to_string(value));
 }
 
+static int64_t getIntegerAttrSignedValue(IntegerAttr attr) {
+  const APInt &value = attr.getValue();
+  return value.getBitWidth() == 0 ? 0 : value.getSExtValue();
+}
+
 static FailureOr<std::string> buildEmitCOpaqueConstantLiteral(Type targetType,
                                                               Attribute valueAttr) {
   auto opaqueTy = dyn_cast<emitc::OpaqueType>(targetType);
@@ -2871,7 +2876,7 @@ struct ArithConstantToEmitC : public OpConversionPattern<arith::ConstantOp> {
     }
 
     if (auto intAttr = dyn_cast_or_null<IntegerAttr>(valueAttr)) {
-      std::string valStr = std::to_string(intAttr.getValue().getSExtValue());
+      std::string valStr = std::to_string(getIntegerAttrSignedValue(intAttr));
       auto constAttr = emitc::OpaqueAttr::get(rewriter.getContext(), valStr);
       rewriter.replaceOpWithNewOp<emitc::ConstantOp>(op, newType, constAttr);
       return success();
@@ -3292,7 +3297,7 @@ struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
       }
       if (auto attr = ofr.dyn_cast<Attribute>()) {
          if (auto ia = dyn_cast<IntegerAttr>(attr))
-             return mkIndex(ia.getValue().getSExtValue());
+             return mkIndex(getIntegerAttrSignedValue(ia));
       }
       return mkIndex(0);
     };
@@ -4153,7 +4158,7 @@ struct PointerCastConversion : public OpConversionPattern<pto::PointerCastOp> {
   static bool getIndexConst(Value v, int64_t &out) {
     if (auto cst = v.getDefiningOp<arith::ConstantOp>()) {
       if (auto ia = dyn_cast<IntegerAttr>(cst.getValue())) {
-        out = ia.getValue().getSExtValue();
+        out = getIntegerAttrSignedValue(ia);
         return true;
       }
     }
@@ -11193,7 +11198,7 @@ struct PTOBindTileToEmitC : public OpConversionPattern<pto::BindTileOp> {
       return false;
     if (auto cst = v.getDefiningOp<arith::ConstantOp>()) {
       if (auto ia = dyn_cast<IntegerAttr>(cst.getValue())) {
-        out = ia.getValue().getSExtValue();
+        out = getIntegerAttrSignedValue(ia);
         return true;
       }
     }
