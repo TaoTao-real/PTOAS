@@ -1,4 +1,4 @@
-// RUN: ptoas --pto-arch=a3 --stop-after=pto-materialize-tile-handles --mlir-print-ir-after=pto-materialize-tile-handles %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=IR
+// RUN: ptoas --pto-arch=a3 --pto-print-seam-ir %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=IR
 // RUN: ptoas --pto-arch=a3 %s -o - 2>&1 | FileCheck %s --check-prefix=EMITC
 
 module {
