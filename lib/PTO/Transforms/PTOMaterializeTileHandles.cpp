@@ -54,6 +54,11 @@ namespace {
 static constexpr llvm::StringLiteral kForceDynamicValidShapeAttrName =
     "__pto.force_dynamic_valid_shape";
 
+static int64_t getIntegerAttrSignedValue(IntegerAttr attr) {
+  const APInt &value = attr.getValue();
+  return value.getBitWidth() == 0 ? 0 : value.getSExtValue();
+}
+
 struct TileHandleMetadata {
   Value source;
   Value validRow;
@@ -270,13 +275,13 @@ static bool getTilePointerStrides(TileBufConfigAttr configAttr, Type elemTy,
   if (auto blAttr = dyn_cast<BLayoutAttr>(configAttr.getBLayout()))
     blVal = static_cast<int32_t>(blAttr.getValue());
   else if (auto intAttr = dyn_cast<IntegerAttr>(configAttr.getBLayout()))
-    blVal = static_cast<int32_t>(intAttr.getInt());
+    blVal = static_cast<int32_t>(getIntegerAttrSignedValue(intAttr));
 
   int32_t slVal = 0;
   if (auto slAttr = dyn_cast<SLayoutAttr>(configAttr.getSLayout()))
     slVal = static_cast<int32_t>(slAttr.getValue());
   else if (auto intAttr = dyn_cast<IntegerAttr>(configAttr.getSLayout()))
-    slVal = static_cast<int32_t>(intAttr.getInt());
+    slVal = static_cast<int32_t>(getIntegerAttrSignedValue(intAttr));
 
   bool boxed = slVal != 0;
   int64_t innerRows = 1;
@@ -284,7 +289,7 @@ static bool getTilePointerStrides(TileBufConfigAttr configAttr, Type elemTy,
   if (boxed) {
     int32_t fractal = 512;
     if (auto frAttr = dyn_cast<IntegerAttr>(configAttr.getSFractalSize()))
-      fractal = static_cast<int32_t>(frAttr.getInt());
+      fractal = static_cast<int32_t>(getIntegerAttrSignedValue(frAttr));
 
     unsigned elemBytes = pto::getPTOStorageElemByteSize(elemTy);
     if (elemBytes == 0)
@@ -432,7 +437,7 @@ static Value materializeOffset(OpFoldResult ofr, OpBuilder &builder,
                                Location loc) {
   if (auto attr = ofr.dyn_cast<Attribute>()) {
     if (auto intAttr = dyn_cast<IntegerAttr>(attr))
-      return makeI64Constant(builder, loc, intAttr.getInt());
+      return makeI64Constant(builder, loc, getIntegerAttrSignedValue(intAttr));
     return Value();
   }
   return ensureI64(cast<Value>(ofr), builder, loc);
