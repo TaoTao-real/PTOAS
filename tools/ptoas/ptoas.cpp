@@ -835,6 +835,12 @@ static Attribute getDefaultEmitCVariableInitAttr(OpBuilder &builder, Type type) 
   return Attribute{};
 }
 
+static Type getEmitCVariableStorageType(Type valueType) {
+  if (isa<emitc::ArrayType, emitc::LValueType>(valueType))
+    return valueType;
+  return emitc::LValueType::get(valueType);
+}
+
 // FormExpressions may inline conditions into emitc.expression, but the C++
 // emitter prints cf.br/cf.cond_br operands by variable name rather than by
 // recursively emitting an expression. Materialize such operands so CFG-based
@@ -860,12 +866,21 @@ static void materializeControlFlowOperands(Operation *rootOp) {
       if (!initAttr)
         continue;
 
-      Value tmp =
-          builder.create<emitc::VariableOp>(op->getLoc(), value.getType(),
-                                            initAttr)
-              .getResult();
+      Value tmp = builder
+                      .create<emitc::VariableOp>(
+                          op->getLoc(), getEmitCVariableStorageType(value.getType()),
+                          initAttr)
+                      .getResult();
       builder.create<emitc::AssignOp>(op->getLoc(), tmp, value);
-      operand.set(tmp);
+      if (auto lvalueTy = dyn_cast<emitc::LValueType>(tmp.getType())) {
+        Value loaded = builder
+                           .create<emitc::LoadOp>(op->getLoc(),
+                                                  lvalueTy.getValueType(), tmp)
+                           .getResult();
+        operand.set(loaded);
+      } else {
+        operand.set(tmp);
+      }
     }
   }
 }
