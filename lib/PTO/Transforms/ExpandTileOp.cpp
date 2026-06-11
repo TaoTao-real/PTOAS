@@ -26,6 +26,7 @@
 //
 
 #include "PTO/IR/PTO.h"
+#include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -195,8 +196,8 @@ static std::string getDtypeString(Type elemTy) {
   if (elemTy.isF32()) return "f32";
   if (elemTy.isF16()) return "f16";
   if (elemTy.isBF16()) return "bf16";
-  if (elemTy.isFloat8E4M3FN()) return "f8e4m3";
-  if (elemTy.isFloat8E5M2()) return "f8e5m2";
+  if (pto::isPTOFloat8E4M3LikeType(elemTy)) return "f8e4m3";
+  if (pto::isPTOFloat8E5M2LikeType(elemTy)) return "f8e5m2";
   if (isa<pto::HiF8Type>(elemTy)) return "hif8";
   if (isa<pto::F4E1M2x2Type>(elemTy)) return "f4e1m2x2";
   if (isa<pto::F4E2M1x2Type>(elemTy)) return "f4e2m1x2";

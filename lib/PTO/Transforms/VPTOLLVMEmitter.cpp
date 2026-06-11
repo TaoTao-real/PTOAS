@@ -87,6 +87,18 @@ static Type getLLVMCompatibleVectorType(ArrayRef<int64_t> shape,
   return VectorType::get(shape, elementType, scalableDims);
 }
 
+static bool isLowpPayloadABIElementType(Type type) {
+  return pto::isPTOFloat8Type(type) || pto::isPTOHiFloat8Type(type) ||
+         pto::isPTOFloat4PackedType(type);
+}
+
+static Type getLowpPayloadABIElementType(Type elementType,
+                                         MLIRContext *context) {
+  if (!isLowpPayloadABIElementType(elementType))
+    return {};
+  return IntegerType::get(context, 8);
+}
+
 static Type normalizePayloadTypeForLLVMLowering(Type type, Builder &builder) {
   if (pto::isPTOHiFloat8x2Type(type))
     return getLLVMCompatibleVectorType(
@@ -118,10 +130,6 @@ static Type normalizeGEPElementTypeForLLVMLowering(Type type,
     return builder.getI16Type();
   if (pto::isPTOLowPrecisionType(type))
     return builder.getI8Type();
-  if (isa<LLVM::LLVMHiFloat8Type, LLVM::LLVMFloat8E4M3Type,
-          LLVM::LLVMFloat8E5M2Type, LLVM::LLVMFloat4E1M2x2Type,
-          LLVM::LLVMFloat4E2M1x2Type>(type))
-    return builder.getI8Type();
 
   if (auto vecType = dyn_cast<VectorType>(type)) {
     Type normalizedElement =
@@ -133,23 +141,17 @@ static Type normalizeGEPElementTypeForLLVMLowering(Type type,
                                        vecType.getScalableDims());
   }
 
-  if (auto vecType = dyn_cast<LLVM::LLVMFixedVectorType>(type)) {
-    Type normalizedElement =
-        normalizeGEPElementTypeForLLVMLowering(vecType.getElementType(),
-                                               builder);
-    if (normalizedElement == vecType.getElementType())
-      return normalizePayloadTypeForLLVMLowering(type, builder);
-    return LLVM::LLVMFixedVectorType::get(normalizedElement,
-                                         vecType.getNumElements());
-  }
-
   return normalizePayloadTypeForLLVMLowering(type, builder);
 }
 
 static Type convertVPTOType(Type type, Builder &builder) {
   if (auto vecType = dyn_cast<pto::VRegType>(type)) {
-    Type elementType =
-        normalizePayloadTypeForLLVMLowering(vecType.getElementType(), builder);
+    Type sourceElementType = vecType.getElementType();
+    Type elementType = getLowpPayloadABIElementType(sourceElementType,
+                                                   builder.getContext());
+    if (!elementType)
+      elementType = normalizePayloadTypeForLLVMLowering(sourceElementType,
+                                                       builder);
     return getLLVMCompatibleVectorType({vecType.getElementCount()},
                                        elementType);
   }
@@ -486,8 +488,7 @@ static std::string getMemoryElementTypeFragment(Type type) {
 }
 
 static bool isLowpPayloadElementType(Type type) {
-  return pto::isPTOFloat8Type(type) || pto::isPTOHiFloat8Type(type) ||
-         pto::isPTOFloat4PackedType(type);
+  return isLowpPayloadABIElementType(type);
 }
 
 struct LowpPayloadABI {
@@ -497,9 +498,10 @@ struct LowpPayloadABI {
 
 static std::optional<LowpPayloadABI>
 getLowpPayloadABI(Type elementType, MLIRContext *context) {
-  if (!isLowpPayloadElementType(elementType))
+  Type carrierElementType = getLowpPayloadABIElementType(elementType, context);
+  if (!carrierElementType)
     return std::nullopt;
-  return LowpPayloadABI{IntegerType::get(context, 8), "u8"};
+  return LowpPayloadABI{carrierElementType, "u8"};
 }
 
 static Type getLowpPayloadCarrierType(Type vectorLikeType,
@@ -1010,10 +1012,9 @@ static VcvtElemKind classifyVcvtElemType(Type type) {
     return VcvtElemKind::BF16;
   if (type.isF32())
     return VcvtElemKind::F32;
-  if (type.isFloat8E4M3() || type.isFloat8E4M3FN() ||
-      type.isFloat8E4M3FNUZ() || type.isFloat8E4M3B11FNUZ())
+  if (pto::isPTOFloat8E4M3LikeType(type))
     return VcvtElemKind::F8E4M3;
-  if (type.isFloat8E5M2() || type.isFloat8E5M2FNUZ())
+  if (pto::isPTOFloat8E5M2LikeType(type))
     return VcvtElemKind::F8E5M2;
   if (pto::isPTOHiFloat8Type(type))
     return VcvtElemKind::HiF8;
