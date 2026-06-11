@@ -1016,8 +1016,11 @@ static void normalizeEmitCIntegerAttrsForCppEmission(Operation *rootOp) {
 }
 
 static Attribute getDefaultEmitCVariableInitAttr(OpBuilder &builder, Type type) {
-  if (auto intTy = dyn_cast<IntegerType>(type))
+  if (auto intTy = dyn_cast<IntegerType>(type)) {
+    if (intTy.getWidth() == 0)
+      return emitc::OpaqueAttr::get(builder.getContext(), "0");
     return builder.getIntegerAttr(intTy, 0);
+  }
   if (isa<IndexType>(type))
     return builder.getIndexAttr(0);
   if (auto floatTy = dyn_cast<FloatType>(type))
