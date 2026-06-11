@@ -2,7 +2,7 @@
 
 ## 1. 项目简介 (Introduction)
 
-**ptoas** (`ptoas`) 是一个基于 **LLVM/MLIR (llvmorg-19.1.7)***(Commit cd708029e0b2869e80abe31ddb175f7c35361f90)* 框架构建的专用编译器工具链，专为 **PTO Bytecode** (Programming Tiling Operator Bytecode) 设计。
+**ptoas** (`ptoas`) 是一个基于 **LLVM/MLIR (llvmorg-21.1.8)** 框架构建的专用编译器工具链，专为 **PTO Bytecode** (Programming Tiling Operator Bytecode) 设计。
 
 作为连接上层 AI 框架与底层各类NPU/GPGPU/CPU硬件，`ptoas` 采用 **Out-of-Tree** 架构构建，提供了完整的 C++ 与 Python 接口，主要职责包括：
 
@@ -37,7 +37,7 @@ PTOAS/
 
 ## 3. 构建指南 (Build Instructions)
 
-⚠️ **重要提示**：本项目严格依赖 **LLVM llvmorg-19.1.7** 版本。
+⚠️ **重要提示**：本项目严格依赖 **LLVM llvmorg-21.1.8** 版本。
 
 
 ### 3.0 环境变量配置 (Configuration)
@@ -51,11 +51,11 @@ export WORKSPACE_DIR=$HOME/llvm-workspace
 
 # LLVM 源码与构建路径
 export LLVM_SOURCE_DIR=$WORKSPACE_DIR/llvm-project
-export LLVM_BUILD_DIR=$LLVM_SOURCE_DIR/build-shared
+export LLVM_BUILD_DIR=$LLVM_SOURCE_DIR/build-shared-21
 
 # PTOAS 源码与安装路径
 export PTO_SOURCE_DIR=$WORKSPACE_DIR/PTOAS
-export PTO_INSTALL_DIR=$PTO_SOURCE_DIR/install
+export PTO_INSTALL_DIR=$PTO_SOURCE_DIR/install-llvm21
 # =======================================================
 
 # 创建工作目录
@@ -69,21 +69,22 @@ mkdir -p $WORKSPACE_DIR
 * **Compiler**: GCC >= 9 或 Clang (支持 C++17)
 * **Build System**: CMake >= 3.20, Ninja
 * **Python**: 3.8+
-* **Python Packages**: `pybind11`, `numpy`
+* **Python Packages**: `pybind11<3`, `nanobind`, `numpy`
 ```bash
-python3 -m pip install pybind11==2.12.0 numpy
+python3 -m pip install 'pybind11<3' nanobind numpy
 
 ```
 
-> 说明：当前 LLVM/MLIR Python 绑定与 `pybind11` 3.x 不兼容。
+> 说明：当前 PTOAS Python 扩展继续使用 `pybind11`，LLVM21 的 MLIR Python 绑定构建需要 `nanobind`。
+> 当前 LLVM/MLIR Python 绑定与 `pybind11` 3.x 不兼容。
 > 如果编译 LLVM 时遇到 `def_property family does not currently support keep_alive` 等报错，
-> 请先执行上面的降级命令。
+> 请确认使用上面的 `pybind11<3` 依赖。
 
 
 
 ### 3.2 第一步：构建 LLVM/MLIR (Dependency)
 
-我们需要下载 LLVM 源码，切换到 `llvmorg-19.1.7` 标签，并以**动态库 (Shared Libs)** 模式编译，以确保 Python Binding 的正确链接。
+我们需要下载 LLVM 源码，切换到 `llvmorg-21.1.8` 标签，并以**动态库 (Shared Libs)** 模式编译，以确保 Python Binding 的正确链接。
 
 ```bash
 # 1. 下载 LLVM 源码
@@ -91,8 +92,8 @@ cd $WORKSPACE_DIR
 git clone https://github.com/llvm/llvm-project.git
 cd $LLVM_SOURCE_DIR
 
-# 2. [关键] 切换到 llvmorg-19.1.7
-git checkout llvmorg-19.1.7
+# 2. [关键] 切换到 llvmorg-21.1.8
+git checkout llvmorg-21.1.8
 
 # 3. 配置 CMake (构建动态库并启用 Python 绑定)
 cmake -G Ninja -S llvm -B $LLVM_BUILD_DIR \
@@ -100,6 +101,9 @@ cmake -G Ninja -S llvm -B $LLVM_BUILD_DIR \
     -DBUILD_SHARED_LIBS=ON \
     -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
     -DPython3_EXECUTABLE=$(which python3) \
+    -DPython_EXECUTABLE=$(which python3) \
+    -Dpybind11_DIR=$(python3 -m pybind11 --cmakedir) \
+    -Dnanobind_DIR=$(python3 -m nanobind --cmake_dir) \
     -DCMAKE_BUILD_TYPE=Release \
     -DLLVM_TARGETS_TO_BUILD="host"
 
@@ -110,7 +114,7 @@ ninja -C $LLVM_BUILD_DIR
 
 ### 3.3 第二步：构建 PTOAS (Out-of-Tree)
 
-下载 PTOAS 源码并基于刚刚编译好的 LLVM 19 进行构建。
+下载 PTOAS 源码并基于刚刚编译好的 LLVM 21 进行构建。
 
 ```bash
 # 1. 下载 PTOAS 源码
@@ -125,7 +129,7 @@ export PYBIND11_CMAKE_DIR=$(python3 -m pybind11 --cmakedir)
 # 注意：此处直接使用了 3.0 章节中定义的变量，无需手动修改
 cmake -G Ninja \
     -S . \
-    -B build \
+    -B build-llvm21 \
     -DLLVM_DIR=$LLVM_BUILD_DIR/lib/cmake/llvm \
     -DMLIR_DIR=$LLVM_BUILD_DIR/lib/cmake/mlir \
     -DPython3_EXECUTABLE=$(which python3) \
@@ -136,12 +140,12 @@ cmake -G Ninja \
     -DCMAKE_INSTALL_PREFIX="$PTO_INSTALL_DIR"
 
 # 4. 编译并安装
-ninja -C build
-ninja -C build install
+ninja -C build-llvm21
+ninja -C build-llvm21 install
 
 # 5. 检查构建产物
 # build 输出（便于本地开发/调试）
-$PTO_SOURCE_DIR/build/python/
+$PTO_SOURCE_DIR/build-llvm21/python/
 ├── mlir
 │   ├── _mlir_libs
 │   │   └── _pto.cpython-*.so
@@ -159,8 +163,8 @@ $PTO_INSTALL_DIR/
         └── _pto.cpython-*.so
 
 # CLI 工具
-$PTO_SOURCE_DIR/build/tools/ptoas/ptoas
-$PTO_SOURCE_DIR/build/tools/ptobc/ptobc
+$PTO_SOURCE_DIR/build-llvm21/tools/ptoas/ptoas
+$PTO_SOURCE_DIR/build-llvm21/tools/ptobc/ptobc
 
 ```
 
@@ -183,7 +187,7 @@ export PYTHONPATH=$PTO_PYTHON_ROOT:$MLIR_PYTHON_ROOT:$PYTHONPATH
 export LD_LIBRARY_PATH=$LLVM_BUILD_DIR/lib:$PTO_INSTALL_DIR/lib:$LD_LIBRARY_PATH
 
 # 3. PATH: 将 ptoas / ptobc 添加到命令行路径
-export PATH=$PTO_SOURCE_DIR/build/tools/ptoas:$PTO_SOURCE_DIR/build/tools/ptobc:$PATH
+export PATH=$PTO_SOURCE_DIR/build-llvm21/tools/ptoas:$PTO_SOURCE_DIR/build-llvm21/tools/ptobc:$PATH
 
 ```
 

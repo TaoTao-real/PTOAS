@@ -541,7 +541,7 @@ static void populateViewShapeAndStrides(Value value,
       shape.assign(memrefTy.getShape().begin(), memrefTy.getShape().end());
     if (strides.empty()) {
       int64_t offset = ShapedType::kDynamic;
-      if (succeeded(getStridesAndOffset(memrefTy, strides, offset))) {
+      if (succeeded(memrefTy.getStridesAndOffset(strides, offset))) {
         // strides populated — dynamic dims remain ShapedType::kDynamic.
       }
     }
@@ -588,7 +588,7 @@ static std::optional<OperandTypeInfo> buildOperandTypeInfo(Value value) {
       info.viewShape.assign(mrTy.getShape().begin(), mrTy.getShape().end());
     if (info.viewStrides.empty()) {
       int64_t offset = ShapedType::kDynamic;
-      if (succeeded(getStridesAndOffset(mrTy, info.viewStrides, offset))) {
+      if (succeeded(mrTy.getStridesAndOffset(info.viewStrides, offset))) {
         // strides populated — dynamic dims remain ShapedType::kDynamic.
       }
     }

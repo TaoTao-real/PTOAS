@@ -10,6 +10,7 @@
 from pathlib import Path
 import re
 import sys
+from typing import Optional
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ptodsl"))
@@ -29,7 +30,7 @@ def expect(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
-def expect_raises(exc_type, func, message_substring: str | None = None) -> Exception:
+def expect_raises(exc_type, func, message_substring: Optional[str] = None) -> Exception:
     try:
         func()
     except exc_type as exc:

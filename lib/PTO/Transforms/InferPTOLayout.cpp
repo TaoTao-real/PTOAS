@@ -69,7 +69,7 @@ static std::optional<int64_t> getConstInt(OpFoldResult ofr) {
       return ia.getInt();
     return std::nullopt;
   }
-  return getConstInt(ofr.get<Value>());
+  return getConstInt(ofr.dyn_cast<Value>());
 }
 
 static unsigned elemByteSize(Type ty) {
@@ -275,7 +275,7 @@ static std::optional<Layout> inferFromStaticMemRefTy(MemRefType mrTy) {
     return std::nullopt;
   SmallVector<int64_t> strideInts;
   int64_t offset = ShapedType::kDynamic;
-  if (failed(getStridesAndOffset(mrTy, strideInts, offset)))
+  if (failed(mrTy.getStridesAndOffset(strideInts, offset)))
     return std::nullopt;
   if (offset == ShapedType::kDynamic ||
       llvm::any_of(strideInts,
@@ -593,7 +593,7 @@ struct InferPTOLayoutPass
 
       SmallVector<int64_t> strideInts;
       int64_t offset = ShapedType::kDynamic;
-      if (failed(getStridesAndOffset(srcTy, strideInts, offset)) ||
+      if (failed(srcTy.getStridesAndOffset(strideInts, offset)) ||
           offset == ShapedType::kDynamic ||
           llvm::any_of(strideInts,
                        [](int64_t s) { return s == ShapedType::kDynamic; })) {

@@ -117,7 +117,7 @@ static LogicalResult computeSubviewElementOffset(memref::SubViewOp op,
 
   SmallVector<int64_t> strides;
   int64_t baseOffset = 0;
-  if (failed(getStridesAndOffset(sourceType, strides, baseOffset)))
+  if (failed(sourceType.getStridesAndOffset(strides, baseOffset)))
     return failure();
   // The SSA source already names the base address after bind_tile/pointer_cast
   // normalization. A dynamic memref layout offset here is metadata we can
@@ -773,7 +773,6 @@ struct VPTOPtrNormalizePass
         [](Type type) { return convertSubviewResultType(type); });
     typeConverter.addTargetMaterialization(materializeUnrealizedCast);
     typeConverter.addSourceMaterialization(materializeUnrealizedCast);
-    typeConverter.addArgumentMaterialization(materializeUnrealizedCast);
 
     ConversionTarget target(*context);
     target.addLegalDialect<arith::ArithDialect, func::FuncDialect,

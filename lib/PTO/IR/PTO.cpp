@@ -3511,7 +3511,7 @@ static LogicalResult verifyAsyncFlatContiguous1DGMMemRef(Operation *op,
 
   SmallVector<int64_t> strides;
   int64_t offset = 0;
-  if (failed(getStridesAndOffset(memTy, strides, offset)))
+  if (failed(memTy.getStridesAndOffset(strides, offset)))
     return op->emitOpError() << "expects " << name
                              << " to be a strided memref with a known layout";
 
@@ -3732,8 +3732,7 @@ static bool isSupportedMGatherMScatterPayloadElemType(Operation *op, Type ty) {
     return true;
   if (!isTargetArchA5(op))
     return false;
-  return ty.isFloat8E4M3() || ty.isFloat8E4M3FN() || ty.isFloat8E4M3FNUZ() ||
-         ty.isFloat8E4M3B11FNUZ() || ty.isFloat8E5M2() || ty.isFloat8E5M2FNUZ();
+  return isPTOFloat8Type(ty);
 }
 
 static bool isSupportedMScatterAtomicPayloadElemType(Type ty,
@@ -3895,8 +3894,7 @@ static bool isA5AccStorePreQuantDstType(Type srcElem, Type dstElem) {
     return false;
   return dstElem.isInteger(8) || dstElem.isF16() || dstElem.isBF16() ||
          dstElem.isF32() || isPTOHiFloat8Type(dstElem) ||
-         dstElem.isFloat8E4M3() || dstElem.isFloat8E4M3FN() ||
-         dstElem.isFloat8E4M3FNUZ() || dstElem.isFloat8E4M3B11FNUZ();
+         isPTOFloat8E4M3LikeType(dstElem);
 }
 
 static bool isA5LowPrecisionTCvtPair(Type srcElem, Type dstElem) {
@@ -6198,9 +6196,7 @@ static bool isA5Fp8LikeType(Type ty) {
 }
 
 static bool isA5MxInputType(Type ty) {
-  if (auto ft = dyn_cast<FloatType>(ty))
-    return ft.isFloat8E4M3FN() || ft.isFloat8E5M2();
-  return false;
+  return isa<Float8E4M3FNType, Float8E5M2Type>(ty);
 }
 
 static LogicalResult verifyA5MxTypeTriple(Operation *op, Type lhsTy, Type rhsTy,
@@ -7509,8 +7505,8 @@ LogicalResult TGemvMxBiasOp::verify() {
                                              getA().getType(), "a_scale", "a")) ||
         failed(verifyScaleTileMatchesOperand(*this, getBScale().getType(),
                                              getB().getType(), "b_scale", "b")) ||
-        failed(verifyGemvTileOperands(*this, getA().getType(), getB().getType(),
-                                      getDst().getType())) ||
+        failed(verifyA5MxGemvTileOperands(*this, getA().getType(),
+                                          getB().getType(), getDst().getType())) ||
         failed(verifyMatBiasTile(*this, getBias().getType(), getDst().getType(),
                                  /*requireFloatBias=*/true)))
       return failure();
@@ -11840,7 +11836,7 @@ mlir::LogicalResult mlir::pto::SimdTileToMemrefOp::verify() {
 
     SmallVector<int64_t, 4> memStrides;
     int64_t memOffset = ShapedType::kDynamic;
-    if (failed(getStridesAndOffset(memTy, memStrides, memOffset)))
+    if (failed(memTy.getStridesAndOffset(memStrides, memOffset)))
       return emitOpError("expects memref to use strided layout");
     if (memOffset != 0)
       return emitOpError("expects memref offset to be 0");

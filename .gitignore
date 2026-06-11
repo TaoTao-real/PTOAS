@@ -1,8 +1,10 @@
 # Build artifacts
 build/
+build-*/
 build_plain/
 build_plan/
 install/
+install-*/
 
 # TileLang ST standalone build outputs (see temp_docs/standalone_st.md)
 test/tilelang_st/npu/a5/src/st/build/

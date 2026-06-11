@@ -107,8 +107,8 @@ jobs:
         needs.detect-vpto-sim-changes.outputs.should_run == 'true'
       }}
     env:
-      LLVM_REPO: https://github.com/vpto-dev/llvm-project.git
-      LLVM_REF: feature-vpto
+      LLVM_REPO: https://github.com/llvm/llvm-project.git
+      LLVM_TAG: llvmorg-21.1.8
       PTO_INSTALL_DIR: ${{ github.workspace }}/install
       VPTO_SIM_WORKSPACE: ${{ github.workspace }}/.work/vpto-sim-ci
       TILELANG_DSL_WORKSPACE: ${{ github.workspace }}/.work/tilelang-dsl-ci
@@ -165,11 +165,12 @@ jobs:
           need_pip_install=0
           python3 -c "import numpy" >/dev/null 2>&1 || need_pip_install=1
           python3 -m pybind11 --cmakedir >/dev/null 2>&1 || need_pip_install=1
+          python3 -m nanobind --cmake_dir >/dev/null 2>&1 || need_pip_install=1
           python3 -c "import ml_dtypes" >/dev/null 2>&1 || need_pip_install=1
 
           if [[ "${need_pip_install}" -eq 1 ]]; then
             python3 -m pip install --upgrade pip
-            python3 -m pip install 'pybind11<3' numpy ml-dtypes
+            python3 -m pip install 'pybind11<3' nanobind numpy ml-dtypes
           fi
 
       - name: Clean CI work dirs
@@ -194,7 +195,7 @@ jobs:
           fi
 
           git remote set-url origin "${LLVM_REPO}"
-          git fetch --depth 1 origin "${LLVM_REF}"
+          git fetch --depth 1 origin "${LLVM_TAG}"
           git checkout --force FETCH_HEAD
 
       - name: Build LLVM/MLIR
@@ -208,6 +209,9 @@ jobs:
             -DLLVM_ENABLE_ASSERTIONS=ON \
             -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
             -DPython3_EXECUTABLE=python3 \
+            -DPython_EXECUTABLE=python3 \
+            -Dpybind11_DIR="$(python3 -m pybind11 --cmakedir)" \
+            -Dnanobind_DIR="$(python3 -m nanobind --cmake_dir)" \
             -DCMAKE_BUILD_TYPE=Release \
             -DLLVM_TARGETS_TO_BUILD="host"
 

@@ -39,7 +39,7 @@ endif()
 message(STATUS "PTOAS CLI version: ${PTOAS_CLI_VERSION}")
 
 # =========================================================
-# [新增] 强制设置 C++17 标准 (LLVM 19 必需)
+# [新增] 强制设置 C++17 标准 (LLVM/MLIR 必需)
 # =========================================================
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -52,6 +52,8 @@ find_package(LLVM REQUIRED CONFIG)
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
 message(STATUS "LLVM CMake Dir: ${LLVM_CMAKE_DIR}")
 message(STATUS "LLVM Include Dir: ${LLVM_INCLUDE_DIRS}")
+get_filename_component(PTO_LLVM_BUILD_LIBRARY_DIR
+  "${LLVM_BUILD_LIBRARY_DIR}" REALPATH)
 
 # 将 LLVM 模块路径加入 CMake 搜索路径
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
@@ -98,7 +100,7 @@ include_directories(${MLIR_INCLUDE_DIRS})
 include_directories(${PROJECT_SOURCE_DIR}/include)
 include_directories(${PROJECT_BINARY_DIR}/include)
 
-link_directories(${LLVM_BUILD_LIBRARY_DIR})
+link_directories(${PTO_LLVM_BUILD_LIBRARY_DIR})
 add_definitions(${LLVM_DEFINITIONS})
 
 # =========================================================

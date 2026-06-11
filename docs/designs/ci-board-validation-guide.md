@@ -83,7 +83,7 @@
 ```bash
 git clone https://github.com/llvm/llvm-project.git
 cd llvm-project
-git checkout llvmorg-19.1.7
+git checkout llvmorg-21.1.8
 
 cmake -G Ninja -S llvm -B llvm/build-shared \
   -DLLVM_ENABLE_PROJECTS="mlir;clang" \

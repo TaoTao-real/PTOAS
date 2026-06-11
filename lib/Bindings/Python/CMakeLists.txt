@@ -19,6 +19,9 @@ find_package(pybind11 CONFIG REQUIRED)
 include(TableGen)
 include(AddMLIR)
 
+get_filename_component(PTO_LLVM_BUILD_LIBRARY_DIR
+  "${LLVM_BUILD_LIBRARY_DIR}" REALPATH)
+
 # ---- 1) Python native extension: mlir._mlir_libs._pto ----
 pybind11_add_module(_pto MODULE
   PTOModule.cpp
@@ -54,8 +57,8 @@ target_link_libraries(_pto PRIVATE
 # 关键：放到 mlir/_mlir_libs 下（匹配 MLIR dialect python 的 import 习惯）
 set_target_properties(_pto PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/python/mlir/_mlir_libs"
-  BUILD_RPATH "${LLVM_BUILD_LIBRARY_DIR}"
-  INSTALL_RPATH "${LLVM_BUILD_LIBRARY_DIR}"
+  BUILD_RPATH "${PTO_LLVM_BUILD_LIBRARY_DIR}"
+  INSTALL_RPATH "${PTO_LLVM_BUILD_LIBRARY_DIR}"
 )
 # macOS: 避免 ld 警告 "-undefined suppress is deprecated"，仅保留 -undefined dynamic_lookup
 if(APPLE)
@@ -84,17 +87,37 @@ add_dependencies(_pto PTOPythonGen)
 
 # ---- 3) Copy generated python + handwritten pto.py into build/python ----
 set(PTO_PY_SRC "${CMAKE_SOURCE_DIR}/python/pto/dialects/pto.py")
+set(PTO_PY_BUILD_DIR "${CMAKE_BINARY_DIR}/python/mlir/dialects")
+set(PTO_PY_BUILD "${PTO_PY_BUILD_DIR}/pto.py")
+set(PTO_OPS_PY_BUILD "${PTO_PY_BUILD_DIR}/_pto_ops_gen.py")
 
-add_custom_command(TARGET _pto POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/python/mlir/dialects"
+add_custom_command(
+  OUTPUT
+    "${PTO_PY_BUILD}"
+    "${PTO_OPS_PY_BUILD}"
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${PTO_PY_BUILD_DIR}"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           "${PTO_PY_SRC}"
-          "${CMAKE_BINARY_DIR}/python/mlir/dialects/pto.py"
+          "${PTO_PY_BUILD}"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           "${CMAKE_CURRENT_BINARY_DIR}/_pto_ops_gen.py"
-          "${CMAKE_BINARY_DIR}/python/mlir/dialects/_pto_ops_gen.py"
+          "${PTO_OPS_PY_BUILD}"
+  DEPENDS
+    "${PTO_PY_SRC}"
+    "${CMAKE_CURRENT_BINARY_DIR}/_pto_ops_gen.py"
   VERBATIM
 )
+
+add_custom_target(PTOStagePythonModules ALL
+  DEPENDS
+    "${PTO_PY_BUILD}"
+    "${PTO_OPS_PY_BUILD}"
+)
+add_dependencies(PTOStagePythonModules PTOPythonGen)
+add_dependencies(_pto PTOStagePythonModules)
+if(TARGET PTOPythonModules)
+  add_dependencies(PTOPythonModules PTOStagePythonModules)
+endif()
 
 install(FILES
   "${PTO_PY_SRC}"

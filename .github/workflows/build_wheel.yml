@@ -24,9 +24,9 @@ permissions:
   contents: write
 
 env:
-  LLVM_REPO: https://github.com/vpto-dev/llvm-project.git
-  LLVM_REF: feature-vpto
-  LLVM_CACHE_FLAVOR: release-hardening-v1
+  LLVM_REPO: https://github.com/llvm/llvm-project.git
+  LLVM_TAG: llvmorg-21.1.8
+  LLVM_CACHE_FLAVOR: llvm21-release-hardening-v1
 
 jobs:
   build_wheel:
@@ -98,9 +98,9 @@ jobs:
       - name: Resolve LLVM source SHA
         id: llvm-source
         run: |
-          LLVM_SOURCE_SHA="$(git ls-remote "${LLVM_REPO}" "refs/heads/${LLVM_REF}" | awk '{print $1}')"
+          LLVM_SOURCE_SHA="$(git ls-remote "${LLVM_REPO}" "refs/tags/${LLVM_TAG}" | awk '{print $1}')"
           if [ -z "${LLVM_SOURCE_SHA}" ]; then
-            echo "ERROR: failed to resolve ${LLVM_REPO} ${LLVM_REF}" >&2
+            echo "ERROR: failed to resolve ${LLVM_REPO} ${LLVM_TAG}" >&2
             exit 1
           fi
           echo "sha=${LLVM_SOURCE_SHA}" >> "$GITHUB_OUTPUT"
@@ -121,7 +121,7 @@ jobs:
             git remote add origin "${LLVM_REPO}"
           fi
           git remote set-url origin "${LLVM_REPO}"
-          git fetch --depth 1 origin "${LLVM_REF}"
+          git fetch --depth 1 origin "${LLVM_TAG}"
           git checkout --force FETCH_HEAD
 
       - name: Warn when default-branch cache is missing for PR/release runs
@@ -143,6 +143,9 @@ jobs:
             -DLLVM_ENABLE_ASSERTIONS=OFF \
             -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
             -DPython3_EXECUTABLE=${PY_PATH}/bin/python \
+            -DPython_EXECUTABLE=${PY_PATH}/bin/python \
+            -Dpybind11_DIR="$(${PY_PATH}/bin/python -m pybind11 --cmakedir)" \
+            -Dnanobind_DIR="$(${PY_PATH}/bin/python -m nanobind --cmake_dir)" \
             -DCMAKE_BUILD_TYPE=Release \
             -DLLVM_TARGETS_TO_BUILD="host"
           ninja -C $LLVM_BUILD_DIR

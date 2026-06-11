@@ -15,6 +15,8 @@
 namespace mlir::pto {
 
 bool isPTOFloat8Type(Type t);
+bool isPTOFloat8E4M3LikeType(Type t);
+bool isPTOFloat8E5M2LikeType(Type t);
 bool isPTOHiFloat8Type(Type t);
 bool isPTOHiFloat8x2Type(Type t);
 bool isPTOFloat4PackedType(Type t);

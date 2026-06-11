@@ -10,7 +10,7 @@
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
 import json
 import linecache
 import re
@@ -42,7 +42,7 @@ class MarkdownCodeBlock:
     end_line: int
     language: str
     lines: tuple[str, ...]
-    metadata: "DocBlockMetadata | None"
+    metadata: "Optional[DocBlockMetadata]"
 
     @property
     def text(self) -> str:
@@ -66,9 +66,9 @@ class DocBlockMetadata:
 @dataclass(frozen=True)
 class DocTestDirective:
     mode: str
-    symbol: str | None = None
-    compile_kwargs: dict[str, object] | None = None
-    fixture: str | None = None
+    symbol: Optional[str] = None
+    compile_kwargs: Optional[dict[str, object]] = None
+    fixture: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -85,12 +85,12 @@ def expect(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
-def format_doc_context(path: Path, start_line: int, symbol: str | None = None) -> str:
+def format_doc_context(path: Path, start_line: int, symbol: Optional[str] = None) -> str:
     symbol_text = symbol if symbol is not None else "<unknown>"
     return f"{path}:{start_line} [symbol={symbol_text}]"
 
 
-def fail_doc(path: Path, start_line: int, message: str, symbol: str | None = None) -> None:
+def fail_doc(path: Path, start_line: int, message: str, symbol: Optional[str] = None) -> None:
     raise AssertionError(f"{format_doc_context(path, start_line, symbol)}: {message}")
 
 
@@ -98,7 +98,7 @@ def iter_markdown_files(root: Path) -> Iterable[Path]:
     yield from sorted(root.glob("*.md"))
 
 
-def parse_metadata_line(path: Path, line: str, line_number: int) -> DocBlockMetadata | None:
+def parse_metadata_line(path: Path, line: str, line_number: int) -> Optional[DocBlockMetadata]:
     match = META_RE.match(line)
     if match is None:
         return None
@@ -116,7 +116,7 @@ def parse_metadata_line(path: Path, line: str, line_number: int) -> DocBlockMeta
     return DocBlockMetadata(kind=kind, body=body, line=line_number, raw=line.rstrip("\n"))
 
 
-def find_block_metadata(path: Path, lines: list[str], fence_line: int) -> DocBlockMetadata | None:
+def find_block_metadata(path: Path, lines: list[str], fence_line: int) -> Optional[DocBlockMetadata]:
     candidate = fence_line - 2
     while candidate >= 0 and not lines[candidate].strip():
         candidate -= 1
@@ -128,7 +128,7 @@ def find_block_metadata(path: Path, lines: list[str], fence_line: int) -> DocBlo
     return parse_metadata_line(path, line, candidate + 1)
 
 
-def block_label(block: MarkdownCodeBlock, symbol: str | None = None) -> str:
+def block_label(block: MarkdownCodeBlock, symbol: Optional[str] = None) -> str:
     return format_doc_context(block.path, block.start_line, symbol)
 
 
@@ -257,9 +257,9 @@ def parse_test_directive(block: MarkdownCodeBlock) -> DocTestDirective:
 def execute_source(
     source: str,
     block: MarkdownCodeBlock,
-    symbol: str | None = None,
+    symbol: Optional[str] = None,
     *,
-    extra_namespace: dict[str, object] | None = None,
+    extra_namespace: Optional[dict[str, object]] = None,
 ) -> dict[str, object]:
     namespace: dict[str, object] = {
         "__builtins__": __builtins__,
@@ -437,7 +437,7 @@ def scan_markdown_file(path: Path) -> MarkdownScanResult:
     block_language = ""
     block_start = 0
     block_lines: list[str] = []
-    metadata: DocBlockMetadata | None = None
+    metadata: Optional[DocBlockMetadata] = None
 
     for index, line in enumerate(lines, start=1):
         fence_match = FENCE_RE.match(line.rstrip("\n"))

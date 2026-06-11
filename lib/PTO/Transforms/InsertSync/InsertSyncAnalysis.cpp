@@ -113,7 +113,7 @@ static std::optional<BLayout> getKnownBLayout(Type ty) {
   if (auto memRefTy = dyn_cast<MemRefType>(ty)) {
     SmallVector<int64_t> strides;
     int64_t offset = 0;
-    if (failed(getStridesAndOffset(memRefTy, strides, offset)) ||
+    if (failed(memRefTy.getStridesAndOffset(strides, offset)) ||
         strides.size() != 2) {
       return std::nullopt;
     }

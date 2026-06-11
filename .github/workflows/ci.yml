@@ -97,14 +97,14 @@ jobs:
     runs-on: ubuntu-22.04
     env:
       PTOAS_CLANG_MAJOR: "15"
-      LLVM_REPO: https://github.com/vpto-dev/llvm-project.git
-      LLVM_REF: feature-vpto
+      LLVM_REPO: https://github.com/llvm/llvm-project.git
+      LLVM_TAG: llvmorg-21.1.8
       LLVM_BUILD_DIR: ${{ github.workspace }}/llvm-project/llvm/build-assert
       LLVM_DIR: ${{ github.workspace }}/llvm-project/llvm/build-assert
       PTO_BUILD_DIR: ${{ github.workspace }}/build-assert
       PTO_INSTALL_DIR: ${{ github.workspace }}/install-assert
       MLIR_PYTHONPATH: ${{ github.workspace }}/llvm-project/llvm/build-assert/tools/mlir/python_packages/mlir_core
-      LLVM_CACHE_FLAVOR: assert-shared-mlirpy-hardening-v2
+      LLVM_CACHE_FLAVOR: llvm21-assert-shared-mlirpy-hardening-v1
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -122,7 +122,7 @@ jobs:
             libedit-dev zlib1g-dev libxml2-dev libzstd-dev
           python3 -m pip install --upgrade pip
           # LLVM/MLIR Python bindings are not yet compatible with pybind11 3.x.
-          python3 -m pip install 'pybind11<3' numpy
+          python3 -m pip install 'pybind11<3' nanobind numpy
 
       - name: Define payload paths
         shell: bash
@@ -159,9 +159,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          LLVM_SOURCE_SHA="$(git ls-remote "${LLVM_REPO}" "refs/heads/${LLVM_REF}" | awk '{print $1}')"
+          LLVM_SOURCE_SHA="$(git ls-remote "${LLVM_REPO}" "refs/tags/${LLVM_TAG}" | awk '{print $1}')"
           [[ -n "${LLVM_SOURCE_SHA}" ]] || {
-            echo "ERROR: failed to resolve ${LLVM_REPO} ${LLVM_REF}" >&2
+            echo "ERROR: failed to resolve ${LLVM_REPO} ${LLVM_TAG}" >&2
             exit 1
           }
           echo "LLVM_SOURCE_SHA=${LLVM_SOURCE_SHA}" >> "${GITHUB_ENV}"
@@ -187,7 +187,7 @@ jobs:
           fi
 
           git remote set-url origin "${LLVM_REPO}"
-          git fetch --depth 1 origin "${LLVM_REF}"
+          git fetch --depth 1 origin "${LLVM_TAG}"
           git checkout --force FETCH_HEAD
 
       - name: Build LLVM/MLIR (only if cache miss)
@@ -200,6 +200,9 @@ jobs:
             -DLLVM_ENABLE_ASSERTIONS=ON \
             -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
             -DPython3_EXECUTABLE=python3 \
+            -DPython_EXECUTABLE=python3 \
+            -Dpybind11_DIR="$(python3 -m pybind11 --cmakedir)" \
+            -Dnanobind_DIR="$(python3 -m nanobind --cmake_dir)" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER="${PTOAS_CMAKE_C_COMPILER}" \
             -DCMAKE_CXX_COMPILER="${PTOAS_CMAKE_CXX_COMPILER}" \

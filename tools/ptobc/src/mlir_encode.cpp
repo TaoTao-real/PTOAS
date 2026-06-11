@@ -121,6 +121,35 @@ static mlir::DictionaryAttr stripKnownImmediateAttrs(
   }
 }
 
+static bool hasDefaultZeroPipeId(llvm::StringRef opName) {
+  return llvm::StringSwitch<bool>(opName)
+      .Case("pto.aic_initialize_pipe", true)
+      .Case("pto.aiv_initialize_pipe", true)
+      .Case("pto.talloc_to_aiv", true)
+      .Case("pto.talloc_to_aic", true)
+      .Case("pto.tpush_to_aiv", true)
+      .Case("pto.tpush_to_aic", true)
+      .Case("pto.tpop_from_aiv", true)
+      .Case("pto.tpop_from_aic", true)
+      .Case("pto.tfree_from_aiv", true)
+      .Case("pto.tfree_from_aic", true)
+      .Default(false);
+}
+
+static mlir::DictionaryAttr stripDefaultZeroPipeId(mlir::MLIRContext *ctx,
+                                                   mlir::DictionaryAttr dict,
+                                                   mlir::Operation &op) {
+  if (!dict || dict.empty() ||
+      !hasDefaultZeroPipeId(op.getName().getStringRef()))
+    return dict;
+
+  auto idAttr = op.getAttrOfType<mlir::IntegerAttr>("id");
+  if (!idAttr || idAttr.getInt() != 0)
+    return dict;
+
+  return stripAttrs(ctx, dict, {"id"});
+}
+
 static uint64_t internAttr(PTOBCFile& f, mlir::DictionaryAttr dict) {
   if (!dict || dict.empty()) return 0;
   std::string s = printAttrDict(dict);
@@ -468,6 +497,8 @@ void Encoder::encodeKnownOpImmediates(
       mask |= 0x1;
     if (at.getValidCol())
       mask |= 0x2;
+    if (at.getAddr())
+      mask |= 0x4;
     out.appendU8(mask);
     imms.push_back(mask);
     return;
@@ -540,7 +571,8 @@ void Encoder::encodeKnownOpOperands(
     if (imms.empty())
       throw std::runtime_error("optmask operands missing immediate");
     uint8_t mask = uint8_t(imms.front());
-    emitOperands(((mask & 0x1) ? 1 : 0) + ((mask & 0x2) ? 1 : 0));
+    emitOperands(((mask & 0x1) ? 1 : 0) + ((mask & 0x2) ? 1 : 0) +
+                 ((mask & 0x4) ? 1 : 0));
     return;
   }
   default:
@@ -557,6 +589,7 @@ void Encoder::encodeKnownOp(mlir::Operation &op, Buffer &out,
   out.appendU16LE(variantInfo.opcode);
   mlir::DictionaryAttr dict = op.getAttrDictionary();
   dict = stripKnownImmediateAttrs(op.getContext(), dict, info);
+  dict = stripDefaultZeroPipeId(op.getContext(), dict, op);
   writeULEB128(internAttr(file, dict), out.bytes);
 
   if (info.has_variant_u8)

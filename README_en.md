@@ -2,7 +2,7 @@
 
 ## 1. Introduction
 
-**ptoas** is a specialized compiler toolchain built on top of **LLVM/MLIR (llvmorg-19.1.7)** *(Commit cd708029e0b2869e80abe31ddb175f7c35361f90)*, designed specifically for **PTO Bytecode** (Programming Tiling Operator Bytecode).
+**ptoas** is a specialized compiler toolchain built on top of **LLVM/MLIR (llvmorg-21.1.8)** *(Commit 2078da43e25a4623cab2d0d60decddf709aaea28)*, designed specifically for **PTO Bytecode** (Programming Tiling Operator Bytecode).
 
 Acting as the bridge between upper-level AI frameworks and underlying NPU/GPGPU/CPU hardware, `ptoas` is built in an **Out-of-Tree** architecture and provides complete C++ and Python interfaces. Its primary responsibilities include:
 
@@ -36,7 +36,7 @@ PTOAS/
 
 ## 3. Build Instructions
 
-⚠️ **Important**: This project strictly requires **LLVM llvmorg-19.1.7**.
+⚠️ **Important**: This project strictly requires **LLVM llvmorg-21.1.8**.
 
 ### 3.0 Environment Variable Configuration
 
@@ -67,10 +67,10 @@ mkdir -p $WORKSPACE_DIR
 * **Compiler**: GCC >= 9 or Clang (C++17 support required)
 * **Build System**: CMake >= 3.20, Ninja
 * **Python**: 3.8+
-* **Python Packages**: `pybind11`, `numpy`
+* **Python Packages**: `pybind11<3`, `nanobind`, `numpy`
 
 ```bash
-python3 -m pip install pybind11==2.12.0 numpy
+python3 -m pip install "pybind11<3" nanobind numpy
 ```
 
 > **Note**: The current LLVM/MLIR Python bindings are not compatible with `pybind11` 3.x.
@@ -79,7 +79,7 @@ python3 -m pip install pybind11==2.12.0 numpy
 
 ### 3.2 Step 1: Build LLVM/MLIR (Dependency)
 
-Download the LLVM source, check out the `llvmorg-19.1.7` tag, and build with **shared libraries** to ensure correct linking for Python bindings.
+Download the LLVM source, check out the `llvmorg-21.1.8` tag, and build with **shared libraries** to ensure correct linking for Python bindings.
 
 ```bash
 # 1. Clone LLVM
@@ -87,8 +87,8 @@ cd $WORKSPACE_DIR
 git clone https://github.com/llvm/llvm-project.git
 cd $LLVM_SOURCE_DIR
 
-# 2. [Critical] Check out llvmorg-19.1.7
-git checkout llvmorg-19.1.7
+# 2. [Critical] Check out llvmorg-21.1.8
+git checkout llvmorg-21.1.8
 
 # 3. Configure CMake (build shared libs with Python bindings enabled)
 cmake -G Ninja -S llvm -B $LLVM_BUILD_DIR \
@@ -105,7 +105,7 @@ ninja -C $LLVM_BUILD_DIR
 
 ### 3.3 Step 2: Build PTOAS (Out-of-Tree)
 
-Clone the PTOAS source and build against the LLVM 19 you just compiled.
+Clone the PTOAS source and build against the LLVM 21 you just compiled.
 
 ```bash
 # 1. Clone PTOAS

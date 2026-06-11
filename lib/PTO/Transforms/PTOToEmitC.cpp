@@ -117,6 +117,20 @@ static const char *addrSpaceQualifier(pto::AddressSpace as) {
   return "__gm__";
 }
 
+static Type getEmitCVariableResultType(Type valueType) {
+  if (isa<emitc::ArrayType, emitc::LValueType>(valueType))
+    return valueType;
+  return emitc::LValueType::get(valueType);
+}
+
+static Value loadEmitCVariableIfNeeded(OpBuilder &builder, Location loc,
+                                       Value value) {
+  if (auto lvalueTy = dyn_cast<emitc::LValueType>(value.getType()))
+    return builder.create<emitc::LoadOp>(loc, lvalueTy.getValueType(), value)
+        .getResult();
+  return value;
+}
+
 [[maybe_unused]] static constexpr llvm::StringLiteral kLoweredSetValidShapeAttrName =
     "__pto.lowered_set_validshape";
 [[maybe_unused]] static constexpr llvm::StringLiteral kLoweredSetValidShapeConfigAttrName =
@@ -408,7 +422,7 @@ getGatherScatterShapeLayoutInfo(Type ty) {
 
   SmallVector<int64_t, 4> strides;
   int64_t offset = ShapedType::kDynamic;
-  if (failed(getStridesAndOffset(memRefTy, strides, offset)) ||
+  if (failed(memRefTy.getStridesAndOffset(strides, offset)) ||
       strides.size() != 2)
     return std::nullopt;
 
@@ -496,12 +510,9 @@ static bool isEmitCGlobalTensorLikeType(Type ty) {
 }
 
 static std::string getEmitCScalarTypeToken(Type elemTy) {
-  if (pto::isPTOFloat8Type(elemTy) &&
-      (elemTy.isFloat8E4M3() || elemTy.isFloat8E4M3FN() ||
-       elemTy.isFloat8E4M3FNUZ() || elemTy.isFloat8E4M3B11FNUZ()))
+  if (pto::isPTOFloat8E4M3LikeType(elemTy))
     return "float8_e4m3_t";
-  if (pto::isPTOFloat8Type(elemTy) &&
-      (elemTy.isFloat8E5M2() || elemTy.isFloat8E5M2FNUZ()))
+  if (pto::isPTOFloat8E5M2LikeType(elemTy))
     return "float8_e5m2_t";
   if (isa<pto::HiF8Type>(elemTy))
     return "hifloat8_t";
@@ -666,10 +677,9 @@ public:
     // 1. 基本类型 (f32, i32, index)
     // ---------------------------------------------------------
     addConversion([Ctx](FloatType type) -> Type {
-      if (type.isFloat8E4M3() || type.isFloat8E4M3FN() ||
-          type.isFloat8E4M3FNUZ() || type.isFloat8E4M3B11FNUZ())
+      if (pto::isPTOFloat8E4M3LikeType(type))
         return emitc::OpaqueType::get(Ctx, "float8_e4m3_t");
-      if (type.isFloat8E5M2() || type.isFloat8E5M2FNUZ())
+      if (pto::isPTOFloat8E5M2LikeType(type))
         return emitc::OpaqueType::get(Ctx, "float8_e5m2_t");
       if (type.isF32()) return emitc::OpaqueType::get(Ctx, "float");
       if (type.isF16()) return emitc::OpaqueType::get(Ctx, "half");
@@ -869,8 +879,6 @@ public:
 
     addSourceMaterialization(materializeCast);
     addTargetMaterialization(materializeCast);
-    // Needed for region/block signature conversions (e.g. CFG block args).
-    addArgumentMaterialization(materializeCast);
   }
 };
 
@@ -3207,7 +3215,7 @@ struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
       if (auto intAttr = dyn_cast<IntegerAttr>(attr))
         return intAttr.getInt();
     } else {
-      Value v = ofr.get<Value>();
+      Value v = ofr.dyn_cast<Value>();
       if (auto cOp = v.getDefiningOp<arith::ConstantOp>()) {
         if (auto iAttr = dyn_cast<IntegerAttr>(cOp.getValue()))
           return iAttr.getInt();
@@ -3297,7 +3305,8 @@ struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
     } else {
         SmallVector<int64_t> strideInts;
         int64_t offset = ShapedType::kDynamic;
-        bool useTypeStrides = succeeded(getStridesAndOffset(srcType, strideInts, offset));
+        bool useTypeStrides =
+            succeeded(srcType.getStridesAndOffset(strideInts, offset));
         (void)offset;
         if (useTypeStrides) {
           for (int64_t s : strideInts) {
@@ -3661,7 +3670,7 @@ static bool hasStaticShape(MemRefType mrTy) {
 
 static bool getStaticMemrefLayout(MemRefType mrTy, SmallVectorImpl<int64_t> &strides,
                                   int64_t &offset) {
-  if (failed(getStridesAndOffset(mrTy, strides, offset))) {
+  if (failed(mrTy.getStridesAndOffset(strides, offset))) {
     strides.clear();
     int64_t stride = 1;
     ArrayRef<int64_t> shape = mrTy.getShape();
@@ -4047,9 +4056,11 @@ static FailureOr<Value> buildAsyncScratchTileValue(
 
   Value tile = rewriter
                    .create<emitc::VariableOp>(
-                       loc, emitc::OpaqueType::get(ctx, tileTypeStr),
+                       loc, getEmitCVariableResultType(
+                                emitc::OpaqueType::get(ctx, tileTypeStr)),
                        emitc::OpaqueAttr::get(ctx, ""))
                    .getResult();
+  tile = loadEmitCVariableIfNeeded(rewriter, loc, tile);
   auto addr = rewriter.getArrayAttr({emitc::OpaqueAttr::get(ctx, "uint64_t")});
   Value scratchAddr =
       rewriter
@@ -4109,9 +4120,11 @@ static FailureOr<Value> buildSyncAllWorkspaceTileValue(
 
   auto tileEmitTy = emitc::OpaqueType::get(ctx, *tileTypeString);
   Value tile = rewriter
-                   .create<emitc::VariableOp>(loc, tileEmitTy,
+                   .create<emitc::VariableOp>(loc,
+                                              getEmitCVariableResultType(tileEmitTy),
                                               emitc::OpaqueAttr::get(ctx, ""))
                    .getResult();
+  tile = loadEmitCVariableIfNeeded(rewriter, loc, tile);
 
   Value rawPtr = workspace;
   auto u64Ty = emitc::OpaqueType::get(ctx, "uint64_t");
@@ -4421,10 +4434,10 @@ struct PointerCastConversion : public OpConversionPattern<pto::PointerCastOp> {
         // 静态情况 (Tile v;)
         auto varOp = rewriter.create<emitc::VariableOp>(
             loc, 
-            tileType, 
+            getEmitCVariableResultType(tileType),
             emitc::OpaqueAttr::get(ctx, "")
         );
-        resultValue = varOp.getResult();
+        resultValue = loadEmitCVariableIfNeeded(rewriter, loc, varOp.getResult());
     }
 
     // TASSIGN: pto-isa expects an integral address.
@@ -6469,8 +6482,10 @@ struct PTOBuildAsyncSessionToEmitC
 
     Value session = rewriter
                         .create<emitc::VariableOp>(
-                            loc, sessionTy, emitc::OpaqueAttr::get(ctx, ""))
+                            loc, getEmitCVariableResultType(sessionTy),
+                            emitc::OpaqueAttr::get(ctx, ""))
                         .getResult();
+    session = loadEmitCVariableIfNeeded(rewriter, loc, session);
 
     auto u32Ty = emitc::OpaqueType::get(ctx, "uint32_t");
 
@@ -6499,12 +6514,13 @@ struct PTOBuildAsyncSessionToEmitC
     Value baseConfig =
         rewriter
             .create<emitc::VariableOp>(
-                loc, baseConfigTy,
+                loc, getEmitCVariableResultType(baseConfigTy),
                 emitc::OpaqueAttr::get(
                     ctx, "{" + std::to_string(blockBytes) + "ULL, " +
                              std::to_string(commBlockOffset) + "ULL, " +
                              std::to_string(queueNum) + "u}"))
             .getResult();
+    baseConfig = loadEmitCVariableIfNeeded(rewriter, loc, baseConfig);
 
     rewriter.create<emitc::CallOpaqueOp>(
         loc, TypeRange{}, "pto::comm::BuildAsyncSession<pto::comm::DmaEngine::SDMA>",
@@ -6634,7 +6650,7 @@ static FailureOr<Value> buildCollectiveParallelGroup(
                                        firstTy);
   auto groupArray = cast<TypedValue<emitc::ArrayType>>(
       rewriter
-          .create<emitc::VariableOp>(loc, arrayTy,
+          .create<emitc::VariableOp>(loc, getEmitCVariableResultType(arrayTy),
                                      emitc::OpaqueAttr::get(ctx, "{}"))
           .getResult());
 
@@ -7038,9 +7054,10 @@ struct PTODeclareGlobalToEmitC
       }
     }
     auto var = rewriter.create<emitc::VariableOp>(
-        op.getLoc(), convertedType,
+        op.getLoc(), getEmitCVariableResultType(convertedType),
         emitc::OpaqueAttr::get(rewriter.getContext(), ""));
-    rewriter.replaceOp(op, var.getResult());
+    rewriter.replaceOp(
+        op, loadEmitCVariableIfNeeded(rewriter, op.getLoc(), var.getResult()));
     return success();
   }
 };
@@ -7061,9 +7078,10 @@ struct PTODeclareEventIdArrayToEmitC
 
     auto array = rewriter
                      .create<emitc::VariableOp>(
-                         op.getLoc(), arrayTy,
+                         op.getLoc(), getEmitCVariableResultType(arrayTy),
                          emitc::OpaqueAttr::get(rewriter.getContext(), ""))
                      .getResult();
+    array = loadEmitCVariableIfNeeded(rewriter, op.getLoc(), array);
     rewriter.replaceOp(op, array);
     return success();
   }
@@ -7130,9 +7148,10 @@ struct PTODeclareLocalArrayToEmitC
 
     auto var = rewriter
                    .create<emitc::VariableOp>(
-                       op.getLoc(), arrayTy,
+                       op.getLoc(), getEmitCVariableResultType(arrayTy),
                        emitc::OpaqueAttr::get(rewriter.getContext(), ""))
                    .getResult();
+    var = loadEmitCVariableIfNeeded(rewriter, op.getLoc(), var);
     rewriter.replaceOp(op, var);
     return success();
   }
@@ -7166,11 +7185,12 @@ struct PTOLocalArrayGetToEmitC
     auto snapshot =
         rewriter
             .create<emitc::VariableOp>(
-                op.getLoc(), resultTy,
+                op.getLoc(), getEmitCVariableResultType(resultTy),
                 emitc::OpaqueAttr::get(rewriter.getContext(), ""))
             .getResult();
     rewriter.create<emitc::AssignOp>(op.getLoc(), snapshot, sub.getResult());
-    rewriter.replaceOp(op, snapshot);
+    rewriter.replaceOp(
+        op, loadEmitCVariableIfNeeded(rewriter, op.getLoc(), snapshot));
     return success();
   }
 };
@@ -7673,9 +7693,11 @@ struct ReinterpretCastToEmitC : public OpConversionPattern<memref::ReinterpretCa
 
     auto tileType = emitc::OpaqueType::get(ctx, tileTypeStr);
     Value tile = rewriter
-                     .create<emitc::VariableOp>(loc, tileType,
+                     .create<emitc::VariableOp>(loc,
+                                                getEmitCVariableResultType(tileType),
                                                 emitc::OpaqueAttr::get(ctx, ""))
                      .getResult();
+    tile = loadEmitCVariableIfNeeded(rewriter, loc, tile);
 
     // Compute an integer address and assign it to the new tile.
     // NOTE: pto-isa TASSIGN requires an integral address (not a pointer).
@@ -9282,13 +9304,24 @@ struct PTOQuantToEmitC : public OpConversionPattern<pto::TQuantOp> {
     Value offsetPtr;
     if (op.getOffset()) {
       Value offset = peelUnrealized(adaptor.getOffset());
-      auto offsetOT = mlir::dyn_cast<emitc::OpaqueType>(offset.getType());
-      if (offsetOT) {
-        offsetPtr = rewriter
-                        .create<emitc::ApplyOp>(
-                            loc, emitc::PointerType::get(offsetOT), "&", offset)
-                        .getResult();
+      Type offsetValueTy = offset.getType();
+      Value offsetLValue = offset;
+      if (auto lvalueTy = dyn_cast<emitc::LValueType>(offsetValueTy)) {
+        offsetValueTy = lvalueTy.getValueType();
+      } else {
+        offsetLValue =
+            rewriter
+                .create<emitc::VariableOp>(
+                    loc, getEmitCVariableResultType(offsetValueTy),
+                    emitc::OpaqueAttr::get(ctx, ""))
+                .getResult();
+        rewriter.create<emitc::AssignOp>(loc, offsetLValue, offset);
       }
+      offsetPtr =
+          rewriter
+              .create<emitc::ApplyOp>(
+                  loc, emitc::PointerType::get(offsetValueTy), "&", offsetLValue)
+              .getResult();
     }
 
     // TQUANT<QuantType, DstTile, SrcTile, FpTile>(dst, src, fp[, &offset])
@@ -11347,8 +11380,8 @@ struct PTOBindTileToEmitC : public OpConversionPattern<pto::BindTileOp> {
           if (!pto::isPTOFloat4PackedType(elemTy) &&
               subRows != ShapedType::kDynamic &&
               subCols != ShapedType::kDynamic &&
-              succeeded(getStridesAndOffset(subMrTy, inheritedStrides,
-                                            inheritedOffset)) &&
+              succeeded(subMrTy.getStridesAndOffset(inheritedStrides,
+                                                    inheritedOffset)) &&
               inheritedStrides.size() >= 2) {
             int64_t childRowStride = 0;
             int64_t childColStride = 0;
@@ -11514,9 +11547,12 @@ struct PTOBindTileToEmitC : public OpConversionPattern<pto::BindTileOp> {
             .getResult(0);
       }
 
-      return rewriter
-          .create<emitc::VariableOp>(loc, tileType, emitc::OpaqueAttr::get(ctx, ""))
-          .getResult();
+      Value tile = rewriter
+                       .create<emitc::VariableOp>(
+                           loc, getEmitCVariableResultType(tileType),
+                           emitc::OpaqueAttr::get(ctx, ""))
+                       .getResult();
+      return loadEmitCVariableIfNeeded(rewriter, loc, tile);
     };
 
     auto emitElemTypeToString = [&](Type elemTy) -> std::string {
@@ -11744,8 +11780,10 @@ struct PTOAllocTileToEmitC
       tile =
           rewriter
               .create<emitc::VariableOp>(
-                  loc, convertedTy, emitc::OpaqueAttr::get(ctx, ""))
+                  loc, getEmitCVariableResultType(convertedTy),
+                  emitc::OpaqueAttr::get(ctx, ""))
               .getResult();
+      tile = loadEmitCVariableIfNeeded(rewriter, loc, tile);
     }
 
     Value addr = adaptor.getAddr();
@@ -11788,10 +11826,12 @@ createEmitCTileVariable(ConversionPatternRewriter &rewriter, Location loc,
   if (!convertedTy)
     convertedTy = emitc::OpaqueType::get(rewriter.getContext(), *tileTypeString);
 
-  return rewriter
-      .create<emitc::VariableOp>(
-          loc, convertedTy, emitc::OpaqueAttr::get(rewriter.getContext(), ""))
-      .getResult();
+  Value tile = rewriter
+                   .create<emitc::VariableOp>(
+                       loc, getEmitCVariableResultType(convertedTy),
+                       emitc::OpaqueAttr::get(rewriter.getContext(), ""))
+                   .getResult();
+  return loadEmitCVariableIfNeeded(rewriter, loc, tile);
 }
 
 struct PTOTReshapeToEmitC : public OpConversionPattern<pto::TReshapeOp> {
@@ -11961,10 +12001,12 @@ struct PTOMaterializeTileToEmitC
             .getResult(0);
       }
 
-      return rewriter
-          .create<emitc::VariableOp>(loc, convertedTy,
-                                     emitc::OpaqueAttr::get(ctx, ""))
-          .getResult();
+      Value tile = rewriter
+                       .create<emitc::VariableOp>(
+                           loc, getEmitCVariableResultType(convertedTy),
+                           emitc::OpaqueAttr::get(ctx, ""))
+                       .getResult();
+      return loadEmitCVariableIfNeeded(rewriter, loc, tile);
     };
 
     if (!isSubview && !forceDynamicValid && isTileLike(source)) {
@@ -12990,7 +13032,7 @@ static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
 
   patterns.add<CallToEmitC, ReturnToEmitC>(typeConverter, ctx);
 
-  populateSCFToEmitCConversionPatterns(patterns);
+  populateSCFToEmitCConversionPatterns(patterns, typeConverter);
   // Keep CFG-style branches type-consistent when block argument types are
   // converted (e.g. after lowering scf.while to cf.br/cf.cond_br).
   populateBranchOpInterfaceTypeConversionPattern(patterns, typeConverter);
@@ -13205,7 +13247,7 @@ static AICORE inline void ptoas_auto_sync_tail(
       scfLoweringPatterns.add<SCFExecuteRegionInline, SCFExecuteRegionToCF,
                               SCFIndexSwitchToCF,
                               SCFWhileToCF, CFSwitchToCondBr>(ctx);
-      (void)applyPatternsAndFoldGreedily(mop, std::move(scfLoweringPatterns));
+      (void)applyPatternsGreedily(mop, std::move(scfLoweringPatterns));
 
       bool hasUnsupportedSCF = false;
       mop.walk([&](Operation *op) {

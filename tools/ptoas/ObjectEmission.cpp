@@ -63,7 +63,7 @@ static bool writeTextFile(StringRef path, StringRef content,
 
 static void stripUnsupportedBishengAttrs(llvm::Module &module) {
   for (llvm::Function &function : module) {
-    // LLVM 19 prints memory effect attributes in textual form like
+    // LLVM prints memory effect attributes in textual form like
     // `memory(none)`. beta.1 Bisheng cannot parse that syntax, so remove only
     // the unsupported memory-effect attribute before serializing the module.
     function.setAttributes(
