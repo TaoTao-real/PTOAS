@@ -134,55 +134,32 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          apt_packages=()
-          add_apt_package() {
-            local package="$1"
-            local existing
-            for existing in "${apt_packages[@]}"; do
-              [[ "${existing}" == "${package}" ]] && return 0
-            done
-            apt_packages+=("${package}")
-          }
-          install_apt_packages() {
-            if [[ "$#" -eq 0 ]]; then
-              return 0
-            fi
-            if ! command -v sudo >/dev/null 2>&1 || ! command -v apt-get >/dev/null 2>&1; then
-              echo "ERROR: missing required tools/packages and automatic installation requires sudo + apt-get" >&2
-              exit 1
-            fi
-            sudo apt-get -o DPkg::Lock::Timeout=60 update
-            sudo env DEBIAN_FRONTEND=noninteractive \
-              apt-get -o DPkg::Lock::Timeout=60 install -y "$@"
-          }
-
           missing_tools=()
-          for tool in python3 git cmake ninja make cc c++; do
+          for tool in python3 git cmake ninja make; do
             if ! command -v "${tool}" >/dev/null 2>&1; then
               missing_tools+=("${tool}")
             fi
           done
 
           if [[ "${#missing_tools[@]}" -gt 0 ]]; then
-            for tool in "${missing_tools[@]}"; do
-              case "${tool}" in
-                python3) add_apt_package python3 ;;
-                git) add_apt_package git ;;
-                cmake) add_apt_package cmake ;;
-                ninja) add_apt_package ninja-build ;;
-                make) add_apt_package make ;;
-                cc|c++) add_apt_package build-essential ;;
-              esac
-            done
+            if command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get install -y python3 python3-pip git cmake ninja-build make
+            else
+              echo "ERROR: missing required tools on self-hosted runner: ${missing_tools[*]}" >&2
+              echo "ERROR: automatic installation requires sudo + apt-get" >&2
+              exit 1
+            fi
           fi
 
-          [[ -r /usr/include/zlib.h ]] || add_apt_package zlib1g-dev
-          [[ -r /usr/include/zstd.h ]] || add_apt_package libzstd-dev
-          install_apt_packages "${apt_packages[@]}"
-
           python3 -m pip --version >/dev/null 2>&1 || {
-            install_apt_packages python3-pip
+            if command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get install -y python3-pip
+            else
+              echo "ERROR: python3-pip is required on self-hosted runner" >&2
+              exit 1
+            fi
           }
 
           need_pip_install=0
