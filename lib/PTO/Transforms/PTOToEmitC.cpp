@@ -20,10 +20,6 @@
 #include "PTO/IR/PTOSyncUtils.h"
 #include "PTO/Transforms/Passes.h"
 
-#include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
-#include "mlir/Analysis/DataFlow/IntegerRangeAnalysis.h"
-#include "mlir/Analysis/DataFlowFramework.h"
-
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/EmitC/IR/EmitC.h"
@@ -12781,9 +12777,7 @@ struct CFSwitchToCondBr : public OpRewritePattern<cf::SwitchOp> {
 static void populatePTOToEmitCPatterns(RewritePatternSet &patterns,
                                        TypeConverter &typeConverter,
                                        MLIRContext *ctx,
-                                       DataFlowSolver &solver,
                                        PTOArch targetArch) {
-  (void)solver;
   patterns.add<ArithCmpIToEmitC>(typeConverter, ctx);
   patterns.add<PTOAllocTileToEmitC>(typeConverter, ctx);
   patterns.add<PTOMaterializeTileToEmitC>(typeConverter, ctx);
@@ -13341,14 +13335,8 @@ static AICORE inline void ptoas_auto_sync_tail(
     target.addLegalDialect<emitc::EmitCDialect>();
     target.addLegalOp<ModuleOp>();
 
-    auto solver = std::make_unique<DataFlowSolver>();
-    solver->load<dataflow::DeadCodeAnalysis>();
-    solver->load<dataflow::IntegerRangeAnalysis>();
-    if (failed(solver->initializeAndRun(getOperation())))
-      return signalPassFailure();
-
     RewritePatternSet patterns(ctx);
-    populatePTOToEmitCPatterns(patterns, typeConverter, ctx, *solver, targetArch);
+    populatePTOToEmitCPatterns(patterns, typeConverter, ctx, targetArch);
 
     // 4. 执行转换
     if (failed(applyPartialConversion(mop, target, std::move(patterns)))) {
