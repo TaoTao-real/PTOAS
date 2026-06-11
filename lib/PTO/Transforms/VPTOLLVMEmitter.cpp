@@ -559,6 +559,30 @@ static Type getPackedLowpScalarMemoryType(Type semanticType,
   return IntegerType::get(context, 16);
 }
 
+static Type getLowpIntrinsicCarrierType(Type semanticType, Type convertedType,
+                                        MLIRContext *context) {
+  if (auto vregType = dyn_cast<pto::VRegType>(semanticType)) {
+    if (!isLowpPayloadABIElementType(vregType.getElementType()))
+      return convertedType;
+    int64_t elementCount = vregType.getElementCount();
+    if (elementCount <= 0 || elementCount % 4 != 0)
+      return {};
+    return VectorType::get({elementCount / 4}, IntegerType::get(context, 32));
+  }
+
+  if (Type packedScalarType =
+          getPackedLowpScalarMemoryType(semanticType, context))
+    return packedScalarType;
+  return convertedType;
+}
+
+static Value bitcastToType(Location loc, Value value, Type targetType,
+                           ConversionPatternRewriter &rewriter) {
+  if (!targetType || targetType == value.getType())
+    return value;
+  return rewriter.create<LLVM::BitcastOp>(loc, targetType, value);
+}
+
 static Type getScalarAccessGEPElementType(Type semanticType,
                                           Builder &builder) {
   if (Type memoryType =
@@ -7305,10 +7329,24 @@ public:
     if (!resultType)
       return rewriter.notifyMatchFailure(op, "failed to convert vcvt result type");
 
+    Type inputCallType = getLowpIntrinsicCarrierType(
+        op.getInput().getType(), adaptor.getInput().getType(),
+        rewriter.getContext());
+    if (!inputCallType)
+      return rewriter.notifyMatchFailure(op,
+                                         "unsupported vcvt input carrier type");
+    Type resultCallType = getLowpIntrinsicCarrierType(
+        op.getResult().getType(), resultType, rewriter.getContext());
+    if (!resultCallType)
+      return rewriter.notifyMatchFailure(op,
+                                         "unsupported vcvt result carrier type");
+    Value input = bitcastToType(op.getLoc(), adaptor.getInput(), inputCallType,
+                                rewriter);
+
     SmallVector<Value> callArgs;
     SmallVector<Type> argTypes;
-    callArgs.push_back(adaptor.getInput());
-    argTypes.push_back(adaptor.getInput().getType());
+    callArgs.push_back(input);
+    argTypes.push_back(input.getType());
     callArgs.push_back(adaptor.getMask());
     argTypes.push_back(adaptor.getMask().getType());
 
@@ -7356,12 +7394,15 @@ public:
       argTypes.push_back(partValue.getType());
     }
 
-    auto funcType = rewriter.getFunctionType(argTypes, TypeRange{resultType});
+    auto funcType = rewriter.getFunctionType(argTypes, TypeRange{resultCallType});
     auto call = rewriter.create<func::CallOp>(
-        op.getLoc(), StringRef((*contract).intrinsic), TypeRange{resultType}, callArgs);
+        op.getLoc(), StringRef((*contract).intrinsic),
+        TypeRange{resultCallType}, callArgs);
     state.plannedDecls.push_back(
         PlannedDecl{std::string((*contract).intrinsic), funcType});
-    rewriter.replaceOp(op, call.getResults());
+    Value result =
+        bitcastToType(op.getLoc(), call.getResult(0), resultType, rewriter);
+    rewriter.replaceOp(op, result);
     return success();
   }
 
@@ -8888,15 +8929,30 @@ public:
     Value saturation = getI32Constant(
         rewriter, op.getLoc(), static_cast<uint64_t>(op.getSaturation()));
 
+    Type srcCallType = getLowpIntrinsicCarrierType(
+        op.getSrc().getType(), adaptor.getSrc().getType(),
+        rewriter.getContext());
+    if (!srcCallType)
+      return rewriter.notifyMatchFailure(
+          op, "unsupported convert input carrier type");
+    Type resultCallType = getLowpIntrinsicCarrierType(
+        op.getDst().getType(), resultType, rewriter.getContext());
+    if (!resultCallType)
+      return rewriter.notifyMatchFailure(
+          op, "unsupported convert result carrier type");
+    Value src =
+        bitcastToType(op.getLoc(), adaptor.getSrc(), srcCallType, rewriter);
+
     auto funcType = rewriter.getFunctionType(
-        TypeRange{adaptor.getSrc().getType(), rewriter.getI32Type(),
-                  rewriter.getI32Type()},
-        TypeRange{resultType});
+        TypeRange{src.getType(), rewriter.getI32Type(), rewriter.getI32Type()},
+        TypeRange{resultCallType});
     auto call = rewriter.create<func::CallOp>(
-        op.getLoc(), *calleeName, TypeRange{resultType},
-        ValueRange{adaptor.getSrc(), rounding, saturation});
+        op.getLoc(), *calleeName, TypeRange{resultCallType},
+        ValueRange{src, rounding, saturation});
     state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
-    rewriter.replaceOp(op, call.getResults());
+    Value result =
+        bitcastToType(op.getLoc(), call.getResult(0), resultType, rewriter);
+    rewriter.replaceOp(op, result);
     return success();
   }
 

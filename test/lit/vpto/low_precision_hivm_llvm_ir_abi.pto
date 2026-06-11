@@ -1,0 +1,107 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: mkdir -p %T/fake-cann/bin %T/fake-cann/tools/bisheng_compiler/bin
+// RUN: touch %T/fake-cann/bin/bisheng %T/fake-cann/bin/cce-ld %T/fake-cann/bin/ld.lld %T/fake-cann/tools/bisheng_compiler/bin/bisheng
+// RUN: chmod +x %T/fake-cann/bin/bisheng %T/fake-cann/bin/cce-ld %T/fake-cann/bin/ld.lld %T/fake-cann/tools/bisheng_compiler/bin/bisheng
+// RUN: env ASCEND_HOME_PATH=%T/fake-cann PATH=%T/fake-cann/bin:%T/fake-cann/tools/bisheng_compiler/bin:%PATH% ptoas --pto-arch=a5 --pto-backend=vpto --vpto-emit-hivm-llvm %s -o %t.ll
+// RUN: FileCheck %s --check-prefix=LLVMIR < %t.ll
+
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+  func.func @lowp_vector_kernel(%f32_seed: f32,
+                                %bf16_seed: bf16,
+                                %ub_f8: !pto.ptr<f8E4M3FN, ub>,
+                                %ub_hif8: !pto.ptr<!pto.hif8, ub>,
+                                %ub_f4: !pto.ptr<!pto.f4E1M2x2, ub>,
+                                %dst_f32: !pto.ptr<f32, ub>,
+                                %dst_bf16: !pto.ptr<bf16, ub>) attributes {pto.kernel} {
+    %c0 = arith.constant 0 : index
+    pto.vecscope {
+      %mask_b8 = pto.pset_b8 "PAT_ALL" : !pto.mask<b8>
+      %mask_b16 = pto.pset_b16 "PAT_ALL" : !pto.mask<b16>
+      %mask_b32 = pto.pset_b32 "PAT_ALL" : !pto.mask<b32>
+
+      %src_f32 = pto.vdup %f32_seed, %mask_b32 : f32, !pto.mask<b32> -> !pto.vreg<64xf32>
+      %f8 = pto.vcvt %src_f32, %mask_b32 {rnd = "R", sat = "NOSAT", part = "P0"} : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<256xf8E4M3FN>
+      pto.vsts %f8, %ub_f8[%c0], %mask_b8 : !pto.vreg<256xf8E4M3FN>, !pto.ptr<f8E4M3FN, ub>, !pto.mask<b8>
+      %f8_loaded = pto.vlds %ub_f8[%c0] : !pto.ptr<f8E4M3FN, ub> -> !pto.vreg<256xf8E4M3FN>
+      %f8_back = pto.vcvt %f8_loaded, %mask_b8 {part = "P0"} : !pto.vreg<256xf8E4M3FN>, !pto.mask<b8> -> !pto.vreg<64xf32>
+      pto.vsts %f8_back, %dst_f32[%c0], %mask_b32 : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
+
+      %hif8 = pto.vcvt %src_f32, %mask_b32 {rnd = "A", sat = "NOSAT", part = "P0"} : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<256x!pto.hif8>
+      pto.vsts %hif8, %ub_hif8[%c0], %mask_b8 : !pto.vreg<256x!pto.hif8>, !pto.ptr<!pto.hif8, ub>, !pto.mask<b8>
+      %hif8_loaded = pto.vlds %ub_hif8[%c0] : !pto.ptr<!pto.hif8, ub> -> !pto.vreg<256x!pto.hif8>
+      %hif8_back = pto.vcvt %hif8_loaded, %mask_b8 {part = "P0"} : !pto.vreg<256x!pto.hif8>, !pto.mask<b8> -> !pto.vreg<64xf32>
+      pto.vsts %hif8_back, %dst_f32[%c0], %mask_b32 : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
+
+      %src_bf16 = pto.vdup %bf16_seed, %mask_b16 : bf16, !pto.mask<b16> -> !pto.vreg<128xbf16>
+      %f4 = pto.vcvt %src_bf16, %mask_b16 {rnd = "R", part = "P0"} : !pto.vreg<128xbf16>, !pto.mask<b16> -> !pto.vreg<256x!pto.f4E1M2x2>
+      pto.vsts %f4, %ub_f4[%c0], %mask_b8 : !pto.vreg<256x!pto.f4E1M2x2>, !pto.ptr<!pto.f4E1M2x2, ub>, !pto.mask<b8>
+      %f4_loaded = pto.vlds %ub_f4[%c0] : !pto.ptr<!pto.f4E1M2x2, ub> -> !pto.vreg<256x!pto.f4E1M2x2>
+      %f4_back = pto.vcvt %f4_loaded, %mask_b8 {part = "P0"} : !pto.vreg<256x!pto.f4E1M2x2>, !pto.mask<b8> -> !pto.vreg<128xbf16>
+      pto.vsts %f4_back, %dst_bf16[%c0], %mask_b16 : !pto.vreg<128xbf16>, !pto.ptr<bf16, ub>, !pto.mask<b16>
+    }
+    return
+  }
+
+  func.func @lowp_simt_kernel(%gm: !pto.ptr<i32, gm>) attributes {pto.aicore} {
+    %c0_i64 = arith.constant 0 : i64
+    %c128_i64 = arith.constant 128 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %dim = arith.constant 1 : i32
+    %threads = arith.constant 32 : i32
+    %ub_i32 = pto.castptr %c0_i64 : i64 -> !pto.ptr<i32, ub>
+    %ub_i64 = pto.castptr %c0_i64 : i64 -> !pto.ptr<i64, ub>
+    %ub_hif8 = pto.castptr %c0_i64 : i64 -> !pto.ptr<!pto.hif8x2, ub>
+    pto.store_vfsimt_info %dim, %dim, %threads : i32, i32, i32
+    func.call @lowp_simt_body(%ub_i32, %ub_i64, %ub_hif8) : (!pto.ptr<i32, ub>, !pto.ptr<i64, ub>, !pto.ptr<!pto.hif8x2, ub>) -> ()
+    pto.mte_ub_gm %ub_i32, %gm, %c128_i64
+      nburst(%c1_i64, %c128_i64, %c128_i64)
+      : !pto.ptr<i32, ub>, !pto.ptr<i32, gm>, i64, i64, i64, i64
+    return
+  }
+
+  func.func @lowp_simt_body(%dst: !pto.ptr<i32, ub>, %dst64: !pto.ptr<i64, ub>, %hif8_dst: !pto.ptr<!pto.hif8x2, ub>) attributes {pto.simt_entry} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %f2 = arith.constant dense<[1.000000e+00, 2.000000e+00]> : vector<2xf32>
+    %f8 = pto.convert %f2 round(r) nosat : vector<2xf32> -> vector<2xf8E4M3FN>
+    %hif8 = pto.convert %f2 round(a) nosat : vector<2xf32> -> !pto.hif8x2
+    %f8_back = pto.convert %f8 round(r) nosat : vector<2xf8E4M3FN> -> vector<2xf32>
+    %hif8_back = pto.convert %hif8 round(a) nosat : !pto.hif8x2 -> vector<2xf32>
+    %f8_bits = llvm.bitcast %f8 : vector<2xf8E4M3FN> to i16
+    %f8_back_bits = llvm.bitcast %f8_back : vector<2xf32> to i64
+    %hif8_back_bits = llvm.bitcast %hif8_back : vector<2xf32> to i64
+    %f8_bits_i32 = arith.extui %f8_bits : i16 to i32
+    pto.store %f8_bits_i32, %dst[%c0] : !pto.ptr<i32, ub>, i32
+    pto.store %hif8, %hif8_dst[%c1] : !pto.ptr<!pto.hif8x2, ub>, !pto.hif8x2
+    pto.store %f8_back_bits, %dst64[%c0] : !pto.ptr<i64, ub>, i64
+    pto.store %hif8_back_bits, %dst64[%c1] : !pto.ptr<i64, ub>, i64
+    return
+  }
+}
+
+// LLVMIR: declare <64 x i32> @llvm.hivm.vcvtff.f322f8e4m3.x
+// LLVMIR: declare void @llvm.hivm.vstsx1.v256f8e4m3(<256 x i8>
+// LLVMIR: declare <256 x i8> @llvm.hivm.vldsx1.v256f8e4m3
+// LLVMIR: declare <64 x float> @llvm.hivm.vcvtff.f8e4m32f32.x(<64 x i32>
+// LLVMIR: declare <64 x i32> @llvm.hivm.vcvtff.f322hif8.x
+// LLVMIR: declare void @llvm.hivm.vstsx1.v256hif8(<256 x i8>
+// LLVMIR: declare <64 x i32> @llvm.hivm.vcvtff2.bf162f4e1m2x2.x
+// LLVMIR: declare <128 x bfloat> @llvm.hivm.vcvtff2.f4e1m2x22bf16.x(<64 x i32>
+// LLVMIR: declare i16 @llvm.hivm.f32x2.to.f8e4m3x2
+// LLVMIR: declare i16 @llvm.hivm.f32x2.to.hif8x2
+// LLVMIR: declare <2 x float> @llvm.hivm.f8e4m3x2.to.f32x2(i16
+// LLVMIR: declare <2 x float> @llvm.hivm.hif8x2.to.f32x2(i16
+// LLVMIR: bitcast <64 x i32> {{%[0-9]+}} to <256 x i8>
+// LLVMIR: bitcast <256 x i8> {{%[0-9]+}} to <64 x i32>
+// LLVMIR: bitcast i16 {{%[0-9]+}} to <2 x i8>
+// LLVMIR-NOT: declare <256 x f8e4m3>
+// LLVMIR-NOT: declare <2 x f8e4m3>
+// LLVMIR-NOT: declare <256 x i8> @llvm.hivm.vcvtff.f322f8e4m3.x
+// LLVMIR-NOT: declare <2 x i8> @llvm.hivm.f32x2.to.f8e4m3x2
