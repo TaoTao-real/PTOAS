@@ -67,16 +67,11 @@ static Type getElementTypeFromVectorLike(Type type);
 static std::optional<int64_t> getElementCountFromVectorLike(Type type);
 
 static Type getLowPrecisionLLVMType(Type type, MLIRContext *context) {
-  if (pto::isPTOHiFloat8Type(type))
-    return Float8E4M3FNType::get(context);
-  if (isa<pto::F4E1M2x2Type>(type))
+  if (pto::isPTOHiFloat8Type(type) || isa<pto::F4E1M2x2Type>(type) ||
+      isa<pto::F4E2M1x2Type>(type) ||
+      pto::isPTOFloat8E4M3LikeType(type) ||
+      pto::isPTOFloat8E5M2LikeType(type))
     return IntegerType::get(context, 8);
-  if (isa<pto::F4E2M1x2Type>(type))
-    return IntegerType::get(context, 8);
-  if (pto::isPTOFloat8E4M3LikeType(type))
-    return Float8E4M3Type::get(context);
-  if (pto::isPTOFloat8E5M2LikeType(type))
-    return Float8E5M2Type::get(context);
   return {};
 }
 
@@ -101,7 +96,7 @@ static Type getLowpPayloadABIElementType(Type elementType,
 static Type normalizePayloadTypeForLLVMLowering(Type type, Builder &builder) {
   if (pto::isPTOHiFloat8x2Type(type))
     return getLLVMCompatibleVectorType(
-        {2}, Float8E4M3FNType::get(builder.getContext()));
+        {2}, builder.getI8Type());
   if (Type lowpType = getLowPrecisionLLVMType(type, builder.getContext()))
     return lowpType;
 
@@ -9255,6 +9250,8 @@ static Value convertLdgCallResult(Location loc, Type valueType,
   if (pto::isPTOFloat8Type(valueType) || pto::isPTOHiFloat8Type(valueType)) {
     Value payload =
         rewriter.create<arith::TruncIOp>(loc, rewriter.getI8Type(), callResult);
+    if (payload.getType() == convertedValueType)
+      return payload;
     return rewriter.create<LLVM::BitcastOp>(loc, convertedValueType, payload);
   }
   return callResult;
@@ -9388,8 +9385,10 @@ static Value convertStgValue(Location loc, Type valueType, Value value,
   }
 
   if (pto::isPTOFloat8Type(valueType) || pto::isPTOHiFloat8Type(valueType)) {
-    Value payload =
-        rewriter.create<LLVM::BitcastOp>(loc, rewriter.getI8Type(), value);
+    Value payload = value;
+    if (payload.getType() != rewriter.getI8Type())
+      payload =
+          rewriter.create<LLVM::BitcastOp>(loc, rewriter.getI8Type(), value);
     return rewriter.create<arith::ExtUIOp>(loc, rewriter.getI32Type(), payload);
   }
   if (valueType.isBF16())
