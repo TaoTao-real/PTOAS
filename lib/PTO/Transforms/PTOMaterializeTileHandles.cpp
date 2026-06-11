@@ -24,6 +24,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 
@@ -603,6 +604,17 @@ static Value lookupMaterializedTileHandle(
   return it->second;
 }
 
+static void cloneBlockWithoutTerminator(Block *from, Block *to,
+                                        IRMapping &mapping) {
+  OpBuilder builder(to, to->end());
+  Operation *terminator = from->getTerminator();
+  for (Operation &op : *from) {
+    if (&op == terminator)
+      break;
+    builder.clone(op, mapping);
+  }
+}
+
 static FailureOr<bool>
 materializeSCFIfResults(ModuleOp module, DenseMap<Value, Value> &tileHandles) {
   bool changed = false;
@@ -618,6 +630,19 @@ materializeSCFIfResults(ModuleOp module, DenseMap<Value, Value> &tileHandles) {
     auto elseYield = dyn_cast<scf::YieldOp>(ifOp.elseBlock()->getTerminator());
     if (!thenYield || !elseYield)
       continue;
+
+    if (thenYield.getNumOperands() != ifOp.getNumResults() ||
+        elseYield.getNumOperands() != ifOp.getNumResults()) {
+      ifOp.emitOpError("result count does not match branch yield operands");
+      return failure();
+    }
+
+    SmallVector<Type> resultTypes(ifOp->getResultTypes());
+    SmallVector<Value> thenYieldOperands(thenYield.getOperands().begin(),
+                                         thenYield.getOperands().end());
+    SmallVector<Value> elseYieldOperands(elseYield.getOperands().begin(),
+                                         elseYield.getOperands().end());
+    SmallVector<unsigned> materializedResults;
 
     for (auto [idx, result] : llvm::enumerate(ifOp.getResults())) {
       if (!isLocalTileMemRef(result.getType()))
@@ -639,12 +664,47 @@ materializeSCFIfResults(ModuleOp module, DenseMap<Value, Value> &tileHandles) {
       }
 
       Type tileTy = thenTile.getType();
-      thenYield->setOperand(idx, thenTile);
-      elseYield->setOperand(idx, elseTile);
-      result.setType(tileTy);
-      tileHandles[result] = result;
-      changed = true;
+      resultTypes[idx] = tileTy;
+      thenYieldOperands[idx] = thenTile;
+      elseYieldOperands[idx] = elseTile;
+      materializedResults.push_back(idx);
     }
+
+    if (materializedResults.empty())
+      continue;
+
+    OpBuilder builder(ifOp);
+    auto newIf = builder.create<scf::IfOp>(
+        ifOp.getLoc(), TypeRange(resultTypes), ifOp.getCondition(),
+        /*addThenBlock=*/true, /*addElseBlock=*/true);
+    newIf->setAttrs(ifOp->getAttrs());
+
+    IRMapping thenMapping;
+    cloneBlockWithoutTerminator(ifOp.thenBlock(), newIf.thenBlock(),
+                                thenMapping);
+    builder.setInsertionPointToEnd(newIf.thenBlock());
+    for (Value &operand : thenYieldOperands)
+      operand = thenMapping.lookupOrDefault(operand);
+    builder.create<scf::YieldOp>(thenYield.getLoc(), thenYieldOperands);
+
+    IRMapping elseMapping;
+    cloneBlockWithoutTerminator(ifOp.elseBlock(), newIf.elseBlock(),
+                                elseMapping);
+    builder.setInsertionPointToEnd(newIf.elseBlock());
+    for (Value &operand : elseYieldOperands)
+      operand = elseMapping.lookupOrDefault(operand);
+    builder.create<scf::YieldOp>(elseYield.getLoc(), elseYieldOperands);
+
+    for (auto [oldResult, newResult] :
+         llvm::zip_equal(ifOp.getResults(), newIf.getResults()))
+      oldResult.replaceAllUsesWith(newResult);
+
+    for (unsigned idx : materializedResults) {
+      tileHandles[newIf.getResult(idx)] = newIf.getResult(idx);
+    }
+
+    ifOp.erase();
+    changed = true;
   }
 
   return changed;
@@ -664,6 +724,18 @@ materializeSCFForResults(ModuleOp module, DenseMap<Value, Value> &tileHandles) {
     auto yield = dyn_cast<scf::YieldOp>(forOp.getBody()->getTerminator());
     if (!yield)
       continue;
+
+    if (yield.getNumOperands() != forOp.getNumResults() ||
+        forOp.getInitArgs().size() != forOp.getNumResults()) {
+      forOp.emitOpError("result count does not match iter/yield operands");
+      return failure();
+    }
+
+    SmallVector<Value> initArgs(forOp.getInitArgs().begin(),
+                               forOp.getInitArgs().end());
+    SmallVector<Value> yieldOperands(yield.getOperands().begin(),
+                                     yield.getOperands().end());
+    SmallVector<unsigned> materializedResults;
 
     for (auto [idx, result] : llvm::enumerate(forOp.getResults())) {
       if (!isLocalTileMemRef(result.getType()))
@@ -692,15 +764,45 @@ materializeSCFForResults(ModuleOp module, DenseMap<Value, Value> &tileHandles) {
         return failure();
       }
 
-      Type tileTy = initTile.getType();
-      forOp->setOperand(forOp.getNumControlOperands() + idx, initTile);
-      iterArg.setType(tileTy);
-      yield->setOperand(idx, yieldTile);
-      result.setType(tileTy);
-      tileHandles[iterArg] = iterArg;
-      tileHandles[result] = result;
-      changed = true;
+      initArgs[idx] = initTile;
+      yieldOperands[idx] = yieldTile;
+      materializedResults.push_back(idx);
     }
+
+    if (materializedResults.empty())
+      continue;
+
+    OpBuilder builder(forOp);
+    auto newFor = builder.create<scf::ForOp>(
+        forOp.getLoc(), forOp.getLowerBound(), forOp.getUpperBound(),
+        forOp.getStep(), initArgs);
+    newFor->setAttrs(forOp->getAttrs());
+
+    IRMapping mapping;
+    mapping.map(forOp.getInductionVar(), newFor.getInductionVar());
+    for (auto [oldArg, newArg] :
+         llvm::zip_equal(forOp.getBody()->getArguments().drop_front(),
+                         newFor.getBody()->getArguments().drop_front()))
+      mapping.map(oldArg, newArg);
+
+    cloneBlockWithoutTerminator(forOp.getBody(), newFor.getBody(), mapping);
+    builder.setInsertionPointToEnd(newFor.getBody());
+    for (Value &operand : yieldOperands)
+      operand = mapping.lookupOrDefault(operand);
+    builder.create<scf::YieldOp>(yield.getLoc(), yieldOperands);
+
+    for (auto [oldResult, newResult] :
+         llvm::zip_equal(forOp.getResults(), newFor.getResults()))
+      oldResult.replaceAllUsesWith(newResult);
+
+    for (unsigned idx : materializedResults) {
+      BlockArgument newIterArg = newFor.getRegionIterArg(idx);
+      tileHandles[newIterArg] = newIterArg;
+      tileHandles[newFor.getResult(idx)] = newFor.getResult(idx);
+    }
+
+    forOp.erase();
+    changed = true;
   }
 
   return changed;
