@@ -36,6 +36,34 @@ makeDesc(Operation *op, Value value, MemoryConsistencyAccessKind kind,
     desc.component = getMemoryConsistencyComponent(*pipe);
   desc.cachePolicy = cachePolicy;
   desc.isSignal = isSignal;
+  desc.mayCreateDirtyLine =
+      cachePolicy == MemoryConsistencyCachePolicy::Cacheable &&
+      kind == MemoryConsistencyAccessKind::Write;
+  desc.mayReadStaleLine =
+      cachePolicy == MemoryConsistencyCachePolicy::Cacheable &&
+      kind == MemoryConsistencyAccessKind::Read;
+  return desc;
+}
+
+MemoryAccessDesc makeDescForComponent(Operation *op, Value value,
+                                      MemoryConsistencyAccessKind kind,
+                                      std::optional<AddressSpace> memorySpace,
+                                      MemoryConsistencyComponent component,
+                                      MemoryConsistencyCachePolicy cachePolicy,
+                                      MemoryConsistencySignalRole signalRole =
+                                          MemoryConsistencySignalRole::None) {
+  MemoryAccessDesc desc =
+      makeDesc(op, value, kind, memorySpace, std::nullopt, cachePolicy,
+               signalRole != MemoryConsistencySignalRole::None);
+  desc.component = component;
+  desc.signalRole = signalRole;
+  if (signalRole != MemoryConsistencySignalRole::None) {
+    // The comm primitive implementation owns signal cache maintenance. The
+    // descriptor marks publish/consume boundaries; it must not be treated as a
+    // payload cache hazard by later scans.
+    desc.mayCreateDirtyLine = false;
+    desc.mayReadStaleLine = false;
+  }
   return desc;
 }
 
@@ -51,6 +79,26 @@ std::optional<AddressSpace> getTileBufferAddressSpace(Value value) {
   }
 
   return std::nullopt;
+}
+
+MemoryConsistencyCachePolicy getScalarGMCachePolicy(Value value,
+                                                    L1Cache l1Cache) {
+  auto memorySpace = getMemoryAccessAddressSpace(value);
+  if (!memorySpace)
+    return MemoryConsistencyCachePolicy::Unknown;
+  if (*memorySpace != AddressSpace::GM)
+    return MemoryConsistencyCachePolicy::NotApplicable;
+  return l1Cache == L1Cache::Uncache ? MemoryConsistencyCachePolicy::NonCache
+                                     : MemoryConsistencyCachePolicy::Cacheable;
+}
+
+MemoryConsistencyCachePolicy getDefaultScalarGMCachePolicy(Value value) {
+  auto memorySpace = getMemoryAccessAddressSpace(value);
+  if (!memorySpace)
+    return MemoryConsistencyCachePolicy::Unknown;
+  if (*memorySpace != AddressSpace::GM)
+    return MemoryConsistencyCachePolicy::NotApplicable;
+  return MemoryConsistencyCachePolicy::Cacheable;
 }
 
 SmallVector<MemoryAccessDesc, 4> collectTLoadAccessDescs(TLoadOp op) {
@@ -84,6 +132,83 @@ SmallVector<MemoryAccessDesc, 4> collectTStoreAccessDescs(TStoreOp op) {
   return descs;
 }
 
+SmallVector<MemoryAccessDesc, 4> collectLoadScalarAccessDescs(LoadScalarOp op) {
+  return {makeDescForComponent(op.getOperation(), op.getPtr(),
+                               MemoryConsistencyAccessKind::Read,
+                               getMemoryAccessAddressSpace(op.getPtr()),
+                               MemoryConsistencyComponent::Scalar,
+                               getDefaultScalarGMCachePolicy(op.getPtr()))};
+}
+
+SmallVector<MemoryAccessDesc, 4>
+collectStoreScalarAccessDescs(StoreScalarOp op) {
+  return {makeDescForComponent(op.getOperation(), op.getPtr(),
+                               MemoryConsistencyAccessKind::Write,
+                               getMemoryAccessAddressSpace(op.getPtr()),
+                               MemoryConsistencyComponent::Scalar,
+                               getDefaultScalarGMCachePolicy(op.getPtr()))};
+}
+
+SmallVector<MemoryAccessDesc, 4> collectPTOLoadAccessDescs(PTOLoadOp op) {
+  return {makeDescForComponent(op.getOperation(), op.getPtr(),
+                               MemoryConsistencyAccessKind::Read,
+                               getMemoryAccessAddressSpace(op.getPtr()),
+                               MemoryConsistencyComponent::Simt,
+                               getDefaultScalarGMCachePolicy(op.getPtr()))};
+}
+
+SmallVector<MemoryAccessDesc, 4> collectPTOStoreAccessDescs(PTOStoreOp op) {
+  return {makeDescForComponent(op.getOperation(), op.getPtr(),
+                               MemoryConsistencyAccessKind::Write,
+                               getMemoryAccessAddressSpace(op.getPtr()),
+                               MemoryConsistencyComponent::Simt,
+                               getDefaultScalarGMCachePolicy(op.getPtr()))};
+}
+
+SmallVector<MemoryAccessDesc, 4> collectPTOLdgAccessDescs(PTOLdgOp op) {
+  L1Cache l1Cache =
+      op.getL1cacheAttr() ? op.getL1cacheAttr().getValue() : L1Cache::Cache;
+  return {makeDescForComponent(op.getOperation(), op.getPtr(),
+                               MemoryConsistencyAccessKind::Read,
+                               getMemoryAccessAddressSpace(op.getPtr()),
+                               MemoryConsistencyComponent::Simt,
+                               getScalarGMCachePolicy(op.getPtr(), l1Cache))};
+}
+
+SmallVector<MemoryAccessDesc, 4> collectPTOStgAccessDescs(PTOStgOp op) {
+  L1Cache l1Cache =
+      op.getL1cacheAttr() ? op.getL1cacheAttr().getValue() : L1Cache::Cache;
+  return {makeDescForComponent(op.getOperation(), op.getPtr(),
+                               MemoryConsistencyAccessKind::Write,
+                               getMemoryAccessAddressSpace(op.getPtr()),
+                               MemoryConsistencyComponent::Simt,
+                               getScalarGMCachePolicy(op.getPtr(), l1Cache))};
+}
+
+SmallVector<MemoryAccessDesc, 4> collectTNotifyAccessDescs(TNotifyOp op) {
+  return {makeDescForComponent(
+      op.getOperation(), op.getSignal(), MemoryConsistencyAccessKind::Write,
+      AddressSpace::GM, MemoryConsistencyComponent::Scalar,
+      MemoryConsistencyCachePolicy::NotApplicable,
+      MemoryConsistencySignalRole::Publish)};
+}
+
+SmallVector<MemoryAccessDesc, 4> collectTWaitAccessDescs(TWaitOp op) {
+  return {makeDescForComponent(
+      op.getOperation(), op.getSignal(), MemoryConsistencyAccessKind::Read,
+      AddressSpace::GM, MemoryConsistencyComponent::Scalar,
+      MemoryConsistencyCachePolicy::NotApplicable,
+      MemoryConsistencySignalRole::Consume)};
+}
+
+SmallVector<MemoryAccessDesc, 4> collectTTestAccessDescs(TTestOp op) {
+  return {makeDescForComponent(
+      op.getOperation(), op.getSignal(), MemoryConsistencyAccessKind::Read,
+      AddressSpace::GM, MemoryConsistencyComponent::Scalar,
+      MemoryConsistencyCachePolicy::NotApplicable,
+      MemoryConsistencySignalRole::Consume)};
+}
+
 } // namespace
 
 SmallVector<MemoryAccessDesc, 4>
@@ -95,6 +220,24 @@ mlir::pto::collectMemoryAccessDescs(Operation *op) {
     return collectTLoadAccessDescs(tload);
   if (auto tstore = dyn_cast<TStoreOp>(op))
     return collectTStoreAccessDescs(tstore);
+  if (auto loadScalar = dyn_cast<LoadScalarOp>(op))
+    return collectLoadScalarAccessDescs(loadScalar);
+  if (auto storeScalar = dyn_cast<StoreScalarOp>(op))
+    return collectStoreScalarAccessDescs(storeScalar);
+  if (auto load = dyn_cast<PTOLoadOp>(op))
+    return collectPTOLoadAccessDescs(load);
+  if (auto store = dyn_cast<PTOStoreOp>(op))
+    return collectPTOStoreAccessDescs(store);
+  if (auto ldg = dyn_cast<PTOLdgOp>(op))
+    return collectPTOLdgAccessDescs(ldg);
+  if (auto stg = dyn_cast<PTOStgOp>(op))
+    return collectPTOStgAccessDescs(stg);
+  if (auto notify = dyn_cast<TNotifyOp>(op))
+    return collectTNotifyAccessDescs(notify);
+  if (auto wait = dyn_cast<TWaitOp>(op))
+    return collectTWaitAccessDescs(wait);
+  if (auto test = dyn_cast<TTestOp>(op))
+    return collectTTestAccessDescs(test);
 
   return {};
 }
@@ -144,6 +287,61 @@ MemoryConsistencyComponent mlir::pto::getMemoryConsistencyComponent(PIPE pipe) {
   return MemoryConsistencyComponent::Unknown;
 }
 
+bool mlir::pto::isGMMemoryAccess(const MemoryAccessDesc &desc) {
+  return desc.memorySpace && *desc.memorySpace == AddressSpace::GM;
+}
+
+bool mlir::pto::isPayloadAccess(const MemoryAccessDesc &desc) {
+  return isGMMemoryAccess(desc) &&
+         desc.signalRole == MemoryConsistencySignalRole::None && !desc.isSignal;
+}
+
+bool mlir::pto::mayNeedCleanBeforeNonCacheConsumer(
+    const MemoryAccessDesc &desc) {
+  return isPayloadAccess(desc) &&
+         desc.kind == MemoryConsistencyAccessKind::Write &&
+         desc.mayCreateDirtyLine;
+}
+
+bool mlir::pto::mayNeedInvalidateBeforeCacheableConsumer(
+    const MemoryAccessDesc &desc) {
+  return isPayloadAccess(desc) &&
+         desc.kind == MemoryConsistencyAccessKind::Read &&
+         desc.mayReadStaleLine;
+}
+
+bool mlir::pto::needsPipeDrainBeforePublish(const MemoryAccessDesc &desc) {
+  if (!isPayloadAccess(desc) || desc.kind != MemoryConsistencyAccessKind::Write)
+    return false;
+
+  if (desc.cachePolicy != MemoryConsistencyCachePolicy::NonCache)
+    return false;
+
+  if (!desc.pipe)
+    return false;
+
+  switch (*desc.pipe) {
+  case PIPE::PIPE_MTE2:
+  case PIPE::PIPE_MTE3:
+  case PIPE::PIPE_MTE4:
+  case PIPE::PIPE_MTE5:
+  case PIPE::PIPE_FIX:
+  case PIPE::VIRTUAL_PIPE_MTE2_L1A:
+  case PIPE::VIRTUAL_PIPE_MTE2_L1B:
+    return true;
+  case PIPE::PIPE_S:
+  case PIPE::PIPE_V:
+  case PIPE::PIPE_M:
+  case PIPE::PIPE_MTE1:
+  case PIPE::PIPE_ALL:
+  case PIPE::PIPE_V2:
+  case PIPE::PIPE_NUM:
+  case PIPE::PIPE_UNASSIGNED:
+    return false;
+  }
+  return false;
+}
+
 StringRef mlir::pto::stringifyMemoryConsistencyAccessKind(
     MemoryConsistencyAccessKind kind) {
   switch (kind) {
@@ -177,6 +375,8 @@ StringRef mlir::pto::stringifyMemoryConsistencyComponent(
     return "unknown";
   case MemoryConsistencyComponent::Scalar:
     return "scalar";
+  case MemoryConsistencyComponent::Simt:
+    return "simt";
   case MemoryConsistencyComponent::Vector:
     return "vector";
   case MemoryConsistencyComponent::Cube:
@@ -193,6 +393,19 @@ StringRef mlir::pto::stringifyMemoryConsistencyComponent(
     return "mte5";
   case MemoryConsistencyComponent::Fix:
     return "fix";
+  }
+  return "unknown";
+}
+
+StringRef mlir::pto::stringifyMemoryConsistencySignalRole(
+    MemoryConsistencySignalRole signalRole) {
+  switch (signalRole) {
+  case MemoryConsistencySignalRole::None:
+    return "none";
+  case MemoryConsistencySignalRole::Publish:
+    return "publish";
+  case MemoryConsistencySignalRole::Consume:
+    return "consume";
   }
   return "unknown";
 }

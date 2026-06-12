@@ -40,6 +40,7 @@ enum class MemoryConsistencyCachePolicy {
 enum class MemoryConsistencyComponent {
   Unknown,
   Scalar,
+  Simt,
   Vector,
   Cube,
   MTE1,
@@ -48,6 +49,12 @@ enum class MemoryConsistencyComponent {
   MTE4,
   MTE5,
   Fix,
+};
+
+enum class MemoryConsistencySignalRole {
+  None,
+  Publish,
+  Consume,
 };
 
 struct MemoryAccessDesc {
@@ -59,13 +66,21 @@ struct MemoryAccessDesc {
   MemoryConsistencyComponent component = MemoryConsistencyComponent::Unknown;
   MemoryConsistencyCachePolicy cachePolicy =
       MemoryConsistencyCachePolicy::Unknown;
+  MemoryConsistencySignalRole signalRole = MemoryConsistencySignalRole::None;
   bool isSignal = false;
+  bool mayCreateDirtyLine = false;
+  bool mayReadStaleLine = false;
 };
 
 SmallVector<MemoryAccessDesc, 4> collectMemoryAccessDescs(Operation *op);
 
 std::optional<AddressSpace> getMemoryAccessAddressSpace(Value value);
 MemoryConsistencyComponent getMemoryConsistencyComponent(PIPE pipe);
+bool isGMMemoryAccess(const MemoryAccessDesc &desc);
+bool isPayloadAccess(const MemoryAccessDesc &desc);
+bool mayNeedCleanBeforeNonCacheConsumer(const MemoryAccessDesc &desc);
+bool mayNeedInvalidateBeforeCacheableConsumer(const MemoryAccessDesc &desc);
+bool needsPipeDrainBeforePublish(const MemoryAccessDesc &desc);
 
 StringRef
 stringifyMemoryConsistencyAccessKind(MemoryConsistencyAccessKind kind);
@@ -73,6 +88,8 @@ StringRef
 stringifyMemoryConsistencyCachePolicy(MemoryConsistencyCachePolicy policy);
 StringRef
 stringifyMemoryConsistencyComponent(MemoryConsistencyComponent component);
+StringRef
+stringifyMemoryConsistencySignalRole(MemoryConsistencySignalRole signalRole);
 StringRef
 stringifyMemoryConsistencyAddressSpace(std::optional<AddressSpace> memorySpace);
 
