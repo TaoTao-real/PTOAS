@@ -7,7 +7,7 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 from mlir.dialects import arith, func, pto
-from mlir.ir import Context, F32Type, IndexType, InsertionPoint, IntegerType, Location, Module
+from mlir.ir import Context, F32Type, IndexType, InsertionPoint, IntegerType, Location, Module, UnitAttr
 
 
 def build():
@@ -45,6 +45,7 @@ def build():
             fn_ty = func.FunctionType.get([ptr_f32, ptr_u32, ptr_f32], [])
             with InsertionPoint(module.body):
                 fn = func.FuncOp("vec_add_kernel_2d", fn_ty)
+                fn.operation.attributes["pto.entry"] = UnitAttr.get(ctx)
                 entry = fn.add_entry_block()
 
             with InsertionPoint(entry):

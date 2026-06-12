@@ -9,5 +9,5 @@ module {
   }
 }
 
-// CHECK-LABEL: __global__ AICORE void tsync_emitc(
+// CHECK-LABEL: AICORE void tsync_emitc(
 // CHECK: TSYNC(

@@ -7,6 +7,7 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 from mlir.ir import (
+    UnitAttr,
     Context,
     Location,
     InsertionPoint,
@@ -46,6 +47,7 @@ def build():
         fn_ty = func.FunctionType.get([ptr_bf16], [])
         with InsertionPoint(module.body):
             fn = func.FuncOp("bf16_tile", fn_ty)
+            fn.operation.attributes["pto.entry"] = UnitAttr.get(ctx)
             entry = fn.add_entry_block()
 
         with InsertionPoint(entry):

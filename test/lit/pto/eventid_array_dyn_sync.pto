@@ -13,7 +13,7 @@ module {
   }
 }
 
-// CHECK-LABEL: __global__ AICORE void eventid_array_dyn_sync() {
+// CHECK-LABEL: AICORE void eventid_array_dyn_sync() {
 // CHECK: const int64_t {{v[0-9]+}} = 0;
 // CHECK: PTOAS_EventIdArray<4> [[ARR:v[0-9]+]];
 // CHECK: PTOAS_EventIdArray<4> [[ARR_VAL:v[0-9]+]] = [[ARR]];

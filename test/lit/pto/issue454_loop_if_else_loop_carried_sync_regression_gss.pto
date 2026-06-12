@@ -4,7 +4,7 @@
 // GraphSyncSolver often emits PIPE_ALL barriers instead of fine-grained M/MTE1 events here.
 //
 // CHECK-DAG: pipe_barrier(PIPE_ALL)
-// CHECK-LABEL: __global__ AICORE void loop_if_else_loop_carried_sync()
+// CHECK-LABEL: AICORE void loop_if_else_loop_carried_sync()
 // CHECK: for (int64_t [[IV:[ij][0-9]+]] =
 // CHECK: if ([[IV]] ==
 // CHECK: } else {

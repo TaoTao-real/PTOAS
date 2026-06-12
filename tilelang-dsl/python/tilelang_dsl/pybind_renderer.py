@@ -316,7 +316,7 @@ class PybindRenderer:
         # Create function in module body
         with InsertionPoint(self._module.body):
             fn = _func_dialect.FuncOp(self.kernel.symbol_name, fn_ty)
-            # Add tilelang.instance attribute
+            fn.attributes["pto.entry"] = _get_mlir_unit_attr(self._ctx)
             fn.attributes["pto.tilelang.instance"] = _get_mlir_unit_attr(self._ctx)
             self._entry_block = fn.add_entry_block()
 

@@ -7,6 +7,7 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 from mlir.ir import (
+    UnitAttr,
     Context, Location, InsertionPoint,
     IndexType, IntegerType, F16Type, F32Type, StringAttr
 )
@@ -137,6 +138,7 @@ def build(
         fn_ty = func.FunctionType.get([ptr_out, ptr_a, ptr_b, ptr_bias, i1], [])
         with InsertionPoint(module.body):
             fn = func.FuncOp("RunTMATMULSplitK", fn_ty)
+            fn.operation.attributes["pto.entry"] = UnitAttr.get(ctx)
             entry = fn.add_entry_block()
 
         with InsertionPoint(entry):

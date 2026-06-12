@@ -24,7 +24,7 @@ module {
   }
 }
 
-// CHECK-LABEL: __global__ AICORE void thistogram_emitc_u32()
+// CHECK-LABEL: AICORE void thistogram_emitc_u32()
 // CHECK: THISTOGRAM<HistByte::BYTE_3>(
 // CHECK: THISTOGRAM<HistByte::BYTE_2>(
 // CHECK: THISTOGRAM<HistByte::BYTE_1>(

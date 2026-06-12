@@ -53,7 +53,7 @@ module {
 // IR: pto.tadd{{.*}}{pto.fusion.group_id = 0 : i64, pto.fusion.order = 1 : i64{{.*}}}
 // IR: pto.tstore ins(
 
-// CPP-LABEL: __global__ AICORE void final_emitc_last_use_level2(
+// CPP-LABEL: AICORE void final_emitc_last_use_level2(
 // CPP-NOT: pto.fusion_region
 // CPP-NOT: pto.yield
 // CPP-NOT: PTOAS__LAST_USE__

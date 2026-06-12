@@ -50,7 +50,7 @@ module attributes {"pto.target_arch" = "a3"} {
   }
 }
 
-// CHECK-LABEL: __global__ AICORE void tinsert_acc_mat_pipeline_a3(
+// CHECK-LABEL: AICORE void tinsert_acc_mat_pipeline_a3(
 // CHECK: set_flag(PIPE_M, PIPE_FIX, EVENT_ID{{[0-9]+}});
 // CHECK: wait_flag(PIPE_M, PIPE_FIX, EVENT_ID{{[0-9]+}});
 // CHECK: TINSERT(

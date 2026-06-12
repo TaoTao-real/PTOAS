@@ -29,9 +29,9 @@ module attributes {"pto.device-spec" = "Ascend950"} {
   }
 }
 
-// A5-LABEL: __global__ AICORE void tmov_acc_to_vec_mode_a5(
+// A5-LABEL: AICORE void tmov_acc_to_vec_mode_a5(
 // A5: set_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
 // A5: wait_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
 // A5: TMOV<{{.*}}pto::AccToVecMode::DualModeSplitM{{.*}}>(
-// A3-LABEL: __global__ AICORE void tmov_acc_to_vec_mode_a5(
+// A3-LABEL: AICORE void tmov_acc_to_vec_mode_a5(
 // A3: TMOV<{{.*}}pto::AccToVecMode::DualModeSplitM{{.*}}>(

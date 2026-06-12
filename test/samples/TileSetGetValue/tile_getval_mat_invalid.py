@@ -10,7 +10,7 @@
 Test that TGetValOp rejects MAT tile_buf (Ascend hardware does not support
 reading from MAT tile_buf to scalar). Verification must fail.
 """
-from mlir.ir import Context, Location, Module, InsertionPoint, MLIRError
+from mlir.ir import Context, Location, Module, InsertionPoint, MLIRError, UnitAttr
 from mlir.dialects import func, arith, pto
 from mlir.ir import F32Type, IndexType
 
@@ -37,6 +37,7 @@ def build():
             fn_ty = func.FunctionType.get([], [])
             with InsertionPoint(m.body):
                 fn = func.FuncOp("tgetval_mat_invalid", fn_ty)
+                fn.operation.attributes["pto.entry"] = UnitAttr.get(ctx)
                 entry = fn.add_entry_block()
 
             with InsertionPoint(entry):

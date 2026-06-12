@@ -4,7 +4,7 @@
 // - The carried handshake must still sit in the loop body before the branch.
 // - The if/else must not reorder that wait/set sequence across the branch.
 //
-// CHECK-LABEL: __global__ AICORE void loop_if_else_loop_carried_sync()
+// CHECK-LABEL: AICORE void loop_if_else_loop_carried_sync()
 // CHECK: set_flag(PIPE_FIX, PIPE_MTE1, EVENT_ID1);
 // CHECK: TMOV({{v[0-9]+}}, {{v[0-9]+}});
 // CHECK: TMOV({{v[0-9]+}}, {{v[0-9]+}});

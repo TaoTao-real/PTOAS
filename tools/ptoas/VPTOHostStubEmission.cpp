@@ -77,7 +77,7 @@ static LogicalResult collectVPTOKernelStubDecls(
 
   for (ModuleOp module : modules) {
     module.walk([&](func::FuncOp func) {
-      if (!pto::isPTOKernelFunction(func))
+      if (!pto::isPTOEntryFunction(func))
         return;
 
       std::string logicalName = getLogicalKernelName(func.getSymName());

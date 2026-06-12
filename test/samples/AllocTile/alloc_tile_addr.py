@@ -6,7 +6,7 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-from mlir.ir import Context, Location, Module, InsertionPoint
+from mlir.ir import Context, Location, Module, InsertionPoint, UnitAttr
 from mlir.dialects import func, arith, pto
 from mlir.ir import F32Type, IntegerType, IntegerAttr, IndexType
 
@@ -41,6 +41,7 @@ def build():
             fn_ty = func.FunctionType.get([i64, i32, i32], [])
             with InsertionPoint(m.body):
                 fn = func.FuncOp("alloc_tile_with_addr_demo", fn_ty)
+                fn.operation.attributes["pto.entry"] = UnitAttr.get(ctx)
                 entry = fn.add_entry_block()
 
             with InsertionPoint(entry):

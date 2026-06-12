@@ -11,7 +11,7 @@ module {
   }
 }
 
-// CHECK-LABEL: __global__ AICORE void syncall_emitc(
+// CHECK-LABEL: AICORE void syncall_emitc(
 // CHECK: Tile<TileType::Vec, int32_t, 1, 64
 // CHECK: Tile<TileType::Mat, int32_t, 1, 64
 // CHECK: SYNCALL<SyncAllMode::Soft, SyncCoreType::Mix>(

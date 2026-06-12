@@ -13,5 +13,5 @@ module {
   }
 }
 
-// CHECK-LABEL: __global__ AICORE void tpartmul_emitc()
+// CHECK-LABEL: AICORE void tpartmul_emitc()
 // CHECK: TPARTMUL(

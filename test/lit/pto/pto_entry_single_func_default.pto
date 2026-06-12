@@ -6,4 +6,6 @@ module {
   }
 }
 
-// CHECK-LABEL: __global__ AICORE void single_kernel(
+// CHECK-NOT: extern "C"
+// CHECK-NOT: __global__ AICORE
+// CHECK-LABEL: AICORE void single_kernel(

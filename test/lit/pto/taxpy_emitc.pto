@@ -13,7 +13,7 @@ module {
   }
 }
 
-// A3-LABEL: __global__ AICORE void taxpy_emitc()
+// A3-LABEL: AICORE void taxpy_emitc()
 // A3: TAXPY(
-// A5-LABEL: __global__ AICORE void taxpy_emitc()
+// A5-LABEL: AICORE void taxpy_emitc()
 // A5: TAXPY(

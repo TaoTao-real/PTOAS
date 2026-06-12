@@ -1,0 +1,13 @@
+// RUN: ptoas --pto-arch=a3 --pto-level=level3 %s -o - 2>&1 | FileCheck %s
+
+module attributes {pto.target_arch = "a2a3"} {
+  func.func @softmax(%arg0: !pto.ptr<f32>, %arg1: index)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    return
+  }
+}
+
+// CHECK-NOT: extern "C"
+// CHECK-NOT: __global__ AICORE
+// CHECK-LABEL: AICORE void softmax(
+// CHECK: #if defined(__DAV_VEC__)

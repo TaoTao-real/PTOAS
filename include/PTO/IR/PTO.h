@@ -177,7 +177,7 @@ private:
 };
 
 
-/// Function attribute that marks an explicit PTO kernel entry.
+/// Function attributes that mark an explicit PTO kernel entry.
 inline constexpr llvm::StringLiteral kPTOEntryAttrName = "pto.entry";
 inline constexpr llvm::StringLiteral kLegacyHACCEntryAttrName = "hacc.entry";
 inline constexpr llvm::StringLiteral kPTOKernelAttrName = "pto.kernel";
@@ -188,13 +188,9 @@ inline constexpr llvm::StringLiteral kPTOSimtMaxThreadsAttrName =
 inline constexpr llvm::StringLiteral kPTOSimtMaxRegistersAttrName =
     "pto.simt_max_regs";
 
-/// Return true if the operation carries a PTO kernel marker.
-bool hasPTOKernelAttr(Operation *op);
-
-/// Return true if the function is a PTO kernel definition.
-bool isPTOKernelFunction(func::FuncOp func);
-
-/// Return true if the function carries an explicit entry marker.
+/// Return true if the function carries an explicit entry marker. PTO accepts
+/// both the EmitC naming (`pto.entry`) and VPTO naming (`pto.kernel`) as entry
+/// aliases; `hacc.entry` and `pto.aicore` are legacy aliases.
 bool hasExplicitPTOEntryAttr(func::FuncOp func);
 
 /// Return true if the function should be emitted as an AICORE entry.
@@ -203,7 +199,7 @@ bool isPTOEntryFunction(func::FuncOp func);
 /// Validate module-level PTO entry configuration before EmitC lowering.
 LogicalResult validatePTOEntryFunctions(ModuleOp module);
 
-/// Materialize the effective PTO entry selection onto function attributes.
+/// Clear internal PTO entry selection markers from function attributes.
 void annotatePTOEntryFunctions(ModuleOp module);
 
 } // namespace pto

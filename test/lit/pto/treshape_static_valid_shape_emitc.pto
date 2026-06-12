@@ -31,7 +31,7 @@ module attributes {pto.target_arch = "a5"} {
   }
 }
 
-// CHECK-LABEL: __global__ AICORE void treshape_static_valid_shape_emitc()
+// CHECK-LABEL: AICORE void treshape_static_valid_shape_emitc()
 // CHECK: Tile<TileType::Vec, float, 16, 1, BLayout::ColMajor, 16, 1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null> [[SRC_STORAGE:v[0-9]+]];
 // CHECK: Tile<TileType::Vec, float, 16, 1, BLayout::ColMajor, 16, 1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null> [[SRC:v[0-9]+]] = [[SRC_STORAGE]];
 // CHECK: TASSIGN([[SRC]],

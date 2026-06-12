@@ -6,7 +6,7 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-from mlir.ir import Context, InsertionPoint, Location, Module, IndexType, F16Type
+from mlir.ir import Context, InsertionPoint, Location, Module, IndexType, F16Type, UnitAttr
 from mlir.dialects import arith, func, pto
 
 
@@ -32,6 +32,7 @@ def build():
             fn_ty = func.FunctionType.get([ptr_f16, ptr_f16], [])
             with InsertionPoint(module.body):
                 fn = func.FuncOp("tprefetch_kernel", fn_ty)
+                fn.operation.attributes["pto.entry"] = UnitAttr.get(ctx)
                 entry = fn.add_entry_block()
 
             with InsertionPoint(entry):

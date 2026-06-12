@@ -12,5 +12,5 @@ module {
   }
 }
 
-// A3-LABEL: __global__ AICORE void tcolargmax_emitc()
+// A3-LABEL: AICORE void tcolargmax_emitc()
 // A3: TCOLARGMAX(

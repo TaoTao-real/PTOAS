@@ -53,7 +53,7 @@ module attributes {pto.target_arch = "a5"} {
   }
 }
 
-// CHECK-LABEL: __global__ AICORE void mscatter_pipe_selection(
+// CHECK-LABEL: AICORE void mscatter_pipe_selection(
 // CHECK: TLOAD(
 // CHECK: TLOAD(
 // CHECK: set_flag(PIPE_MTE2, PIPE_V, EVENT_ID0);

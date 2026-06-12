@@ -50,7 +50,7 @@ module attributes {"pto.device-spec" = "Ascend950"} {
   }
 }
 
-// CHECK-LABEL: __global__ AICORE void tinsert_acc_mat_pipeline(
+// CHECK-LABEL: AICORE void tinsert_acc_mat_pipeline(
 // CHECK: set_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
 // CHECK-NOT: set_flag(PIPE_M, PIPE_MTE3, EVENT_ID0);
 // CHECK: wait_flag(PIPE_M, PIPE_FIX, EVENT_ID0);

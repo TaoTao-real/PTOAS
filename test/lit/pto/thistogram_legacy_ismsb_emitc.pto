@@ -15,6 +15,6 @@ module {
   }
 }
 
-// CHECK-LABEL: __global__ AICORE void thistogram_legacy_ismsb_emitc()
+// CHECK-LABEL: AICORE void thistogram_legacy_ismsb_emitc()
 // CHECK: THISTOGRAM<HistByte::BYTE_0>(
 // CHECK: THISTOGRAM<HistByte::BYTE_1>(

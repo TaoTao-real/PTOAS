@@ -17,6 +17,6 @@ module {
   }
 }
 
-// A3-LABEL: __global__ AICORE void tpartarg_emitc()
+// A3-LABEL: AICORE void tpartarg_emitc()
 // A3: TPARTARGMAX(
 // A3: TPARTARGMIN(

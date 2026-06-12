@@ -113,6 +113,11 @@ jobs:
       VPTO_SIM_WORKSPACE: ${{ github.workspace }}/.work/vpto-sim-ci
       TILELANG_DSL_WORKSPACE: ${{ github.workspace }}/.work/tilelang-dsl-ci
       TILELANG_DSL_UT_WORKSPACE: ${{ github.workspace }}/.work/tilelang-dsl-ut-ci
+      PYPTO_REF: main
+      PYPTO_WORKSPACE: ${{ github.workspace }}/.work/pypto-ci
+      PYPTO_RUN_WORKSPACE: ${{ github.workspace }}/.work/pypto-run-ci
+      PTO_ISA_COMMIT: 016396b57e2c17093f1194e6acd89bb112b0ab24
+      PTO_ISA_ROOT: ${{ github.workspace }}/.work/pto-isa-ci
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -122,13 +127,35 @@ jobs:
 
       - name: Resolve LLVM directories
         shell: bash
-        env:
-          TOOL_CACHE: ${{ runner.tool_cache }}
         run: |
           set -euo pipefail
-          echo "LLVM_ROOT=${TOOL_CACHE}/llvm-project" >> "${GITHUB_ENV}"
-          echo "LLVM_DIR=${TOOL_CACHE}/llvm-project/llvm/build-assert" >> "${GITHUB_ENV}"
-          echo "MLIR_PYTHONPATH=${TOOL_CACHE}/llvm-project/llvm/build-assert/tools/mlir/python_packages/mlir_core" >> "${GITHUB_ENV}"
+          echo "LLVM_ROOT=${RUNNER_TOOL_CACHE}/llvm-project" >> "${GITHUB_ENV}"
+          echo "LLVM_DIR=${RUNNER_TOOL_CACHE}/llvm-project/llvm/build-assert" >> "${GITHUB_ENV}"
+          echo "MLIR_PYTHONPATH=${RUNNER_TOOL_CACHE}/llvm-project/llvm/build-assert/tools/mlir/python_packages/mlir_core" >> "${GITHUB_ENV}"
+
+      - name: Resolve LLVM cache key
+        id: llvm-cache-key
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Resolve to a Git object that ls-remote can handle: either a tag
+          # (LLVM_TAG) or a branch head (LLVM_REF).  Only one is expected.
+          ref="${LLVM_TAG:-${LLVM_REF}}"
+          sha="$(git ls-remote "${LLVM_REPO}" "${ref}" | awk '{print $1}')"
+          if [[ -z "${sha}" ]]; then
+            echo "ERROR: failed to resolve ${LLVM_REPO} ${ref}" >&2
+            exit 1
+          fi
+          echo "sha=${sha}" >> "${GITHUB_OUTPUT}"
+          echo "key=llvm-build-${sha}-assert-v1" >> "${GITHUB_OUTPUT}"
+
+      - name: Restore LLVM build cache
+        id: llvm-cache
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.LLVM_DIR }}
+          key: ${{ steps.llvm-cache-key.outputs.key }}
 
       - name: Ensure runner dependencies
         shell: bash
@@ -200,8 +227,11 @@ jobs:
           rm -rf "${PTO_INSTALL_DIR}"
           rm -rf "${VPTO_SIM_WORKSPACE}"
           rm -rf "${TILELANG_DSL_WORKSPACE}"
+          rm -rf "${PYPTO_WORKSPACE}"
+          rm -rf "${PYPTO_RUN_WORKSPACE}"
+          rm -rf "${PTO_ISA_ROOT}"
 
-      - name: Prepare LLVM source (no rebuild)
+      - name: Prepare LLVM source
         shell: bash
         run: |
           set -euo pipefail
@@ -214,14 +244,25 @@ jobs:
           fi
 
           git remote set-url origin "${LLVM_REPO}"
-          git fetch --depth 1 origin "${LLVM_REF}"
+          ref="${LLVM_TAG:-${LLVM_REF}}"
+          git fetch --depth 1 origin "${ref}"
           git checkout --force FETCH_HEAD
 
       - name: Build LLVM/MLIR
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
           cd "${LLVM_ROOT}"
+          # Pin system compilers.  Self-hosted runners may have conda GCC on
+          # PATH; letting CMake autodetect it produces build errors or ABI
+          # mismatches with system libraries.
+          export CC=gcc
+          export CXX=g++
+          # Clean the build directory so that stale generated files from a
+          # previous run (e.g. _smt_ops_gen.py left behind when the ref
+          # changed) do not leak into the fresh build.
+          rm -rf llvm/build-assert
           cmake -G Ninja -S llvm -B llvm/build-assert \
             -DLLVM_ENABLE_PROJECTS="mlir;clang" \
             -DBUILD_SHARED_LIBS=ON \
@@ -236,11 +277,22 @@ jobs:
 
           ninja -C llvm/build-assert
 
+      - name: Save LLVM build cache
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.LLVM_DIR }}
+          key: ${{ steps.llvm-cache-key.outputs.key }}
+
       - name: Build PTOAS
         shell: bash
         run: |
           set -euo pipefail
           rm -rf "${PTO_INSTALL_DIR}"
+          # Pin system compilers for the same reason as LLVM above.
+          export CC=gcc
+          export CXX=g++
           # LLVM_BUILD_DIR is the env var read by the build backend (_ptoas_build_backend.py).
           LLVM_BUILD_DIR="${LLVM_DIR}" \
             CMAKE_C_COMPILER="${PTOAS_CMAKE_C_COMPILER}" \
@@ -276,6 +328,156 @@ jobs:
           echo "ASCEND_HOME_PATH=${ASCEND_HOME_PATH_DETECTED}" >> "${GITHUB_ENV}"
           echo "PTOAS_BIN=${GITHUB_WORKSPACE}/build/tools/ptoas/ptoas" >> "${GITHUB_ENV}"
 
+      - name: Checkout PyPTO
+        uses: actions/checkout@v4
+        with:
+          repository: hw-native-sys/pypto
+          ref: ${{ env.PYPTO_REF }}
+          path: ${{ env.PYPTO_WORKSPACE }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout PTO-ISA
+        uses: actions/checkout@v4
+        with:
+          repository: hw-native-sys/pto-isa
+          ref: ${{ env.PTO_ISA_COMMIT }}
+          path: ${{ env.PTO_ISA_ROOT }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Ensure GCC 15 for PyPTO simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          compiler_major() {
+            "$1" -dumpfullversion -dumpversion | cut -d. -f1
+          }
+
+          if command -v g++-15 >/dev/null 2>&1; then
+            if [[ "$(compiler_major "$(command -v g++-15)")" != "15" ]]; then
+              echo "ERROR: g++-15 exists but is not GCC 15: $(g++-15 --version | head -1)" >&2
+              exit 1
+            fi
+            if ! command -v gcc-15 >/dev/null 2>&1; then
+              echo "ERROR: g++-15 exists but gcc-15 is missing." >&2
+              exit 1
+            fi
+            exit 0
+          fi
+
+          if ! command -v x86_64-conda-linux-gnu-g++ >/dev/null 2>&1 || \
+             ! command -v x86_64-conda-linux-gnu-gcc >/dev/null 2>&1 || \
+             [[ "$(compiler_major "$(command -v x86_64-conda-linux-gnu-g++)")" != "15" ]]; then
+            if ! command -v conda >/dev/null 2>&1; then
+              echo "ERROR: PyPTO simulator smoke requires GCC/G++ 15 and conda is unavailable to install it." >&2
+              exit 1
+            fi
+            conda install -y -c conda-forge gcc_linux-64=15 gxx_linux-64=15
+            hash -r
+          fi
+
+          mkdir -p "${PYPTO_WORKSPACE}/.work/bin"
+          ln -sf "$(command -v x86_64-conda-linux-gnu-g++)" "${PYPTO_WORKSPACE}/.work/bin/g++-15"
+          ln -sf "$(command -v x86_64-conda-linux-gnu-gcc)" "${PYPTO_WORKSPACE}/.work/bin/gcc-15"
+          echo "${PYPTO_WORKSPACE}/.work/bin" >> "${GITHUB_PATH}"
+
+      - name: Prepare PyPTO Python dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 -m pip install --upgrade pip
+          python3 -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+          python3 -m pip install scikit-build-core nanobind ninja pytest cloudpickle
+
+      - name: Install PyPTO frontend and runtime
+        shell: bash
+        env:
+          PTO_ISA_ROOT: ${{ env.PTO_ISA_ROOT }}
+        run: |
+          set -euo pipefail
+          rm -rf "${PYPTO_WORKSPACE}/build" "${PYPTO_WORKSPACE}/_skbuild" "${PYPTO_WORKSPACE}/runtime/build"
+          python3 -m pip install --no-build-isolation --no-deps "${PYPTO_WORKSPACE}"
+          # ci_sim only runs PyPTO simulator tests. Keep the runtime install from
+          # auto-detecting onboard platforms from the runner's CANN environment.
+          env -u ASCEND_HOME_PATH python3 -m pip install --no-build-isolation --no-deps "${PYPTO_WORKSPACE}/runtime"
+
+      - name: Run PyPTO PTOAS end-to-end simulator smoke
+        shell: bash
+        env:
+          PTOAS_ROOT: ${{ github.workspace }}/build/tools/ptoas
+          PTO_ISA_ROOT: ${{ env.PTO_ISA_ROOT }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${PYPTO_RUN_WORKSPACE}"
+          cd "${PYPTO_WORKSPACE}"
+
+          run_pypto_pytest() {
+            local platform="$1"
+            local suite_name="$2"
+            local kernels_dir="${PYPTO_RUN_WORKSPACE}/${suite_name}_${platform}"
+            local log_file="${PYPTO_RUN_WORKSPACE}/${suite_name}_${platform}.log"
+            shift 2
+
+            python3 -m pytest "$@" \
+              -v \
+              --platform="${platform}" \
+              --pto-isa-commit="${PTO_ISA_COMMIT}" \
+              --save-kernels \
+              --kernels-dir="${kernels_dir}" \
+              2>&1 | tee "${log_file}"
+          }
+
+          # All suites below compile through PyPTO's PTO backend and run ptoas.
+          # They are split into separate pytest processes to avoid backend global-state conflicts.
+          run_pypto_core_smoke() {
+            local platform="$1"
+            local dyn_valid_shape="tests/st/runtime/control_flow/test_dyn_orch_shape.py::TestDynOrchShapeOperations::test_dyn_orch_valid_shape_add[shape0-valid_shape0-${platform}]"
+            local cross_core="tests/st/runtime/cross_core/test_cross_core.py::TestCrossCore::test_tpush_tpop_v2c_updown[${platform}]"
+            local pypto_smoke_tests=(
+              tests/st/examples/00_hello_world/test_hello_world.py
+              tests/st/examples/02_intermediate/test_softmax.py::TestTileSoftmax::test_tile_softmax
+              tests/st/examples/02_intermediate/test_rms_norm.py::TestRMSNormCore::test_rms_norm_core
+              tests/st/runtime/ops/test_elementwise.py
+              tests/st/runtime/ops/test_assemble.py
+              tests/st/runtime/framework_and_models/test_jit.py::TestJITExecution::test_cache_hit_reuses_compiled_program
+              tests/st/runtime/framework_and_models/test_jit.py::TestJITDynamicBatch::test_one_artifact_serves_multiple_batches
+              tests/st/runtime/framework_and_models/test_compiled_program.py::TestManualWorkerExtraction::test_block_dim_override_runs
+              "${dyn_valid_shape}"
+              "${cross_core}"
+            )
+            run_pypto_pytest "${platform}" core_ptoas "${pypto_smoke_tests[@]}"
+          }
+
+          run_pypto_fa_ptoas_smoke() {
+            local platform="$1"
+            local pypto_fa_tests=(
+              tests/st/runtime/ops/test_cast.py::TestCast::test_tile_cast_col_major_narrow
+              tests/st/runtime/framework_and_models/test_paged_attention.py::TestPagedAttentionKernels::test_qk_matmul_ptoas[16-128-128]
+              tests/st/runtime/framework_and_models/test_paged_attention.py::TestPagedAttentionKernels::test_softmax_prepare_ptoas[16-128]
+              tests/st/runtime/framework_and_models/test_paged_attention.py::TestPagedAttentionKernels::test_softmax_prepare_unaligned_ptoas[16-128-100]
+              tests/st/runtime/framework_and_models/test_paged_attention.py::TestPagedAttentionKernels::test_pv_matmul_ptoas[16-128-128]
+              tests/st/runtime/framework_and_models/test_paged_attention.py::TestPagedAttentionKernels::test_online_update_ptoas[16-128-0-1]
+            )
+            run_pypto_pytest "${platform}" fa_ptoas "${pypto_fa_tests[@]}"
+          }
+
+          run_pypto_int8_codegen_smoke() {
+            local platform="$1"
+            local pypto_int8_tests=(
+              tests/st/codegen/dsl/test_batch_matmul_pipeline.py::test_no_mat_to_mat_tmov
+            )
+            run_pypto_pytest "${platform}" int8_ptoas_codegen "${pypto_int8_tests[@]}"
+          }
+
+          run_pypto_core_smoke a5sim
+          run_pypto_fa_ptoas_smoke a5sim
+          run_pypto_core_smoke a2a3sim
+          run_pypto_fa_ptoas_smoke a2a3sim
+          run_pypto_int8_codegen_smoke a2a3sim
+
       - name: Run VPTO SIM validation
         if: ${{ true }}
         shell: bash
@@ -296,6 +498,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "${TILELANG_DSL_WORKSPACE}"
+          export LLVM_BUILD_DIR="${LLVM_DIR}"
+          export MLIR_PYTHON_ROOT="${MLIR_PYTHONPATH}"
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" \
             PTOAS_BIN="${PTOAS_BIN}" \
@@ -356,4 +560,13 @@ jobs:
           path: |
             ${{ env.VPTO_SIM_WORKSPACE }}/parallel-runner.log
             ${{ env.VPTO_SIM_WORKSPACE }}/parallel-summary.tsv
+          if-no-files-found: warn
+
+      - name: Upload PyPTO SIM logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pypto-sim-smoke-${{ github.run_id }}
+          path: |
+            ${{ env.PYPTO_RUN_WORKSPACE }}/*.log
           if-no-files-found: warn

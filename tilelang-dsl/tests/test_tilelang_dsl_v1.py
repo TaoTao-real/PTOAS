@@ -2736,7 +2736,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn("// tilelang.specialize tile shape=(16, 32) memory_space=ub", text)
         self.assertIn('module attributes {pto.target_arch = "a5"} {', text)
         self.assertIn(
-            "func.func @kernel(%arg0: !pto.tensor_view<?x?x?x?x?xf32>, %arg1: !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=1>) attributes { pto.tilelang.instance, pto.kernel_kind = #pto.kernel_kind<vector> } {",
+            "func.func @kernel(%arg0: !pto.tensor_view<?x?x?x?x?xf32>, %arg1: !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=1>) attributes { pto.entry, pto.tilelang.instance, pto.kernel_kind = #pto.kernel_kind<vector> } {",
             text,
         )
         module = specialized.mlir_module()
@@ -3325,7 +3325,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         self.assertIn("// tilelang.target = a5", text)
         self.assertIn("// tilelang.op = multi_op_materialize_sub_unique", text)
         self.assertIn(
-            'func.func @kernel(%arg0: !pto.tensor_view<?x?x?x?x?xf32>, %arg1: !pto.tensor_view<?x?x?x?x?xf32>) attributes { pto.tilelang.instance, pto.kernel_kind = #pto.kernel_kind<vector> } {',
+            'func.func @kernel(%arg0: !pto.tensor_view<?x?x?x?x?xf32>, %arg1: !pto.tensor_view<?x?x?x?x?xf32>) attributes { pto.entry, pto.tilelang.instance, pto.kernel_kind = #pto.kernel_kind<vector> } {',
             text,
         )
 
@@ -4002,7 +4002,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         text = kernel.mlir_text()
         self.assertIn(
             "func.func @kernel(%arg0: !pto.tensor_view<?x?x?x?x?xf32>) "
-            "attributes { pto.tilelang.instance, pto.kernel_kind = #pto.kernel_kind<vector> } {",
+            "attributes { pto.entry, pto.tilelang.instance, pto.kernel_kind = #pto.kernel_kind<vector> } {",
             text,
         )
         self.assertEqual(text.count("pto.get_tensor_view_dim"), 5)
@@ -4024,7 +4024,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
         text = kernel.mlir_text()
         self.assertIn(
             "func.func @kernel(%arg0: !pto.tensor_view<?x?x?x?x?xf32>) "
-            "attributes { pto.tilelang.instance, pto.kernel_kind = #pto.kernel_kind<vector> } {",
+            "attributes { pto.entry, pto.tilelang.instance, pto.kernel_kind = #pto.kernel_kind<vector> } {",
             text,
         )
         self.assertEqual(text.count("pto.get_tensor_view_stride"), 5)
@@ -4139,7 +4139,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
 
         text = specialized.mlir_text()
         self.assertIn(
-            "func.func @kernel(%arg0: !pto.tensor_view<?x?x?x?x?xf32>, %arg1: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>) attributes { pto.tilelang.instance, pto.kernel_kind = #pto.kernel_kind<vector> } {",
+            "func.func @kernel(%arg0: !pto.tensor_view<?x?x?x?x?xf32>, %arg1: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>) attributes { pto.entry, pto.tilelang.instance, pto.kernel_kind = #pto.kernel_kind<vector> } {",
             text,
         )
         self.assertIn("scf.for %lane_", text)
@@ -7349,7 +7349,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
 
         text = specialized.mlir_text()
         self.assertIn(
-            "func.func @kernel(%arg0: !pto.tile_buf<loc=vec, dtype=f16, rows=8, cols=128, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, %arg1: !pto.tile_buf<loc=vec, dtype=f16, rows=8, cols=128, v_row=8, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>, %arg2: !pto.tile_buf<loc=vec, dtype=f16, rows=8, cols=128, v_row=8, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>) attributes { pto.tilelang.instance, pto.kernel_kind = #pto.kernel_kind<vector> } {",
+            "func.func @kernel(%arg0: !pto.tile_buf<loc=vec, dtype=f16, rows=8, cols=128, v_row=?, v_col=?, blayout=row_major, slayout=none_box, fractal=512, pad=0>, %arg1: !pto.tile_buf<loc=vec, dtype=f16, rows=8, cols=128, v_row=8, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>, %arg2: !pto.tile_buf<loc=vec, dtype=f16, rows=8, cols=128, v_row=8, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>) attributes { pto.entry, pto.tilelang.instance, pto.kernel_kind = #pto.kernel_kind<vector> } {",
             text,
         )
         self.assertIn("valid_shape=(?, ?)", text)
@@ -7718,7 +7718,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
 
         text = kernel.mlir_text()
         self.assertIn(
-            "func.func @kernel(%arg0: !pto.ptr<f32, gm>, %arg1: !pto.ptr<f32, gm>, %arg2: i64) attributes { pto.tilelang.instance, pto.kernel_kind = #pto.kernel_kind<vector> } {",
+            "func.func @kernel(%arg0: !pto.ptr<f32, gm>, %arg1: !pto.ptr<f32, gm>, %arg2: i64) attributes { pto.entry, pto.tilelang.instance, pto.kernel_kind = #pto.kernel_kind<vector> } {",
             text,
         )
         self.assertRegex(
@@ -8519,7 +8519,7 @@ class TileLangDSLDescriptorTests(unittest.TestCase):
 
         text = specialized.mlir_text()
         self.assertIn(
-            "func.func @kernel(%arg0: !pto.tensor_view<?x?x?x?x?xf32>, %arg1: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>, %arg2: i32) attributes { pto.tilelang.instance, pto.kernel_kind = #pto.kernel_kind<vector> } {",
+            "func.func @kernel(%arg0: !pto.tensor_view<?x?x?x?x?xf32>, %arg1: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16, v_row=16, v_col=16, blayout=row_major, slayout=none_box, fractal=512, pad=0>, %arg2: i32) attributes { pto.entry, pto.tilelang.instance, pto.kernel_kind = #pto.kernel_kind<vector> } {",
             text,
         )
         self.assertRegex(

@@ -69,7 +69,7 @@ module {
 // MARKER: call_opaque "PTOAS__LAST_USE__TSUBS__0__1"
 // MARKER-NOT: pto::last_use
 
-// CPP-LABEL: __global__ AICORE void mark_last_use_slot_mask_level2(
+// CPP-LABEL: AICORE void mark_last_use_slot_mask_level2(
 // CPP-NOT: PTOAS__LAST_USE__
 // CPP: {{\[\[pto::last_use\(0\)\]\] TEXPANDS\(}}
 // CPP: {{\[\[pto::last_use\(0, 1\)\]\] TADDS\(}}

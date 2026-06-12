@@ -4,7 +4,7 @@
 // syncFinder learned from the loop body for the post-loop TMOV, the matching
 // wait must be moved before the loop so the zero-trip path is still ordered.
 //
-// CHECK-LABEL: __global__ AICORE void syncfinder_zero_loop_if_probe
+// CHECK-LABEL: AICORE void syncfinder_zero_loop_if_probe
 // CHECK: TLOAD
 // CHECK: set_flag(PIPE_MTE2, PIPE_V, EVENT_ID[[LOOP:[0-9]+]]);
 // CHECK-NEXT: wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID[[LOOP]]);

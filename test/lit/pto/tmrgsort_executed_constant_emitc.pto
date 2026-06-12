@@ -18,7 +18,7 @@ module {
   }
 }
 
-// A3-LABEL: __global__ AICORE void tmrgsort_executed_constant_emitc()
+// A3-LABEL: AICORE void tmrgsort_executed_constant_emitc()
 // A3-DAG: pto::MrgSortExecutedNumList [[EXFULL:v[0-9]+]] = pto::MrgSortExecutedNumList{128, 64, 0, 0};
 // A3-DAG: pto::MrgSortExecutedNumList [[EXHIGH:v[0-9]+]] = pto::MrgSortExecutedNumList{50000, 40000, 32768, 65535};
 // A3-DAG: pto::MrgSortExecutedNumList [[EXZERO:v[0-9]+]] = pto::MrgSortExecutedNumList{0, 0, 0, 0};

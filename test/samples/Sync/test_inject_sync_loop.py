@@ -7,6 +7,7 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 from mlir.ir import (
+    UnitAttr,
     Context,
     Location,
     Module,
@@ -46,6 +47,7 @@ def build():
             fn_ty = func.FunctionType.get([ptr_f16, ptr_f16], [])
             with InsertionPoint(m.body):
                 fn = func.FuncOp("test_loop_sync", fn_ty)
+                fn.operation.attributes["pto.entry"] = UnitAttr.get(ctx)
                 entry = fn.add_entry_block()
 
             with InsertionPoint(entry):

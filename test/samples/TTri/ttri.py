@@ -12,7 +12,7 @@ Generates one lower-triangular and one upper-triangular 32x32 i32 tile and
 stores them into a single output buffer as two consecutive 32x32 slices.
 """
 
-from mlir.ir import Context, Location, Module, InsertionPoint, IndexType, IntegerType
+from mlir.ir import Context, Location, Module, InsertionPoint, IndexType, IntegerType, UnitAttr
 from mlir.dialects import func, arith, pto
 
 
@@ -38,6 +38,7 @@ def build():
             fn_ty = func.FunctionType.get([ptr_i32], [])
             with InsertionPoint(module.body):
                 fn = func.FuncOp("ttri_kernel", fn_ty)
+                fn.operation.attributes["pto.entry"] = UnitAttr.get(ctx)
                 entry = fn.add_entry_block()
 
             with InsertionPoint(entry):

@@ -6,7 +6,7 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-from mlir.ir import Context, Location, Module, InsertionPoint, MLIRError
+from mlir.ir import Context, Location, Module, InsertionPoint, MLIRError, UnitAttr
 from mlir.dialects import func, pto
 from mlir.ir import F16Type, IntegerType, MemRefType
 
@@ -49,6 +49,7 @@ def build():
             fn_ty = func.FunctionType.get([dst_memref_ty], [])
             with InsertionPoint(m.body):
                 fn = func.FuncOp("tstore_fp_invalid_vec_f16_to_i8", fn_ty)
+                fn.operation.attributes["pto.entry"] = UnitAttr.get(ctx)
                 entry = fn.add_entry_block()
 
             with InsertionPoint(entry):

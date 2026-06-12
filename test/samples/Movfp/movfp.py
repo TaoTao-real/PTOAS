@@ -16,7 +16,7 @@ Important PTO-ISA constraints (a2a3/a5):
   - src must be ACC tile; dst must be MAT tile.
 """
 
-from mlir.ir import Context, Location, Module, InsertionPoint
+from mlir.ir import Context, Location, Module, InsertionPoint, UnitAttr
 from mlir.dialects import func, arith, pto
 from mlir.ir import F16Type, F32Type, IndexType, IntegerType
 
@@ -128,6 +128,7 @@ def build():
             fn_ty = func.FunctionType.get([ptr_f16, ptr_f16, ptr_ui64, ptr_f32], [])
             with InsertionPoint(m.body):
                 fn = func.FuncOp("vec_movfp_kernel_2d", fn_ty)
+                fn.operation.attributes["pto.entry"] = UnitAttr.get(ctx)
                 entry = fn.add_entry_block()
 
             with InsertionPoint(entry):

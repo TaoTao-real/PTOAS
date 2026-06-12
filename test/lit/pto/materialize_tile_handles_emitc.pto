@@ -18,7 +18,7 @@ module {
 // IR: pto.alloc_tile addr = {{.*}} : !pto.tile_buf<vec, 16x16xf32>
 // IR-NOT: pto.materialize_tile
 
-// EMITC-LABEL: __global__ AICORE void materialize_tile_handles_emitc()
+// EMITC-LABEL: AICORE void materialize_tile_handles_emitc()
 // EMITC: Tile<TileType::Vec, half, 16, 16, BLayout::RowMajor, 16, 16, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>
 // EMITC: TASSIGN(
 // EMITC: Tile<TileType::Vec, float, 16, 16, BLayout::RowMajor, 16, 16, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null>

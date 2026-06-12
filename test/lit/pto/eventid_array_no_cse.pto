@@ -17,7 +17,7 @@ module {
   }
 }
 
-// CHECK-LABEL: __global__ AICORE void eventid_array_no_cse() {
+// CHECK-LABEL: AICORE void eventid_array_no_cse() {
 // CHECK: PTOAS_EventIdArray<4> [[ARR0:v[0-9]+]];
 // CHECK: PTOAS_EventIdArray<4> [[ARR0_VAL:v[0-9]+]] = [[ARR0]];
 // CHECK: PTOAS_EventIdArray<4> [[ARR1:v[0-9]+]];

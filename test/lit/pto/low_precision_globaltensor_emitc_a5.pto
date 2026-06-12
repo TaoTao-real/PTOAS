@@ -27,7 +27,7 @@ module {
   }
 }
 
-// A5-LABEL: __global__ AICORE void low_precision_globaltensor_emitc_a5(
+// A5-LABEL: AICORE void low_precision_globaltensor_emitc_a5(
 // A5-DAG: GlobalTensor<hifloat8_t,
 // A5-DAG: GlobalTensor<float8_e4m3_t,
 // A5-DAG: GlobalTensor<float4_e1m2x2_t,

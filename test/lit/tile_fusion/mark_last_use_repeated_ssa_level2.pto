@@ -48,6 +48,6 @@ module {
 // CHECK: pto.tadd ins(%{{.*}}, %{{.*}} : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%{{.*}} : !pto.tile_buf<vec, 32x32xf32>) {pto.fusion.group_id = 0 : i64, pto.fusion.order = 0 : i64, pto.last_use = array<i64: 1, 1, 0>}
 // CHECK-NEXT: pto.tadd ins(%{{.*}}, %{{.*}} : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%{{.*}} : !pto.tile_buf<vec, 32x32xf32>) {pto.fusion.group_id = 0 : i64, pto.fusion.order = 1 : i64, pto.last_use = array<i64: 1, 1, 0>}
 
-// CPP-LABEL: __global__ AICORE void mark_last_use_repeated_ssa_level2(
+// CPP-LABEL: AICORE void mark_last_use_repeated_ssa_level2(
 // CPP: {{\[\[pto::last_use\(0, 1, 1\)\]\] TADD\(}}
 // CPP: {{\[\[pto::last_use\(0, 1, 1\)\]\] TADD\(}}

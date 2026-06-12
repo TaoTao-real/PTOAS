@@ -3719,9 +3719,7 @@ static FailureOr<VcvtContract> buildVcvtContract(pto::VcvtOp op) {
 }
 
 static bool needsV300CtrlModeForVPTOFunc(func::FuncOp funcOp) {
-  if ((!pto::isPTOEntryFunction(funcOp) &&
-       !pto::isPTOKernelFunction(funcOp)) ||
-      funcOp.getBlocks().empty())
+  if (!pto::isPTOEntryFunction(funcOp) || funcOp.getBlocks().empty())
     return false;
 
   bool needsCtrlSetup = false;
@@ -10186,7 +10184,7 @@ static LogicalResult renameKernelFunctionsForKernelKind(ModuleOp module,
   }
 
   for (func::FuncOp funcOp : module.getOps<func::FuncOp>()) {
-    if (!pto::hasPTOKernelAttr(funcOp.getOperation()))
+    if (!pto::hasExplicitPTOEntryAttr(funcOp))
       continue;
     if (funcOp.getSymName().ends_with(suffix))
       continue;

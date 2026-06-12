@@ -8,6 +8,7 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 from mlir.ir import (
+    UnitAttr,
     Context,
     F32Type,
     IndexType,
@@ -36,6 +37,7 @@ def build():
 
             with InsertionPoint(module.body):
                 fn = func.FuncOp("test_intercore_sync_a3_dyn", fn_ty)
+                fn.operation.attributes["pto.entry"] = UnitAttr.get(ctx)
                 entry = fn.add_entry_block()
 
             with InsertionPoint(entry):

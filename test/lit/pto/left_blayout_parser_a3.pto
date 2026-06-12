@@ -10,5 +10,5 @@ module attributes {"pto.target_arch" = "a3"} {
   }
 }
 
-// CHECK-LABEL: __global__ AICORE void left_blayout_parser_a3() {
+// CHECK-LABEL: AICORE void left_blayout_parser_a3() {
 // CHECK: Tile<TileType::Left, float, 32, 32, BLayout::RowMajor, 32, 32, SLayout::RowMajor, 512, PadValue::Null, CompactMode::Null>

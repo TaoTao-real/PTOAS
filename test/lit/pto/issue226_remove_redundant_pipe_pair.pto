@@ -4,7 +4,7 @@
 // set/wait pair when the interval contains a complete inner set/wait pair on
 // the same pipe pair, even if those syncs came from different dep roots.
 //
-// CHECK-LABEL: __global__ AICORE void remove_redundant_pipe_pair
+// CHECK-LABEL: AICORE void remove_redundant_pipe_pair
 // CHECK: set_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[M2MTE1:[0-9]+]]);
 // CHECK: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[M2MTE1]]);
 // CHECK-NOT: wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID[[M2MTE1]]);

@@ -24,7 +24,7 @@ module attributes {pto.target_arch = "a5"} {
   }
 }
 
-// CHECK-LABEL: __global__ AICORE void a5_tmov_treshape_dynamic_valid_shape_level2()
+// CHECK-LABEL: AICORE void a5_tmov_treshape_dynamic_valid_shape_level2()
 // CHECK: Tile<TileType::Vec, float, 16, 1, BLayout::ColMajor, -1, -1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null> [[SRC_ORIG:v[0-9]+]]
 // CHECK: Tile<TileType::Vec, float, 16, 1, BLayout::ColMajor, -1, -1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null> [[DST_ORIG:v[0-9]+]]
 // CHECK: Tile<TileType::Vec, float, 1, 16, BLayout::RowMajor, -1, -1, SLayout::NoneBox, 512, PadValue::Null, CompactMode::Null> [[SRC_STORAGE:v[0-9]+]];

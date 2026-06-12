@@ -254,7 +254,7 @@ class _AuthoringRenderer:
         kernel_kind = "cube" if self.kernel.kernel_family == "cube" else "vector"
         function_attrs = (
             "attributes { "
-            f"pto.tilelang.instance, pto.kernel_kind = #pto.kernel_kind<{kernel_kind}> "
+            f"pto.entry, pto.tilelang.instance, pto.kernel_kind = #pto.kernel_kind<{kernel_kind}> "
             "}"
         )
         lines.append(f'module attributes {{pto.target_arch = "{self.kernel.target}"}} {{')

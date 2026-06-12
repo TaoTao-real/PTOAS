@@ -371,10 +371,10 @@ mlir::pto::PTOASContext::createTempPath(llvm::StringRef prefix,
   return tempFiles.create(prefix, suffix, path, llvm::errs());
 }
 
-static bool hasPTOKernel(ModuleOp module) {
+static bool hasPTOEntry(ModuleOp module) {
   bool found = false;
   module.walk([&](func::FuncOp func) {
-    if (mlir::pto::isPTOKernelFunction(func)) {
+    if (mlir::pto::isPTOEntryFunction(func)) {
       found = true;
       return WalkResult::interrupt();
     }
@@ -468,7 +468,7 @@ public:
     ModuleOp op = module.get();
     op->setAttr("pto.backend", StringAttr::get(op.getContext(), "vpto"));
 
-    bool emitHostStub = hasPTOKernel(op);
+    bool emitHostStub = hasPTOEntry(op);
     mlir::pto::PTOASCompileResult jobResult;
     if (mlir::pto::compilePTOASModule(
             module, context, mlir::pto::PTOBackend::VPTO, jobResult,
@@ -543,7 +543,7 @@ LogicalResult VPTOBackendJob::run(PTOASContext &context) {
   ModuleOp op = module.get();
   op->setAttr("pto.backend", StringAttr::get(op.getContext(), "vpto"));
 
-  bool emitHostStub = hasPTOKernel(op) && !mlir::pto::emitVPTOLLVMIR;
+  bool emitHostStub = hasPTOEntry(op) && !mlir::pto::emitVPTOLLVMIR;
   if (mlir::pto::compilePTOASModule(
           module, context, mlir::pto::PTOBackend::VPTO, result,
           emitHostStub) != 0)

@@ -12,7 +12,7 @@
 // A5 TROWARGMIN should not treat tmp as a required scratch write in local
 // memory planning, otherwise this shape triggers a false vec overflow.
 // CHECK-NOT: vec overflow
-// CHECK: __global__ AICORE void TROWARGMIN_TMP_OVERFLOW(
+// CHECK: AICORE void TROWARGMIN_TMP_OVERFLOW(
 
 module {
   func.func @TROWARGMIN_TMP_OVERFLOW(%src_ptr: !pto.ptr<f32>, %dst_ptr: !pto.ptr<ui32>) {

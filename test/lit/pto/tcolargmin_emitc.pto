@@ -12,5 +12,5 @@ module {
   }
 }
 
-// A5-LABEL: __global__ AICORE void tcolargmin_emitc()
+// A5-LABEL: AICORE void tcolargmin_emitc()
 // A5: TCOLARGMIN(

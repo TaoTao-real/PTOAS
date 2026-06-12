@@ -89,25 +89,13 @@ jobs:
 
           git_failure_pattern='(error: RPC failed|Operation timed out|Connection timed out|connection timeout|Failed to connect|Could not resolve host|early EOF|fetch-pack|remote end hung up|GnuTLS recv error|TLS connection|HTTP/2 stream)'
           log_file="failed.log"
-          step_log_file="failed-git-steps.log"
 
           echo "Downloading failed logs for workflow run ${RUN_ID}"
           gh run view "${RUN_ID}" --repo "${REPO}" --log-failed > "${log_file}"
 
-          awk -F'\t' '
-            $2 == "Checkout" || $2 == "Prepare LLVM source (no rebuild)" {
-              print
-            }
-          ' "${log_file}" > "${step_log_file}"
-
-          if [[ ! -s "${step_log_file}" ]]; then
-            echo "No Checkout/Prepare LLVM source logs found in failed jobs; skip rerun."
-            exit 0
-          fi
-
-          if grep -Eiq "${git_failure_pattern}" "${step_log_file}"; then
-            echo "Git/network failure detected in self-hosted checkout/fetch stage; rerunning failed jobs."
+          if grep -Eiq "${git_failure_pattern}" "${log_file}"; then
+            echo "Git/network failure detected; rerunning failed jobs."
             gh api --method POST "repos/${REPO}/actions/runs/${RUN_ID}/rerun-failed-jobs"
           else
-            echo "Failed jobs did not fail in a recognized git/network stage; skip rerun."
+            echo "Failed jobs did not fail with a recognized git/network error; skip rerun."
           fi

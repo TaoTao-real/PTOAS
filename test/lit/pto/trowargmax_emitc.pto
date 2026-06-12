@@ -12,5 +12,5 @@ module {
   }
 }
 
-// A3-LABEL: __global__ AICORE void trowargmax_emitc()
+// A3-LABEL: AICORE void trowargmax_emitc()
 // A3: TROWARGMAX(

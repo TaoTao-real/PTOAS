@@ -7,7 +7,7 @@
 // - Outer loop-carried and inner loop-carried syncs on PIPE_M -> PIPE_MTE1 must coexist.
 // - Inner-loop and outer-loop event chains must both keep their set/wait handshake.
 //
-// CHECK-LABEL: __global__ AICORE void nested_loop_same_pipe_pair()
+// CHECK-LABEL: AICORE void nested_loop_same_pipe_pair()
 // CHECK-COUNT-2: for (int64_t
 // CHECK: TMATMUL(
 // CHECK: #endif // __DAV_CUBE__

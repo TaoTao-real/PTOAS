@@ -7,7 +7,7 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 """Test pto.print: format is string attribute, scalar is operand. Generates PRINTF("format", scalar) in C++."""
-from mlir.ir import Context, Location, Module, InsertionPoint
+from mlir.ir import Context, Location, Module, InsertionPoint, UnitAttr
 from mlir.dialects import func, pto
 from mlir.ir import F32Type
 
@@ -23,6 +23,7 @@ def build():
             fn_ty = func.FunctionType.get([f32], [])
             with InsertionPoint(m.body):
                 fn = func.FuncOp("print_scalar_kernel", fn_ty)
+                fn.operation.attributes["pto.entry"] = UnitAttr.get(ctx)
                 entry = fn.add_entry_block()
 
             with InsertionPoint(entry):

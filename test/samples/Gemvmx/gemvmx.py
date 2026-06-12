@@ -6,7 +6,7 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-from mlir.ir import Context, Location, Module, InsertionPoint, StringAttr
+from mlir.ir import Context, Location, Module, InsertionPoint, StringAttr, UnitAttr
 from mlir.dialects import func, arith, pto
 from mlir.ir import F16Type, F32Type, IndexType
 
@@ -129,6 +129,7 @@ def build():
             )
             with InsertionPoint(m.body):
                 fn = func.FuncOp("gemvmx_kernel", fn_ty)
+                fn.operation.attributes["pto.entry"] = UnitAttr.get(ctx)
                 entry = fn.add_entry_block()
 
             with InsertionPoint(entry):

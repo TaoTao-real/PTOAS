@@ -13,5 +13,5 @@ module attributes {"pto.target_arch" = "a5"} {
   }
 }
 
-// CHECK-LABEL: __global__ AICORE void tinsert_a5_f32_to_f32_ok(
+// CHECK-LABEL: AICORE void tinsert_a5_f32_to_f32_ok(
 // CHECK: TINSERT(
