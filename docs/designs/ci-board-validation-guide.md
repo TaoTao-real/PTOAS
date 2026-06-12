@@ -81,9 +81,9 @@
 ### 3.1 构建 LLVM/MLIR
 
 ```bash
-git clone https://github.com/llvm/llvm-project.git
+git clone https://github.com/TaoTao-real/llvm-project.git
 cd llvm-project
-git checkout llvmorg-21.1.8
+git checkout feature-vpto-llvm21
 
 cmake -G Ninja -S llvm -B llvm/build-shared \
   -DLLVM_ENABLE_PROJECTS="mlir;clang" \

@@ -10,7 +10,8 @@ ARG ARCH
 
 # NOTE: change $PY_VER for different Python versions (3.8 - 3.14 available)
 ARG PY_VER=cp311-cp311
-ARG LLVM_TAG=llvmorg-21.1.8
+ARG LLVM_REF=feature-vpto-llvm21
+ARG LLVM_REPO=https://github.com/TaoTao-real/llvm-project.git
 
 ## -- usually no need to change below --
 
@@ -34,7 +35,7 @@ ENV PTO_INSTALL_DIR=$PTO_SOURCE_DIR/install-release
 
 # build LLVM
 WORKDIR $WORKSPACE_DIR
-RUN git clone --depth 1 --branch ${LLVM_TAG} https://github.com/llvm/llvm-project.git
+RUN git clone --depth 1 --branch ${LLVM_REF} ${LLVM_REPO} llvm-project
 
 WORKDIR $LLVM_SOURCE_DIR
 RUN cmake -C /tmp/LinuxHardeningCache.cmake -G Ninja -S llvm -B $LLVM_BUILD_DIR \

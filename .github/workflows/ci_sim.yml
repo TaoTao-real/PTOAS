@@ -107,8 +107,8 @@ jobs:
         needs.detect-vpto-sim-changes.outputs.should_run == 'true'
       }}
     env:
-      LLVM_REPO: https://github.com/llvm/llvm-project.git
-      LLVM_TAG: llvmorg-21.1.8
+      LLVM_REPO: https://github.com/TaoTao-real/llvm-project.git
+      LLVM_REF: feature-vpto-llvm21
       PTO_INSTALL_DIR: ${{ github.workspace }}/install
       VPTO_SIM_WORKSPACE: ${{ github.workspace }}/.work/vpto-sim-ci
       TILELANG_DSL_WORKSPACE: ${{ github.workspace }}/.work/tilelang-dsl-ci
@@ -214,7 +214,7 @@ jobs:
           fi
 
           git remote set-url origin "${LLVM_REPO}"
-          git fetch --depth 1 origin "${LLVM_TAG}"
+          git fetch --depth 1 origin "${LLVM_REF}"
           git checkout --force FETCH_HEAD
 
       - name: Build LLVM/MLIR

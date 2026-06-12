@@ -2,7 +2,7 @@
 
 ## 1. 项目简介 (Introduction)
 
-**ptoas** (`ptoas`) 是一个基于 **LLVM/MLIR (llvmorg-21.1.8)** 框架构建的专用编译器工具链，专为 **PTO Bytecode** (Programming Tiling Operator Bytecode) 设计。
+**ptoas** (`ptoas`) 是一个基于 **LLVM/MLIR LLVM21 VPTO 分支 (`TaoTao-real/llvm-project:feature-vpto-llvm21`)** 框架构建的专用编译器工具链，专为 **PTO Bytecode** (Programming Tiling Operator Bytecode) 设计。
 
 作为连接上层 AI 框架与底层各类NPU/GPGPU/CPU硬件，`ptoas` 采用 **Out-of-Tree** 架构构建，提供了完整的 C++ 与 Python 接口，主要职责包括：
 
@@ -37,7 +37,7 @@ PTOAS/
 
 ## 3. 构建指南 (Build Instructions)
 
-⚠️ **重要提示**：本项目严格依赖 **LLVM llvmorg-21.1.8** 版本。
+⚠️ **重要提示**：本项目严格依赖 **LLVM21 VPTO 分支 `TaoTao-real/llvm-project:feature-vpto-llvm21`**。
 
 
 ### 3.0 环境变量配置 (Configuration)
@@ -84,16 +84,16 @@ python3 -m pip install 'pybind11<3' nanobind numpy
 
 ### 3.2 第一步：构建 LLVM/MLIR (Dependency)
 
-我们需要下载 LLVM 源码，切换到 `llvmorg-21.1.8` 标签，并以**动态库 (Shared Libs)** 模式编译，以确保 Python Binding 的正确链接。
+我们需要下载 VPTO 适配后的 LLVM 源码，切换到 `feature-vpto-llvm21` 分支，并以**动态库 (Shared Libs)** 模式编译，以确保 Python Binding 的正确链接。
 
 ```bash
 # 1. 下载 LLVM 源码
 cd $WORKSPACE_DIR
-git clone https://github.com/llvm/llvm-project.git
+git clone https://github.com/TaoTao-real/llvm-project.git
 cd $LLVM_SOURCE_DIR
 
-# 2. [关键] 切换到 llvmorg-21.1.8
-git checkout llvmorg-21.1.8
+# 2. [关键] 切换到 VPTO 适配分支
+git checkout feature-vpto-llvm21
 
 # 3. 配置 CMake (构建动态库并启用 Python 绑定)
 cmake -G Ninja -S llvm -B $LLVM_BUILD_DIR \

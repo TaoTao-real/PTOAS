@@ -97,8 +97,8 @@ jobs:
     runs-on: ubuntu-22.04
     env:
       PTOAS_CLANG_MAJOR: "15"
-      LLVM_REPO: https://github.com/llvm/llvm-project.git
-      LLVM_TAG: llvmorg-21.1.8
+      LLVM_REPO: https://github.com/TaoTao-real/llvm-project.git
+      LLVM_REF: feature-vpto-llvm21
       LLVM_BUILD_DIR: ${{ github.workspace }}/llvm-project/llvm/build-assert
       LLVM_DIR: ${{ github.workspace }}/llvm-project/llvm/build-assert
       PTO_BUILD_DIR: ${{ github.workspace }}/build-assert
@@ -159,9 +159,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          LLVM_SOURCE_SHA="$(git ls-remote "${LLVM_REPO}" "refs/tags/${LLVM_TAG}" | awk '{print $1}')"
+          LLVM_SOURCE_SHA="$(git ls-remote "${LLVM_REPO}" "refs/heads/${LLVM_REF}" | awk '{print $1}')"
           [[ -n "${LLVM_SOURCE_SHA}" ]] || {
-            echo "ERROR: failed to resolve ${LLVM_REPO} ${LLVM_TAG}" >&2
+            echo "ERROR: failed to resolve ${LLVM_REPO} ${LLVM_REF}" >&2
             exit 1
           }
           echo "LLVM_SOURCE_SHA=${LLVM_SOURCE_SHA}" >> "${GITHUB_ENV}"
@@ -187,7 +187,7 @@ jobs:
           fi
 
           git remote set-url origin "${LLVM_REPO}"
-          git fetch --depth 1 origin "${LLVM_TAG}"
+          git fetch --depth 1 origin "${LLVM_REF}"
           git checkout --force FETCH_HEAD
 
       - name: Build LLVM/MLIR (only if cache miss)

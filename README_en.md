@@ -2,7 +2,7 @@
 
 ## 1. Introduction
 
-**ptoas** is a specialized compiler toolchain built on top of **LLVM/MLIR (llvmorg-21.1.8)** *(Commit 2078da43e25a4623cab2d0d60decddf709aaea28)*, designed specifically for **PTO Bytecode** (Programming Tiling Operator Bytecode).
+**ptoas** is a specialized compiler toolchain built on top of the **LLVM21 VPTO branch (`TaoTao-real/llvm-project:feature-vpto-llvm21`)**, designed specifically for **PTO Bytecode** (Programming Tiling Operator Bytecode).
 
 Acting as the bridge between upper-level AI frameworks and underlying NPU/GPGPU/CPU hardware, `ptoas` is built in an **Out-of-Tree** architecture and provides complete C++ and Python interfaces. Its primary responsibilities include:
 
@@ -36,7 +36,7 @@ PTOAS/
 
 ## 3. Build Instructions
 
-⚠️ **Important**: This project strictly requires **LLVM llvmorg-21.1.8**.
+⚠️ **Important**: This project strictly requires the **LLVM21 VPTO branch `TaoTao-real/llvm-project:feature-vpto-llvm21`**.
 
 ### 3.0 Environment Variable Configuration
 
@@ -79,16 +79,16 @@ python3 -m pip install "pybind11<3" nanobind numpy
 
 ### 3.2 Step 1: Build LLVM/MLIR (Dependency)
 
-Download the LLVM source, check out the `llvmorg-21.1.8` tag, and build with **shared libraries** to ensure correct linking for Python bindings.
+Download the VPTO-adapted LLVM source, check out the `feature-vpto-llvm21` branch, and build with **shared libraries** to ensure correct linking for Python bindings.
 
 ```bash
 # 1. Clone LLVM
 cd $WORKSPACE_DIR
-git clone https://github.com/llvm/llvm-project.git
+git clone https://github.com/TaoTao-real/llvm-project.git
 cd $LLVM_SOURCE_DIR
 
-# 2. [Critical] Check out llvmorg-21.1.8
-git checkout llvmorg-21.1.8
+# 2. [Critical] Check out the VPTO adaptation branch
+git checkout feature-vpto-llvm21
 
 # 3. Configure CMake (build shared libs with Python bindings enabled)
 cmake -G Ninja -S llvm -B $LLVM_BUILD_DIR \
