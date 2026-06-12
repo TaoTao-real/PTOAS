@@ -563,6 +563,38 @@ static Type getLowpPayloadCarrierType(Type vectorLikeType,
   return VectorType::get({*lanes}, abi->llvmElementType);
 }
 
+static Type getLowpVcvtIntrinsicElementType(Type elementType,
+                                            MLIRContext *context) {
+  if (pto::isPTOHiFloat8Type(elementType))
+    return LLVM::LLVMHiFloat8Type::get(context);
+  if (isa<pto::F4E1M2x2Type>(elementType))
+    return LLVM::LLVMFloat4E1M2x2Type::get(context);
+  if (isa<pto::F4E2M1x2Type>(elementType))
+    return LLVM::LLVMFloat4E2M1x2Type::get(context);
+  if (pto::isPTOFloat8E4M3LikeType(elementType))
+    return LLVM::LLVMFloat8E4M3Type::get(context);
+  if (pto::isPTOFloat8E5M2LikeType(elementType))
+    return LLVM::LLVMFloat8E5M2Type::get(context);
+  return {};
+}
+
+static Type getLowpIntrinsicCarrierType(Type semanticType, Type convertedType,
+                                        MLIRContext *context);
+
+static Type getVcvtIntrinsicValueType(Type semanticType, Type convertedType,
+                                      MLIRContext *context) {
+  Type elementType = getElementTypeFromVectorLike(semanticType);
+  Type lowpElementType =
+      getLowpVcvtIntrinsicElementType(elementType, context);
+  if (!lowpElementType)
+    return getLowpIntrinsicCarrierType(semanticType, convertedType, context);
+
+  auto lanes = getElementCountFromVectorLike(semanticType);
+  if (!lanes)
+    return {};
+  return VectorType::get({*lanes}, lowpElementType);
+}
+
 static Type getPayloadABIType(Type semanticType, Type convertedType,
                               MLIRContext *context) {
   if (Type carrierType = getLowpPayloadCarrierType(semanticType, context))
@@ -7301,13 +7333,13 @@ public:
     if (!resultType)
       return rewriter.notifyMatchFailure(op, "failed to convert vcvt result type");
 
-    Type inputCallType = getLowpIntrinsicCarrierType(
+    Type inputCallType = getVcvtIntrinsicValueType(
         op.getInput().getType(), adaptor.getInput().getType(),
         rewriter.getContext());
     if (!inputCallType)
       return rewriter.notifyMatchFailure(op,
                                          "unsupported vcvt input carrier type");
-    Type resultCallType = getLowpIntrinsicCarrierType(
+    Type resultCallType = getVcvtIntrinsicValueType(
         op.getResult().getType(), resultType, rewriter.getContext());
     if (!resultCallType)
       return rewriter.notifyMatchFailure(op,
