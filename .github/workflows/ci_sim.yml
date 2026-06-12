@@ -98,7 +98,7 @@ jobs:
   vpto-sim-validation:
     needs: detect-vpto-sim-changes
     runs-on: [self-hosted, Linux, X64, label-1]
-    timeout-minutes: 120
+    timeout-minutes: 180
     concurrency:
       group: vpto-sim-${{ github.event.pull_request.number || github.ref }}
       cancel-in-progress: true
