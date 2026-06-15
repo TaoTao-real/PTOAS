@@ -6,13 +6,13 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// Regression for issue #711: pto.comm.tnotify lowering must drain MTE-side
-// pipes before emitting pto::comm::TNOTIFY(...). TNOTIFY_IMPL writes the
+// Regression for issue #711: pto.comm.tnotify lowering must release pending
+// payload work before emitting pto::comm::TNOTIFY(...). TNOTIFY_IMPL writes the
 // signal on the scalar pipe and only does pipe_barrier(PIPE_ALL) *after* the
-// store, so without an MTE drain the signal can overtake an in-flight
-// pto.tload / pto.tstore (local or peer) and the receiver's matching TWAIT
-// returns before the data is visible. The drain should be precise: only MTE
-// pipes that may have prior in-flight work are drained before TNOTIFY.
+// store, so without pre-notify release actions the signal can overtake an
+// in-flight pto.tload / pto.tstore or a dirty cacheable GM store. The release
+// should be precise: drain only pending producer/consumer pipes, clean GM cache
+// only for cacheable GM writes, and emit a DDR fence only for published writes.
 
 // RUN: ptoas --pto-arch=a3 %s -o - 2>&1 | FileCheck %s
 
@@ -143,6 +143,97 @@ module {
     return
   }
 
+  // ACC tstore uses the FIX pipe in the emitted ISA path. Publishing a signal
+  // after it needs both the FIX drain and the DDR visibility fence.
+  func.func @tnotify_release_after_fix_tstore(
+      %dst_ptr: !pto.ptr<f32>,
+      %signal_ptr: !pto.ptr<i32>)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c32 = arith.constant 32 : index
+    %v_i32 = arith.constant 1 : i32
+
+    %tile = pto.alloc_tile :
+      !pto.tile_buf<loc=acc, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=col_major, slayout=row_major, fractal=1024, pad=0>
+
+    %dst_view = pto.make_tensor_view %dst_ptr,
+      shape = [%c1, %c32], strides = [%c32, %c1] : !pto.tensor_view<?x?xf32>
+    %dst = pto.partition_view %dst_view,
+      offsets = [%c0, %c0], sizes = [%c1, %c32]
+      : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<1x32xf32>
+
+    pto.tstore ins(%tile : !pto.tile_buf<loc=acc, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=col_major, slayout=row_major, fractal=1024, pad=0>)
+               outs(%dst : !pto.partition_tensor_view<1x32xf32>)
+
+    %sig_view = pto.make_tensor_view %signal_ptr,
+      shape = [%c1], strides = [%c1] : !pto.tensor_view<1xi32>
+    %sig = pto.partition_view %sig_view,
+      offsets = [%c0], sizes = [%c1]
+      : !pto.tensor_view<1xi32> -> !pto.partition_tensor_view<1xi32>
+    pto.comm.tnotify(%sig, %v_i32 : !pto.partition_tensor_view<1xi32>, i32)
+        {notifyOp = #pto<notify_op set>}
+    return
+  }
+
+  // Cacheable GM scalar stores can leave dirty data cache lines. TNOTIFY must
+  // release that payload before publishing the signal.
+  func.func @tnotify_release_after_scalar_store(
+      %dst_ptr: !pto.ptr<i32>,
+      %src_ptr: !pto.ptr<i32>,
+      %signal_ptr: !pto.ptr<i32>)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %v_i32 = arith.constant 1 : i32
+
+    %val = pto.load_scalar %src_ptr[%c0] : !pto.ptr<i32> -> i32
+    pto.store_scalar %val, %dst_ptr[%c0] : !pto.ptr<i32>, i32
+
+    %sig_view = pto.make_tensor_view %signal_ptr,
+      shape = [%c1], strides = [%c1] : !pto.tensor_view<1xi32>
+    %sig = pto.partition_view %sig_view,
+      offsets = [%c0], sizes = [%c1]
+      : !pto.tensor_view<1xi32> -> !pto.partition_tensor_view<1xi32>
+    pto.comm.tnotify(%sig, %v_i32 : !pto.partition_tensor_view<1xi32>, i32)
+        {notifyOp = #pto<notify_op set>}
+    return
+  }
+
+  // A pre-existing pipe barrier drains MTE3 locally. It should suppress only
+  // the duplicate pipe_barrier, not the DDR visibility fence needed by publish.
+  func.func @tnotify_after_existing_mte3_barrier(
+      %dst_ptr: !pto.ptr<f32>,
+      %signal_ptr: !pto.ptr<i32>)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c32 = arith.constant 32 : index
+    %v_i32 = arith.constant 1 : i32
+
+    %tile = pto.alloc_tile :
+      !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    %dst_view = pto.make_tensor_view %dst_ptr,
+      shape = [%c1, %c32], strides = [%c32, %c1] : !pto.tensor_view<?x?xf32>
+    %dst = pto.partition_view %dst_view,
+      offsets = [%c0, %c0], sizes = [%c1, %c32]
+      : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<1x32xf32>
+
+    pto.tstore ins(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+               outs(%dst : !pto.partition_tensor_view<1x32xf32>)
+    pto.barrier <PIPE_MTE3>
+
+    %sig_view = pto.make_tensor_view %signal_ptr,
+      shape = [%c1], strides = [%c1] : !pto.tensor_view<1xi32>
+    %sig = pto.partition_view %sig_view,
+      offsets = [%c0], sizes = [%c1]
+      : !pto.tensor_view<1xi32> -> !pto.partition_tensor_view<1xi32>
+    pto.comm.tnotify(%sig, %v_i32 : !pto.partition_tensor_view<1xi32>, i32)
+        {notifyOp = #pto<notify_op set>}
+    return
+  }
+
   // twait must NOT receive the new MTE drain -- the receiver-side wait does
   // not write any peer-visible data, so adding a barrier there would only be
   // a needless stall. Pair this with --implicit-check-not to lock that in.
@@ -170,6 +261,7 @@ module {
 // CHECK:      TSTORE(
 // CHECK:      pipe_barrier(PIPE_MTE2);
 // CHECK-NEXT: pipe_barrier(PIPE_MTE3);
+// CHECK-NEXT: dsb(DSB_DDR);
 // CHECK-NEXT: pto::comm::TNOTIFY(
 
 // CHECK-LABEL: AICORE void tnotify_drain_after_tload(
@@ -187,6 +279,24 @@ module {
 // CHECK-LABEL: AICORE void tnotify_no_mte_drain(
 // CHECK-NOT:  pipe_barrier(
 // CHECK:      pto::comm::TNOTIFY(
+
+// CHECK-LABEL: AICORE void tnotify_release_after_fix_tstore(
+// CHECK:      TSTORE(
+// CHECK:      pipe_barrier(PIPE_FIX);
+// CHECK-NEXT: dsb(DSB_DDR);
+// CHECK-NEXT: pto::comm::TNOTIFY(
+
+// CHECK-LABEL: AICORE void tnotify_release_after_scalar_store(
+// CHECK:      dcci((__gm__ void*)0, ENTIRE_DATA_CACHE, CACHELINE_OUT);
+// CHECK-NEXT: dsb(DSB_DDR);
+// CHECK-NEXT: pto::comm::TNOTIFY(
+
+// CHECK-LABEL: AICORE void tnotify_after_existing_mte3_barrier(
+// CHECK:      TSTORE(
+// CHECK:      pipe_barrier(PIPE_MTE3);
+// CHECK-NOT:  pipe_barrier(
+// CHECK:      dsb(DSB_DDR);
+// CHECK-NEXT: pto::comm::TNOTIFY(
 
 // CHECK-LABEL: AICORE void twait_no_extra_drain(
 // CHECK-NOT:  pipe_barrier(

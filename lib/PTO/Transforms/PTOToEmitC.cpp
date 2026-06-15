@@ -18,6 +18,7 @@
 #include "PTO/IR/PTO.h"
 #include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/IR/PTOSyncUtils.h"
+#include "PTO/Transforms/MemoryConsistency/MemoryAccessDesc.h"
 #include "PTO/Transforms/Passes.h"
 
 #include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
@@ -129,11 +130,13 @@ static constexpr llvm::StringLiteral kTNotifyDrainMte2AttrName =
     "__pto.emitc.tnotify_drain_mte2";
 static constexpr llvm::StringLiteral kTNotifyDrainMte3AttrName =
     "__pto.emitc.tnotify_drain_mte3";
+static constexpr llvm::StringLiteral kTNotifyDrainFixAttrName =
+    "__pto.emitc.tnotify_drain_fix";
+static constexpr llvm::StringLiteral kTNotifyDsbDdrAttrName =
+    "__pto.emitc.tnotify_dsb_ddr";
+static constexpr llvm::StringLiteral kTNotifyCleanGmCacheAttrName =
+    "__pto.emitc.tnotify_clean_gm_cache";
 
-enum TNotifyMteDrainMask : unsigned {
-  kDrainMte2 = 1U << 0,
-  kDrainMte3 = 1U << 1,
-};
 static constexpr llvm::StringLiteral kLastUseAttrName = "pto.last_use";
 static constexpr llvm::StringLiteral kLastUseMarkerPrefix = "PTOAS__LAST_USE__";
 
@@ -266,101 +269,235 @@ static Value peelUnrealized(Value v) {
   return v;
 }
 
-static unsigned getMteDrainMaskForPipe(pto::PIPE pipe) {
+struct TNotifyReleaseState {
+  bool drainMte2 = false;
+  bool drainMte3 = false;
+  bool drainFix = false;
+  bool needsDsbDdr = false;
+  bool needsCleanGmCache = false;
+
+  void merge(const TNotifyReleaseState &other) {
+    drainMte2 |= other.drainMte2;
+    drainMte3 |= other.drainMte3;
+    drainFix |= other.drainFix;
+    needsDsbDdr |= other.needsDsbDdr;
+    needsCleanGmCache |= other.needsCleanGmCache;
+  }
+
+  void applyBarrier(pto::PIPE pipe) {
+    switch (pipe) {
+    case pto::PIPE::PIPE_MTE2:
+      drainMte2 = false;
+      break;
+    case pto::PIPE::PIPE_MTE3:
+      drainMte3 = false;
+      break;
+    case pto::PIPE::PIPE_FIX:
+      drainFix = false;
+      break;
+    case pto::PIPE::PIPE_ALL:
+      drainMte2 = false;
+      drainMte3 = false;
+      drainFix = false;
+      break;
+    default:
+      break;
+    }
+  }
+};
+
+static void markPipeDrainForDesc(const pto::MemoryAccessDesc &desc,
+                                 TNotifyReleaseState &state,
+                                 bool requireDsbDdr) {
+  if (!desc.pipe)
+    return;
+
+  switch (*desc.pipe) {
+  case pto::PIPE::PIPE_MTE2:
+  case pto::PIPE::VIRTUAL_PIPE_MTE2_L1A:
+  case pto::PIPE::VIRTUAL_PIPE_MTE2_L1B:
+    state.drainMte2 = true;
+    break;
+  case pto::PIPE::PIPE_MTE3:
+  case pto::PIPE::PIPE_MTE4:
+  case pto::PIPE::PIPE_MTE5:
+    state.drainMte3 = true;
+    break;
+  case pto::PIPE::PIPE_FIX:
+    state.drainFix = true;
+    break;
+  case pto::PIPE::PIPE_ALL:
+    state.drainMte2 = true;
+    state.drainMte3 = true;
+    state.drainFix = true;
+    break;
+  default:
+    break;
+  }
+
+  if (requireDsbDdr)
+    state.needsDsbDdr = true;
+}
+
+static TNotifyReleaseState getFallbackReleaseStateForPipe(pto::PIPE pipe) {
+  TNotifyReleaseState state;
   switch (pipe) {
   case pto::PIPE::PIPE_MTE2:
-    return kDrainMte2;
+    state.drainMte2 = true;
+    break;
   case pto::PIPE::PIPE_MTE3:
-    return kDrainMte3;
+    state.drainMte3 = true;
+    break;
+  case pto::PIPE::PIPE_FIX:
+    state.drainFix = true;
+    state.needsDsbDdr = true;
+    break;
   case pto::PIPE::PIPE_ALL:
-    return kDrainMte2 | kDrainMte3;
+    state.drainMte2 = true;
+    state.drainMte3 = true;
+    state.drainFix = true;
+    state.needsDsbDdr = true;
+    break;
   default:
-    return 0;
+    break;
   }
+  return state;
 }
 
-static unsigned getDirectMteDrainMask(Operation *op) {
+static TNotifyReleaseState getDirectReleaseState(Operation *op) {
+  TNotifyReleaseState state;
+  if (isa<pto::BarrierOp>(op))
+    return state;
+
+  SmallVector<pto::MemoryAccessDesc, 4> descs =
+      pto::collectMemoryAccessDescs(op);
+  for (const pto::MemoryAccessDesc &desc : descs) {
+    if (pto::needsPipeDrainBeforePublish(desc)) {
+      markPipeDrainForDesc(desc, state, /*requireDsbDdr=*/true);
+      continue;
+    }
+
+    if (pto::isPayloadAccess(desc) &&
+        desc.kind == pto::MemoryConsistencyAccessKind::Write &&
+        desc.cachePolicy == pto::MemoryConsistencyCachePolicy::NonCache) {
+      markPipeDrainForDesc(desc, state, /*requireDsbDdr=*/true);
+      state.needsDsbDdr = true;
+      continue;
+    }
+
+    if (pto::mayNeedCleanBeforeNonCacheConsumer(desc)) {
+      state.needsCleanGmCache = true;
+      state.needsDsbDdr = true;
+      continue;
+    }
+
+    if (pto::isPayloadAccess(desc) &&
+        desc.kind == pto::MemoryConsistencyAccessKind::Read &&
+        desc.cachePolicy == pto::MemoryConsistencyCachePolicy::NonCache)
+      markPipeDrainForDesc(desc, state, /*requireDsbDdr=*/false);
+  }
+
+  if (!descs.empty())
+    return state;
+
   if (auto pipeOp = dyn_cast<pto::OpPipeInterface>(op))
-    return getMteDrainMaskForPipe(pipeOp.getPipe());
-  return 0;
+    return getFallbackReleaseStateForPipe(pipeOp.getPipe());
+  return state;
 }
 
-static unsigned collectMteDrainMask(Operation *op) {
-  unsigned mask = getDirectMteDrainMask(op);
+static TNotifyReleaseState collectReleaseState(Operation *op) {
+  TNotifyReleaseState state = getDirectReleaseState(op);
   for (Region &region : op->getRegions())
     for (Block &block : region)
       for (Operation &nested : block)
-        mask |= collectMteDrainMask(&nested);
-  return mask;
+        state.merge(collectReleaseState(&nested));
+  return state;
 }
 
 static bool isLoopLikeOp(Operation *op) {
   return isa<scf::ForOp, scf::WhileOp, scf::ParallelOp, scf::ForallOp>(op);
 }
 
-static void setTNotifyDrainAttrs(pto::TNotifyOp op, unsigned mask) {
+static void setTNotifyReleaseAttrs(pto::TNotifyOp op,
+                                   const TNotifyReleaseState &state) {
   op->removeAttr(kTNotifyDrainMte2AttrName);
   op->removeAttr(kTNotifyDrainMte3AttrName);
-  if (mask & kDrainMte2)
+  op->removeAttr(kTNotifyDrainFixAttrName);
+  op->removeAttr(kTNotifyDsbDdrAttrName);
+  op->removeAttr(kTNotifyCleanGmCacheAttrName);
+  if (state.drainMte2)
     op->setAttr(kTNotifyDrainMte2AttrName, UnitAttr::get(op.getContext()));
-  if (mask & kDrainMte3)
+  if (state.drainMte3)
     op->setAttr(kTNotifyDrainMte3AttrName, UnitAttr::get(op.getContext()));
+  if (state.drainFix)
+    op->setAttr(kTNotifyDrainFixAttrName, UnitAttr::get(op.getContext()));
+  if (state.needsDsbDdr)
+    op->setAttr(kTNotifyDsbDdrAttrName, UnitAttr::get(op.getContext()));
+  if (state.needsCleanGmCache)
+    op->setAttr(kTNotifyCleanGmCacheAttrName, UnitAttr::get(op.getContext()));
 }
 
-static void markNestedTNotifyWithMask(Operation *op, unsigned mask) {
-  op->walk([&](pto::TNotifyOp notify) { setTNotifyDrainAttrs(notify, mask); });
+static void markNestedTNotifyWithReleaseState(Operation *op,
+                                              const TNotifyReleaseState &state) {
+  op->walk(
+      [&](pto::TNotifyOp notify) { setTNotifyReleaseAttrs(notify, state); });
 }
 
-static unsigned annotateTNotifyMteDrainForBlock(Block &block,
-                                                unsigned entryPendingMask,
-                                                unsigned loopCarriedMask) {
-  unsigned pendingMask = entryPendingMask;
+static TNotifyReleaseState
+annotateTNotifyReleaseForBlock(Block &block,
+                               const TNotifyReleaseState &entryPendingState,
+                               const TNotifyReleaseState &loopCarriedState) {
+  TNotifyReleaseState pendingState = entryPendingState;
   for (Operation &op : block) {
     if (auto notify = dyn_cast<pto::TNotifyOp>(op)) {
-      setTNotifyDrainAttrs(notify, pendingMask | loopCarriedMask);
-      pendingMask = 0;
+      TNotifyReleaseState notifyState = pendingState;
+      notifyState.merge(loopCarriedState);
+      setTNotifyReleaseAttrs(notify, notifyState);
+      pendingState = {};
     }
 
-    pendingMask |= getDirectMteDrainMask(&op);
+    pendingState.merge(getDirectReleaseState(&op));
 
-    unsigned regionEntryMask = pendingMask;
-    unsigned combinedRegionExitMask = 0;
+    TNotifyReleaseState regionEntryState = pendingState;
+    TNotifyReleaseState combinedRegionExitState;
     for (Region &region : op.getRegions()) {
-      unsigned nestedLoopCarriedMask = loopCarriedMask;
+      TNotifyReleaseState nestedLoopCarriedState = loopCarriedState;
       if (isLoopLikeOp(&op))
-        nestedLoopCarriedMask |= collectMteDrainMask(&op);
+        nestedLoopCarriedState.merge(collectReleaseState(&op));
 
       if (region.hasOneBlock()) {
-        combinedRegionExitMask |= annotateTNotifyMteDrainForBlock(
-            region.front(), regionEntryMask, nestedLoopCarriedMask);
+        combinedRegionExitState.merge(annotateTNotifyReleaseForBlock(
+            region.front(), regionEntryState, nestedLoopCarriedState));
       } else {
-        unsigned regionMask = collectMteDrainMask(&op);
-        markNestedTNotifyWithMask(&op, regionEntryMask | nestedLoopCarriedMask |
-                                           regionMask);
-        combinedRegionExitMask |= regionEntryMask | regionMask;
+        TNotifyReleaseState regionState = collectReleaseState(&op);
+        TNotifyReleaseState nestedNotifyState = regionEntryState;
+        nestedNotifyState.merge(nestedLoopCarriedState);
+        nestedNotifyState.merge(regionState);
+        markNestedTNotifyWithReleaseState(&op, nestedNotifyState);
+        TNotifyReleaseState regionExitState = regionEntryState;
+        regionExitState.merge(regionState);
+        combinedRegionExitState.merge(regionExitState);
       }
     }
-    pendingMask |= combinedRegionExitMask;
+    pendingState.merge(combinedRegionExitState);
 
     if (auto barrier = dyn_cast<pto::BarrierOp>(op))
-      pendingMask &= ~getMteDrainMaskForPipe(barrier.getPipe().getPipe());
+      pendingState.applyBarrier(barrier.getPipe().getPipe());
   }
-  return pendingMask;
+  return pendingState;
 }
 
-static void annotateTNotifyMteDrain(ModuleOp module) {
+static void annotateTNotifyRelease(ModuleOp module) {
   for (auto func : module.getOps<func::FuncOp>()) {
     if (func.getBody().hasOneBlock()) {
-      (void)annotateTNotifyMteDrainForBlock(func.getBody().front(),
-                                            /*entryPendingMask=*/0,
-                                            /*loopCarriedMask=*/0);
+      (void)annotateTNotifyReleaseForBlock(func.getBody().front(),
+                                           /*entryPendingState=*/{},
+                                           /*loopCarriedState=*/{});
       continue;
     }
 
-    // Be conservative for pre-existing CFG: without a path-sensitive CFG data
-    // flow here, every TNotify may observe any MTE work in the function.
-    unsigned funcMask = collectMteDrainMask(func.getOperation());
-    markNestedTNotifyWithMask(func.getOperation(), funcMask);
+    TNotifyReleaseState funcState = collectReleaseState(func.getOperation());
+    markNestedTNotifyWithReleaseState(func.getOperation(), funcState);
   }
 }
 
@@ -6631,18 +6768,39 @@ static void emitPipeBarrier(ConversionPatternRewriter &rewriter, Location loc,
                                        ArrayAttr{}, ValueRange{});
 }
 
+static void emitDsbDdr(ConversionPatternRewriter &rewriter, Location loc) {
+  auto *ctx = rewriter.getContext();
+  auto args = rewriter.getArrayAttr({emitc::OpaqueAttr::get(ctx, "DSB_DDR")});
+  rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{}, "dsb", args,
+                                       ArrayAttr{}, ValueRange{});
+}
+
+static void emitCleanGmCache(ConversionPatternRewriter &rewriter,
+                             Location loc) {
+  rewriter.create<emitc::VerbatimOp>(
+      loc, rewriter.getStringAttr(
+               "dcci((__gm__ void*)0, ENTIRE_DATA_CACHE, CACHELINE_OUT);"));
+}
+
 // Issue #711: TNOTIFY writes its signal on the scalar pipe, and
 // TNOTIFY_IMPL's trailing pipe_barrier(PIPE_ALL) runs *after* that store.
-// If prior pto.tload / pto.tstore work is still in flight on an MTE pipe when
-// the signal lands, the receiver's matching TWAIT can return before the data
-// is visible. Emit only the MTE pipe drains that the pre-lowering analysis
-// proved may be needed before this TNotify.
-static void emitTNotifyMteDrain(ConversionPatternRewriter &rewriter,
-                                Location loc, unsigned mask) {
-  if (mask & kDrainMte2)
+// If prior payload work is still in flight or still dirty in GM cache when the
+// signal lands, the receiver's matching TWAIT can return before the data is
+// visible. Emit only the release actions that the pre-lowering analysis proved
+// may be needed before this TNotify.
+static void emitTNotifyReleaseActions(ConversionPatternRewriter &rewriter,
+                                      Location loc,
+                                      const TNotifyReleaseState &state) {
+  if (state.drainMte2)
     emitPipeBarrier(rewriter, loc, "PIPE_MTE2");
-  if (mask & kDrainMte3)
+  if (state.drainMte3)
     emitPipeBarrier(rewriter, loc, "PIPE_MTE3");
+  if (state.drainFix)
+    emitPipeBarrier(rewriter, loc, "PIPE_FIX");
+  if (state.needsCleanGmCache)
+    emitCleanGmCache(rewriter, loc);
+  if (state.needsDsbDdr)
+    emitDsbDdr(rewriter, loc);
 }
 
 static std::string waitCmpTok(pto::WaitCmp cmp) {
@@ -6899,14 +7057,18 @@ struct PTOSignalCommToEmitC : public OpConversionPattern<SignalOp> {
           rewriter, op.getLoc(), notifyTy, notifyOpTok(op.getNotifyOp()));
       SmallVector<Value> operands{*signalGT, peelUnrealized(adaptor.getValue()),
                                   notifyOp};
-      // See emitTNotifyMteDrain comment: drain in-flight MTE work before the
-      // scalar-pipe signal store so the notify/wait handshake is honored.
-      unsigned drainMask = 0;
+      TNotifyReleaseState releaseState;
       if (op->hasAttr(kTNotifyDrainMte2AttrName))
-        drainMask |= kDrainMte2;
+        releaseState.drainMte2 = true;
       if (op->hasAttr(kTNotifyDrainMte3AttrName))
-        drainMask |= kDrainMte3;
-      emitTNotifyMteDrain(rewriter, op.getLoc(), drainMask);
+        releaseState.drainMte3 = true;
+      if (op->hasAttr(kTNotifyDrainFixAttrName))
+        releaseState.drainFix = true;
+      if (op->hasAttr(kTNotifyDsbDdrAttrName))
+        releaseState.needsDsbDdr = true;
+      if (op->hasAttr(kTNotifyCleanGmCacheAttrName))
+        releaseState.needsCleanGmCache = true;
+      emitTNotifyReleaseActions(rewriter, op.getLoc(), releaseState);
       rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, callee,
                                            ArrayAttr{}, ArrayAttr{}, operands);
       rewriter.eraseOp(op);
@@ -13047,7 +13209,7 @@ static AICORE inline void ptoas_auto_sync_tail(
       }
     }
 
-    annotateTNotifyMteDrain(mop);
+    annotateTNotifyRelease(mop);
 
     // 3. 配置转换目标
     ConversionTarget target(*ctx);
