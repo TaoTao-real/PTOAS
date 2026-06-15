@@ -136,6 +136,8 @@ static constexpr llvm::StringLiteral kTNotifyDsbDdrAttrName =
     "__pto.emitc.tnotify_dsb_ddr";
 static constexpr llvm::StringLiteral kTNotifyCleanGmCacheAttrName =
     "__pto.emitc.tnotify_clean_gm_cache";
+static constexpr llvm::StringLiteral kAcquireInvalidateGmCacheAttrName =
+    "__pto.emitc.acquire_invalidate_gm_cache";
 
 static constexpr llvm::StringLiteral kLastUseAttrName = "pto.last_use";
 static constexpr llvm::StringLiteral kLastUseMarkerPrefix = "PTOAS__LAST_USE__";
@@ -269,6 +271,13 @@ static Value peelUnrealized(Value v) {
   return v;
 }
 
+static void emitInvalidateGmCache(ConversionPatternRewriter &rewriter,
+                                  Location loc) {
+  rewriter.create<emitc::VerbatimOp>(
+      loc, rewriter.getStringAttr(
+               "dcci((__gm__ void*)0, ENTIRE_DATA_CACHE);"));
+}
+
 struct TNotifyReleaseState {
   bool drainMte2 = false;
   bool drainMte3 = false;
@@ -303,6 +312,14 @@ struct TNotifyReleaseState {
     default:
       break;
     }
+  }
+};
+
+struct SignalAcquireState {
+  bool needsInvalidateGmCache = false;
+
+  void merge(const SignalAcquireState &other) {
+    needsInvalidateGmCache |= other.needsInvalidateGmCache;
   }
 };
 
@@ -418,6 +435,49 @@ static bool isLoopLikeOp(Operation *op) {
   return isa<scf::ForOp, scf::WhileOp, scf::ParallelOp, scf::ForallOp>(op);
 }
 
+static bool needsAcquireInvalidateBefore(Operation *op) {
+  for (const pto::MemoryAccessDesc &desc : pto::collectMemoryAccessDescs(op)) {
+    if (pto::mayNeedInvalidateBeforeCacheableConsumer(desc))
+      return true;
+  }
+  return false;
+}
+
+static SignalAcquireState getDirectAcquireState(Operation *op) {
+  SignalAcquireState state;
+  // TWAIT is a blocking acquire of the signal. The signal cache maintenance is
+  // owned by the comm primitive itself; PTOAS only needs to invalidate stale
+  // payload cache lines before the following cacheable GM read.
+  if (isa<pto::TWaitOp>(op))
+    state.needsInvalidateGmCache = true;
+  return state;
+}
+
+static SignalAcquireState collectAcquireState(Operation *op) {
+  SignalAcquireState state = getDirectAcquireState(op);
+  for (Region &region : op->getRegions())
+    for (Block &block : region)
+      for (Operation &nested : block)
+        state.merge(collectAcquireState(&nested));
+  return state;
+}
+
+static void markAcquireConsumer(Operation *op) {
+  op->setAttr(kAcquireInvalidateGmCacheAttrName,
+              UnitAttr::get(op->getContext()));
+}
+
+static void markNestedAcquireConsumers(Operation *op,
+                                       const SignalAcquireState &state) {
+  if (!state.needsInvalidateGmCache)
+    return;
+
+  op->walk([&](Operation *nested) {
+    if (needsAcquireInvalidateBefore(nested))
+      markAcquireConsumer(nested);
+  });
+}
+
 static void setTNotifyReleaseAttrs(pto::TNotifyOp op,
                                    const TNotifyReleaseState &state) {
   op->removeAttr(kTNotifyDrainMte2AttrName);
@@ -498,6 +558,65 @@ static void annotateTNotifyRelease(ModuleOp module) {
 
     TNotifyReleaseState funcState = collectReleaseState(func.getOperation());
     markNestedTNotifyWithReleaseState(func.getOperation(), funcState);
+  }
+}
+
+static SignalAcquireState
+annotateSignalAcquireForBlock(Block &block,
+                              const SignalAcquireState &entryPendingState,
+                              const SignalAcquireState &loopCarriedState) {
+  SignalAcquireState pendingState = entryPendingState;
+  for (Operation &op : block) {
+    SignalAcquireState consumerState = pendingState;
+    consumerState.merge(loopCarriedState);
+    if (consumerState.needsInvalidateGmCache &&
+        needsAcquireInvalidateBefore(&op)) {
+      markAcquireConsumer(&op);
+      pendingState = {};
+    }
+
+    SignalAcquireState regionEntryState = pendingState;
+    SignalAcquireState combinedRegionExitState;
+    for (Region &region : op.getRegions()) {
+      SignalAcquireState nestedLoopCarriedState = loopCarriedState;
+      if (isLoopLikeOp(&op))
+        nestedLoopCarriedState.merge(collectAcquireState(&op));
+
+      if (region.hasOneBlock()) {
+        combinedRegionExitState.merge(annotateSignalAcquireForBlock(
+            region.front(), regionEntryState, nestedLoopCarriedState));
+      } else {
+        SignalAcquireState regionState = collectAcquireState(&op);
+        SignalAcquireState nestedConsumerState = regionEntryState;
+        nestedConsumerState.merge(nestedLoopCarriedState);
+        nestedConsumerState.merge(regionState);
+        markNestedAcquireConsumers(&op, nestedConsumerState);
+        SignalAcquireState regionExitState = regionEntryState;
+        regionExitState.merge(regionState);
+        combinedRegionExitState.merge(regionExitState);
+      }
+    }
+    pendingState.merge(combinedRegionExitState);
+    pendingState.merge(getDirectAcquireState(&op));
+  }
+  return pendingState;
+}
+
+static void annotateSignalAcquire(ModuleOp module) {
+  module.walk([](Operation *op) {
+    op->removeAttr(kAcquireInvalidateGmCacheAttrName);
+  });
+
+  for (auto func : module.getOps<func::FuncOp>()) {
+    if (func.getBody().hasOneBlock()) {
+      (void)annotateSignalAcquireForBlock(func.getBody().front(),
+                                          /*entryPendingState=*/{},
+                                          /*loopCarriedState=*/{});
+      continue;
+    }
+
+    SignalAcquireState funcState = collectAcquireState(func.getOperation());
+    markNestedAcquireConsumers(func.getOperation(), funcState);
   }
 }
 
@@ -6358,6 +6477,9 @@ struct PTOLoadScalarToEmitC : public OpConversionPattern<pto::LoadScalarOp> {
     Type dstTy = getTypeConverter()->convertType(op.getValue().getType());
     if (!dstTy)
       return failure();
+
+    if (op->hasAttr(kAcquireInvalidateGmCacheAttrName))
+      emitInvalidateGmCache(rewriter, op.getLoc());
 
     auto call = rewriter.create<emitc::CallOpaqueOp>(
         op.getLoc(), TypeRange{dstTy}, "PTOAS__PTR_LOAD",
@@ -13210,6 +13332,7 @@ static AICORE inline void ptoas_auto_sync_tail(
     }
 
     annotateTNotifyRelease(mop);
+    annotateSignalAcquire(mop);
 
     // 3. 配置转换目标
     ConversionTarget target(*ctx);

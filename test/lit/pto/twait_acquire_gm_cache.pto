@@ -1,0 +1,113 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: ptoas --pto-arch=a3 %s -o - 2>&1 | FileCheck %s
+
+module {
+  func.func @twait_acquire_before_scalar_load(
+      %signal_ptr: !pto.ptr<i32>,
+      %payload_ptr: !pto.ptr<i32>)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %v_i32 = arith.constant 1 : i32
+
+    %sig_view = pto.make_tensor_view %signal_ptr,
+      shape = [%c1], strides = [%c1] : !pto.tensor_view<1xi32>
+    %sig = pto.partition_view %sig_view,
+      offsets = [%c0], sizes = [%c1]
+      : !pto.tensor_view<1xi32> -> !pto.partition_tensor_view<1xi32>
+
+    pto.comm.twait(%sig, %v_i32 : !pto.partition_tensor_view<1xi32>, i32)
+        {cmp = #pto<wait_cmp ge>}
+    %val = pto.load_scalar %payload_ptr[%c0] : !pto.ptr<i32> -> i32
+    return
+  }
+
+  func.func @scalar_load_without_twait(%payload_ptr: !pto.ptr<i32>)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %val = pto.load_scalar %payload_ptr[%c0] : !pto.ptr<i32> -> i32
+    return
+  }
+
+  func.func @twait_before_tload_no_cache_invalidate(
+      %signal_ptr: !pto.ptr<i32>,
+      %payload_ptr: !pto.ptr<f32>)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c32 = arith.constant 32 : index
+    %v_i32 = arith.constant 1 : i32
+
+    %tile = pto.alloc_tile :
+      !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    %sig_view = pto.make_tensor_view %signal_ptr,
+      shape = [%c1], strides = [%c1] : !pto.tensor_view<1xi32>
+    %sig = pto.partition_view %sig_view,
+      offsets = [%c0], sizes = [%c1]
+      : !pto.tensor_view<1xi32> -> !pto.partition_tensor_view<1xi32>
+
+    %payload_view = pto.make_tensor_view %payload_ptr,
+      shape = [%c1, %c32], strides = [%c32, %c1] : !pto.tensor_view<?x?xf32>
+    %payload = pto.partition_view %payload_view,
+      offsets = [%c0, %c0], sizes = [%c1, %c32]
+      : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<1x32xf32>
+
+    pto.comm.twait(%sig, %v_i32 : !pto.partition_tensor_view<1xi32>, i32)
+        {cmp = #pto<wait_cmp ge>}
+    pto.tload ins(%payload : !pto.partition_tensor_view<1x32xf32>)
+              outs(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    return
+  }
+
+  func.func @twait_acquire_once_for_first_scalar_load(
+      %signal_ptr: !pto.ptr<i32>,
+      %payload0: !pto.ptr<i32>,
+      %payload1: !pto.ptr<i32>)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %v_i32 = arith.constant 1 : i32
+
+    %sig_view = pto.make_tensor_view %signal_ptr,
+      shape = [%c1], strides = [%c1] : !pto.tensor_view<1xi32>
+    %sig = pto.partition_view %sig_view,
+      offsets = [%c0], sizes = [%c1]
+      : !pto.tensor_view<1xi32> -> !pto.partition_tensor_view<1xi32>
+
+    pto.comm.twait(%sig, %v_i32 : !pto.partition_tensor_view<1xi32>, i32)
+        {cmp = #pto<wait_cmp ge>}
+    %val0 = pto.load_scalar %payload0[%c0] : !pto.ptr<i32> -> i32
+    %val1 = pto.load_scalar %payload1[%c0] : !pto.ptr<i32> -> i32
+    return
+  }
+}
+
+// CHECK-LABEL: AICORE void twait_acquire_before_scalar_load(
+// CHECK:      pto::comm::TWAIT(
+// CHECK-NEXT: dcci((__gm__ void*)0, ENTIRE_DATA_CACHE);
+// CHECK-NEXT: PTOAS__PTR_LOAD(
+// CHECK-NOT:  CACHELINE_OUT
+
+// CHECK-LABEL: AICORE void scalar_load_without_twait(
+// CHECK-NOT:  dcci((__gm__ void*)0, ENTIRE_DATA_CACHE);
+// CHECK:      PTOAS__PTR_LOAD(
+
+// CHECK-LABEL: AICORE void twait_before_tload_no_cache_invalidate(
+// CHECK:      pto::comm::TWAIT(
+// CHECK-NOT:  dcci((__gm__ void*)0, ENTIRE_DATA_CACHE);
+// CHECK:      TLOAD(
+
+// CHECK-LABEL: AICORE void twait_acquire_once_for_first_scalar_load(
+// CHECK:      pto::comm::TWAIT(
+// CHECK-NEXT: dcci((__gm__ void*)0, ENTIRE_DATA_CACHE);
+// CHECK-NEXT: PTOAS__PTR_LOAD(
+// CHECK-NOT:  dcci((__gm__ void*)0, ENTIRE_DATA_CACHE);
+// CHECK:      PTOAS__PTR_LOAD(
