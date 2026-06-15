@@ -19,12 +19,15 @@
 #include "PTO/Transforms/MemoryConsistency/MemoryAccessDesc.h"
 #include "PTO/Transforms/MemoryConsistency/MemoryConsistencyAttrs.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/Pass/Pass.h"
+
+#include <optional>
 
 namespace mlir {
 namespace pto {
@@ -82,6 +85,12 @@ struct SignalAcquireState {
     needsInvalidateGmCache |= other.needsInvalidateGmCache;
   }
 };
+
+static SignalAcquireState makeAcquireInvalidateState() {
+  SignalAcquireState state;
+  state.needsInvalidateGmCache = true;
+  return state;
+}
 
 static void markPipeDrainForDesc(const pto::MemoryAccessDesc &desc,
                                  TNotifyReleaseState &state,
@@ -196,11 +205,104 @@ static bool isLoopLikeOp(Operation *op) {
 }
 
 static bool needsAcquireInvalidateBefore(Operation *op) {
+  if (!isa<pto::LoadScalarOp>(op))
+    return false;
+
   for (const pto::MemoryAccessDesc &desc : pto::collectMemoryAccessDescs(op)) {
     if (pto::mayNeedInvalidateBeforeCacheableConsumer(desc))
       return true;
   }
   return false;
+}
+
+static std::optional<bool> getBoolConstant(Value value) {
+  auto constant = value.getDefiningOp<arith::ConstantOp>();
+  if (!constant)
+    return std::nullopt;
+
+  Attribute attr = constant.getValue();
+  if (auto boolAttr = dyn_cast<BoolAttr>(attr))
+    return boolAttr.getValue();
+  if (auto intAttr = dyn_cast<IntegerAttr>(attr)) {
+    if (auto intTy = dyn_cast<IntegerType>(value.getType());
+        intTy && intTy.getWidth() == 1)
+      return !intAttr.getValue().isZero();
+  }
+  return std::nullopt;
+}
+
+static bool isTTestResult(Value value) {
+  return value && value.getDefiningOp<pto::TTestOp>();
+}
+
+// Returns whether acquire is valid when `condition` evaluates to true. For a
+// direct TTest result, true means signal-ready; for a simple inversion, false
+// means signal-ready.
+static std::optional<bool> getAcquireWhenConditionTrue(Value condition) {
+  if (isTTestResult(condition))
+    return true;
+
+  if (auto xorOp = condition.getDefiningOp<arith::XOrIOp>()) {
+    auto lhsPolarity = getAcquireWhenConditionTrue(xorOp.getLhs());
+    auto rhsConst = getBoolConstant(xorOp.getRhs());
+    if (lhsPolarity && rhsConst)
+      return *rhsConst ? !*lhsPolarity : *lhsPolarity;
+
+    auto rhsPolarity = getAcquireWhenConditionTrue(xorOp.getRhs());
+    auto lhsConst = getBoolConstant(xorOp.getLhs());
+    if (rhsPolarity && lhsConst)
+      return *lhsConst ? !*rhsPolarity : *rhsPolarity;
+  }
+
+  if (auto cmpOp = condition.getDefiningOp<arith::CmpIOp>()) {
+    arith::CmpIPredicate pred = cmpOp.getPredicate();
+    if (pred != arith::CmpIPredicate::eq &&
+        pred != arith::CmpIPredicate::ne)
+      return std::nullopt;
+
+    auto lhsPolarity = getAcquireWhenConditionTrue(cmpOp.getLhs());
+    auto rhsConst = getBoolConstant(cmpOp.getRhs());
+    if (lhsPolarity && rhsConst) {
+      bool valueWhenConditionTrue =
+          pred == arith::CmpIPredicate::eq ? *rhsConst : !*rhsConst;
+      return valueWhenConditionTrue ? *lhsPolarity : !*lhsPolarity;
+    }
+
+    auto rhsPolarity = getAcquireWhenConditionTrue(cmpOp.getRhs());
+    auto lhsConst = getBoolConstant(cmpOp.getLhs());
+    if (rhsPolarity && lhsConst) {
+      bool valueWhenConditionTrue =
+          pred == arith::CmpIPredicate::eq ? *lhsConst : !*lhsConst;
+      return valueWhenConditionTrue ? *rhsPolarity : !*rhsPolarity;
+    }
+  }
+
+  return std::nullopt;
+}
+
+static bool valueFeedsRecognizedAcquireCondition(Value value,
+                                                unsigned depth = 0) {
+  if (!value || depth > 1)
+    return false;
+
+  for (Operation *user : value.getUsers()) {
+    if (auto ifOp = dyn_cast<scf::IfOp>(user)) {
+      if (ifOp.getCondition() == value)
+        return true;
+    }
+    if (auto conditionOp = dyn_cast<scf::ConditionOp>(user)) {
+      if (conditionOp.getCondition() == value)
+        return true;
+    }
+    if (isa<arith::XOrIOp, arith::CmpIOp>(user) &&
+        valueFeedsRecognizedAcquireCondition(user->getResult(0), depth + 1))
+      return true;
+  }
+  return false;
+}
+
+static bool hasRecognizedControlUse(pto::TTestOp op) {
+  return valueFeedsRecognizedAcquireCondition(op.getResult());
 }
 
 static SignalAcquireState getDirectAcquireState(Operation *op) {
@@ -209,6 +311,9 @@ static SignalAcquireState getDirectAcquireState(Operation *op) {
   // owned by the comm primitive itself; PTOAS only needs to invalidate stale
   // payload cache lines before the following cacheable GM read.
   if (isa<pto::TWaitOp>(op))
+    state.needsInvalidateGmCache = true;
+  if (auto test = dyn_cast<pto::TTestOp>(op);
+      test && !hasRecognizedControlUse(test))
     state.needsInvalidateGmCache = true;
   return state;
 }
@@ -330,6 +435,98 @@ static void annotateTNotifyRelease(ModuleOp module) {
 static SignalAcquireState
 annotateSignalAcquireForBlock(Block &block,
                               const SignalAcquireState &entryPendingState,
+                              const SignalAcquireState &loopCarriedState);
+
+static SignalAcquireState
+annotateSignalAcquireForRegion(Region &region,
+                               const SignalAcquireState &entryPendingState,
+                               const SignalAcquireState &loopCarriedState) {
+  if (region.empty())
+    return entryPendingState;
+
+  if (region.hasOneBlock()) {
+    return annotateSignalAcquireForBlock(region.front(), entryPendingState,
+                                         loopCarriedState);
+  }
+
+  SignalAcquireState regionState;
+  for (Block &block : region)
+    for (Operation &nested : block)
+      regionState.merge(collectAcquireState(&nested));
+
+  SignalAcquireState nestedConsumerState = entryPendingState;
+  nestedConsumerState.merge(loopCarriedState);
+  nestedConsumerState.merge(regionState);
+  for (Block &block : region)
+    for (Operation &nested : block)
+      markNestedAcquireConsumers(&nested, nestedConsumerState);
+
+  SignalAcquireState regionExitState = entryPendingState;
+  regionExitState.merge(regionState);
+  return regionExitState;
+}
+
+static std::optional<SignalAcquireState>
+annotateSignalAcquireForIf(scf::IfOp ifOp,
+                           const SignalAcquireState &entryPendingState,
+                           const SignalAcquireState &loopCarriedState) {
+  auto acquireWhenConditionTrue =
+      getAcquireWhenConditionTrue(ifOp.getCondition());
+  if (!acquireWhenConditionTrue)
+    return std::nullopt;
+
+  SignalAcquireState thenEntry = entryPendingState;
+  SignalAcquireState elseEntry = entryPendingState;
+  if (*acquireWhenConditionTrue)
+    thenEntry.merge(makeAcquireInvalidateState());
+  else
+    elseEntry.merge(makeAcquireInvalidateState());
+
+  SignalAcquireState exitState =
+      annotateSignalAcquireForRegion(ifOp.getThenRegion(), thenEntry,
+                                     loopCarriedState);
+  if (ifOp.getElseRegion().empty()) {
+    exitState.merge(elseEntry);
+  } else {
+    exitState.merge(annotateSignalAcquireForRegion(ifOp.getElseRegion(),
+                                                   elseEntry,
+                                                   loopCarriedState));
+  }
+  return exitState;
+}
+
+static std::optional<SignalAcquireState>
+annotateSignalAcquireForWhile(scf::WhileOp whileOp,
+                              const SignalAcquireState &entryPendingState,
+                              const SignalAcquireState &loopCarriedState) {
+  scf::ConditionOp conditionOp = whileOp.getConditionOp();
+  auto acquireWhenConditionTrue =
+      getAcquireWhenConditionTrue(conditionOp.getCondition());
+  if (!acquireWhenConditionTrue)
+    return std::nullopt;
+
+  SignalAcquireState nestedLoopCarriedState = loopCarriedState;
+  nestedLoopCarriedState.merge(collectAcquireState(whileOp.getOperation()));
+
+  SignalAcquireState beforeExitState = annotateSignalAcquireForRegion(
+      whileOp.getBefore(), entryPendingState, nestedLoopCarriedState);
+
+  SignalAcquireState bodyEntryState = beforeExitState;
+  SignalAcquireState loopExitState = beforeExitState;
+  if (*acquireWhenConditionTrue)
+    bodyEntryState.merge(makeAcquireInvalidateState());
+  else
+    loopExitState.merge(makeAcquireInvalidateState());
+
+  SignalAcquireState bodyExitState = annotateSignalAcquireForRegion(
+      whileOp.getAfter(), bodyEntryState, nestedLoopCarriedState);
+  loopExitState.merge(bodyExitState);
+  return loopExitState;
+}
+
+static SignalAcquireState
+annotateSignalAcquireForBlock(Block &block,
+                              const SignalAcquireState &entryPendingState,
                               const SignalAcquireState &loopCarriedState) {
   SignalAcquireState pendingState = entryPendingState;
   for (Operation &op : block) {
@@ -341,6 +538,24 @@ annotateSignalAcquireForBlock(Block &block,
       pendingState = {};
     }
 
+    if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
+      if (auto ifExitState =
+              annotateSignalAcquireForIf(ifOp, pendingState, loopCarriedState)) {
+        pendingState = *ifExitState;
+        pendingState.merge(getDirectAcquireState(&op));
+        continue;
+      }
+    }
+
+    if (auto whileOp = dyn_cast<scf::WhileOp>(op)) {
+      if (auto whileExitState = annotateSignalAcquireForWhile(
+              whileOp, pendingState, loopCarriedState)) {
+        pendingState = *whileExitState;
+        pendingState.merge(getDirectAcquireState(&op));
+        continue;
+      }
+    }
+
     SignalAcquireState regionEntryState = pendingState;
     SignalAcquireState combinedRegionExitState;
     for (Region &region : op.getRegions()) {
@@ -348,19 +563,8 @@ annotateSignalAcquireForBlock(Block &block,
       if (isLoopLikeOp(&op))
         nestedLoopCarriedState.merge(collectAcquireState(&op));
 
-      if (region.hasOneBlock()) {
-        combinedRegionExitState.merge(annotateSignalAcquireForBlock(
-            region.front(), regionEntryState, nestedLoopCarriedState));
-      } else {
-        SignalAcquireState regionState = collectAcquireState(&op);
-        SignalAcquireState nestedConsumerState = regionEntryState;
-        nestedConsumerState.merge(nestedLoopCarriedState);
-        nestedConsumerState.merge(regionState);
-        markNestedAcquireConsumers(&op, nestedConsumerState);
-        SignalAcquireState regionExitState = regionEntryState;
-        regionExitState.merge(regionState);
-        combinedRegionExitState.merge(regionExitState);
-      }
+      combinedRegionExitState.merge(annotateSignalAcquireForRegion(
+          region, regionEntryState, nestedLoopCarriedState));
     }
     pendingState.merge(combinedRegionExitState);
     pendingState.merge(getDirectAcquireState(&op));

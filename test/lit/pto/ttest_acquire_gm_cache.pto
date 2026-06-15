@@ -1,0 +1,202 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: ptoas --pto-arch=a3 --mlir-print-ir-after=pto-memory-consistency %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=IR
+// RUN: ptoas --pto-arch=a3 %s -o - 2>&1 | FileCheck %s --check-prefix=CPP
+
+module {
+  func.func @ttest_if_true_acquire(
+      %signal_ptr: !pto.ptr<i32>,
+      %payload_ptr: !pto.ptr<i32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %v_i32 = arith.constant 1 : i32
+
+    %sig_view = pto.make_tensor_view %signal_ptr,
+      shape = [%c1], strides = [%c1] : !pto.tensor_view<1xi32>
+    %sig = pto.partition_view %sig_view,
+      offsets = [%c0], sizes = [%c1]
+      : !pto.tensor_view<1xi32> -> !pto.partition_tensor_view<1xi32>
+
+    %ok = pto.comm.ttest(%sig, %v_i32 : !pto.partition_tensor_view<1xi32>, i32)
+        {cmp = #pto<wait_cmp ge>} -> i1
+    scf.if %ok {
+      %val = pto.load_scalar %payload_ptr[%c0] : !pto.ptr<i32> -> i32
+    }
+    return
+  }
+
+  func.func @ttest_if_inverted_else_acquire(
+      %signal_ptr: !pto.ptr<i32>,
+      %payload_ptr: !pto.ptr<i32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %true = arith.constant true
+    %v_i32 = arith.constant 1 : i32
+
+    %sig_view = pto.make_tensor_view %signal_ptr,
+      shape = [%c1], strides = [%c1] : !pto.tensor_view<1xi32>
+    %sig = pto.partition_view %sig_view,
+      offsets = [%c0], sizes = [%c1]
+      : !pto.tensor_view<1xi32> -> !pto.partition_tensor_view<1xi32>
+
+    %ok = pto.comm.ttest(%sig, %v_i32 : !pto.partition_tensor_view<1xi32>, i32)
+        {cmp = #pto<wait_cmp ge>} -> i1
+    %not_ok = arith.xori %ok, %true : i1
+    scf.if %not_ok {
+    } else {
+      %val = pto.load_scalar %payload_ptr[%c0] : !pto.ptr<i32> -> i32
+    }
+    return
+  }
+
+  func.func @ttest_polling_loop_exit_acquire(
+      %signal_ptr: !pto.ptr<i32>,
+      %payload_ptr: !pto.ptr<i32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %true = arith.constant true
+    %v_i32 = arith.constant 1 : i32
+
+    %sig_view = pto.make_tensor_view %signal_ptr,
+      shape = [%c1], strides = [%c1] : !pto.tensor_view<1xi32>
+    %sig = pto.partition_view %sig_view,
+      offsets = [%c0], sizes = [%c1]
+      : !pto.tensor_view<1xi32> -> !pto.partition_tensor_view<1xi32>
+
+    scf.while : () -> () {
+      %ok = pto.comm.ttest(%sig, %v_i32
+          : !pto.partition_tensor_view<1xi32>, i32)
+          {cmp = #pto<wait_cmp ge>} -> i1
+      %not_ok = arith.xori %ok, %true : i1
+      scf.condition(%not_ok)
+    } do {
+      scf.yield
+    }
+
+    %val = pto.load_scalar %payload_ptr[%c0] : !pto.ptr<i32> -> i32
+    return
+  }
+
+  func.func @ttest_while_body_acquire(
+      %signal_ptr: !pto.ptr<i32>,
+      %payload_ptr: !pto.ptr<i32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %v_i32 = arith.constant 1 : i32
+
+    %sig_view = pto.make_tensor_view %signal_ptr,
+      shape = [%c1], strides = [%c1] : !pto.tensor_view<1xi32>
+    %sig = pto.partition_view %sig_view,
+      offsets = [%c0], sizes = [%c1]
+      : !pto.tensor_view<1xi32> -> !pto.partition_tensor_view<1xi32>
+
+    scf.while : () -> () {
+      %ok = pto.comm.ttest(%sig, %v_i32
+          : !pto.partition_tensor_view<1xi32>, i32)
+          {cmp = #pto<wait_cmp ge>} -> i1
+      scf.condition(%ok)
+    } do {
+      %val = pto.load_scalar %payload_ptr[%c0] : !pto.ptr<i32> -> i32
+      scf.yield
+    }
+    return
+  }
+
+  func.func @ttest_tload_no_acquire(
+      %signal_ptr: !pto.ptr<i32>,
+      %payload_ptr: !pto.ptr<f32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c32 = arith.constant 32 : index
+    %v_i32 = arith.constant 1 : i32
+
+    %tile = pto.alloc_tile :
+      !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %sig_view = pto.make_tensor_view %signal_ptr,
+      shape = [%c1], strides = [%c1] : !pto.tensor_view<1xi32>
+    %sig = pto.partition_view %sig_view,
+      offsets = [%c0], sizes = [%c1]
+      : !pto.tensor_view<1xi32> -> !pto.partition_tensor_view<1xi32>
+    %payload_view = pto.make_tensor_view %payload_ptr,
+      shape = [%c1, %c32], strides = [%c32, %c1] : !pto.tensor_view<?x?xf32>
+    %payload = pto.partition_view %payload_view,
+      offsets = [%c0, %c0], sizes = [%c1, %c32]
+      : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<1x32xf32>
+
+    %ok = pto.comm.ttest(%sig, %v_i32 : !pto.partition_tensor_view<1xi32>, i32)
+        {cmp = #pto<wait_cmp ge>} -> i1
+    scf.if %ok {
+      pto.tload ins(%payload : !pto.partition_tensor_view<1x32xf32>)
+                outs(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    }
+    return
+  }
+
+  func.func @ttest_fallback_acquire(
+      %signal_ptr: !pto.ptr<i32>,
+      %payload_ptr: !pto.ptr<i32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %v_i32 = arith.constant 1 : i32
+
+    %sig_view = pto.make_tensor_view %signal_ptr,
+      shape = [%c1], strides = [%c1] : !pto.tensor_view<1xi32>
+    %sig = pto.partition_view %sig_view,
+      offsets = [%c0], sizes = [%c1]
+      : !pto.tensor_view<1xi32> -> !pto.partition_tensor_view<1xi32>
+
+    %ok = pto.comm.ttest(%sig, %v_i32 : !pto.partition_tensor_view<1xi32>, i32)
+        {cmp = #pto<wait_cmp ge>} -> i1
+    %val = pto.load_scalar %payload_ptr[%c0] : !pto.ptr<i32> -> i32
+    return
+  }
+}
+
+// IR-LABEL: func.func @ttest_if_true_acquire
+// IR:      pto.load_scalar
+// IR-SAME: __pto.emitc.acquire_invalidate_gm_cache
+
+// IR-LABEL: func.func @ttest_if_inverted_else_acquire
+// IR:      } else {
+// IR:      pto.load_scalar
+// IR-SAME: __pto.emitc.acquire_invalidate_gm_cache
+
+// IR-LABEL: func.func @ttest_polling_loop_exit_acquire
+// IR:      scf.while
+// IR:      pto.load_scalar
+// IR-SAME: __pto.emitc.acquire_invalidate_gm_cache
+
+// IR-LABEL: func.func @ttest_while_body_acquire
+// IR:      scf.while
+// IR:      pto.load_scalar
+// IR-SAME: __pto.emitc.acquire_invalidate_gm_cache
+
+// IR-LABEL: func.func @ttest_tload_no_acquire
+// IR-NOT:  __pto.emitc.acquire_invalidate_gm_cache
+// IR:      pto.tload
+
+// IR-LABEL: func.func @ttest_fallback_acquire
+// IR:      pto.load_scalar
+// IR-SAME: __pto.emitc.acquire_invalidate_gm_cache
+
+// CPP-LABEL: AICORE void ttest_if_true_acquire(
+// CPP:      pto::comm::TTEST(
+// CPP:      if (
+// CPP:      dcci((__gm__ void*)0, ENTIRE_DATA_CACHE);
+// CPP-NEXT: PTOAS__PTR_LOAD(
+
+// CPP-LABEL: AICORE void ttest_polling_loop_exit_acquire(
+// CPP:      pto::comm::TTEST(
+// CPP:      dcci((__gm__ void*)0, ENTIRE_DATA_CACHE);
+// CPP-NEXT: PTOAS__PTR_LOAD(
+
+// CPP-LABEL: AICORE void ttest_fallback_acquire(
+// CPP:      pto::comm::TTEST(
+// CPP:      dcci((__gm__ void*)0, ENTIRE_DATA_CACHE);
+// CPP-NEXT: PTOAS__PTR_LOAD(
