@@ -1809,6 +1809,8 @@ int mlir::pto::compilePTOASModule(
     return emitVPTOBackendResult(*module, result, emitVPTOHostStub);
   }
 
+  pm.addPass(pto::createPTOMemoryConsistencyPass());
+
   if (arch == "a3") {
     pm.addPass(pto::createEmitPTOManualPass(pto::PTOArch::A3));
   } else {

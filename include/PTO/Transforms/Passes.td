@@ -115,6 +115,23 @@ def PTOGraphSyncSolver : Pass<"pto-graph-sync-solver", "func::FuncOp"> {
   ];
 }
 
+def PTOMemoryConsistency : Pass<"pto-memory-consistency", "ModuleOp"> {
+  let summary = "Annotate PTO memory consistency actions before lowering";
+  let description = [{
+    Analyzes signal/payload memory consistency boundaries and annotates PTO ops
+    with release/acquire actions consumed by EmitC lowering. The pass does not
+    emit code directly.
+  }];
+
+  let constructor = "mlir::pto::createPTOMemoryConsistencyPass()";
+
+  let dependentDialects = [
+    "mlir::pto::PTODialect",
+    "mlir::func::FuncDialect",
+    "mlir::scf::SCFDialect"
+  ];
+}
+
 def ConvertToPTOOp : Pass<"convert-to-pto-op"> {
   let summary = "Convert Ops from other dialects to PTO Ops";
   let constructor = "mlir::pto::createConvertToPTOOpPass()";
