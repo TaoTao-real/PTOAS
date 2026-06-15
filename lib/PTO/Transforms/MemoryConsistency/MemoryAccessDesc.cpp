@@ -15,6 +15,8 @@
 
 #include "PTO/Transforms/MemoryConsistency/MemoryAccessDesc.h"
 
+#include "PTO/Transforms/InsertSync/SyncMacroModel.h"
+
 #include "mlir/IR/BuiltinTypes.h"
 
 using namespace mlir;
@@ -99,6 +101,98 @@ MemoryConsistencyCachePolicy getDefaultScalarGMCachePolicy(Value value) {
   if (*memorySpace != AddressSpace::GM)
     return MemoryConsistencyCachePolicy::NotApplicable;
   return MemoryConsistencyCachePolicy::Cacheable;
+}
+
+std::optional<PIPE> getPipeForPipeline(PipelineType pipe) {
+  switch (pipe) {
+  case PipelineType::PIPE_S:
+    return PIPE::PIPE_S;
+  case PipelineType::PIPE_V:
+    return PIPE::PIPE_V;
+  case PipelineType::PIPE_M:
+    return PIPE::PIPE_M;
+  case PipelineType::PIPE_MTE1:
+    return PIPE::PIPE_MTE1;
+  case PipelineType::PIPE_MTE2:
+    return PIPE::PIPE_MTE2;
+  case PipelineType::PIPE_MTE3:
+    return PIPE::PIPE_MTE3;
+  case PipelineType::PIPE_ALL:
+    return PIPE::PIPE_ALL;
+  case PipelineType::PIPE_MTE4:
+    return PIPE::PIPE_MTE4;
+  case PipelineType::PIPE_MTE5:
+    return PIPE::PIPE_MTE5;
+  case PipelineType::PIPE_V2:
+    return PIPE::PIPE_V2;
+  case PipelineType::PIPE_FIX:
+    return PIPE::PIPE_FIX;
+  case PipelineType::VIRTUAL_PIPE_MTE2_L1A:
+    return PIPE::VIRTUAL_PIPE_MTE2_L1A;
+  case PipelineType::VIRTUAL_PIPE_MTE2_L1B:
+    return PIPE::VIRTUAL_PIPE_MTE2_L1B;
+  case PipelineType::PIPE_NUM:
+    return PIPE::PIPE_NUM;
+  case PipelineType::PIPE_UNASSIGNED:
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+MemoryConsistencyCachePolicy
+getMacroCachePolicy(std::optional<AddressSpace> memorySpace,
+                    std::optional<PIPE> pipe) {
+  if (!memorySpace)
+    return MemoryConsistencyCachePolicy::Unknown;
+  if (*memorySpace != AddressSpace::GM)
+    return MemoryConsistencyCachePolicy::NotApplicable;
+  if (!pipe)
+    return MemoryConsistencyCachePolicy::Unknown;
+
+  switch (*pipe) {
+  case PIPE::PIPE_MTE2:
+  case PIPE::PIPE_MTE3:
+  case PIPE::PIPE_MTE4:
+  case PIPE::PIPE_MTE5:
+  case PIPE::PIPE_FIX:
+  case PIPE::VIRTUAL_PIPE_MTE2_L1A:
+  case PIPE::VIRTUAL_PIPE_MTE2_L1B:
+    return MemoryConsistencyCachePolicy::NonCache;
+  case PIPE::PIPE_S:
+  case PIPE::PIPE_V:
+  case PIPE::PIPE_V2:
+    return MemoryConsistencyCachePolicy::Cacheable;
+  case PIPE::PIPE_M:
+  case PIPE::PIPE_MTE1:
+  case PIPE::PIPE_ALL:
+  case PIPE::PIPE_NUM:
+  case PIPE::PIPE_UNASSIGNED:
+    return MemoryConsistencyCachePolicy::Unknown;
+  }
+  return MemoryConsistencyCachePolicy::Unknown;
+}
+
+MemoryAccessDesc makeMacroDesc(Operation *op, Value value,
+                               MemoryConsistencyAccessKind kind,
+                               std::optional<PIPE> pipe) {
+  auto memorySpace = getMemoryAccessAddressSpace(value);
+  return makeDesc(op, value, kind, memorySpace, pipe,
+                  getMacroCachePolicy(memorySpace, pipe));
+}
+
+SmallVector<MemoryAccessDesc, 4>
+collectSyncMacroAccessDescs(Operation *op, const SyncMacroModel &model) {
+  SmallVector<MemoryAccessDesc, 4> descs;
+  for (const SyncMacroPhase &phase : model.phases) {
+    std::optional<PIPE> pipe = getPipeForPipeline(phase.pipe);
+    for (Value value : phase.useValues)
+      descs.push_back(
+          makeMacroDesc(op, value, MemoryConsistencyAccessKind::Read, pipe));
+    for (Value value : phase.defValues)
+      descs.push_back(
+          makeMacroDesc(op, value, MemoryConsistencyAccessKind::Write, pipe));
+  }
+  return descs;
 }
 
 SmallVector<MemoryAccessDesc, 4> collectTLoadAccessDescs(TLoadOp op) {
@@ -238,6 +332,8 @@ mlir::pto::collectMemoryAccessDescs(Operation *op) {
     return collectTWaitAccessDescs(wait);
   if (auto test = dyn_cast<TTestOp>(op))
     return collectTTestAccessDescs(test);
+  if (auto model = getSyncMacroModel(op))
+    return collectSyncMacroAccessDescs(op, *model);
 
   return {};
 }
@@ -249,6 +345,9 @@ mlir::pto::getMemoryAccessAddressSpace(Value value) {
 
   if (auto tileBufferSpace = getTileBufferAddressSpace(value))
     return tileBufferSpace;
+
+  if (isa<TensorViewType, PartitionTensorViewType>(value.getType()))
+    return AddressSpace::GM;
 
   if (auto addressSpace = getPTOAddressSpaceAttr(value.getType()))
     return addressSpace.getAddressSpace();

@@ -234,6 +234,50 @@ module {
     return
   }
 
+  // comm macro ops contain hidden MTE phases. TPUT reads src through MTE2 and
+  // writes dst through MTE3, so publishing a signal after it needs the same
+  // release actions as explicit TLOAD/TSTORE.
+  func.func @tnotify_release_after_comm_macro(
+      %dst_ptr: !pto.ptr<f32>,
+      %src_ptr: !pto.ptr<f32>,
+      %signal_ptr: !pto.ptr<i32>)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c32 = arith.constant 32 : index
+    %v_i32 = arith.constant 1 : i32
+
+    %ping = pto.alloc_tile :
+      !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    %dst_view = pto.make_tensor_view %dst_ptr,
+      shape = [%c1, %c32], strides = [%c32, %c1] : !pto.tensor_view<?x?xf32>
+    %dst = pto.partition_view %dst_view,
+      offsets = [%c0, %c0], sizes = [%c1, %c32]
+      : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<1x32xf32>
+
+    %src_view = pto.make_tensor_view %src_ptr,
+      shape = [%c1, %c32], strides = [%c32, %c1] : !pto.tensor_view<?x?xf32>
+    %src = pto.partition_view %src_view,
+      offsets = [%c0, %c0], sizes = [%c1, %c32]
+      : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<1x32xf32>
+
+    pto.comm.tput(%dst, %src, buf(%ping) :
+        !pto.partition_tensor_view<1x32xf32>,
+        !pto.partition_tensor_view<1x32xf32>,
+        !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+        {atomicType = #pto<atomic_type atomic_none>}
+
+    %sig_view = pto.make_tensor_view %signal_ptr,
+      shape = [%c1], strides = [%c1] : !pto.tensor_view<1xi32>
+    %sig = pto.partition_view %sig_view,
+      offsets = [%c0], sizes = [%c1]
+      : !pto.tensor_view<1xi32> -> !pto.partition_tensor_view<1xi32>
+    pto.comm.tnotify(%sig, %v_i32 : !pto.partition_tensor_view<1xi32>, i32)
+        {notifyOp = #pto<notify_op set>}
+    return
+  }
+
   // twait must NOT receive the new MTE drain -- the receiver-side wait does
   // not write any peer-visible data, so adding a barrier there would only be
   // a needless stall. Pair this with --implicit-check-not to lock that in.
@@ -296,6 +340,13 @@ module {
 // CHECK:      pipe_barrier(PIPE_MTE3);
 // CHECK-NOT:  pipe_barrier(
 // CHECK:      dsb(DSB_DDR);
+// CHECK-NEXT: pto::comm::TNOTIFY(
+
+// CHECK-LABEL: AICORE void tnotify_release_after_comm_macro(
+// CHECK:      pto::comm::TPUT(
+// CHECK:      pipe_barrier(PIPE_MTE2);
+// CHECK-NEXT: pipe_barrier(PIPE_MTE3);
+// CHECK-NEXT: dsb(DSB_DDR);
 // CHECK-NEXT: pto::comm::TNOTIFY(
 
 // CHECK-LABEL: AICORE void twait_no_extra_drain(
