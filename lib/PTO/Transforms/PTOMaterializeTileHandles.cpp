@@ -435,7 +435,8 @@ static Value ensureI64(Value value, OpBuilder &builder, Location loc) {
 
 static Value materializeOffset(OpFoldResult ofr, OpBuilder &builder,
                                Location loc) {
-  if (auto attr = ofr.dyn_cast<Attribute>()) {
+  if (isa<Attribute>(ofr)) {
+    Attribute attr = cast<Attribute>(ofr);
     if (auto intAttr = dyn_cast<IntegerAttr>(attr))
       return makeI64Constant(builder, loc, getIntegerAttrSignedValue(intAttr));
     return Value();

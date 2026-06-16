@@ -64,12 +64,13 @@ static std::optional<int64_t> getConstInt(Value v) {
 }
 
 static std::optional<int64_t> getConstInt(OpFoldResult ofr) {
-  if (auto attr = ofr.dyn_cast<Attribute>()) {
+  if (isa<Attribute>(ofr)) {
+    Attribute attr = cast<Attribute>(ofr);
     if (auto ia = dyn_cast<IntegerAttr>(attr))
       return ia.getInt();
     return std::nullopt;
   }
-  return getConstInt(ofr.dyn_cast<Value>());
+  return getConstInt(cast<Value>(ofr));
 }
 
 static unsigned elemByteSize(Type ty) {

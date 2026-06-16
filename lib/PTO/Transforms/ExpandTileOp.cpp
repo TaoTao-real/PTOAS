@@ -467,12 +467,13 @@ static bool getStaticIntFromValue(Value value, int64_t &out) {
 }
 
 static int64_t getStaticIntOrDynamic(OpFoldResult ofr) {
-  if (auto attr = ofr.dyn_cast<Attribute>()) {
+  if (isa<Attribute>(ofr)) {
+    Attribute attr = cast<Attribute>(ofr);
     if (auto intAttr = dyn_cast<IntegerAttr>(attr))
       return intAttr.getInt();
     return ShapedType::kDynamic;
   }
-  auto value = llvm::cast<Value>(ofr);
+  Value value = cast<Value>(ofr);
   int64_t result = ShapedType::kDynamic;
   if (getStaticIntFromValue(value, result))
     return result;

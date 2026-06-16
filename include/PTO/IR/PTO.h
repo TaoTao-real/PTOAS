@@ -199,7 +199,7 @@ bool isPTOEntryFunction(func::FuncOp func);
 /// Validate module-level PTO entry configuration before EmitC lowering.
 LogicalResult validatePTOEntryFunctions(ModuleOp module);
 
-/// Clear internal PTO entry selection markers from function attributes.
+/// Materialize the effective PTO entry selection onto function attributes.
 void annotatePTOEntryFunctions(ModuleOp module);
 
 } // namespace pto

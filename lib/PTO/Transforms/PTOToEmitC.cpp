@@ -3221,11 +3221,12 @@ struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
 
   // 辅助函数：尝试从 OpFoldResult 中提取静态整数值
   std::optional<int64_t> extractStaticInt(OpFoldResult ofr) const {
-    if (auto attr = ofr.dyn_cast<Attribute>()) {
+    if (isa<Attribute>(ofr)) {
+      Attribute attr = cast<Attribute>(ofr);
       if (auto intAttr = dyn_cast<IntegerAttr>(attr))
         return getIntegerAttrSignedValue(intAttr);
     } else {
-      Value v = ofr.dyn_cast<Value>();
+      Value v = cast<Value>(ofr);
       if (auto cOp = v.getDefiningOp<arith::ConstantOp>()) {
         if (auto iAttr = dyn_cast<IntegerAttr>(cOp.getValue()))
           return getIntegerAttrSignedValue(iAttr);
@@ -3296,13 +3297,15 @@ struct SubviewToEmitCPattern : public OpConversionPattern<memref::SubViewOp> {
 
     // Helper: 将 OpFoldResult 转为 EmitC Value (用于计算)
     auto ofrToEmitCValue = [&](OpFoldResult ofr) -> Value {
-      if (auto v = ofr.dyn_cast<Value>()) {
+      if (isa<Value>(ofr)) {
+        Value v = cast<Value>(ofr);
         Value rv = rewriter.getRemappedValue(v);
         return asIndex(rv);
       }
-      if (auto attr = ofr.dyn_cast<Attribute>()) {
-         if (auto ia = dyn_cast<IntegerAttr>(attr))
-             return mkIndex(getIntegerAttrSignedValue(ia));
+      if (isa<Attribute>(ofr)) {
+        Attribute attr = cast<Attribute>(ofr);
+        if (auto ia = dyn_cast<IntegerAttr>(attr))
+          return mkIndex(getIntegerAttrSignedValue(ia));
       }
       return mkIndex(0);
     };
