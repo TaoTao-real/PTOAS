@@ -508,8 +508,6 @@ jobs:
           PTOAS_BIN="${PTOAS_BIN}" \
           DEVICE=SIM \
           JOBS="${JOBS:-32}" \
-          VPTO_SIM_ENABLE_KNOWN_UNSUPPORTED_SKIP=1 \
-          VPTO_SIM_KNOWN_UNSUPPORTED_CASES_FILE="${GITHUB_WORKSPACE}/test/vpto/known_unsupported/cann-9.0.0-beta.1-sim.txt" \
           bash test/vpto/scripts/run_host_vpto_validation_parallel.sh
 
       - name: Run TileLang DSL CI

@@ -19,8 +19,6 @@ WORK_SPACE="${WORK_SPACE:-}"
 CASE_NAME="${CASE_NAME:-}"
 CASE_PREFIX="${CASE_PREFIX:-}"
 JOBS="${JOBS:-}"
-VPTO_SIM_ENABLE_KNOWN_UNSUPPORTED_SKIP="${VPTO_SIM_ENABLE_KNOWN_UNSUPPORTED_SKIP:-0}"
-VPTO_SIM_KNOWN_UNSUPPORTED_CASES_FILE="${VPTO_SIM_KNOWN_UNSUPPORTED_CASES_FILE:-}"
 
 log() {
   echo "[$(date +'%F %T')] $*"
@@ -70,41 +68,6 @@ fi
 
 [[ "${JOBS}" =~ ^[0-9]+$ ]] || die "JOBS must be a positive integer, got: ${JOBS}"
 [[ "${JOBS}" -ge 1 ]] || die "JOBS must be >= 1"
-
-KNOWN_UNSUPPORTED_CASES=()
-
-trim() {
-  local text="$1"
-  text="${text#"${text%%[![:space:]]*}"}"
-  text="${text%"${text##*[![:space:]]}"}"
-  printf '%s' "${text}"
-}
-
-load_known_unsupported_cases() {
-  [[ "${VPTO_SIM_ENABLE_KNOWN_UNSUPPORTED_SKIP}" == "1" ]] || return 0
-  [[ -n "${VPTO_SIM_KNOWN_UNSUPPORTED_CASES_FILE}" ]] ||
-    die "VPTO_SIM_KNOWN_UNSUPPORTED_CASES_FILE is required when known-unsupported skip is enabled"
-  [[ -f "${VPTO_SIM_KNOWN_UNSUPPORTED_CASES_FILE}" ]] ||
-    die "known-unsupported cases file not found: ${VPTO_SIM_KNOWN_UNSUPPORTED_CASES_FILE}"
-
-  local raw line
-  while IFS= read -r raw || [[ -n "${raw}" ]]; do
-    line="$(trim "${raw%%#*}")"
-    [[ -n "${line}" ]] || continue
-    KNOWN_UNSUPPORTED_CASES+=("${line}")
-  done < "${VPTO_SIM_KNOWN_UNSUPPORTED_CASES_FILE}"
-}
-
-is_known_unsupported_case() {
-  local case_name="$1"
-  local known_case
-  for known_case in "${KNOWN_UNSUPPORTED_CASES[@]}"; do
-    if [[ "${known_case}" == "${case_name}" ]]; then
-      return 0
-    fi
-  done
-  return 1
-}
 
 mkdir -p "${WORK_SPACE}"
 WORK_SPACE="$(cd "${WORK_SPACE}" && pwd)"
@@ -163,32 +126,13 @@ if [[ "${DEVICE:-SIM}" == "SIM" && "${COMPILE_ONLY:-0}" != "1" &&
   die "case ${CASE_NAME} is onboard-only and cannot run with DEVICE=SIM"
 fi
 
-load_known_unsupported_cases
-
-DISCOVERED_CASES=()
-while IFS= read -r case_name; do
-  DISCOVERED_CASES+=("${case_name}")
-done < <(discover_cases)
-[[ "${#DISCOVERED_CASES[@]}" -gt 0 ]] || die "no cases found under ${CASES_ROOT}"
-
-CASES=()
-SKIPPED_CASES=()
-for case_name in "${DISCOVERED_CASES[@]}"; do
-  if is_known_unsupported_case "${case_name}"; then
-    SKIPPED_CASES+=("${case_name}")
-  else
-    CASES+=("${case_name}")
-  fi
-done
-
-[[ "${#CASES[@]}" -gt 0 || "${#SKIPPED_CASES[@]}" -gt 0 ]] ||
-  die "no runnable or skipped cases found under ${CASES_ROOT}"
+readarray -t CASES < <(discover_cases)
+[[ "${#CASES[@]}" -gt 0 ]] || die "no cases found under ${CASES_ROOT}"
 
 : > "${SUMMARY_FILE}"
 : > "${RUNNER_LOG}"
 
-RUNNING_PIDS=()
-RUNNING_CASES=()
+declare -A PID_TO_CASE=()
 
 launch_case() {
   local case_name="$1"
@@ -199,14 +143,12 @@ launch_case() {
   ) &
 
   local pid=$!
-  RUNNING_PIDS+=("${pid}")
-  RUNNING_CASES+=("${case_name}")
+  PID_TO_CASE["${pid}"]="${case_name}"
 }
 
 reap_one() {
-  local index="$1"
-  local pid="${RUNNING_PIDS[${index}]}"
-  local case_name="${RUNNING_CASES[${index}]}"
+  local pid="$1"
+  local case_name="${PID_TO_CASE[${pid}]}"
   local result="FAIL"
   local detail="1"
 
@@ -217,8 +159,7 @@ reap_one() {
 
   printf '%s\t%s\t%s\n' "${case_name}" "${result}" "${detail}" >> "${SUMMARY_FILE}"
   log "[${case_name}] ${result} (${detail})" | tee -a "${RUNNER_LOG}"
-  unset 'RUNNING_PIDS['"${index}"']'
-  unset 'RUNNING_CASES['"${index}"']'
+  unset 'PID_TO_CASE['"${pid}"']'
 }
 
 log "=== VPTO Host Validation Parallel ===" | tee -a "${RUNNER_LOG}"
@@ -226,34 +167,26 @@ log "WORK_SPACE=${WORK_SPACE}" | tee -a "${RUNNER_LOG}"
 log "CASE_NAME=${CASE_NAME:-<all>}" | tee -a "${RUNNER_LOG}"
 log "CASE_PREFIX=${CASE_PREFIX:-<none>}" | tee -a "${RUNNER_LOG}"
 log "JOBS=${JOBS}" | tee -a "${RUNNER_LOG}"
-log "TOTAL_CASES=${#DISCOVERED_CASES[@]}" | tee -a "${RUNNER_LOG}"
-log "RUNNABLE_CASES=${#CASES[@]}" | tee -a "${RUNNER_LOG}"
-log "SKIPPED_CASES=${#SKIPPED_CASES[@]}" | tee -a "${RUNNER_LOG}"
+log "TOTAL_CASES=${#CASES[@]}" | tee -a "${RUNNER_LOG}"
 if [[ -n "${SIM_LIB_DIR:-}" ]]; then
   log "SIM_LIB_DIR=${SIM_LIB_DIR}" | tee -a "${RUNNER_LOG}"
 fi
 
-for case_name in "${SKIPPED_CASES[@]}"; do
-  printf '%s\tSKIP\tknown-unsupported\n' "${case_name}" >> "${SUMMARY_FILE}"
-  log "[${case_name}] SKIP (known-unsupported)" | tee -a "${RUNNER_LOG}"
-done
-
 next_index=0
-while [[ "${next_index}" -lt "${#CASES[@]}" || "${#RUNNING_PIDS[@]}" -gt 0 ]]; do
-  while [[ "${next_index}" -lt "${#CASES[@]}" && "${#RUNNING_PIDS[@]}" -lt "${JOBS}" ]]; do
+while [[ "${next_index}" -lt "${#CASES[@]}" || "${#PID_TO_CASE[@]}" -gt 0 ]]; do
+  while [[ "${next_index}" -lt "${#CASES[@]}" && "${#PID_TO_CASE[@]}" -lt "${JOBS}" ]]; do
     launch_case "${CASES[${next_index}]}"
     next_index="$((next_index + 1))"
   done
 
-  if [[ "${#RUNNING_PIDS[@]}" -eq 0 ]]; then
+  if [[ "${#PID_TO_CASE[@]}" -eq 0 ]]; then
     continue
   fi
 
   while true; do
-    for index in "${!RUNNING_PIDS[@]}"; do
-      pid="${RUNNING_PIDS[${index}]}"
+    for pid in "${!PID_TO_CASE[@]}"; do
       if ! kill -0 "${pid}" 2>/dev/null; then
-        reap_one "${index}"
+        reap_one "${pid}"
         break 2
       fi
     done
@@ -262,14 +195,13 @@ while [[ "${next_index}" -lt "${#CASES[@]}" || "${#RUNNING_PIDS[@]}" -gt 0 ]]; d
 done
 
 pass_count="$(awk -F '\t' '$2 == "PASS" {count++} END {print count + 0}' "${SUMMARY_FILE}")"
-skip_count="$(awk -F '\t' '$2 == "SKIP" {count++} END {print count + 0}' "${SUMMARY_FILE}")"
-fail_count="$(awk -F '\t' '$2 == "FAIL" {count++} END {print count + 0}' "${SUMMARY_FILE}")"
+fail_count="$(awk -F '\t' '$2 != "PASS" {count++} END {print count + 0}' "${SUMMARY_FILE}")"
 
-log "PASS=${pass_count} SKIP=${skip_count} FAIL=${fail_count}" | tee -a "${RUNNER_LOG}"
+log "PASS=${pass_count} FAIL=${fail_count}" | tee -a "${RUNNER_LOG}"
 log "summary: ${SUMMARY_FILE}" | tee -a "${RUNNER_LOG}"
 
 if [[ "${fail_count}" -ne 0 ]]; then
   die "parallel validation finished with ${fail_count} failing case(s)"
 fi
 
-log "All ${pass_count} runnable case(s) passed; ${skip_count} known-unsupported case(s) skipped" | tee -a "${RUNNER_LOG}"
+log "All ${pass_count} case(s) passed" | tee -a "${RUNNER_LOG}"
