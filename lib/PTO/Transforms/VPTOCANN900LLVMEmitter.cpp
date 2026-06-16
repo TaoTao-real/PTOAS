@@ -67,11 +67,16 @@ static Type getElementTypeFromVectorLike(Type type);
 static std::optional<int64_t> getElementCountFromVectorLike(Type type);
 
 static Type getLowPrecisionLLVMType(Type type, MLIRContext *context) {
-  if (pto::isPTOHiFloat8Type(type) || isa<pto::F4E1M2x2Type>(type) ||
-      isa<pto::F4E2M1x2Type>(type) ||
-      pto::isPTOFloat8E4M3LikeType(type) ||
-      pto::isPTOFloat8E5M2LikeType(type))
+  if (pto::isPTOHiFloat8Type(type))
+    return Float8E4M3FNType::get(context);
+  if (isa<pto::F4E1M2x2Type>(type))
     return IntegerType::get(context, 8);
+  if (isa<pto::F4E2M1x2Type>(type))
+    return IntegerType::get(context, 8);
+  if (pto::isPTOFloat8E4M3LikeType(type))
+    return Float8E4M3Type::get(context);
+  if (pto::isPTOFloat8E5M2LikeType(type))
+    return Float8E5M2Type::get(context);
   return {};
 }
 
@@ -96,7 +101,7 @@ static Type getLowpPayloadABIElementType(Type elementType,
 static Type normalizePayloadTypeForLLVMLowering(Type type, Builder &builder) {
   if (pto::isPTOHiFloat8x2Type(type))
     return getLLVMCompatibleVectorType(
-        {2}, builder.getI8Type());
+        {2}, Float8E4M3FNType::get(builder.getContext()));
   if (Type lowpType = getLowPrecisionLLVMType(type, builder.getContext()))
     return lowpType;
 
@@ -563,38 +568,6 @@ static Type getLowpPayloadCarrierType(Type vectorLikeType,
   return VectorType::get({*lanes}, abi->llvmElementType);
 }
 
-static Type getLowpVcvtIntrinsicElementType(Type elementType,
-                                            MLIRContext *context) {
-  if (pto::isPTOHiFloat8Type(elementType))
-    return LLVM::LLVMHiFloat8Type::get(context);
-  if (isa<pto::F4E1M2x2Type>(elementType))
-    return LLVM::LLVMFloat4E1M2x2Type::get(context);
-  if (isa<pto::F4E2M1x2Type>(elementType))
-    return LLVM::LLVMFloat4E2M1x2Type::get(context);
-  if (pto::isPTOFloat8E4M3LikeType(elementType))
-    return LLVM::LLVMFloat8E4M3Type::get(context);
-  if (pto::isPTOFloat8E5M2LikeType(elementType))
-    return LLVM::LLVMFloat8E5M2Type::get(context);
-  return {};
-}
-
-static Type getLowpIntrinsicCarrierType(Type semanticType, Type convertedType,
-                                        MLIRContext *context);
-
-static Type getVcvtIntrinsicValueType(Type semanticType, Type convertedType,
-                                      MLIRContext *context) {
-  Type elementType = getElementTypeFromVectorLike(semanticType);
-  Type lowpElementType =
-      getLowpVcvtIntrinsicElementType(elementType, context);
-  if (!lowpElementType)
-    return getLowpIntrinsicCarrierType(semanticType, convertedType, context);
-
-  auto lanes = getElementCountFromVectorLike(semanticType);
-  if (!lanes)
-    return {};
-  return VectorType::get({*lanes}, lowpElementType);
-}
-
 static Type getPayloadABIType(Type semanticType, Type convertedType,
                               MLIRContext *context) {
   if (Type carrierType = getLowpPayloadCarrierType(semanticType, context))
@@ -634,30 +607,6 @@ static Type getPackedLowpScalarMemoryType(Type semanticType,
   if (!isLowpPayloadABIElementType(vecType.getElementType()))
     return {};
   return IntegerType::get(context, 16);
-}
-
-static Type getLowpIntrinsicCarrierType(Type semanticType, Type convertedType,
-                                        MLIRContext *context) {
-  if (auto vregType = dyn_cast<pto::VRegType>(semanticType)) {
-    if (!isLowpPayloadABIElementType(vregType.getElementType()))
-      return convertedType;
-    int64_t elementCount = vregType.getElementCount();
-    if (elementCount <= 0 || elementCount % 4 != 0)
-      return {};
-    return VectorType::get({elementCount / 4}, IntegerType::get(context, 32));
-  }
-
-  if (Type packedScalarType =
-          getPackedLowpScalarMemoryType(semanticType, context))
-    return packedScalarType;
-  return convertedType;
-}
-
-static Value bitcastToType(Location loc, Value value, Type targetType,
-                           ConversionPatternRewriter &rewriter) {
-  if (!targetType || targetType == value.getType())
-    return value;
-  return rewriter.create<LLVM::BitcastOp>(loc, targetType, value);
 }
 
 static Type getScalarAccessGEPElementType(Type semanticType,
@@ -7333,24 +7282,10 @@ public:
     if (!resultType)
       return rewriter.notifyMatchFailure(op, "failed to convert vcvt result type");
 
-    Type inputCallType = getVcvtIntrinsicValueType(
-        op.getInput().getType(), adaptor.getInput().getType(),
-        rewriter.getContext());
-    if (!inputCallType)
-      return rewriter.notifyMatchFailure(op,
-                                         "unsupported vcvt input carrier type");
-    Type resultCallType = getVcvtIntrinsicValueType(
-        op.getResult().getType(), resultType, rewriter.getContext());
-    if (!resultCallType)
-      return rewriter.notifyMatchFailure(op,
-                                         "unsupported vcvt result carrier type");
-    Value input = bitcastToType(op.getLoc(), adaptor.getInput(), inputCallType,
-                                rewriter);
-
     SmallVector<Value> callArgs;
     SmallVector<Type> argTypes;
-    callArgs.push_back(input);
-    argTypes.push_back(input.getType());
+    callArgs.push_back(adaptor.getInput());
+    argTypes.push_back(adaptor.getInput().getType());
     callArgs.push_back(adaptor.getMask());
     argTypes.push_back(adaptor.getMask().getType());
 
@@ -7398,15 +7333,12 @@ public:
       argTypes.push_back(partValue.getType());
     }
 
-    auto funcType = rewriter.getFunctionType(argTypes, TypeRange{resultCallType});
+    auto funcType = rewriter.getFunctionType(argTypes, TypeRange{resultType});
     auto call = rewriter.create<func::CallOp>(
-        op.getLoc(), StringRef((*contract).intrinsic),
-        TypeRange{resultCallType}, callArgs);
+        op.getLoc(), StringRef((*contract).intrinsic), TypeRange{resultType}, callArgs);
     state.plannedDecls.push_back(
         PlannedDecl{std::string((*contract).intrinsic), funcType});
-    Value result =
-        bitcastToType(op.getLoc(), call.getResult(0), resultType, rewriter);
-    rewriter.replaceOp(op, result);
+    rewriter.replaceOp(op, call.getResults());
     return success();
   }
 
@@ -8931,30 +8863,15 @@ public:
     Value saturation = getI32Constant(
         rewriter, op.getLoc(), static_cast<uint64_t>(op.getSaturation()));
 
-    Type srcCallType = getLowpIntrinsicCarrierType(
-        op.getSrc().getType(), adaptor.getSrc().getType(),
-        rewriter.getContext());
-    if (!srcCallType)
-      return rewriter.notifyMatchFailure(
-          op, "unsupported convert input carrier type");
-    Type resultCallType = getLowpIntrinsicCarrierType(
-        op.getDst().getType(), resultType, rewriter.getContext());
-    if (!resultCallType)
-      return rewriter.notifyMatchFailure(
-          op, "unsupported convert result carrier type");
-    Value src =
-        bitcastToType(op.getLoc(), adaptor.getSrc(), srcCallType, rewriter);
-
     auto funcType = rewriter.getFunctionType(
-        TypeRange{src.getType(), rewriter.getI32Type(), rewriter.getI32Type()},
-        TypeRange{resultCallType});
+        TypeRange{adaptor.getSrc().getType(), rewriter.getI32Type(),
+                  rewriter.getI32Type()},
+        TypeRange{resultType});
     auto call = rewriter.create<func::CallOp>(
-        op.getLoc(), *calleeName, TypeRange{resultCallType},
-        ValueRange{src, rounding, saturation});
+        op.getLoc(), *calleeName, TypeRange{resultType},
+        ValueRange{adaptor.getSrc(), rounding, saturation});
     state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
-    Value result =
-        bitcastToType(op.getLoc(), call.getResult(0), resultType, rewriter);
-    rewriter.replaceOp(op, result);
+    rewriter.replaceOp(op, call.getResults());
     return success();
   }
 
@@ -9336,8 +9253,6 @@ static Value convertLdgCallResult(Location loc, Type valueType,
   if (pto::isPTOFloat8Type(valueType) || pto::isPTOHiFloat8Type(valueType)) {
     Value payload =
         rewriter.create<arith::TruncIOp>(loc, rewriter.getI8Type(), callResult);
-    if (payload.getType() == convertedValueType)
-      return payload;
     return rewriter.create<LLVM::BitcastOp>(loc, convertedValueType, payload);
   }
   return callResult;
@@ -9471,10 +9386,8 @@ static Value convertStgValue(Location loc, Type valueType, Value value,
   }
 
   if (pto::isPTOFloat8Type(valueType) || pto::isPTOHiFloat8Type(valueType)) {
-    Value payload = value;
-    if (payload.getType() != rewriter.getI8Type())
-      payload =
-          rewriter.create<LLVM::BitcastOp>(loc, rewriter.getI8Type(), value);
+    Value payload =
+        rewriter.create<LLVM::BitcastOp>(loc, rewriter.getI8Type(), value);
     return rewriter.create<arith::ExtUIOp>(loc, rewriter.getI32Type(), payload);
   }
   if (valueType.isBF16())
