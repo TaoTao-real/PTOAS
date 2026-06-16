@@ -4464,8 +4464,10 @@ static LogicalResult verifyMatTileOperandsA5(Operation *op, Type lhsTy,
   if (!lhsTb || !rhsTb || !dstTb)
     return success();
 
-  if (lhsTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::ColMajor))
-    return op->emitOpError("expects lhs to use the col_major blayout on A5");
+  if (lhsTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor) &&
+      lhsTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::ColMajor))
+    return op->emitOpError(
+        "expects lhs to use the row_major or col_major blayout on A5");
   if (rhsTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor))
     return op->emitOpError("expects rhs to use the row_major blayout on A5");
   if (dstTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::ColMajor))
@@ -6015,9 +6017,11 @@ mlir::LogicalResult mlir::pto::TExtractOp::verify() {
       if (!hasMatExtractSourceLayoutA5(srcTb, *dstSpace))
         return emitOpError("expects A5 textract src to use a supported mat blayout/slayout combination");
       if (*dstSpace == pto::AddressSpace::LEFT) {
-        if (dstTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::ColMajor) ||
+        if ((dstTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor) &&
+             dstTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::ColMajor)) ||
             dstTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::RowMajor))
-          return emitOpError("expects A5 left dst to use col_major blayout and row_major slayout");
+          return emitOpError(
+              "expects A5 left dst to use row_major or col_major blayout and row_major slayout");
       } else if (*dstSpace == pto::AddressSpace::RIGHT) {
         if (dstTb.getBLayoutValueI32() != static_cast<int32_t>(pto::BLayout::RowMajor) ||
           dstTb.getSLayoutValueI32() != static_cast<int32_t>(pto::SLayout::ColMajor))

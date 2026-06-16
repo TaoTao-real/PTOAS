@@ -170,23 +170,6 @@ static std::optional<AddressSpace> resolveTileBufMemorySpace(StringRef locStr) {
       .Default(::std::nullopt);
 }
 
-static BLayout resolveTileBufBLayout(MLIRContext *context,
-                                     AddressSpace memorySpace,
-                                     BLayout parsedLayout) {
-  if (memorySpace != AddressSpace::LEFT)
-    return parsedLayout;
-
-  switch (getPTOParserTargetArch(context)) {
-  case PTOParserTargetArch::A3:
-    return BLayout::RowMajor;
-  case PTOParserTargetArch::A5:
-    return BLayout::ColMajor;
-  case PTOParserTargetArch::Unspecified:
-    return parsedLayout;
-  }
-  return parsedLayout;
-}
-
 TileBufConfigAttr TileBufType::getConfigAttr() const {
   // 情况 A：getConfig() 已经是 TileBufConfigAttr
   if constexpr (std::is_same_v<decltype(getConfig()), TileBufConfigAttr>) {
@@ -501,14 +484,10 @@ static Type buildTileBufType(AsmParser &parser,
     return Type();
   }
 
-  BLayout effectiveBLayout =
-      resolveTileBufBLayout(parser.getContext(), memorySpace.value(),
-                            bl.value());
-
   // (32-byte alignment and boxed layout divisibility checks removed
   // - not general hardware requirements; validation handled elsewhere)
 
-  auto blAttr = BLayoutAttr::get(ctx, effectiveBLayout);
+  auto blAttr = BLayoutAttr::get(ctx, bl.value());
   auto slAttr = SLayoutAttr::get(ctx, sl.value());
   auto fractalAttr =
       IntegerAttr::get(IntegerType::get(ctx, kI32BitWidth), fields.fractal);
