@@ -573,14 +573,13 @@ void attachHIVMKernelAnnotations(llvm::Module &llvmModule,
     return false;
   };
 
-  auto callsSimtEntry = [&](llvm::Function &function) {
+  auto callsSimtEntry = [](llvm::Function &function) {
     for (llvm::BasicBlock &block : function) {
       for (llvm::Instruction &inst : block) {
         auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
         if (!call)
           continue;
-        auto *callee = call->getCalledFunction();
-        if (callee && simtConfigByName.contains(callee->getName()))
+        if (call->getCallingConv() == llvm::CallingConv::SimtEntry)
           return true;
       }
     }
@@ -614,7 +613,7 @@ void attachHIVMKernelAnnotations(llvm::Module &llvmModule,
   for (llvm::Function &function : llvmModule) {
     if (function.isDeclaration())
       continue;
-    if (simtConfigByName.contains(function.getName())) {
+    if (function.getCallingConv() == llvm::CallingConv::SimtEntry) {
       uint32_t maxThreads = kDefaultSimtMaxThreads;
       uint32_t maxRegisters = kDefaultSimtMaxRegisters;
       if (auto it = simtConfigByName.find(function.getName());

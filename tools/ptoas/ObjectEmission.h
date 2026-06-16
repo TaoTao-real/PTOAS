@@ -93,15 +93,6 @@ LogicalResult compileLLVMToDeviceObject(
     ObjectEmissionDeviceTarget target, const CANNToolchain &toolchain,
     llvm::StringRef stderrPath, llvm::raw_ostream &diagOS);
 
-LogicalResult emitVPTOVectorLLVMIR(llvm::Module &module,
-                                   llvm::StringRef llPath,
-                                   const CANNToolchain &toolchain,
-                                   llvm::raw_ostream &diagOS);
-
-LogicalResult emitVPTOCubeLLVMIR(llvm::Module &module, llvm::StringRef llPath,
-                                 const CANNToolchain &toolchain,
-                                 llvm::raw_ostream &diagOS);
-
 LogicalResult emitCppVectorDeviceObject(
     llvm::StringRef cppSource, llvm::StringRef cppPath,
     llvm::StringRef outObjPath, const CANNToolchain &toolchain,

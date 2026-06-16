@@ -268,10 +268,6 @@ static LogicalResult emitVPTOLLVMFatobj(
     const mlir::pto::PTOASCompileResult &jobResult, PTOASContext &context,
     llvm::StringRef moduleId, llvm::StringRef outputPath);
 
-static LogicalResult emitSingleVPTOLLVMIR(
-    const mlir::pto::PTOASCompileResult &jobResult, PTOASContext &context,
-    llvm::StringRef outputPath);
-
 mlir::pto::PTOASContext::PTOASContext(DialectRegistry &registry,
                                       llvm::StringRef outputPath, int argc,
                                       char **argv)
@@ -543,7 +539,7 @@ LogicalResult VPTOBackendJob::run(PTOASContext &context) {
   ModuleOp op = module.get();
   op->setAttr("pto.backend", StringAttr::get(op.getContext(), "vpto"));
 
-  bool emitHostStub = hasPTOEntry(op) && !mlir::pto::emitVPTOLLVMIR;
+  bool emitHostStub = hasPTOEntry(op);
   if (mlir::pto::compilePTOASModule(
           module, context, mlir::pto::PTOBackend::VPTO, result,
           emitHostStub) != 0)
@@ -556,21 +552,9 @@ LogicalResult VPTOBackendJob::run(PTOASContext &context) {
   }
 
   if (context.getOutputPath().empty() || context.getOutputPath() == "-") {
-    if (mlir::pto::emitVPTOLLVMIR)
-      llvm::errs() << "Error: VPTO LLVM IR output requires an explicit file "
-                      "path passed with -o.\n";
-    else
-      llvm::errs() << "Error: object output requires an explicit file path "
-                      "passed with -o.\n";
+    llvm::errs() << "Error: object output requires an explicit file path "
+                    "passed with -o.\n";
     return failure();
-  }
-
-  if (mlir::pto::emitVPTOLLVMIR) {
-    if (failed(emitSingleVPTOLLVMIR(result, context, context.getOutputPath())))
-      return failure();
-    result.reset();
-    result.kind = mlir::pto::PTOASCompileResultKind::MixedObject;
-    return success();
   }
 
   std::string moduleId = context.allocModuleId();
@@ -601,33 +585,6 @@ static LogicalResult emitVPTOLLVMFatobj(
           llvm::errs())))
     return failure();
   return success();
-}
-
-static LogicalResult emitSingleVPTOLLVMIR(
-    const mlir::pto::PTOASCompileResult &jobResult, PTOASContext &context,
-    llvm::StringRef outputPath) {
-  llvm::Module *cubeModule = jobResult.vptoCubeModule.module.get();
-  llvm::Module *vectorModule = jobResult.vptoVectorModule.module.get();
-  if (!cubeModule && !vectorModule) {
-    llvm::errs() << "Error: VPTO LLVM IR emission requires one device module.\n";
-    return failure();
-  }
-  if (cubeModule && vectorModule) {
-    llvm::errs() << "Error: --vpto-emit-hivm-llvm only supports inputs with "
-                    "a single VPTO device module.\n";
-    return failure();
-  }
-
-  const mlir::pto::CANNToolchain *toolchain =
-      context.getToolchain(llvm::errs());
-  if (!toolchain)
-    return failure();
-
-  if (vectorModule)
-    return mlir::pto::emitVPTOVectorLLVMIR(*vectorModule, outputPath,
-                                           *toolchain, llvm::errs());
-  return mlir::pto::emitVPTOCubeLLVMIR(*cubeModule, outputPath, *toolchain,
-                                       llvm::errs());
 }
 
 static LogicalResult collectChildJobs(
@@ -718,7 +675,6 @@ static LogicalResult buildBackendInfo(ModuleOp module, bool cliBackendSpecified,
   }
 
   if (mlir::pto::emitMlirIR || mlir::pto::emitVPTO ||
-      mlir::pto::emitVPTOLLVMIR ||
       mlir::pto::ptoPrintSeamIR || !mlir::pto::ptoSeamIRFile.empty()) {
     llvm::errs() << "Error: mixed pto.backend fatobj mode does not support "
                     "debug IR output flags.\n";

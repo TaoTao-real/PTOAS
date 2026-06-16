@@ -107,7 +107,7 @@ jobs:
         needs.detect-vpto-sim-changes.outputs.should_run == 'true'
       }}
     env:
-      LLVM_REPO: https://github.com/TaoTao-real/llvm-project.git
+      LLVM_REPO: https://github.com/vpto-dev/llvm-project.git
       LLVM_REF: feature-vpto-llvm21
       PTO_INSTALL_DIR: ${{ github.workspace }}/install
       VPTO_SIM_WORKSPACE: ${{ github.workspace }}/.work/vpto-sim-ci
@@ -201,25 +201,6 @@ jobs:
             python3 -m pip install setuptools wheel 'pybind11<3' nanobind numpy ml-dtypes
           fi
 
-          if [[ -x /usr/bin/cc ]]; then
-            c_compiler=/usr/bin/cc
-          elif [[ -n "${CC:-}" && -x "${CC}" ]]; then
-            c_compiler="${CC}"
-          else
-            c_compiler="$(command -v cc)"
-          fi
-          if [[ -x /usr/bin/c++ ]]; then
-            cxx_compiler=/usr/bin/c++
-          elif [[ -n "${CXX:-}" && -x "${CXX}" ]]; then
-            cxx_compiler="${CXX}"
-          else
-            cxx_compiler="$(command -v c++)"
-          fi
-          echo "PTOAS_CMAKE_C_COMPILER=${c_compiler}" >> "${GITHUB_ENV}"
-          echo "PTOAS_CMAKE_CXX_COMPILER=${cxx_compiler}" >> "${GITHUB_ENV}"
-          "${c_compiler}" --version | head -n 1
-          "${cxx_compiler}" --version | head -n 1
-
       - name: Clean CI work dirs
         shell: bash
         run: |
@@ -297,8 +278,6 @@ jobs:
           export CXX=g++
           # LLVM_BUILD_DIR is the env var read by the build backend (_ptoas_build_backend.py).
           LLVM_BUILD_DIR="${LLVM_DIR}" \
-            CMAKE_C_COMPILER="${PTOAS_CMAKE_C_COMPILER}" \
-            CMAKE_CXX_COMPILER="${PTOAS_CMAKE_CXX_COMPILER}" \
             PTO_INSTALL_DIR="${PTO_INSTALL_DIR}" \
             python3 -m pip install . --no-build-isolation --no-deps --ignore-installed --prefix "${PTO_INSTALL_DIR}"
 

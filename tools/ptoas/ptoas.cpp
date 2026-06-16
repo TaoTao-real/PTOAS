@@ -465,11 +465,6 @@ llvm::cl::opt<bool> mlir::pto::emitVPTO(
     llvm::cl::desc("Write final post-pass VPTO IR to -o"),
     llvm::cl::init(false));
 
-llvm::cl::opt<bool> mlir::pto::emitVPTOLLVMIR(
-    "vpto-emit-hivm-llvm",
-    llvm::cl::desc("Write generated VPTO device LLVM IR to -o"),
-    llvm::cl::init(false));
-
 static llvm::cl::opt<bool> vptoPrintIR(
     "vpto-print-ir",
     llvm::cl::desc("Print post-pass VPTO backend IR to stderr"),
@@ -1799,8 +1794,7 @@ int mlir::pto::compilePTOASModule(
   int argc = context.getArgc();
   char **argv = context.getArgv();
 
-  if (effectiveBackend != PTOBackend::VPTO &&
-      (emitVPTO || emitVPTOLLVMIR)) {
+  if (effectiveBackend != PTOBackend::VPTO && emitVPTO) {
     llvm::errs() << "Error: VPTO-specific flags require "
                     "--pto-backend=vpto or pto.backend = \"vpto\".\n";
     return 1;

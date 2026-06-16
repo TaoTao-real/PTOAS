@@ -24,7 +24,7 @@ permissions:
   contents: write
 
 env:
-  LLVM_REPO: https://github.com/TaoTao-real/llvm-project.git
+  LLVM_REPO: https://github.com/vpto-dev/llvm-project.git
   LLVM_REF: feature-vpto-llvm21
   LLVM_CACHE_FLAVOR: llvm21-vpto-release-hardening-v1
 

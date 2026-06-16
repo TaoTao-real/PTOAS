@@ -68,15 +68,15 @@ static std::optional<int64_t> getElementCountFromVectorLike(Type type);
 
 static Type getLowPrecisionLLVMType(Type type, MLIRContext *context) {
   if (pto::isPTOHiFloat8Type(type))
-    return Float8E4M3FNType::get(context);
+    return LLVM::LLVMHiFloat8Type::get(context);
   if (isa<pto::F4E1M2x2Type>(type))
-    return IntegerType::get(context, 8);
+    return LLVM::LLVMFloat4E1M2x2Type::get(context);
   if (isa<pto::F4E2M1x2Type>(type))
-    return IntegerType::get(context, 8);
+    return LLVM::LLVMFloat4E2M1x2Type::get(context);
   if (pto::isPTOFloat8E4M3LikeType(type))
-    return Float8E4M3Type::get(context);
+    return LLVM::LLVMFloat8E4M3Type::get(context);
   if (pto::isPTOFloat8E5M2LikeType(type))
-    return Float8E5M2Type::get(context);
+    return LLVM::LLVMFloat8E5M2Type::get(context);
   return {};
 }
 
@@ -86,22 +86,10 @@ static Type getLLVMCompatibleVectorType(ArrayRef<int64_t> shape,
   return VectorType::get(shape, elementType, scalableDims);
 }
 
-static bool isLowpPayloadABIElementType(Type type) {
-  return pto::isPTOFloat8Type(type) || pto::isPTOHiFloat8Type(type) ||
-         pto::isPTOFloat4PackedType(type);
-}
-
-static Type getLowpPayloadABIElementType(Type elementType,
-                                         MLIRContext *context) {
-  if (!isLowpPayloadABIElementType(elementType))
-    return {};
-  return IntegerType::get(context, 8);
-}
-
 static Type normalizePayloadTypeForLLVMLowering(Type type, Builder &builder) {
   if (pto::isPTOHiFloat8x2Type(type))
     return getLLVMCompatibleVectorType(
-        {2}, Float8E4M3FNType::get(builder.getContext()));
+        {2}, LLVM::LLVMHiFloat8Type::get(builder.getContext()));
   if (Type lowpType = getLowPrecisionLLVMType(type, builder.getContext()))
     return lowpType;
 
@@ -129,6 +117,10 @@ static Type normalizeGEPElementTypeForLLVMLowering(Type type,
     return builder.getI16Type();
   if (pto::isPTOLowPrecisionType(type))
     return builder.getI8Type();
+  if (isa<LLVM::LLVMHiFloat8Type, LLVM::LLVMFloat8E4M3Type,
+          LLVM::LLVMFloat8E5M2Type, LLVM::LLVMFloat4E1M2x2Type,
+          LLVM::LLVMFloat4E2M1x2Type>(type))
+    return builder.getI8Type();
 
   if (auto vecType = dyn_cast<VectorType>(type)) {
     Type normalizedElement =
@@ -145,12 +137,8 @@ static Type normalizeGEPElementTypeForLLVMLowering(Type type,
 
 static Type convertVPTOType(Type type, Builder &builder) {
   if (auto vecType = dyn_cast<pto::VRegType>(type)) {
-    Type sourceElementType = vecType.getElementType();
-    Type elementType = getLowpPayloadABIElementType(sourceElementType,
-                                                   builder.getContext());
-    if (!elementType)
-      elementType = normalizePayloadTypeForLLVMLowering(sourceElementType,
-                                                       builder);
+    Type elementType =
+        normalizePayloadTypeForLLVMLowering(vecType.getElementType(), builder);
     return getLLVMCompatibleVectorType({vecType.getElementCount()},
                                        elementType);
   }
@@ -192,13 +180,7 @@ static unsigned getNaturalByteAlignment(Type type) {
 }
 
 static bool hasVPTOConvertibleType(Type type) {
-  if (isa<pto::VRegType, pto::MaskType, pto::AlignType, pto::PtrType>(type))
-    return true;
-  if (pto::isPTOLowPrecisionType(type))
-    return true;
-  if (Type elementType = getElementTypeFromVectorLike(type))
-    return pto::isPTOLowPrecisionType(elementType);
-  return false;
+  return isa<pto::VRegType, pto::MaskType, pto::AlignType, pto::PtrType>(type);
 }
 
 static bool hasVPTOConvertibleType(TypeRange types) {
@@ -539,7 +521,8 @@ static std::string getMemoryElementTypeFragment(Type type) {
 }
 
 static bool isLowpPayloadElementType(Type type) {
-  return isLowpPayloadABIElementType(type);
+  return pto::isPTOFloat8Type(type) || pto::isPTOHiFloat8Type(type) ||
+         pto::isPTOFloat4PackedType(type);
 }
 
 struct LowpPayloadABI {
@@ -549,10 +532,9 @@ struct LowpPayloadABI {
 
 static std::optional<LowpPayloadABI>
 getLowpPayloadABI(Type elementType, MLIRContext *context) {
-  Type carrierElementType = getLowpPayloadABIElementType(elementType, context);
-  if (!carrierElementType)
+  if (!isLowpPayloadElementType(elementType))
     return std::nullopt;
-  return LowpPayloadABI{carrierElementType, "u8"};
+  return LowpPayloadABI{IntegerType::get(context, 8), "u8"};
 }
 
 static Type getLowpPayloadCarrierType(Type vectorLikeType,
@@ -591,55 +573,6 @@ static Value castFromPayloadABI(
   Type carrierType =
       getLowpPayloadCarrierType(semanticType, rewriter.getContext());
   if (!carrierType || carrierType == convertedType)
-    return value;
-  return rewriter.create<LLVM::BitcastOp>(loc, convertedType, value);
-}
-
-static Type getPackedLowpScalarMemoryType(Type semanticType,
-                                          MLIRContext *context) {
-  if (pto::isPTOHiFloat8x2Type(semanticType))
-    return IntegerType::get(context, 16);
-
-  auto vecType = dyn_cast<VectorType>(semanticType);
-  if (!vecType || vecType.getRank() != 1 || vecType.getDimSize(0) != 2 ||
-      llvm::is_contained(vecType.getScalableDims(), true))
-    return {};
-  if (!isLowpPayloadABIElementType(vecType.getElementType()))
-    return {};
-  return IntegerType::get(context, 16);
-}
-
-static Type getScalarAccessGEPElementType(Type semanticType,
-                                          Builder &builder) {
-  if (Type memoryType =
-          getPackedLowpScalarMemoryType(semanticType, builder.getContext()))
-    return memoryType;
-  return normalizeGEPElementTypeForLLVMLowering(semanticType, builder);
-}
-
-static Type getScalarAccessLoadStoreType(Type semanticType,
-                                         Type convertedType,
-                                         MLIRContext *context) {
-  if (Type memoryType = getPackedLowpScalarMemoryType(semanticType, context))
-    return memoryType;
-  return convertedType;
-}
-
-static Value castToScalarAccessMemoryType(Location loc, Value value,
-                                          Type semanticType,
-                                          ConversionPatternRewriter &rewriter) {
-  Type memoryType =
-      getPackedLowpScalarMemoryType(semanticType, rewriter.getContext());
-  if (!memoryType || memoryType == value.getType())
-    return value;
-  return rewriter.create<LLVM::BitcastOp>(loc, memoryType, value);
-}
-
-static Value castFromScalarAccessMemoryType(
-    Location loc, Value value, Type semanticType, Type convertedType,
-    ConversionPatternRewriter &rewriter) {
-  if (!getPackedLowpScalarMemoryType(semanticType, rewriter.getContext()) ||
-      value.getType() == convertedType)
     return value;
   return rewriter.create<LLVM::BitcastOp>(loc, convertedType, value);
 }
@@ -9080,8 +9013,6 @@ public:
     if (!convertedValueType)
       return rewriter.notifyMatchFailure(op,
                                          "could not convert load_scalar result type");
-    Type loadValueType = getScalarAccessLoadStoreType(
-        op.getValue().getType(), convertedValueType, rewriter.getContext());
 
     Value offset = adaptor.getOffset();
     if (offset.getType().isIndex())
@@ -9091,41 +9022,18 @@ public:
     Value elemPtr = adaptor.getPtr();
     if (!matchPattern(offset, m_Zero())) {
       elemPtr = rewriter.create<LLVM::GEPOp>(op.getLoc(), llvmPtrType,
-                                             getScalarAccessGEPElementType(
-                                                 op.getValue().getType(),
-                                                 rewriter),
+                                             normalizeGEPElementTypeForLLVMLowering(
+                                                 convertedValueType, rewriter),
                                              adaptor.getPtr(),
                                              ValueRange{offset});
     }
 
-    auto loaded = rewriter.create<LLVM::LoadOp>(
-        op.getLoc(), loadValueType, elemPtr,
-        getNaturalByteAlignment(loadValueType));
-    Value result = castFromScalarAccessMemoryType(
-        op.getLoc(), loaded.getResult(), op.getValue().getType(),
-        convertedValueType, rewriter);
-    rewriter.replaceOp(op, result);
+    rewriter.replaceOpWithNewOp<LLVM::LoadOp>(
+        op, convertedValueType, elemPtr,
+        getNaturalByteAlignment(convertedValueType));
     return success();
   }
 };
-
-static FailureOr<Value> recoverConvertedValue(Value value, Type sourceType,
-                                              const TypeConverter &converter) {
-  Type convertedType = converter.convertType(sourceType);
-  if (!convertedType)
-    return failure();
-
-  for (unsigned depth = 0; depth < 4; ++depth) {
-    if (value.getType() == convertedType)
-      return value;
-    auto castOp = value.getDefiningOp<UnrealizedConversionCastOp>();
-    if (!castOp || castOp->getNumOperands() != 1 ||
-        castOp->getNumResults() != 1)
-      break;
-    value = castOp.getOperand(0);
-  }
-  return failure();
-}
 
 class ConvertPtoStoreScalarOp final
     : public OpConversionPattern<pto::StoreScalarOp> {
@@ -9147,22 +9055,14 @@ public:
     Value elemPtr = adaptor.getPtr();
     if (!matchPattern(offset, m_Zero())) {
       elemPtr = rewriter.create<LLVM::GEPOp>(op.getLoc(), llvmPtrType,
-                                             getScalarAccessGEPElementType(
-                                                 op.getValue().getType(),
+                                             normalizeGEPElementTypeForLLVMLowering(
+                                                 adaptor.getValue().getType(),
                                                  rewriter),
                                              adaptor.getPtr(), ValueRange{offset});
     }
 
-    FailureOr<Value> value = recoverConvertedValue(
-        adaptor.getValue(), op.getValue().getType(), *getTypeConverter());
-    if (failed(value))
-      return rewriter.notifyMatchFailure(op, "could not convert store value");
-
-    Value storedValue = castToScalarAccessMemoryType(
-        op.getLoc(), *value, op.getValue().getType(), rewriter);
-    rewriter.create<LLVM::StoreOp>(
-        op.getLoc(), storedValue, elemPtr,
-        getNaturalByteAlignment(storedValue.getType()));
+    rewriter.create<LLVM::StoreOp>(op.getLoc(), adaptor.getValue(), elemPtr,
+                                   getNaturalByteAlignment(adaptor.getValue().getType()));
     rewriter.eraseOp(op);
     return success();
   }
@@ -9185,8 +9085,6 @@ public:
         getTypeConverter()->convertType(op.getValue().getType());
     if (!convertedValueType)
       return rewriter.notifyMatchFailure(op, "could not convert load result type");
-    Type loadValueType = getScalarAccessLoadStoreType(
-        op.getValue().getType(), convertedValueType, rewriter.getContext());
 
     Value offset = adaptor.getOffset();
     if (offset.getType().isIndex())
@@ -9196,20 +9094,14 @@ public:
     Value elemPtr = adaptor.getPtr();
     if (!matchPattern(offset, m_Zero())) {
       elemPtr = rewriter.create<LLVM::GEPOp>(op.getLoc(), llvmPtrType,
-                                             getScalarAccessGEPElementType(
-                                                 op.getValue().getType(),
-                                                 rewriter),
+                                             convertedValueType,
                                              adaptor.getPtr(),
                                              ValueRange{offset});
     }
 
-    auto loaded = rewriter.create<LLVM::LoadOp>(
-        op.getLoc(), loadValueType, elemPtr,
-        getNaturalByteAlignment(loadValueType));
-    Value result = castFromScalarAccessMemoryType(
-        op.getLoc(), loaded.getResult(), op.getValue().getType(),
-        convertedValueType, rewriter);
-    rewriter.replaceOp(op, result);
+    rewriter.replaceOpWithNewOp<LLVM::LoadOp>(
+        op, convertedValueType, elemPtr,
+        getNaturalByteAlignment(convertedValueType));
     return success();
   }
 };
@@ -9291,9 +9183,7 @@ public:
                                              ValueRange{offset});
     }
 
-    auto ptrTy = dyn_cast<pto::PtrType>(op.getPtr().getType());
-    if (!ptrTy)
-      return rewriter.notifyMatchFailure(op, "expected PTO pointer source type");
+    auto ptrTy = cast<pto::PtrType>(op.getPtr().getType());
     FailureOr<Value> ptr = reinterpretPointerToAddrSpace(
         op, elemPtr,
         static_cast<unsigned>(ptrTy.getMemorySpace().getAddressSpace()));
@@ -9354,22 +9244,13 @@ public:
     Value elemPtr = adaptor.getPtr();
     if (!matchPattern(offset, m_Zero())) {
       elemPtr = rewriter.create<LLVM::GEPOp>(op.getLoc(), llvmPtrType,
-                                             getScalarAccessGEPElementType(
-                                                 op.getValue().getType(),
-                                                 rewriter),
+                                             adaptor.getValue().getType(),
                                              adaptor.getPtr(), ValueRange{offset});
     }
 
-    FailureOr<Value> value = recoverConvertedValue(
-        adaptor.getValue(), op.getValue().getType(), *getTypeConverter());
-    if (failed(value))
-      return rewriter.notifyMatchFailure(op, "could not convert store value");
-
-    Value storedValue = castToScalarAccessMemoryType(
-        op.getLoc(), *value, op.getValue().getType(), rewriter);
     rewriter.replaceOpWithNewOp<LLVM::StoreOp>(
-        op, storedValue, elemPtr,
-        getNaturalByteAlignment(storedValue.getType()));
+        op, adaptor.getValue(), elemPtr,
+        getNaturalByteAlignment(adaptor.getValue().getType()));
     return success();
   }
 };
@@ -9427,9 +9308,7 @@ public:
                                              adaptor.getPtr(), ValueRange{offset});
     }
 
-    auto ptrTy = dyn_cast<pto::PtrType>(op.getPtr().getType());
-    if (!ptrTy)
-      return rewriter.notifyMatchFailure(op, "expected PTO pointer source type");
+    auto ptrTy = cast<pto::PtrType>(op.getPtr().getType());
     FailureOr<Value> ptr = reinterpretPointerToAddrSpace(
         op, elemPtr,
         static_cast<unsigned>(ptrTy.getMemorySpace().getAddressSpace()));
@@ -9449,12 +9328,8 @@ public:
                                : pto::StL2Cache::NMFV;
     Value modeValue =
         getI32Constant(rewriter, op.getLoc(), static_cast<uint64_t>(mode));
-    FailureOr<Value> convertedValue = recoverConvertedValue(
-        adaptor.getValue(), op.getValue().getType(), *getTypeConverter());
-    if (failed(convertedValue))
-      return rewriter.notifyMatchFailure(op, "could not convert stg value");
     Value storedValue = convertStgValue(op.getLoc(), op.getValue().getType(),
-                                        *convertedValue, rewriter);
+                                        adaptor.getValue(), rewriter);
     auto funcType =
         rewriter.getFunctionType(TypeRange{ptr->getType(), storedValue.getType(),
                                            rewriter.getI32Type()},
@@ -9479,9 +9354,7 @@ public:
   LogicalResult
   matchAndRewrite(Operation *op, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
-    if (isa<pto::AddPtrOp, pto::CastPtrOp, pto::LoadScalarOp,
-            pto::StoreScalarOp, pto::PTOLoadOp, pto::PTOStoreOp,
-            pto::PTOLdgOp, pto::PTOStgOp>(op))
+    if (isa<pto::CastPtrOp>(op))
       return failure();
     if (!hasVPTOConvertibleType(op->getOperandTypes()) &&
         !hasVPTOConvertibleType(op->getResultTypes()))
@@ -9924,49 +9797,6 @@ static Type normalizeTypeForOfficialLLVMLowering(Type type, Builder &builder) {
   return type;
 }
 
-static bool isI8VectorToLowpVectorMaterialization(
-    UnrealizedConversionCastOp castOp) {
-  if (castOp->getNumOperands() != 1 || castOp->getNumResults() != 1)
-    return false;
-
-  auto sourceVec = dyn_cast<VectorType>(castOp.getOperand(0).getType());
-  auto resultVec = dyn_cast<VectorType>(castOp.getResult(0).getType());
-  if (!sourceVec || !resultVec || sourceVec.getShape() != resultVec.getShape() ||
-      sourceVec.getScalableDims() != resultVec.getScalableDims())
-    return false;
-
-  auto sourceElement = dyn_cast<IntegerType>(sourceVec.getElementType());
-  return sourceElement && sourceElement.getWidth() == 8 &&
-         pto::isPTOLowPrecisionType(resultVec.getElementType());
-}
-
-static void foldLowpVectorMaterializationCastsForLLVMExport(ModuleOp module) {
-  SmallVector<UnrealizedConversionCastOp> casts;
-  module.walk([&](UnrealizedConversionCastOp castOp) {
-    if (isI8VectorToLowpVectorMaterialization(castOp))
-      casts.push_back(castOp);
-  });
-
-  for (UnrealizedConversionCastOp castOp : casts) {
-    if (!castOp)
-      continue;
-    SmallVector<Operation *> users(castOp->getUsers());
-    for (Operation *user : users) {
-      auto bitcastOp = dyn_cast<LLVM::BitcastOp>(user);
-      if (!bitcastOp)
-        continue;
-      OpBuilder builder(bitcastOp);
-      Value replacement = builder.create<LLVM::BitcastOp>(
-          bitcastOp.getLoc(), bitcastOp.getResult().getType(),
-          castOp.getOperand(0));
-      bitcastOp.getResult().replaceAllUsesWith(replacement);
-      bitcastOp.erase();
-    }
-    if (castOp->use_empty())
-      castOp.erase();
-  }
-}
-
 static void normalizeFuncSignaturesForOfficialLLVMLowering(ModuleOp module) {
   Builder builder(module.getContext());
 
@@ -10159,6 +9989,7 @@ static void applySimtEntryCallingConvention(
     const llvm::StringSet<llvm::BumpPtrAllocator> &simtEntryNames) {
   for (llvm::Function &function : llvmModule) {
     if (simtEntryNames.contains(function.getName())) {
+      function.setCallingConv(llvm::CallingConv::SimtEntry);
       function.addFnAttr(llvm::Attribute::NoInline);
       // Match Bisheng's C++ frontend shape for SIMT outlined bodies. The
       // exported wrapper owns the real kernel metadata, while the SIMT body is
@@ -10180,6 +10011,7 @@ static void applySimtEntryCallingConvention(
         auto *callee = call->getCalledFunction();
         if (!callee || !simtEntryNames.contains(callee->getName()))
           continue;
+        call->setCallingConv(llvm::CallingConv::SimtEntry);
       }
     }
   }
@@ -10252,7 +10084,6 @@ static LogicalResult runPipeline(ModuleOp module, llvm::raw_ostream &diagOS,
     diagOS << "VPTO LLVM emission failed: official lowering pipeline failed\n";
     return failure();
   }
-  foldLowpVectorMaterializationCastsForLLVMExport(clonedModule);
   return emit(clonedModule);
 }
 

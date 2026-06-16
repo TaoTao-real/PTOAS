@@ -63,7 +63,7 @@ static bool writeTextFile(StringRef path, StringRef content,
 
 static void stripUnsupportedBishengAttrs(llvm::Module &module) {
   for (llvm::Function &function : module) {
-    // LLVM prints memory effect attributes in textual form like
+    // LLVM 19 prints memory effect attributes in textual form like
     // `memory(none)`. beta.1 Bisheng cannot parse that syntax, so remove only
     // the unsupported memory-effect attribute before serializing the module.
     function.setAttributes(
@@ -72,113 +72,24 @@ static void stripUnsupportedBishengAttrs(llvm::Module &module) {
   }
 }
 
-static std::optional<size_t> findVectorTypeStart(StringRef text,
-                                                 size_t typeEnd) {
-  unsigned depth = 0;
-  for (size_t index = typeEnd; index > 0; --index) {
-    char c = text[index - 1];
-    if (c == '\n' || c == '\r')
-      return std::nullopt;
-    if (c == '>')
-      ++depth;
-    else if (c == '<') {
-      if (depth == 0)
-        return std::nullopt;
-      --depth;
-      if (depth == 0)
-        return index - 1;
-    }
-  }
-  return std::nullopt;
-}
-
-static std::optional<unsigned> getFixedVectorElementCount(StringRef vectorType) {
-  vectorType = vectorType.trim();
-  if (!vectorType.consume_front("<") || !vectorType.consume_back(">"))
-    return std::nullopt;
-  vectorType = vectorType.trim();
-  if (vectorType.starts_with("vscale"))
-    return std::nullopt;
-
-  auto [countText, elementType] = vectorType.split(" x ");
-  unsigned count = 0;
-  if (countText.empty() || elementType.empty() ||
-      countText.getAsInteger(10, count) || count == 0)
-    return std::nullopt;
-  return count;
-}
-
-static std::string expandFixedVectorSplatConstants(StringRef input) {
-  constexpr StringRef marker = "splat (";
-  constexpr unsigned maxExpandedElements = 4096;
-
-  std::string output;
-  size_t cursor = 0;
-  size_t searchFrom = 0;
-
-  while (true) {
-    size_t splatPos = input.find(marker, searchFrom);
-    if (splatPos == StringRef::npos)
-      break;
-
-    size_t typeEnd = splatPos;
-    while (typeEnd > 0 &&
-           std::isspace(static_cast<unsigned char>(input[typeEnd - 1])))
-      --typeEnd;
-    if (typeEnd == 0 || input[typeEnd - 1] != '>') {
-      searchFrom = splatPos + marker.size();
-      continue;
-    }
-
-    std::optional<size_t> typeStart = findVectorTypeStart(input, typeEnd);
-    if (!typeStart) {
-      searchFrom = splatPos + marker.size();
-      continue;
-    }
-
-    std::optional<unsigned> elementCount =
-        getFixedVectorElementCount(input.slice(*typeStart, typeEnd));
-    if (!elementCount || *elementCount > maxExpandedElements) {
-      searchFrom = splatPos + marker.size();
-      continue;
-    }
-
-    size_t valueStart = splatPos + marker.size();
-    size_t valueEnd = input.find(')', valueStart);
-    size_t lineEnd = input.find('\n', valueStart);
-    if (valueEnd == StringRef::npos ||
-        (lineEnd != StringRef::npos && valueEnd > lineEnd)) {
-      searchFrom = splatPos + marker.size();
-      continue;
-    }
-
-    StringRef element = input.slice(valueStart, valueEnd);
-    output.append(input.data() + cursor, typeEnd - cursor);
-    output.append(" <");
-    for (unsigned index = 0; index < *elementCount; ++index) {
-      if (index != 0)
-        output.append(", ");
-      output.append(element.data(), element.size());
-    }
-    output.append(">");
-
-    cursor = valueEnd + 1;
-    searchFrom = cursor;
-  }
-
-  output.append(input.data() + cursor, input.size() - cursor);
-  return output;
-}
-
 static bool writeLLVMModuleFile(llvm::Module &module, StringRef path,
                                 llvm::raw_ostream &diagOS) {
+  std::error_code ec;
+  llvm::raw_fd_ostream os(path, ec, llvm::sys::fs::OF_Text);
+  if (ec) {
+    diagOS << "Error: failed to open " << path << " for write: "
+           << ec.message() << "\n";
+    return false;
+  }
   stripUnsupportedBishengAttrs(module);
-  std::string llvmIR;
-  llvm::raw_string_ostream os(llvmIR);
   module.print(os, nullptr);
   os.flush();
-  llvmIR = expandFixedVectorSplatConstants(llvmIR);
-  return writeTextFile(path, llvmIR, diagOS);
+  if (os.has_error()) {
+    diagOS << "Error: failed to write LLVM module to " << path << "\n";
+    os.clear_error();
+    return false;
+  }
+  return true;
 }
 
 static std::string sanitizeModuleId(llvm::StringRef raw) {
@@ -989,33 +900,16 @@ static mlir::LogicalResult applyVPTOLLVMABINames(llvm::Module &module,
   return mlir::success();
 }
 
-mlir::LogicalResult mlir::pto::emitVPTOVectorLLVMIR(
-    llvm::Module &module, llvm::StringRef llPath,
-    const CANNToolchain &toolchain, llvm::raw_ostream &diagOS) {
+mlir::LogicalResult mlir::pto::emitVPTOVectorDeviceObject(
+    llvm::Module &module, llvm::StringRef llPath, llvm::StringRef outObjPath,
+    const CANNToolchain &toolchain, llvm::StringRef stderrPath,
+    llvm::raw_ostream &diagOS) {
   if (failed(applyVPTOLLVMABINames(
           module,
           toolchain.vptoPublicABISuffix(ObjectEmissionDeviceTarget::Vector),
           diagOS)))
     return failure();
-  return writeLLVMModule(module, llPath, diagOS);
-}
-
-mlir::LogicalResult mlir::pto::emitVPTOCubeLLVMIR(
-    llvm::Module &module, llvm::StringRef llPath,
-    const CANNToolchain &toolchain, llvm::raw_ostream &diagOS) {
-  if (failed(applyVPTOLLVMABINames(
-          module,
-          toolchain.vptoPublicABISuffix(ObjectEmissionDeviceTarget::Cube),
-          diagOS)))
-    return failure();
-  return writeLLVMModule(module, llPath, diagOS);
-}
-
-mlir::LogicalResult mlir::pto::emitVPTOVectorDeviceObject(
-    llvm::Module &module, llvm::StringRef llPath, llvm::StringRef outObjPath,
-    const CANNToolchain &toolchain, llvm::StringRef stderrPath,
-    llvm::raw_ostream &diagOS) {
-  if (failed(emitVPTOVectorLLVMIR(module, llPath, toolchain, diagOS)))
+  if (failed(writeLLVMModule(module, llPath, diagOS)))
     return failure();
   return compileLLVMToDeviceObject(llPath, outObjPath,
                                    ObjectEmissionDeviceTarget::Vector,
@@ -1026,7 +920,12 @@ mlir::LogicalResult mlir::pto::emitVPTOCubeDeviceObject(
     llvm::Module &module, llvm::StringRef llPath, llvm::StringRef outObjPath,
     const CANNToolchain &toolchain, llvm::StringRef stderrPath,
     llvm::raw_ostream &diagOS) {
-  if (failed(emitVPTOCubeLLVMIR(module, llPath, toolchain, diagOS)))
+  if (failed(applyVPTOLLVMABINames(
+          module,
+          toolchain.vptoPublicABISuffix(ObjectEmissionDeviceTarget::Cube),
+          diagOS)))
+    return failure();
+  if (failed(writeLLVMModule(module, llPath, diagOS)))
     return failure();
   return compileLLVMToDeviceObject(llPath, outObjPath,
                                    ObjectEmissionDeviceTarget::Cube,
