@@ -1,0 +1,126 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You can not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// TileLang ST kernels for pto.trowexpanddiv: row-wise broadcast division.
+// Supports f32, f16 types.
+// src1Col=1: broadcast single column value to all dst columns
+// src1Col>1: each src1 column broadcasts to dstCol/src1Col columns
+
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+  // f32_40x64: launchTRowExpandDiv<float, 40, 64, 40, 1, true, false>
+  func.func @TROWEXPANDDIV_f16_16x32(%src0_ptr: !pto.ptr<f16>, %src1_ptr: !pto.ptr<f16>, %dst_ptr: !pto.ptr<f16>) attributes {pto.kernel} {
+    %c0   = arith.constant 0   : index
+    %c1   = arith.constant 1   : index
+    %c16  = arith.constant 16  : index
+    %c32  = arith.constant 32  : index
+    %c256 = arith.constant 256 : index
+    %c512 = arith.constant 512 : index
+
+    %src0_view = pto.make_tensor_view %src0_ptr,
+      shape = [%c1, %c1, %c1, %c16, %c32],
+      strides = [%c512, %c512, %c512, %c32, %c1]
+      : !pto.tensor_view<1x1x1x16x32xf16>
+    %src1_view = pto.make_tensor_view %src1_ptr,
+      shape = [%c1, %c1, %c1, %c16, %c16],
+      strides = [%c256, %c256, %c256, %c16, %c1]
+      : !pto.tensor_view<1x1x1x16x16xf16>
+    %dst_view = pto.make_tensor_view %dst_ptr,
+      shape = [%c1, %c1, %c1, %c16, %c32],
+      strides = [%c512, %c512, %c512, %c32, %c1]
+      : !pto.tensor_view<1x1x1x16x32xf16>
+
+    %src0_part = pto.partition_view %src0_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c16, %c32]
+      : !pto.tensor_view<1x1x1x16x32xf16> -> !pto.partition_tensor_view<1x1x1x16x32xf16>
+    %src1_part = pto.partition_view %src1_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c16, %c16]
+      : !pto.tensor_view<1x1x1x16x16xf16> -> !pto.partition_tensor_view<1x1x1x16x16xf16>
+    %dst_part = pto.partition_view %dst_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c16, %c32]
+      : !pto.tensor_view<1x1x1x16x32xf16> -> !pto.partition_tensor_view<1x1x1x16x32xf16>
+
+    %src0 = pto.alloc_tile
+      : !pto.tile_buf<vec, 16x32xf16>
+    %src1 = pto.alloc_tile
+      : !pto.tile_buf<vec, 16x16xf16>
+    %dst = pto.alloc_tile
+      : !pto.tile_buf<vec, 16x32xf16>
+
+    pto.tload ins(%src0_part : !pto.partition_tensor_view<1x1x1x16x32xf16>)
+              outs(%src0 : !pto.tile_buf<vec, 16x32xf16>)
+    pto.tload ins(%src1_part : !pto.partition_tensor_view<1x1x1x16x16xf16>)
+              outs(%src1 : !pto.tile_buf<vec, 16x16xf16>)
+
+    pto.trowexpanddiv ins(%src0, %src1 : !pto.tile_buf<vec, 16x32xf16>, !pto.tile_buf<vec, 16x16xf16>) outs(%dst : !pto.tile_buf<vec, 16x32xf16>) {src1Col = 1 : i64, src0eqdst = true, highPrecision = false}
+
+    pto.tstore ins(%dst : !pto.tile_buf<vec, 16x32xf16>)
+               outs(%dst_part : !pto.partition_tensor_view<1x1x1x16x32xf16>)
+    return
+  }
+
+  // f16_32x512: launchTRowExpandDiv<aclFloat16, 32, 512, 32, 1, true, false>
+
+  func.func @TROWEXPANDDIV_f32_40x32_hp(%src0_ptr: !pto.ptr<f32>, %src1_ptr: !pto.ptr<f32>, %dst_ptr: !pto.ptr<f32>) attributes {pto.kernel} {
+    %c0    = arith.constant 0    : index
+    %c1    = arith.constant 1    : index
+    %c8    = arith.constant 8    : index
+    %c32   = arith.constant 32   : index
+    %c40   = arith.constant 40   : index
+    %c320  = arith.constant 320  : index
+    %c1280 = arith.constant 1280 : index
+
+    %src0_view = pto.make_tensor_view %src0_ptr,
+      shape = [%c1, %c1, %c1, %c40, %c32],
+      strides = [%c1280, %c1280, %c1280, %c32, %c1]
+      : !pto.tensor_view<1x1x1x40x32xf32>
+    %src1_view = pto.make_tensor_view %src1_ptr,
+      shape = [%c1, %c1, %c1, %c40, %c8],
+      strides = [%c320, %c320, %c320, %c8, %c1]
+      : !pto.tensor_view<1x1x1x40x8xf32>
+    %dst_view = pto.make_tensor_view %dst_ptr,
+      shape = [%c1, %c1, %c1, %c40, %c32],
+      strides = [%c1280, %c1280, %c1280, %c32, %c1]
+      : !pto.tensor_view<1x1x1x40x32xf32>
+
+    %src0_part = pto.partition_view %src0_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c40, %c32]
+      : !pto.tensor_view<1x1x1x40x32xf32> -> !pto.partition_tensor_view<1x1x1x40x32xf32>
+    %src1_part = pto.partition_view %src1_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c40, %c8]
+      : !pto.tensor_view<1x1x1x40x8xf32> -> !pto.partition_tensor_view<1x1x1x40x8xf32>
+    %dst_part = pto.partition_view %dst_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c40, %c32]
+      : !pto.tensor_view<1x1x1x40x32xf32> -> !pto.partition_tensor_view<1x1x1x40x32xf32>
+
+    %src0 = pto.alloc_tile
+      : !pto.tile_buf<vec, 40x32xf32>
+    %src1 = pto.alloc_tile
+      : !pto.tile_buf<vec, 40x8xf32>
+    %dst = pto.alloc_tile
+      : !pto.tile_buf<vec, 40x32xf32>
+
+    pto.tload ins(%src0_part : !pto.partition_tensor_view<1x1x1x40x32xf32>)
+              outs(%src0 : !pto.tile_buf<vec, 40x32xf32>)
+    pto.tload ins(%src1_part : !pto.partition_tensor_view<1x1x1x40x8xf32>)
+              outs(%src1 : !pto.tile_buf<vec, 40x8xf32>)
+
+    pto.trowexpanddiv ins(%src0, %src1 : !pto.tile_buf<vec, 40x32xf32>, !pto.tile_buf<vec, 40x8xf32>) outs(%dst : !pto.tile_buf<vec, 40x32xf32>) {src1Col = 1 : i64, src0eqdst = true, highPrecision = true}
+
+    pto.tstore ins(%dst : !pto.tile_buf<vec, 40x32xf32>)
+               outs(%dst_part : !pto.partition_tensor_view<1x1x1x40x32xf32>)
+    return
+  }
+
+  // f16_16x128_hp: launchTRowExpandDiv<aclFloat16, 16, 128, 16, 1, true, true> (highPrecision)
+}

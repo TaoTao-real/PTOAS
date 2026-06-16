@@ -6,11 +6,6 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// Please refer to the License for details. You may not use this file except in compliance with the License.
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
-// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
-// See LICENSE in the root of the software repository for the full text of the License.
-
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
 
@@ -44,6 +39,7 @@ constexpr int8_t kC2VDirMask = 1;
 constexpr int8_t kV2CDirMask = 2;
 constexpr int8_t kBidirectionalDirMask = 3;
 constexpr unsigned kVisitedInitReserveSize = 16;
+constexpr llvm::StringLiteral kFrontendPipeIdAttrName = "__pto.frontend_id";
 
 struct PipePeerKey {
   std::string ownerFunc;
@@ -141,6 +137,15 @@ static std::optional<bool> getUsageNoSplit(PipeSplitUsage usage) {
 
 static std::string getFuncSymbol(func::FuncOp funcOp) {
   return funcOp.getSymName().str();
+}
+
+static PipePeerKey getGlobalTensorPipeKey(Operation *op, int8_t dirMask) {
+  std::string id = "unknown";
+  if (auto idAttr = op->getAttrOfType<IntegerAttr>(kFrontendPipeIdAttrName))
+    id = std::to_string(idAttr.getInt());
+  else
+    id = std::to_string(reinterpret_cast<uintptr_t>(op));
+  return PipePeerKey{"__pto_globaltensor_pipe", "id_" + id, dirMask};
 }
 
 static std::optional<PipePeerKey> getPipePeerKey(Value localAddr,
@@ -250,6 +255,22 @@ struct PTOInferValidatePipeInitPass
         key->dirMask = effectiveDirMask;
         keyedInits[*key].push_back(info.op);
       };
+
+      auto recordGlobalTensor = [&](int8_t effectiveDirMask) {
+        keyedInits[getGlobalTensorPipeKey(info.op, effectiveDirMask)].push_back(
+            info.op);
+      };
+
+      if (auto l2g2l = dyn_cast<InitializeL2G2LPipeOp>(info.op)) {
+        if (!l2g2l.getLocalAddr()) {
+          if (info.dirMask == kBidirectionalDirMask) {
+            recordGlobalTensor(kBidirectionalDirMask);
+          } else {
+            recordGlobalTensor(info.dirMask);
+          }
+          return;
+        }
+      }
 
       if (info.dirMask == kBidirectionalDirMask) {
         recordAddr(getLocalAddrOperand(initOp), kC2VDirMask);

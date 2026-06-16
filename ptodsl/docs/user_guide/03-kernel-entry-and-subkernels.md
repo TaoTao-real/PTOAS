@@ -36,8 +36,8 @@ def kernel_name(
     rows: pto.i32,                  # runtime metadata (positional)
     cols: pto.i32,                  # runtime metadata (positional)
     *,
-    CONST_A: pto.constexpr = 128,  # compile-time constant (keyword-only)
-    CONST_B: pto.constexpr = 64,   # compile-time constant (keyword-only)
+    CONST_A: pto.const_expr = 128,  # compile-time constant (keyword-only)
+    CONST_B: pto.const_expr = 64,   # compile-time constant (keyword-only)
 ):
     x_view = pto.make_tensor_view(x_ptr, shape=[rows, cols], strides=[cols, 1])
     y_view = pto.make_tensor_view(y_ptr, shape=[rows, cols], strides=[cols, 1])
@@ -54,7 +54,7 @@ position in the signature, and way to supply the value:
 |---|---|---|---|
 | **Device buffer** | positional (before `*`) | `pto.ptr(dtype, "gm")` | launch time |
 | **Runtime scalar** | positional (before `*`) | `pto.i32`, `pto.f32`, `pto.i1`, etc. | launch time |
-| **Compile-time constant** | keyword-only (after `*`) | `pto.constexpr = <default>` | compile time |
+| **Compile-time constant** | keyword-only (after `*`) | `pto.const_expr = <default>` | compile time |
 
 #### 1. Device-buffer parameters
 
@@ -95,7 +95,7 @@ def my_kernel(
 
 #### 3. Compile-time constants
 
-Declare after `*` with `pto.constexpr` and a default value.
+Declare after `*` with `pto.const_expr` and a default value.
 Pass the value to `.compile(...)` — **not** at launch time:
 
 ```python
@@ -103,7 +103,7 @@ Pass the value to `.compile(...)` — **not** at launch time:
 def my_kernel(
     X_ptr: pto.ptr(pto.f32, "gm"),
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     # BLOCK is a Python value at trace time — use it for tile shapes,
     # unrolled loops, or dtype arguments:
@@ -128,7 +128,7 @@ def scaled_bias_add(
     alpha: pto.f32,                               # runtime scalar
     bias: pto.f32,                                # runtime scalar
     *,
-    BLOCK: pto.constexpr = 128,                   # compile-time constant
+    BLOCK: pto.const_expr = 128,                   # compile-time constant
 ):
     x_view = pto.make_tensor_view(X_ptr, shape=[rows, cols], strides=[cols, 1])
     o_view = pto.make_tensor_view(O_ptr, shape=[rows, cols], strides=[cols, 1])
@@ -225,7 +225,7 @@ def my_kernel(
     rows: pto.i32,
     cols: pto.i32,
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     a_view = pto.make_tensor_view(A_ptr, shape=[rows, cols], strides=[cols, 1])
     b_view = pto.make_tensor_view(B_ptr, shape=[rows, cols], strides=[cols, 1])
@@ -283,7 +283,7 @@ def my_kernel(
     rows: pto.i32,
     cols: pto.i32,
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     a_view = pto.make_tensor_view(A_ptr, shape=[rows, cols], strides=[cols, 1])
     b_view = pto.make_tensor_view(B_ptr, shape=[rows, cols], strides=[cols, 1])
@@ -539,7 +539,7 @@ instruction appears to operate on a single element (`lds`, `sts`, `a + b`),
 but the same instruction is issued across a large number of work-items
 simultaneously.
 
-**Signature**: `@pto.simt(fn=None, *, name=None, target="a5")`
+**Signature**: `@pto.simt(fn=None, *, name=None, target="a5", max_threads=None, max_regs=None)`
 
 <!-- ptodsl-doc-test: {"mode":"compile_fragment","fixture":"kernel_entry.simt_signature","symbol":"kernel_entry_simt_signature_probe","compile":{"BLOCK":8}} -->
 ```python
@@ -573,12 +573,89 @@ def blend_output_rows(
             scalar.store(o_next, o_next_tile[row, col])
 ```
 
-SIMT kernels read and write individual scalar elements from tiles. The unit
-executes the same scalar instruction across many work-items in parallel, making
-it efficient for per-element operations.
+SIMT kernels read and write individual scalar elements from tiles or typed
+pointers. The unit executes the same scalar instruction across many work-items
+in parallel, making it efficient for per-element operations.
+
+#### SIMT resource attributes
+
+Optional `max_threads` and `max_regs` arguments attach VPTO resource attributes
+to the generated `pto.simt_entry` helper.
+
+**Signature**: `@pto.simt(fn=None, *, name=None, target="a5", max_threads=None, max_regs=None)`
+
+**Parameters**:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `max_threads` | positive Python `int` | backend default `1024` | Compile-time launch envelope for this SIMT helper |
+| `max_regs` | positive Python `int` | backend default `32` | Scalar register budget per work-item |
+
+`max_threads` is not the launch size. The actual work-item count comes from the
+SIMT launch dimensions. Both arguments must be Python integers known at trace
+time, greater than zero, and fit in signless `i32`. They are only valid on
+decorated SIMT helper functions, not inline `with pto.simt():` scopes.
+
+**Example**:
+
+<!-- ptodsl-doc-test: {"mode":"compile","symbol":"kernel_entry_simt_resource_probe","compile":{}} -->
+```python
+@pto.simt(max_threads=256, max_regs=48)
+def write_tid(dst: pto.ptr(pto.i32, "gm")):
+    tid = pto.get_tid_x()
+    idx = scalar.index_cast(tid)
+    pto.stg(tid, dst, idx)
+
+
+@pto.jit(target="a5")
+def kernel_entry_simt_resource_probe(dst: pto.ptr(pto.i32, "gm")):
+    write_tid[128, 1, 1](dst)
+```
 
 **Invocation modes**: can be called from `@pto.jit` in either mode, or used
 inline with `with pto.simt():` (Section 3.4).
+
+#### Explicit SIMT launch dimensions
+
+Calling a decorated SIMT helper directly uses the default launch descriptor
+emitted by the tracer. Use indexed launch syntax when the launch dimensions must
+be authored explicitly. `pto.simt_launch(...)` is the equivalent functional
+form.
+
+**Signatures**:
+
+```python
+body[dim_x, dim_y, dim_z](*args, **static_kwargs)
+pto.simt_launch(body, *args, dims=(dim_x, dim_y, dim_z), **static_kwargs)
+```
+
+**Parameters**:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `body` | `@pto.simt` function | SIMT entry body to launch |
+| `*args` | PTO values | Runtime arguments passed to the SIMT body |
+| `dim_x`, `dim_y`, `dim_z` | `i32`-compatible values | Launch dimensions in source-level `x, y, z` order |
+| `**static_kwargs` | hashable Python values | Trace-time specialization arguments for the SIMT body |
+
+**Returns**: None.
+
+**Example**:
+
+<!-- ptodsl-doc-test: {"mode":"compile","symbol":"kernel_entry_simt_launch_probe","compile":{}} -->
+```python
+@pto.simt
+def fill_tid(dst: pto.ptr(pto.i32, "gm")):
+    tid = pto.get_tid_x()
+    pto.stg(tid, dst, scalar.index_cast(tid))
+
+
+@pto.jit(target="a5")
+def kernel_entry_simt_launch_probe(dst: pto.ptr(pto.i32, "gm")):
+    fill_tid[32, 1, 1](dst)
+```
+
+Specific SIMT micro-op APIs are documented in Chapter 13.
 
 ## 3.4 Inline context manager syntax
 
@@ -655,9 +732,9 @@ pointers:
 | `@pto.simd` → caller | Only via `vsts`/`psts` to UB tiles; `vreg` cannot escape |
 | Cube-local → UB | Only via `mte_l0c_ub`; LEFT/RIGHT/ACC/BIAS are private |
 
-## 3.6 `pto.constexpr`
+## 3.6 `pto.const_expr`
 
-`pto.constexpr` marks a `@pto.jit` keyword-only parameter as a compile-time
+`pto.const_expr` marks a `@pto.jit` keyword-only parameter as a compile-time
 constant. The compiler specializes the kernel for each combination of constexpr
 values, and the compiled artifact is cached by specialization key together with
 the kernel's entry annotation contract.
@@ -668,8 +745,8 @@ the kernel's entry annotation contract.
 def kernel(
     A_ptr: pto.ptr(pto.f32, "gm"),
     *,
-    BLOCK: pto.constexpr = 128,
-    DTYPE: pto.constexpr = pto.f32,
+    BLOCK: pto.const_expr = 128,
+    DTYPE: pto.const_expr = pto.f32,
 ):
     # ... use BLOCK / DTYPE in tile shapes, loop bounds, or dtype-specialized paths ...
     return
@@ -682,7 +759,7 @@ def kernel(
 - Cannot change between launches of the same compiled instance — compile a new
   variant for a different value.
 
-`pto.constexpr` parameters can be used anywhere in the kernel body where a
+`pto.const_expr` parameters can be used anywhere in the kernel body where a
 Python value is expected: tile shapes, loop bounds that are known at compile
 time, dtype arguments, etc. They are evaluated at trace time, so `for i in
 range(BLOCK)` would unroll `BLOCK` times.

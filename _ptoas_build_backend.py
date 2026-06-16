@@ -147,6 +147,10 @@ def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
         "PTO_INSTALL_DIR": str(_PTO_INSTALL_DIR),
         "LLVM_BUILD_DIR": str(_LLVM_BUILD_DIR),
         "PTO_WHEEL_DIST_DIR": str(_WHEEL_DIST_DIR),
+        # Keep wheel packaging on the same interpreter pip used to invoke the
+        # backend. This avoids drifting to a different `python3` on PATH in
+        # conda/self-hosted CI environments.
+        "PYTHON": sys.executable,
     })
     subprocess.check_call(
         ["bash", str(_REPO / "docker" / "create_wheel.sh")],

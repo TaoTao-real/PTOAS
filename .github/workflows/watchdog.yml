@@ -22,7 +22,6 @@ jobs:
   rerun-self-hosted-git-failure:
     if: >-
       ${{
-        github.event.workflow_run.event == 'pull_request' &&
         github.event.workflow_run.conclusion == 'failure' &&
         github.event.workflow_run.run_attempt <= 8
       }}
@@ -50,42 +49,35 @@ jobs:
           echo "Inspecting CI workflow run ${RUN_ID} in ${REPO}"
           run_head_sha="${RUN_HEAD_SHA}"
 
-          if [[ ! -f pr-context/pr-number || ! -f pr-context/pr-head-sha ]]; then
-            echo "No pr-context artifact found for workflow run ${RUN_ID}; skip rerun."
-            exit 0
-          fi
+          # ── PR: validate that the run is still current for an open PR ──
+          if [[ -f pr-context/pr-number && -f pr-context/pr-head-sha ]]; then
+            pr_number="$(< pr-context/pr-number)"
+            pr_head_sha="$(< pr-context/pr-head-sha)"
 
-          pr_number="$(< pr-context/pr-number)"
-          pr_head_sha="$(< pr-context/pr-head-sha)"
+            if [[ ! "${pr_number}" =~ ^[0-9]+$ ||
+                  ! "${pr_head_sha}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              echo "Invalid pr-context artifact for workflow run ${RUN_ID}; skip rerun."
+              exit 0
+            fi
 
-          if [[ ! "${pr_number}" =~ ^[0-9]+$ ||
-                ! "${pr_head_sha}" =~ ^[0-9a-fA-F]{40}$ ]]; then
-            echo "Invalid pr-context artifact for workflow run ${RUN_ID}; skip rerun."
-            exit 0
-          fi
+            read -r pr_state current_head_sha < <(
+              gh api "repos/${REPO}/pulls/${pr_number}" \
+                --jq '[.state, .head.sha] | @tsv'
+            )
+            if [[ "${pr_state}" != "open" ]]; then
+              echo "PR #${pr_number} is ${pr_state}; skip rerun."
+              exit 0
+            fi
 
-          if [[ "${pr_head_sha}" != "${run_head_sha}" ]]; then
-            echo "Workflow run ${RUN_ID} does not match pr-context head sha; skip rerun."
-            echo "Run head SHA: ${run_head_sha}"
-            echo "PR context head SHA: ${pr_head_sha}"
-            exit 0
+            if [[ "${run_head_sha}" != "${current_head_sha}" ]]; then
+              echo "Workflow run ${RUN_ID} is stale for PR #${pr_number}; skip rerun."
+              echo "Run head SHA: ${run_head_sha}"
+              echo "Current PR head SHA: ${current_head_sha}"
+              exit 0
+            fi
           fi
-
-          read -r pr_state current_head_sha < <(
-            gh api "repos/${REPO}/pulls/${pr_number}" \
-              --jq '[.state, .head.sha] | @tsv'
-          )
-          if [[ "${pr_state}" != "open" ]]; then
-            echo "PR #${pr_number} is ${pr_state}; skip rerun."
-            exit 0
-          fi
-
-          if [[ "${run_head_sha}" != "${current_head_sha}" ]]; then
-            echo "Workflow run ${RUN_ID} is stale for PR #${pr_number}; skip rerun."
-            echo "Run head SHA: ${run_head_sha}"
-            echo "Current PR head SHA: ${current_head_sha}"
-            exit 0
-          fi
+          # ── schedule / workflow_dispatch: no pr-context artifact, the commit
+          #    is immutable.  run_attempt <= 8 prevents infinite retry loops.
 
           git_failure_pattern='(error: RPC failed|Operation timed out|Connection timed out|connection timeout|Failed to connect|Could not resolve host|early EOF|fetch-pack|remote end hung up|GnuTLS recv error|TLS connection|HTTP/2 stream)'
           log_file="failed.log"

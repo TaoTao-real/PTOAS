@@ -538,10 +538,11 @@ class VectorCubeSurfaceTest(unittest.TestCase):
 
         with patch.object(_pipe_namespace, "unwrap_surface_value", side_effect=_identity), \
              patch.object(_pipe_namespace, "wrap_surface_value", side_effect=_identity), \
-             patch.object(_pipe_namespace, "_infer_global_slot_size", return_value=1024):
+             patch.object(_pipe_namespace, "_infer_unambiguous_global_slot_size", return_value=1024):
             pipe = pto.pipe.c2v(
                 gm_slot_tensor=gm_slot,
                 id=7,
+                nosplit=True,
             )
 
         self.assertEqual(pipe.id, 7)
@@ -565,6 +566,7 @@ class VectorCubeSurfaceTest(unittest.TestCase):
 
         expected_init_kwargs = {
             "id": 7,
+            "nosplit": True,
             "gm_slot_tensor": gm_slot,
         }
         aic_init.assert_called_once_with(1, 1024, **expected_init_kwargs)
@@ -650,6 +652,15 @@ class VectorCubeSurfaceTest(unittest.TestCase):
             "v2c_consumer_buf": v2c_buf,
         })
 
+    def test_local_pipe_constructors_still_require_consumer_buffers(self):
+        with self.assertRaises(TypeError) as c2v_exc:
+            pto.pipe.c2v(slot_size=1024, id=3)
+        self.assertIn("requires consumer_buf for local pipes", str(c2v_exc.exception))
+
+        with self.assertRaises(TypeError) as v2c_exc:
+            pto.pipe.v2c(slot_size=2048, id=4)
+        self.assertIn("requires consumer_buf for local pipes", str(v2c_exc.exception))
+
     def test_pipe_constructors_require_explicit_stable_ids(self):
         buf = object()
         with make_context():
@@ -657,7 +668,7 @@ class VectorCubeSurfaceTest(unittest.TestCase):
         gm_slot = SimpleNamespace(type=gm_slot_type)
 
         with patch.object(_pipe_namespace, "unwrap_surface_value", side_effect=_identity), \
-             patch.object(_pipe_namespace, "_infer_global_slot_size", return_value=1024):
+             patch.object(_pipe_namespace, "_infer_unambiguous_global_slot_size", return_value=1024):
             cases = [
                 lambda: pto.pipe.c2v(gm_slot_tensor=gm_slot),
                 lambda: pto.pipe.v2c(gm_slot_tensor=gm_slot),
@@ -684,6 +695,38 @@ class VectorCubeSurfaceTest(unittest.TestCase):
                 with self.subTest(case=case):
                     with self.assertRaises(TypeError):
                         case()
+
+    def test_global_pipe_slot_size_inference_requires_unambiguous_nosplit(self):
+        with make_context():
+            gm_slot_type = _pipe_namespace._pto.TensorViewType.get([16, 16], F32Type.get())
+        gm_slot = SimpleNamespace(type=gm_slot_type)
+
+        with patch.object(_pipe_namespace, "unwrap_surface_value", side_effect=_identity):
+            for case in (
+                lambda: pto.pipe.c2v(gm_slot_tensor=gm_slot, id=11),
+                lambda: pto.pipe.v2c(gm_slot_tensor=gm_slot, id=12),
+            ):
+                with self.subTest(case=case):
+                    with self.assertRaises(TypeError) as exc:
+                        case()
+                    self.assertIn("requires explicit slot_size", str(exc.exception))
+                    self.assertIn("nosplit=True", str(exc.exception))
+
+    def test_global_pipe_allows_explicit_full_slot_size_for_split_consumer_shape(self):
+        with make_context():
+            gm_slot_type = _pipe_namespace._pto.TensorViewType.get([4, 64, 128], F32Type.get())
+        gm_slot = SimpleNamespace(type=gm_slot_type)
+
+        with patch.object(_pipe_namespace, "unwrap_surface_value", side_effect=_identity), \
+             patch.object(_pipe_namespace, "wrap_surface_value", side_effect=_identity):
+            pipe = pto.pipe.c2v(
+                gm_slot_tensor=gm_slot,
+                slot_size=262144,
+                id=13,
+            )
+
+        self.assertEqual(pipe.slot_size, 262144)
+        self.assertEqual(pipe.entry_type, gm_slot_type)
 
     def test_local_pipe_transactions_dispatch_to_tile_entry_frontend_ops(self):
         c2v_buf = object()

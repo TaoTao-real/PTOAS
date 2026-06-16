@@ -101,7 +101,7 @@ Decorating a function with `@pto.jit` marks it as a launchable PTO kernel. This 
 - **Caching**: compiled kernels are cached by specialization key (function identity + entry annotation signature + constexpr parameter values), so repeated calls with the same configuration skip recompilation.
 - **Launch binding**: the compiled kernel can be invoked with a grid and stream — `compiled[grid, stream](args...)` — which launches the executable on the NPU with the given SPMD grid.
 
-The public `@pto.jit` entry contract is pointer-first. Device buffers are explicit GM pointers (`pto.ptr(..., "gm")`), launch-varying shape/stride metadata travels as runtime scalars, and the kernel body materializes `TensorView` descriptors with `make_tensor_view(ptr, shape=..., strides=...)`. Compile-time constants remain keyword-only `pto.constexpr` parameters:
+The public `@pto.jit` entry contract is pointer-first. Device buffers are explicit GM pointers (`pto.ptr(..., "gm")`), launch-varying shape/stride metadata travels as runtime scalars, and the kernel body materializes `TensorView` descriptors with `make_tensor_view(ptr, shape=..., strides=...)`. Compile-time constants remain keyword-only `pto.const_expr` parameters:
 
 <!-- ptodsl-doc-test: {"mode":"compile","symbol":"flash_attention_kernel","compile":{"BLOCK_Q":128,"BLOCK_KV":128,"CAUSAL":false}} -->
 ```python
@@ -120,9 +120,9 @@ def flash_attention_kernel(
     heads: pto.i32,
     dim: pto.i32,
     *,
-    BLOCK_Q: pto.constexpr = 128,
-    BLOCK_KV: pto.constexpr = 128,
-    CAUSAL: pto.constexpr = False,
+    BLOCK_Q: pto.const_expr = 128,
+    BLOCK_KV: pto.const_expr = 128,
+    CAUSAL: pto.const_expr = False,
 ):
     q_view = pto.make_tensor_view(
         Q_ptr,
@@ -223,7 +223,7 @@ Chapter 11 walks through this example in full detail.
 | New to PTODSL | Chapter 2 (Quick Start), then Chapter 3 (Kernel Entries) |
 
 | Writing your first kernel | Chapter 2 → Chapter 4 (Type System) → Chapter 5 (Control Flow) |
-| Looking up a specific operation | Chapters 6–10 (organized by topic) |
+| Looking up a specific operation | Chapters 6–10 and Chapter 13 (organized by topic) |
 | Understanding the flash attention reference | Chapter 11 |
 
 **Chapter overview:**
@@ -242,5 +242,5 @@ Chapter 11 walks through this example in full detail.
 | 10 | Synchronization: barriers, flags, memory fences |
 | 11 | Flash attention walkthrough |
 | 12 | Additional examples |
-| 13 | Migration from the old `@pto.vkernel`/`@pto.ckernel` API |
+| 13 | SIMT micro-ops |
 | 14 | Common errors and compatibility notes |

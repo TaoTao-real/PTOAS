@@ -104,6 +104,11 @@ def set_env_variables(run_mode, soc_version):
         simulator_lib_path = os.path.join(
             ascend_home, "tools", "simulator", soc_version, "lib"
         )
+        sim_lib_dir = os.environ.get("SIM_LIB_DIR")
+        if sim_lib_dir:
+            simulator_lib_path = sim_lib_dir
+            os.environ["TILELANG_ST_SIM_LIB_DIR"] = simulator_lib_path
+            print(f"[INFO] SIM_LIB_DIR={simulator_lib_path}")
         os.environ["LD_LIBRARY_PATH"] = (
             f"{simulator_lib_path}:{os.environ.get('LD_LIBRARY_PATH', '')}"
         )
@@ -268,6 +273,8 @@ def main():
                         help="Run one or more specific cases within the testcase. Can be passed multiple times.")
     parser.add_argument("-w", "--without-build", action="store_true",
                         help="Skip build (requires prior build)")
+    parser.add_argument("--target-dir", required=False,
+                        help="TileLang ST target directory. Defaults to npu/<soc>/src/st.")
 
     args = parser.parse_args()
 
@@ -292,7 +299,11 @@ def main():
     try:
         script_path = os.path.abspath(__file__)
         tilelang_st_root = os.path.dirname(os.path.dirname(script_path))
-        target_dir = os.path.join(tilelang_st_root, "npu", args.soc_version, "src", "st")
+        target_dir = args.target_dir or os.environ.get("TILELANG_ST_TARGET_DIR")
+        if target_dir:
+            target_dir = os.path.abspath(target_dir)
+        else:
+            target_dir = os.path.join(tilelang_st_root, "npu", args.soc_version, "src", "st")
 
         if not os.path.isdir(target_dir):
             print(f"[ERROR] Target dir not found: {target_dir}", file=sys.stderr)

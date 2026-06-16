@@ -103,7 +103,7 @@ def host_vec_copy(
     rows: pto.i32,
     cols: pto.i32,
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     a_view = pto.make_tensor_view(A_ptr, shape=[rows, cols], strides=[cols, 1])
     o_view = pto.make_tensor_view(O_ptr, shape=[rows, cols], strides=[cols, 1])
@@ -122,7 +122,7 @@ def host_vec_copy_explicit(
     rows: pto.i32,
     cols: pto.i32,
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     a_view = pto.make_tensor_view(A_ptr, shape=[rows, cols], strides=[cols, 1])
     o_view = pto.make_tensor_view(O_ptr, shape=[rows, cols], strides=[cols, 1])
@@ -141,7 +141,7 @@ def pointer_runtime_shape_specialization_probe(
     cols: pto.i32,
     row_stride: pto.i32,
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     x_view = pto.make_tensor_view(x_ptr, shape=[rows, cols], strides=[row_stride, 1])
     x_part = pto.partition_view(x_view, offsets=[0, 0], sizes=[rows, cols])
@@ -156,7 +156,7 @@ def tile_transfer_surface_probe(
     rows: pto.i32,
     cols: pto.i32,
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     a_view = pto.make_tensor_view(A_ptr, shape=[rows, cols], strides=[cols, 1])
     o_view = pto.make_tensor_view(O_ptr, shape=[rows, cols], strides=[cols, 1])
@@ -209,7 +209,7 @@ def runtime_metadata_kernel(
     row_stride: pto.i32,
     col_stride: pto.i32,
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     a_view = pto.make_tensor_view(A_ptr, shape=[rows, cols], strides=[row_stride, col_stride])
     o_view = pto.make_tensor_view(O_ptr, shape=[rows, cols], strides=[row_stride, col_stride])
@@ -369,14 +369,14 @@ def top_level_simd_probe():
 
 
 @pto.jit(target="a5")
-def shared_subkernel_lowering_probe(*, TRACE_TOKEN: pto.constexpr = 0):
+def shared_subkernel_lowering_probe(*, TRACE_TOKEN: pto.const_expr = 0):
     top_level_cube_probe()
     top_level_simd_probe()
     nested_simd_probe()
 
 
 @pto.jit(target="a5", mode="explicit")
-def inline_subkernel_scope_probe(*, TRACE_TOKEN: pto.constexpr = 0):
+def inline_subkernel_scope_probe(*, TRACE_TOKEN: pto.const_expr = 0):
     session = current_session()
     meta_tile = pto.alloc_tile(shape=[1, 8], dtype=pto.i32, valid_shape=[1, 1])
 
@@ -401,6 +401,150 @@ def simt_tid_probe():
     pto.get_tid_z()
 
 
+@pto.simt
+def simt_query_probe():
+    pto.get_tid()
+    pto.get_block_dim()
+    pto.get_grid_dim()
+    pto.get_block_idx_x()
+    pto.get_block_idx_y()
+    pto.get_block_idx_z()
+    pto.get_veccoreid()
+    pto.get_clock32()
+    pto.get_clock64()
+    pto.get_laneid()
+    pto.get_lanemask_eq()
+    pto.get_lanemask_le()
+    pto.get_lanemask_lt()
+    pto.get_lanemask_ge()
+    pto.get_lanemask_gt()
+
+
+@pto.simt
+def simt_grouped_query_probe():
+    tid_x, tid_y, tid_z = pto.get_tid()
+    block_x, block_y, block_z = pto.get_block_dim()
+    grid_x, grid_y, grid_z = pto.get_grid_dim()
+    pto.keep(tid_x, slot=0)
+    pto.keep(tid_y, slot=1)
+    pto.keep(tid_z, slot=2)
+    pto.keep(block_x, slot=3)
+    pto.keep(block_y, slot=4)
+    pto.keep(block_z, slot=5)
+    pto.keep(grid_x, slot=6)
+    pto.keep(grid_y, slot=7)
+    pto.keep(grid_z, slot=8)
+
+
+@pto.simt(max_threads=256, max_regs=48)
+def simt_resource_attr_probe():
+    pto.get_tid_x()
+
+
+@pto.simt
+def simt_collective_math_probe():
+    lane = pto.get_laneid()
+    pred = pto.const(1, dtype=pto.i1)
+
+    pto.vote_all(pred)
+    pto.vote_any(pred)
+    pto.vote_uni(pred)
+    pto.vote_ballot(pred)
+
+    pto.shuffle_idx(lane, lane, width=32)
+    pto.shuffle_up(lane, 1, width=32)
+    pto.shuffle_down(lane, 1, width=32)
+    pto.shuffle_bfly(lane, 1, width=32)
+
+    pto.redux_add(lane, signedness="signed")
+    pto.redux_max(lane, signedness="signed")
+    pto.redux_min(lane, signedness="signed")
+
+    pto.prmt(lane, lane, lane)
+    pto.mulhi(lane, lane, signedness="signed")
+    pto.mul_i32toi64(lane, lane, signedness="unsigned")
+
+    as_f32 = pto.convert(lane, pto.f32, rounding="r", saturation="nosat", signedness="signed")
+    pto.convert(as_f32, pto.i32, rounding="z", saturation="sat", signedness="signed")
+    pto.absf(as_f32)
+    pto.sqrt(as_f32)
+    pto.exp(as_f32)
+    pto.log(as_f32)
+    pto.pow(as_f32, as_f32)
+    pto.ceil(as_f32)
+    pto.floor(as_f32)
+    pto.rint(as_f32)
+    pto.round(as_f32)
+    pto.fmin(as_f32, as_f32)
+    pto.fmax(as_f32, as_f32)
+    pto.fma(as_f32, as_f32, as_f32)
+
+
+@pto.simt
+def simt_memory_atomic_probe(
+    gm: pto.ptr(pto.i32, "gm"),
+):
+    idx = scalar.index_cast(pto.get_tid_x())
+    value = pto.ldg(gm, idx, l1cache="cache", l2cache="nmfv")
+    pto.stg(value, gm, idx, l1cache="uncache", l2cache="wtsred")
+
+    old = pto.atomic_add(gm, value, l2cache="nmfv", signedness="signed")
+    pto.atomic_exch(gm, value, signedness="signed")
+    pto.atomic_sub(gm, value, signedness="signed")
+    pto.atomic_min(gm, value, signedness="signed")
+    pto.atomic_max(gm, value, signedness="signed")
+    pto.atomic_and(gm, value, signedness="unsigned")
+    pto.atomic_or(gm, value, signedness="unsigned")
+    pto.atomic_xor(gm, value, signedness="unsigned")
+    pto.atomic_cas(gm, old, value, signedness="signed")
+
+    pto.syncthreads()
+    pto.threadfence()
+    pto.threadfence_block()
+
+
+@pto.simt
+def simt_specialized_ptr_probe(ptr):
+    value = scalar.load(ptr)
+    _ = value
+
+
+@pto.simt
+def simt_specialized_flag_probe(*, FLAG):
+    if FLAG:
+        pto.get_tid_x()
+    else:
+        pto.get_tid_y()
+
+
+@pto.simt
+def simt_keep_stage():
+    pto.keep(pto.get_tid_x(), slot=0)
+
+
+@pto.simt
+def simt_resume_stage(gm: pto.ptr(pto.i32, "gm")):
+    resumed = pto.resume(pto.i32, slot=0)
+    idx = scalar.index_cast(pto.get_tid_x())
+    scalar.store(resumed, gm, idx)
+
+
+@pto.simt
+def simt_invalid_redux_signedness_probe():
+    pto.redux_max(pto.get_laneid())
+
+
+@pto.simt
+def simt_invalid_convert_signedness_probe():
+    pto.convert(pto.get_laneid(), pto.f32, rounding="r", saturation="nosat")
+
+
+@pto.simt
+def simt_invalid_atomic_signedness_probe(gm: pto.ptr(pto.f32, "gm")):
+    value = pto.ldg(gm, 0)
+    pto.atomic_add(gm, value, signedness="signed")
+
+
 @pto.simd
 def ast_subkernel_runtime_for_helper(rows: pto.i32):
     for row in range(0, rows, 1):
@@ -409,9 +553,77 @@ def ast_subkernel_runtime_for_helper(rows: pto.i32):
 
 
 @pto.jit(target="a5")
-def simt_helper_lowering_probe(*, TRACE_TOKEN: pto.constexpr = 0):
+def simt_helper_lowering_probe(*, TRACE_TOKEN: pto.const_expr = 0):
     simt_tid_probe()
     simt_tid_probe()
+
+
+@pto.jit(target="a5")
+def simt_explicit_launch_probe(*, TRACE_TOKEN: pto.const_expr = 0):
+    pto.simt_launch(simt_query_probe, dims=(32, 2, 1))
+
+
+@pto.jit(target="a5")
+def simt_launch_index_sugar_probe(*, TRACE_TOKEN: pto.const_expr = 0):
+    simt_query_probe[32, 2, 1]()
+
+
+@pto.jit(target="a5")
+def simt_grouped_query_launch_probe(*, TRACE_TOKEN: pto.const_expr = 0):
+    simt_grouped_query_probe[32, 1, 1]()
+
+
+@pto.jit(target="a5")
+def simt_resource_attr_launch_probe(*, TRACE_TOKEN: pto.const_expr = 0):
+    pto.simt_launch(simt_resource_attr_probe, dims=(128, 1, 1))
+
+
+@pto.jit(target="a5")
+def simt_full_surface_probe(
+    gm: pto.ptr(pto.i32, "gm"),
+    *,
+    TRACE_TOKEN: pto.const_expr = 0,
+):
+    pto.simt_launch(simt_collective_math_probe, dims=(32, 1, 1))
+    pto.simt_launch(simt_memory_atomic_probe, gm, dims=(32, 1, 1))
+    pto.simt_launch(simt_keep_stage, dims=(32, 1, 1))
+    pto.simt_launch(simt_resume_stage, gm, dims=(32, 1, 1))
+
+
+@pto.jit(target="a5")
+def simt_specialized_arg_type_probe(
+    gm_i32: pto.ptr(pto.i32, "gm"),
+    gm_f32: pto.ptr(pto.f32, "gm"),
+    *,
+    TRACE_TOKEN: pto.const_expr = 0,
+):
+    pto.simt_launch(simt_specialized_ptr_probe, gm_i32, dims=(32, 1, 1))
+    pto.simt_launch(simt_specialized_ptr_probe, gm_f32, dims=(32, 1, 1))
+
+
+@pto.jit(target="a5")
+def simt_specialized_static_kwarg_probe(*, TRACE_TOKEN: pto.const_expr = 0):
+    pto.simt_launch(simt_specialized_flag_probe, dims=(32, 1, 1), FLAG=False)
+    pto.simt_launch(simt_specialized_flag_probe, dims=(32, 1, 1), FLAG=True)
+
+
+@pto.jit(target="a5")
+def simt_invalid_redux_signedness_launch(*, TRACE_TOKEN: pto.const_expr = 0):
+    pto.simt_launch(simt_invalid_redux_signedness_probe, dims=(32, 1, 1))
+
+
+@pto.jit(target="a5")
+def simt_invalid_convert_signedness_launch(*, TRACE_TOKEN: pto.const_expr = 0):
+    pto.simt_launch(simt_invalid_convert_signedness_probe, dims=(32, 1, 1))
+
+
+@pto.jit(target="a5")
+def simt_invalid_atomic_signedness_launch(
+    gm: pto.ptr(pto.f32, "gm"),
+    *,
+    TRACE_TOKEN: pto.const_expr = 0,
+):
+    pto.simt_launch(simt_invalid_atomic_signedness_probe, gm, dims=(32, 1, 1))
 
 
 @pto.jit(target="a5")
@@ -420,7 +632,7 @@ def ast_subkernel_runtime_for_probe(rows: pto.i32):
 
 
 @pto.jit(target="a5")
-def carry_loop_lowering_probe(*, BLOCK: pto.constexpr = 128):
+def carry_loop_lowering_probe(*, BLOCK: pto.const_expr = 128):
     m_prev = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
     l_prev = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
     o_prev = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
@@ -737,7 +949,7 @@ ast_mutable_closure_cache_kernel_probe, set_ast_mutable_closure_cache_limit = (
 
 def make_ast_signature_closure_default_kernel(limit: int):
     @pto.jit(target="a5")
-    def ast_signature_closure_default_kernel(*, BLOCK: pto.constexpr = limit):
+    def ast_signature_closure_default_kernel(*, BLOCK: pto.const_expr = limit):
         for _ in pto.static_range(BLOCK):
             pto.pipe_barrier(pto.Pipe.ALL)
 
@@ -758,7 +970,7 @@ def make_ast_rebound_subkernel_probe():
     limit = 4
 
     @pto.jit(target="a5")
-    def ast_rebound_subkernel_probe(*, TRACE_TOKEN: pto.constexpr = 0):
+    def ast_rebound_subkernel_probe(*, TRACE_TOKEN: pto.const_expr = 0):
         helper()
 
     return ast_rebound_subkernel_probe
@@ -798,7 +1010,7 @@ def sourceless_subkernel_helper():
     helper = namespace["sourceless_subkernel_helper"]
 
     @pto.jit(target="a5")
-    def sourceless_subkernel_entry_probe(*, TRACE_TOKEN: pto.constexpr = 0):
+    def sourceless_subkernel_entry_probe(*, TRACE_TOKEN: pto.const_expr = 0):
         helper()
 
     return sourceless_subkernel_entry_probe
@@ -808,7 +1020,7 @@ sourceless_subkernel_entry_probe = make_sourceless_subkernel_entry()
 
 
 @pto.jit(target="a5")
-def ast_static_control_flow_probe(*, ENABLE: pto.constexpr = True):
+def ast_static_control_flow_probe(*, ENABLE: pto.const_expr = True):
     if pto.const_expr(ENABLE):
         for _ in pto.static_range(2):
             pto.pipe_barrier(pto.Pipe.ALL)
@@ -817,8 +1029,8 @@ def ast_static_control_flow_probe(*, ENABLE: pto.constexpr = True):
 @pto.jit(target="a5")
 def ast_python_bool_guard_probe(
     *,
-    BLOCK: pto.constexpr = 128,
-    ENABLE: pto.constexpr = True,
+    BLOCK: pto.const_expr = 128,
+    ENABLE: pto.const_expr = True,
 ):
     if BLOCK == 128:
         pto.pipe_barrier(pto.Pipe.ALL)
@@ -853,7 +1065,7 @@ def runtime_scalar_operator_probe(
     cols: pto.i32,
     row_stride: pto.i32,
     *,
-    BLOCK: pto.constexpr = 8,
+    BLOCK: pto.const_expr = 8,
 ):
     block_idx = pto.get_block_idx()
     o_view = pto.make_tensor_view(O_ptr, shape=[rows, cols], strides=[row_stride, 1])
@@ -927,7 +1139,7 @@ def tile_slice_vector_probe(inp_tile: pto.Tile, out_tile: pto.Tile, row: pto.ind
 
 
 @pto.jit(target="a5")
-def tile_slice_surface_probe(*, BLOCK: pto.constexpr = 128):
+def tile_slice_surface_probe(*, BLOCK: pto.const_expr = 128):
     inp_tile = pto.alloc_tile(shape=[2, BLOCK], dtype=pto.f32)
     out_tile = pto.alloc_tile(shape=[2, BLOCK], dtype=pto.f32)
     for row in range(0, 1, 1):
@@ -935,7 +1147,7 @@ def tile_slice_surface_probe(*, BLOCK: pto.constexpr = 128):
 
 
 @pto.jit(target="a5")
-def tile_slice_1d_surface_probe(*, BLOCK: pto.constexpr = 128):
+def tile_slice_1d_surface_probe(*, BLOCK: pto.const_expr = 128):
     inp_tile = pto.alloc_tile(shape=[BLOCK], dtype=pto.f32)
     out_tile = pto.alloc_tile(shape=[BLOCK], dtype=pto.f32)
     start = pto.const(0, dtype=pto.i32)
@@ -951,7 +1163,7 @@ def tile_valid_shape_update_probe(
     rows: pto.i32,
     cols: pto.i32,
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     tile = pto.alloc_tile(
         shape=[1, BLOCK],
@@ -965,7 +1177,7 @@ def tile_valid_shape_update_probe(
 def tile_valid_shape_update_1d_probe(
     length: pto.i32,
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     tile = pto.alloc_tile(
         shape=[BLOCK],
@@ -996,7 +1208,7 @@ def carry_static_pyint_init_probe():
 
 
 @pto.jit(target="a5")
-def integer_loop_bound_probe(*, BLOCK: pto.constexpr = 8):
+def integer_loop_bound_probe(*, BLOCK: pto.const_expr = 8):
     row_start = pto.const(0, dtype=pto.i32)
     row_stop = pto.const(BLOCK, dtype=pto.i32)
     valid_dim = pto.const(BLOCK // 2, dtype=pto.i32)
@@ -1041,6 +1253,17 @@ def simt_pointer_offset_helper(meta_ptr: pto.ptr(pto.i32, pto.MemorySpace.UB)):
     scalar.store(9, meta_ptr + 1)
 
 
+@pto.simt
+def simt_reserved_buffer_peer():
+    pto.reserve_buffer("simt_c2v_fifo", size=8192, location="vec")
+
+
+@pto.simt
+def simt_reserved_buffer_ambiguous_peer(ptr):
+    _ = ptr
+    pto.reserve_buffer("simt_c2v_fifo", size=8192, location="vec")
+
+
 @pto.jit(target="a5")
 def simt_pointer_offset_probe():
     meta_tile = pto.alloc_tile(shape=[1, 8], dtype=pto.i32, valid_shape=[1, 2])
@@ -1049,6 +1272,23 @@ def simt_pointer_offset_probe():
     second = scalar.load(meta_tile.as_ptr() + 1)
     _ = first
     _ = second
+
+
+@pto.jit(target="a5")
+def simt_reserved_buffer_peer_probe():
+    simt_reserved_buffer_peer()
+    imported = pto.import_reserved_buffer("simt_c2v_fifo", peer_func=simt_reserved_buffer_peer)
+    _ = imported
+
+
+@pto.jit(target="a5")
+def simt_reserved_buffer_ambiguous_peer_probe(
+    gm_i32: pto.ptr(pto.i32, "gm"),
+    gm_f32: pto.ptr(pto.f32, "gm"),
+):
+    simt_reserved_buffer_ambiguous_peer(gm_i32)
+    simt_reserved_buffer_ambiguous_peer(gm_f32)
+    pto.import_reserved_buffer("simt_c2v_fifo", peer_func=simt_reserved_buffer_ambiguous_peer)
 
 
 @pto.jit(target="a5")
@@ -1387,7 +1627,7 @@ def low_precision_storage_probe():
 
 
 @pto.jit(target="a5")
-def pointer_vlds_inference_probe(*, BLOCK: pto.constexpr = 128):
+def pointer_vlds_inference_probe(*, BLOCK: pto.const_expr = 128):
     tile = pto.alloc_tile(shape=[2, BLOCK], dtype=pto.f32)
     vec = pto.vlds(tile.as_ptr(), pto.const(0))
     vec_brc = pto.vlds(tile.as_ptr(), pto.const(0), dist="BRC_B32")
@@ -1906,6 +2146,7 @@ def main() -> None:
     expect(not hasattr(pto, "as_ptr"), "pto.as_ptr should not remain on the public pto namespace")
     expect(not hasattr(pto, "vbrc_load"), "pto.vbrc_load should not remain on the public pto namespace")
     expect(not hasattr(pto, "vsts_1pt"), "pto.vsts_1pt should not remain on the public pto namespace")
+    expect(not hasattr(pto, "constexpr"), "pto.constexpr should not remain on the public pto namespace")
     expect(not hasattr(scalar, "sts"), "scalar.sts should not remain in the public scalar namespace")
     expect(not hasattr(scalar, "cmpi"), "scalar.cmpi should not remain in the public scalar namespace")
     expect(not hasattr(scalar, "cmpi_sgt"), "scalar.cmpi_sgt should not remain in the public scalar namespace")
@@ -1933,6 +2174,12 @@ def main() -> None:
     expect(
         "pto.vsts_1pt is not a supported PTODSL public interface" in str(removed_vsts_1pt),
         "removed pto.vsts_1pt should diagnose the public vsts(dist=...) replacement",
+    )
+    removed_constexpr = expect_raises(AttributeError, lambda: getattr(pto, "constexpr"))
+    expect(
+        "pto.constexpr is not a supported PTODSL public interface" in str(removed_constexpr)
+        and "Use pto.const_expr" in str(removed_constexpr),
+        "removed pto.constexpr should diagnose pto.const_expr as the replacement",
     )
     for name in ("max", "min", "exp", "log", "sqrt", "abs"):
         expect(hasattr(scalar, name), f"scalar.{name} should be exported from the public scalar namespace")
@@ -2452,16 +2699,210 @@ def main() -> None:
         "each @pto.simt callsite should materialize a caller-side store_vfsimt_info",
     )
     expect(
-        simt_text.count("call @simt_tid_probe()") == 2,
+        re.search(r"call @simt_tid_probe__simt_\d+\(\)", simt_text) is not None,
         "each @pto.simt callsite should lower to a func.call of the helper symbol",
     )
     expect(
-        simt_text.count("func.func @simt_tid_probe() attributes {pto.simt_entry}") == 1,
+        len(re.findall(r"call @simt_tid_probe__simt_\d+\(\)", simt_text)) == 2,
+        "both @pto.simt callsites should call the same helper specialization",
+    )
+    expect(
+        len(re.findall(r"func\.func @simt_tid_probe__simt_\d+\(\) attributes \{pto\.simt_entry\}", simt_text)) == 1,
         "@pto.simt helper should materialize exactly one reusable pto.simt_entry function",
     )
     expect("pto.get_tid_x" in simt_text, "SIMT helper body should contain pto.get_tid_x")
     expect("pto.get_tid_y" in simt_text, "SIMT helper body should contain pto.get_tid_y")
     expect("pto.get_tid_z" in simt_text, "SIMT helper body should contain pto.get_tid_z")
+
+    simt_launch_text = simt_explicit_launch_probe.compile(TRACE_TOKEN=1).mlir_text()
+    expect_parse_roundtrip_and_verify(simt_launch_text, "explicit simt launch specialization")
+    expect(
+        re.search(r"pto\.simt_launch @simt_query_probe__simt_\d+<<<", simt_launch_text) is not None,
+        "pto.simt_launch(...) should emit VPTO simt_launch sugar",
+    )
+    expect(
+        re.search(r"func\.func @simt_query_probe__simt_\d+\(\) attributes \{pto\.simt_entry\}", simt_launch_text) is not None,
+        "explicit pto.simt_launch should materialize a reusable pto.simt_entry helper",
+    )
+    simt_launch_sugar_text = simt_launch_index_sugar_probe.compile(TRACE_TOKEN=1).mlir_text()
+    expect_parse_roundtrip_and_verify(simt_launch_sugar_text, "indexed simt launch specialization")
+    expect(
+        re.search(r"pto\.simt_launch @simt_query_probe__simt_\d+<<<", simt_launch_sugar_text) is not None,
+        "@pto.simt helper[x, y, z](...) should emit VPTO simt_launch sugar",
+    )
+    simt_grouped_query_text = simt_grouped_query_launch_probe.compile(TRACE_TOKEN=1).mlir_text()
+    expect_parse_roundtrip_and_verify(simt_grouped_query_text, "grouped simt query specialization")
+    expect(
+        re.search(r"pto\.simt_launch @simt_grouped_query_probe__simt_\d+<<<", simt_grouped_query_text) is not None,
+        "grouped SIMT query probe should be launchable through helper[x, y, z](...)",
+    )
+    for op_name in (
+        "pto.get_tid_x",
+        "pto.get_tid_y",
+        "pto.get_tid_z",
+        "pto.get_block_dim_x",
+        "pto.get_block_dim_y",
+        "pto.get_block_dim_z",
+        "pto.get_grid_dim_x",
+        "pto.get_grid_dim_y",
+        "pto.get_grid_dim_z",
+    ):
+        expect(
+            simt_grouped_query_text.count(op_name) == 1,
+            f"grouped SIMT query helpers should lower exactly once to {op_name}",
+        )
+    expect(
+        simt_grouped_query_text.count("pto.keep") == 9,
+        "grouped SIMT query helpers should return values that can be consumed by later micro-ops",
+    )
+    expect_raises(
+        TypeError,
+        lambda: simt_query_probe[32, 1](),
+        "helper[dim_x, dim_y, dim_z]",
+    )
+    expect_raises(
+        TypeError,
+        lambda: ast_subkernel_runtime_for_helper[32, 1, 1](pto.const(1, dtype=pto.i32)),
+        "only @pto.simt",
+    )
+    simt_resource_attr_text = simt_resource_attr_launch_probe.compile(TRACE_TOKEN=1).mlir_text()
+    expect_parse_roundtrip_and_verify(simt_resource_attr_text, "simt resource attr launch specialization")
+    expect(
+        re.search(
+            r"func\.func @simt_resource_attr_probe__simt_\d+\(\) attributes \{pto\.simt_entry, pto\.simt_max_regs = 48 : i32, pto\.simt_max_threads = 256 : i32\}",
+            simt_resource_attr_text,
+        ) is not None,
+        "@pto.simt(max_threads=..., max_regs=...) should attach resource attrs to the helper function",
+    )
+    expect_raises(
+        ValueError,
+        lambda: pto.simt(max_threads=0)(lambda: None),
+        "max_threads",
+    )
+    expect_raises(
+        TypeError,
+        lambda: pto.simt(max_regs=True)(lambda: None),
+        "max_regs",
+    )
+
+    def _enter_inline_simt_with_resource_attr():
+        with pto.simt(max_threads=256):
+            pass
+
+    expect_raises(
+        TypeError,
+        _enter_inline_simt_with_resource_attr,
+        "function decorator",
+    )
+    for op_name in (
+        "pto.get_tid_x",
+        "pto.get_tid_y",
+        "pto.get_tid_z",
+        "pto.get_block_dim_x",
+        "pto.get_block_dim_y",
+        "pto.get_block_dim_z",
+        "pto.get_grid_dim_x",
+        "pto.get_grid_dim_y",
+        "pto.get_grid_dim_z",
+        "pto.get_block_idx_x",
+        "pto.get_block_idx_y",
+        "pto.get_block_idx_z",
+        "pto.get_veccoreid",
+        "pto.get_clock32",
+        "pto.get_clock64",
+        "pto.get_laneid",
+        "pto.get_lanemask_eq",
+        "pto.get_lanemask_le",
+        "pto.get_lanemask_lt",
+        "pto.get_lanemask_ge",
+        "pto.get_lanemask_gt",
+    ):
+        expect(op_name in simt_launch_text, f"SIMT query body should contain {op_name}")
+
+    simt_arg_type_text = simt_specialized_arg_type_probe.compile(TRACE_TOKEN=1).mlir_text()
+    expect_parse_roundtrip_and_verify(simt_arg_type_text, "simt arg-type specialization")
+    expect(
+        len(re.findall(r"func\.func @simt_specialized_ptr_probe__simt_\d+\(", simt_arg_type_text)) == 2,
+        "same @pto.simt body launched with different argument types should materialize two helpers",
+    )
+    expect(
+        "!pto.ptr<i32, gm>" in simt_arg_type_text and "!pto.ptr<f32, gm>" in simt_arg_type_text,
+        "SIMT argument-type specializations should preserve distinct helper pointer types",
+    )
+
+    simt_static_kwarg_text = simt_specialized_static_kwarg_probe.compile(TRACE_TOKEN=1).mlir_text()
+    expect_parse_roundtrip_and_verify(simt_static_kwarg_text, "simt static kwarg specialization")
+    expect(
+        len(re.findall(r"func\.func @simt_specialized_flag_probe__simt_\d+\(", simt_static_kwarg_text)) == 2,
+        "same @pto.simt body launched with different static kwargs should materialize two helpers",
+    )
+    expect("pto.get_tid_x" in simt_static_kwarg_text, "FLAG=True SIMT specialization should emit get_tid_x")
+    expect("pto.get_tid_y" in simt_static_kwarg_text, "FLAG=False SIMT specialization should emit get_tid_y")
+
+    simt_full_text = simt_full_surface_probe.compile(TRACE_TOKEN=1).mlir_text()
+    expect_parse_roundtrip_and_verify(simt_full_text, "full simt surface specialization")
+    for op_name in (
+        "pto.vote_all",
+        "pto.vote_any",
+        "pto.vote_uni",
+        "pto.vote_ballot",
+        "pto.shuffle_idx",
+        "pto.shuffle_up",
+        "pto.shuffle_down",
+        "pto.shuffle_bfly",
+        "pto.redux_add",
+        "pto.redux_max",
+        "pto.redux_min",
+        "pto.ldg",
+        "pto.stg",
+        "pto.atomic_exch",
+        "pto.atomic_add",
+        "pto.atomic_sub",
+        "pto.atomic_min",
+        "pto.atomic_max",
+        "pto.atomic_and",
+        "pto.atomic_or",
+        "pto.atomic_xor",
+        "pto.atomic_cas",
+        "pto.prmt",
+        "pto.mulhi",
+        "pto.mul_i32toi64",
+        "pto.absf",
+        "pto.sqrt",
+        "pto.exp",
+        "pto.log",
+        "pto.pow",
+        "pto.ceil",
+        "pto.floor",
+        "pto.rint",
+        "pto.round",
+        "pto.fmin",
+        "pto.fmax",
+        "pto.fma",
+        "pto.convert",
+        "pto.syncthreads",
+        "pto.threadfence",
+        "pto.threadfence_block",
+        "pto.keep",
+        "pto.resume",
+    ):
+        expect(op_name in simt_full_text, f"full SIMT surface should contain {op_name}")
+
+    expect_raises(
+        TypeError,
+        lambda: simt_invalid_redux_signedness_launch.compile(TRACE_TOKEN=1).mlir_text(),
+        "requires signedness",
+    )
+    expect_raises(
+        TypeError,
+        lambda: simt_invalid_convert_signedness_launch.compile(TRACE_TOKEN=1).mlir_text(),
+        "requires signedness",
+    )
+    expect_raises(
+        TypeError,
+        lambda: simt_invalid_atomic_signedness_launch.compile(TRACE_TOKEN=1).mlir_text(),
+        "does not accept signedness",
+    )
 
     ast_subkernel_runtime_for_text = ast_subkernel_runtime_for_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(
@@ -2971,7 +3412,7 @@ def main() -> None:
     simt_pointer_offset_text = simt_pointer_offset_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(simt_pointer_offset_text, "simt pointer offset specialization")
     expect(
-        "call @simt_pointer_offset_helper" in simt_pointer_offset_text,
+        re.search(r"call @simt_pointer_offset_helper__simt_\d+", simt_pointer_offset_text) is not None,
         "@pto.simt pointer helper should lower to a helper func.call",
     )
     expect(
@@ -2981,6 +3422,23 @@ def main() -> None:
     expect(
         re.search(r"pto\.load %\d+\[%c1(?:_\d+)?\]", simt_pointer_offset_text) is not None,
         "@pto.simt pointer helper probe should preserve ptr+offset load syntax on the caller side",
+    )
+    simt_reserved_buffer_peer_text = simt_reserved_buffer_peer_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(
+        simt_reserved_buffer_peer_text,
+        "simt reserved-buffer peer specialization",
+    )
+    expect(
+        re.search(
+            r"pto\.import_reserved_buffer\{[^}]*peer_func = @simt_reserved_buffer_peer__simt_\d+",
+            simt_reserved_buffer_peer_text,
+        ) is not None,
+        "import_reserved_buffer(peer_func=@pto.simt helper) should reference the materialized helper symbol",
+    )
+    expect_raises(
+        RuntimeError,
+        lambda: simt_reserved_buffer_ambiguous_peer_probe.compile().mlir_text(),
+        "multiple specializations",
     )
 
     scalar_store_coercion_text = scalar_store_element_coercion_probe.compile().mlir_text()

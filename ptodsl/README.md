@@ -262,7 +262,7 @@ def Softmax(
     rows: pto.i32,
     cols: pto.i32,
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     x_view = pto.make_tensor_view(X_ptr, shape=[rows, cols], strides=[cols, 1])
     o_view = pto.make_tensor_view(O_ptr, shape=[rows, cols], strides=[cols, 1])
@@ -288,7 +288,7 @@ PTODSL v1 keeps the public `@pto.jit` entry ABI intentionally narrow:
 - positional runtime scalars use PTO scalar annotations such as `pto.i32`,
   `pto.f32`, and `pto.i1`, while launch-time values remain ordinary Python
   scalars
-- keyword-only parameters annotated with `pto.constexpr` are compile-time
+- keyword-only parameters annotated with `pto.const_expr` are compile-time
   specialization knobs
 
 The host wrapper is responsible for extracting or deriving whatever runtime

@@ -15,14 +15,17 @@ from ._host_tensors import TensorSpec, tensor_spec
 from mlir.dialects import pto as _pto
 
 
-class _ConstexprMarker:
-    """Marker annotation for PTODSL compile-time specialization parameters."""
+class _ConstExprHelper:
+    """Callable marker for PTODSL compile-time specialization parameters and branches."""
 
     def __repr__(self):
-        return "pto.constexpr"
+        return "pto.const_expr"
+
+    def __call__(self, value):
+        return bool(value)
 
 
-constexpr = _ConstexprMarker()
+const_expr = _ConstExprHelper()
 
 
 class MemorySpace:
@@ -284,7 +287,7 @@ class Tile:
 
 
 __all__ = [
-    "constexpr",
+    "const_expr",
     "TensorSpec",
     "MemorySpace",
     "BarrierType",

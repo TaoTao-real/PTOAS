@@ -353,7 +353,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     return
   }
 
-  func.func @TSELS_f32_uint8_2x8_2x32_2x8_2x8(%mask_ptr: !pto.ptr<i8>, %src_ptr: !pto.ptr<f32>, %dst_ptr: !pto.ptr<f32>, %scalar: i32) attributes {pto.kernel} {
+  func.func @TSELS_f32_uint8_2x8_2x32_2x8_2x8(%mask_ptr: !pto.ptr<i8>, %src_ptr: !pto.ptr<f32>, %dst_ptr: !pto.ptr<f32>, %scalar: f32) attributes {pto.kernel} {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c2 = arith.constant 2 : index
@@ -377,13 +377,12 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 
     pto.tload ins(%mask_part : !pto.partition_tensor_view<1x1x1x2x32xi8>) outs(%mask_tile : !pto.tile_buf<vec, 2x32xi8>)
     pto.tload ins(%src_part : !pto.partition_tensor_view<1x1x1x2x8xf32>) outs(%src_tile : !pto.tile_buf<vec, 2x8xf32>)
-    %scalar_f32 = arith.bitcast %scalar : i32 to f32
-    pto.tsels ins(%mask_tile, %src_tile, %tmp_tile, %scalar_f32 : !pto.tile_buf<vec, 2x32xi8>, !pto.tile_buf<vec, 2x8xf32>, !pto.tile_buf<vec, 1x32xf32>, f32) outs(%dst_tile : !pto.tile_buf<vec, 2x8xf32>)
+    pto.tsels ins(%mask_tile, %src_tile, %tmp_tile, %scalar : !pto.tile_buf<vec, 2x32xi8>, !pto.tile_buf<vec, 2x8xf32>, !pto.tile_buf<vec, 1x32xf32>, f32) outs(%dst_tile : !pto.tile_buf<vec, 2x8xf32>)
     pto.tstore ins(%dst_tile : !pto.tile_buf<vec, 2x8xf32>) outs(%dst_part : !pto.partition_tensor_view<1x1x1x2x8xf32>)
     return
   }
 
-  func.func @TSELS_f32_uint16_2x8_2x16_2x8_2x8(%mask_ptr: !pto.ptr<i16>, %src_ptr: !pto.ptr<f32>, %dst_ptr: !pto.ptr<f32>, %scalar: i32) attributes {pto.kernel} {
+  func.func @TSELS_f32_uint16_2x8_2x16_2x8_2x8(%mask_ptr: !pto.ptr<i16>, %src_ptr: !pto.ptr<f32>, %dst_ptr: !pto.ptr<f32>, %scalar: f32) attributes {pto.kernel} {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c2 = arith.constant 2 : index
@@ -406,13 +405,12 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 
     pto.tload ins(%mask_part : !pto.partition_tensor_view<1x1x1x2x16xi16>) outs(%mask_tile : !pto.tile_buf<vec, 2x16xi16>)
     pto.tload ins(%src_part : !pto.partition_tensor_view<1x1x1x2x8xf32>) outs(%src_tile : !pto.tile_buf<vec, 2x8xf32>)
-    %scalar_f32 = arith.bitcast %scalar : i32 to f32
-    pto.tsels ins(%mask_tile, %src_tile, %tmp_tile, %scalar_f32 : !pto.tile_buf<vec, 2x16xi16>, !pto.tile_buf<vec, 2x8xf32>, !pto.tile_buf<vec, 1x32xf32>, f32) outs(%dst_tile : !pto.tile_buf<vec, 2x8xf32>)
+    pto.tsels ins(%mask_tile, %src_tile, %tmp_tile, %scalar : !pto.tile_buf<vec, 2x16xi16>, !pto.tile_buf<vec, 2x8xf32>, !pto.tile_buf<vec, 1x32xf32>, f32) outs(%dst_tile : !pto.tile_buf<vec, 2x8xf32>)
     pto.tstore ins(%dst_tile : !pto.tile_buf<vec, 2x8xf32>) outs(%dst_part : !pto.partition_tensor_view<1x1x1x2x8xf32>)
     return
   }
 
-  func.func @TSELS_f32_uint32_2x8_2x8_2x8_2x8(%mask_ptr: !pto.ptr<i32>, %src_ptr: !pto.ptr<f32>, %dst_ptr: !pto.ptr<f32>, %scalar: i32) attributes {pto.kernel} {
+  func.func @TSELS_f32_uint32_2x8_2x8_2x8_2x8(%mask_ptr: !pto.ptr<i32>, %src_ptr: !pto.ptr<f32>, %dst_ptr: !pto.ptr<f32>, %scalar: f32) attributes {pto.kernel} {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c2 = arith.constant 2 : index
@@ -434,8 +432,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 
     pto.tload ins(%mask_part : !pto.partition_tensor_view<1x1x1x2x8xi32>) outs(%mask_tile : !pto.tile_buf<vec, 2x8xi32>)
     pto.tload ins(%src_part : !pto.partition_tensor_view<1x1x1x2x8xf32>) outs(%src_tile : !pto.tile_buf<vec, 2x8xf32>)
-    %scalar_f32 = arith.bitcast %scalar : i32 to f32
-    pto.tsels ins(%mask_tile, %src_tile, %tmp_tile, %scalar_f32 : !pto.tile_buf<vec, 2x8xi32>, !pto.tile_buf<vec, 2x8xf32>, !pto.tile_buf<vec, 1x32xf32>, f32) outs(%dst_tile : !pto.tile_buf<vec, 2x8xf32>)
+    pto.tsels ins(%mask_tile, %src_tile, %tmp_tile, %scalar : !pto.tile_buf<vec, 2x8xi32>, !pto.tile_buf<vec, 2x8xf32>, !pto.tile_buf<vec, 1x32xf32>, f32) outs(%dst_tile : !pto.tile_buf<vec, 2x8xf32>)
     pto.tstore ins(%dst_tile : !pto.tile_buf<vec, 2x8xf32>) outs(%dst_part : !pto.partition_tensor_view<1x1x1x2x8xf32>)
     return
   }
@@ -501,7 +498,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     return
   }
 
-  func.func @TSELS_f32_uint8_2x32_2x64_2x128_2x31(%mask_ptr: !pto.ptr<i8>, %src_ptr: !pto.ptr<f32>, %dst_ptr: !pto.ptr<f32>, %scalar: i32) attributes {pto.kernel} {
+  func.func @TSELS_f32_uint8_2x32_2x64_2x128_2x31(%mask_ptr: !pto.ptr<i8>, %src_ptr: !pto.ptr<f32>, %dst_ptr: !pto.ptr<f32>, %scalar: f32) attributes {pto.kernel} {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c2 = arith.constant 2 : index
@@ -527,8 +524,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 
     pto.tload ins(%mask_part : !pto.partition_tensor_view<1x1x1x2x64xi8>) outs(%mask_tile : !pto.tile_buf<vec, 2x64xi8>)
     pto.tload ins(%src_part : !pto.partition_tensor_view<1x1x1x2x128xf32>) outs(%src_tile : !pto.tile_buf<vec, 2x128xf32, valid=2x31>)
-    %scalar_f32 = arith.bitcast %scalar : i32 to f32
-    pto.tsels ins(%mask_tile, %src_tile, %tmp_tile, %scalar_f32 : !pto.tile_buf<vec, 2x64xi8>, !pto.tile_buf<vec, 2x128xf32, valid=2x31>, !pto.tile_buf<vec, 1x32xf32, valid=1x31>, f32) outs(%dst_tile : !pto.tile_buf<vec, 2x32xf32, valid=2x31>)
+    pto.tsels ins(%mask_tile, %src_tile, %tmp_tile, %scalar : !pto.tile_buf<vec, 2x64xi8>, !pto.tile_buf<vec, 2x128xf32, valid=2x31>, !pto.tile_buf<vec, 1x32xf32, valid=1x31>, f32) outs(%dst_tile : !pto.tile_buf<vec, 2x32xf32, valid=2x31>)
     pto.tstore ins(%dst_tile : !pto.tile_buf<vec, 2x32xf32, valid=2x31>) outs(%dst_part : !pto.partition_tensor_view<1x1x1x2x31xf32>)
     return
   }
@@ -593,7 +589,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     return
   }
 
-  func.func @TSELS_f32_uint8_32x672_32x96_32x672_32x666(%mask_ptr: !pto.ptr<i8>, %src_ptr: !pto.ptr<f32>, %dst_ptr: !pto.ptr<f32>, %scalar: i32) attributes {pto.kernel} {
+  func.func @TSELS_f32_uint8_32x672_32x96_32x672_32x666(%mask_ptr: !pto.ptr<i8>, %src_ptr: !pto.ptr<f32>, %dst_ptr: !pto.ptr<f32>, %scalar: f32) attributes {pto.kernel} {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c4 = arith.constant 4 : index
@@ -618,13 +614,12 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 
     pto.tload ins(%mask_part : !pto.partition_tensor_view<1x1x1x32x96xi8>) outs(%mask_tile : !pto.tile_buf<vec, 32x96xi8>)
     pto.tload ins(%src_part : !pto.partition_tensor_view<1x1x1x32x672xf32>) outs(%src_tile : !pto.tile_buf<vec, 32x672xf32, valid=32x666>)
-    %scalar_f32 = arith.bitcast %scalar : i32 to f32
-    pto.tsels ins(%mask_tile, %src_tile, %tmp_tile, %scalar_f32 : !pto.tile_buf<vec, 32x96xi8>, !pto.tile_buf<vec, 32x672xf32, valid=32x666>, !pto.tile_buf<vec, 1x32xf32>, f32) outs(%dst_tile : !pto.tile_buf<vec, 32x672xf32, valid=32x666>)
+    pto.tsels ins(%mask_tile, %src_tile, %tmp_tile, %scalar : !pto.tile_buf<vec, 32x96xi8>, !pto.tile_buf<vec, 32x672xf32, valid=32x666>, !pto.tile_buf<vec, 1x32xf32>, f32) outs(%dst_tile : !pto.tile_buf<vec, 32x672xf32, valid=32x666>)
     pto.tstore ins(%dst_tile : !pto.tile_buf<vec, 32x672xf32, valid=32x666>) outs(%dst_part : !pto.partition_tensor_view<1x1x1x32x666xf32>)
     return
   }
 
-  func.func @TSELS_f32_uint8_1x8192_1x4096_1x8192_1x8192(%mask_ptr: !pto.ptr<i8>, %src_ptr: !pto.ptr<f32>, %dst_ptr: !pto.ptr<f32>, %scalar: i32) attributes {pto.kernel} {
+  func.func @TSELS_f32_uint8_1x8192_1x4096_1x8192_1x8192(%mask_ptr: !pto.ptr<i8>, %src_ptr: !pto.ptr<f32>, %dst_ptr: !pto.ptr<f32>, %scalar: f32) attributes {pto.kernel} {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c4 = arith.constant 4 : index
@@ -646,8 +641,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 
     pto.tload ins(%mask_part : !pto.partition_tensor_view<1x1x1x1x4096xi8>) outs(%mask_tile : !pto.tile_buf<vec, 1x4096xi8>)
     pto.tload ins(%src_part : !pto.partition_tensor_view<1x1x1x1x8192xf32>) outs(%src_tile : !pto.tile_buf<vec, 1x8192xf32>)
-    %scalar_f32 = arith.bitcast %scalar : i32 to f32
-    pto.tsels ins(%mask_tile, %src_tile, %tmp_tile, %scalar_f32 : !pto.tile_buf<vec, 1x4096xi8>, !pto.tile_buf<vec, 1x8192xf32>, !pto.tile_buf<vec, 1x32xf32>, f32) outs(%dst_tile : !pto.tile_buf<vec, 1x8192xf32>)
+    pto.tsels ins(%mask_tile, %src_tile, %tmp_tile, %scalar : !pto.tile_buf<vec, 1x4096xi8>, !pto.tile_buf<vec, 1x8192xf32>, !pto.tile_buf<vec, 1x32xf32>, f32) outs(%dst_tile : !pto.tile_buf<vec, 1x8192xf32>)
     pto.tstore ins(%dst_tile : !pto.tile_buf<vec, 1x8192xf32>) outs(%dst_part : !pto.partition_tensor_view<1x1x1x1x8192xf32>)
     return
   }

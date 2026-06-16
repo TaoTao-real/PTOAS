@@ -66,7 +66,7 @@ FRAGMENT_FIXTURES = {
         @pto.jit(target="a5")
         def type_system_low_precision_types_probe(
             *,
-            BLOCK: pto.constexpr = 128,
+            BLOCK: pto.const_expr = 128,
         ):
             {SNIPPET_PLACEHOLDER}
         """
@@ -77,7 +77,7 @@ FRAGMENT_FIXTURES = {
         def type_system_tensor_view_probe(
             A: pto.tensor_spec(rank=2, dtype=pto.f32),
             *,
-            BLOCK: pto.constexpr = 128,
+            BLOCK: pto.const_expr = 128,
         ):
             rows = A.shape[0]
             cols = A.shape[1]
@@ -93,7 +93,7 @@ FRAGMENT_FIXTURES = {
             rows: pto.i32,
             cols: pto.i32,
             *,
-            BLOCK: pto.constexpr = 128,
+            BLOCK: pto.const_expr = 128,
         ):
             dim = cols
             row_offset = 0
@@ -106,10 +106,10 @@ FRAGMENT_FIXTURES = {
         @pto.jit(target="a5")
         def type_system_tile_alloc_probe(
             *,
-            BLOCK: pto.constexpr = 128,
-            Br: pto.constexpr = 16,
-            Bc: pto.constexpr = 16,
-            dim: pto.constexpr = 16,
+            BLOCK: pto.const_expr = 128,
+            Br: pto.const_expr = 16,
+            Bc: pto.const_expr = 16,
+            dim: pto.const_expr = 16,
         ):
             {SNIPPET_PLACEHOLDER}
         """
@@ -119,9 +119,9 @@ FRAGMENT_FIXTURES = {
         @pto.jit(target="a5")
         def type_system_tile_methods_probe(
             *,
-            Br: pto.constexpr = 16,
-            Bc: pto.constexpr = 16,
-            dim: pto.constexpr = 16,
+            Br: pto.const_expr = 16,
+            Bc: pto.const_expr = 16,
+            dim: pto.const_expr = 16,
         ):
             m_prev_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, blayout="ColMajor")
             l_prev_tile = pto.alloc_tile(shape=[Br, 1], dtype=pto.f32, blayout="ColMajor")
@@ -137,8 +137,8 @@ FRAGMENT_FIXTURES = {
         @pto.jit(target="a5")
         def type_system_tile_reshape_probe(
             *,
-            BR: pto.constexpr = 8,
-            BC: pto.constexpr = 64,
+            BR: pto.const_expr = 8,
+            BC: pto.const_expr = 64,
         ):
             {SNIPPET_PLACEHOLDER}
         """
@@ -148,7 +148,7 @@ FRAGMENT_FIXTURES = {
         @pto.jit(target="a5")
         def type_system_vreg_bitcast_probe(
             *,
-            BLOCK: pto.constexpr = 128,
+            BLOCK: pto.const_expr = 128,
         ):
             tile = pto.alloc_tile(shape=[2, BLOCK], dtype=pto.f32)
             row = 0
@@ -161,7 +161,7 @@ FRAGMENT_FIXTURES = {
         @pto.jit(target="a5")
         def type_system_vreg_bitcast_ptr_probe(
             *,
-            BLOCK: pto.constexpr = 128,
+            BLOCK: pto.const_expr = 128,
         ):
             tile = pto.alloc_tile(shape=[2, BLOCK], dtype=pto.f32)
             ptr = tile.as_ptr()
@@ -200,7 +200,7 @@ FRAGMENT_FIXTURES = {
         @pto.jit(target="a5")
         def quick_start_alloc_tile_probe(
             *,
-            BLOCK: pto.constexpr = 128,
+            BLOCK: pto.const_expr = 128,
         ):
             {SNIPPET_PLACEHOLDER}
         """
@@ -226,7 +226,7 @@ FRAGMENT_FIXTURES = {
             rows: pto.i32,
             cols: pto.i32,
             *,
-            BLOCK: pto.constexpr = 128,
+            BLOCK: pto.const_expr = 128,
         ):
             a_view = pto.make_tensor_view(A_ptr, shape=[rows, cols], strides=[cols, 1])
             o_view = pto.make_tensor_view(O_ptr, shape=[rows, cols], strides=[cols, 1])
@@ -266,9 +266,9 @@ FRAGMENT_FIXTURES = {
             heads: pto.i32,
             dim: pto.i32,
             *,
-            BLOCK_Q: pto.constexpr = 128,
-            BLOCK_KV: pto.constexpr = 128,
-            CAUSAL: pto.constexpr = False,
+            BLOCK_Q: pto.const_expr = 128,
+            BLOCK_KV: pto.const_expr = 128,
+            CAUSAL: pto.const_expr = False,
         ):
             pto.get_block_idx()
 
@@ -309,7 +309,7 @@ FRAGMENT_FIXTURES = {
             rows: pto.i32,
             cols: pto.i32,
             *,
-            BLOCK: pto.constexpr = 128,
+            BLOCK: pto.const_expr = 128,
         ):
             a_view = pto.make_tensor_view(A_ptr, shape=[rows, cols], strides=[cols, 1])
             o_view = pto.make_tensor_view(O_ptr, shape=[rows, cols], strides=[cols, 1])
@@ -344,8 +344,8 @@ FRAGMENT_FIXTURES = {
             rows: pto.i32,
             cols: pto.i32,
             *,
-            CONST_A: pto.constexpr = 128,
-            CONST_B: pto.constexpr = 64,
+            CONST_A: pto.const_expr = 128,
+            CONST_B: pto.const_expr = 64,
         ):
             pto.get_block_idx()
 
@@ -378,8 +378,8 @@ FRAGMENT_FIXTURES = {
             rows: pto.i32,
             cols: pto.i32,
             *,
-            BLOCK_M: pto.constexpr = 64,
-            BLOCK_N: pto.constexpr = 128,
+            BLOCK_M: pto.const_expr = 64,
+            BLOCK_N: pto.const_expr = 128,
         ):
             pto.get_block_idx()
 
@@ -413,9 +413,9 @@ FRAGMENT_FIXTURES = {
             reduce_dim: pto.i32,
             cols: pto.i32,
             *,
-            BLOCK_M: pto.constexpr = 64,
-            BLOCK_K: pto.constexpr = 64,
-            BLOCK_N: pto.constexpr = 64,
+            BLOCK_M: pto.const_expr = 64,
+            BLOCK_K: pto.const_expr = 64,
+            BLOCK_N: pto.const_expr = 64,
         ):
             pto.get_block_idx()
 
@@ -444,7 +444,7 @@ FRAGMENT_FIXTURES = {
             rows: pto.i32,
             cols: pto.i32,
             *,
-            BLOCK: pto.constexpr = 8,
+            BLOCK: pto.const_expr = 8,
         ):
             start = pto.const(0, dtype=pto.i32)
             stop = pto.const(BLOCK, dtype=pto.i32)
@@ -464,7 +464,7 @@ FRAGMENT_FIXTURES = {
             rows: pto.i32,
             cols: pto.i32,
             *,
-            BLOCK: pto.constexpr = 8,
+            BLOCK: pto.const_expr = 8,
         ):
             num_blocks = rows
             a_view = pto.make_tensor_view(A_ptr, shape=[rows, cols], strides=[cols, 1])
@@ -480,7 +480,7 @@ FRAGMENT_FIXTURES = {
             rows: pto.i32,
             cols: pto.i32,
             *,
-            BLOCK: pto.constexpr = 8,
+            BLOCK: pto.const_expr = 8,
         ):
             tile = pto.alloc_tile(shape=[2, BLOCK], dtype=pto.f32, valid_shape=[rows, cols])
             {SNIPPET_PLACEHOLDER}
@@ -491,8 +491,8 @@ FRAGMENT_FIXTURES = {
         @pto.jit(target="a5")
         def control_flow_carry_pingpong_probe(
             *,
-            Br: pto.constexpr = 16,
-            num_blocks: pto.constexpr = 4,
+            Br: pto.const_expr = 16,
+            num_blocks: pto.const_expr = 4,
         ):
             {SNIPPET_PLACEHOLDER}
         """
@@ -513,7 +513,7 @@ FRAGMENT_FIXTURES = {
     "tail.chunked_inner_loop": _fixture(
         f"""
         @pto.jit(target="a5")
-        def tail_chunked_inner_loop_probe(*, BLOCK: pto.constexpr = 128):
+        def tail_chunked_inner_loop_probe(*, BLOCK: pto.const_expr = 128):
             cols = pto.const(BLOCK, dtype=pto.i32)
             tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
             out_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
@@ -524,7 +524,7 @@ FRAGMENT_FIXTURES = {
     "tail.vector_pattern": _fixture(
         f"""
         @pto.jit(target="a5")
-        def tail_vector_pattern_probe(*, BLOCK: pto.constexpr = 128):
+        def tail_vector_pattern_probe(*, BLOCK: pto.const_expr = 128):
             rows = pto.const(1, dtype=pto.i32)
             cols = pto.const(BLOCK, dtype=pto.i32)
             tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
@@ -538,7 +538,7 @@ FRAGMENT_FIXTURES = {
 
 
         @pto.jit(target="a5")
-        def tail_simd_helper_probe(*, BLOCK: pto.constexpr = 128):
+        def tail_simd_helper_probe(*, BLOCK: pto.const_expr = 128):
             a_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
             b_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
             o_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
@@ -570,7 +570,7 @@ FRAGMENT_FIXTURES = {
             rows: pto.i32,
             cols: pto.i32,
             *,
-            BLOCK: pto.constexpr = 16,
+            BLOCK: pto.const_expr = 16,
         ):
             view = pto.make_tensor_view(A_ptr, shape=[rows, cols], strides=[cols, 1])
             part = pto.partition_view(view, offsets=[0, 0], sizes=[1, BLOCK])
@@ -600,8 +600,8 @@ FRAGMENT_FIXTURES = {
             V_ptr: pto.ptr(pto.f16, "gm"),
             O_ptr: pto.ptr(pto.f32, "gm"),
             *,
-            ROWS: pto.constexpr = 8,
-            COLS: pto.constexpr = 16,
+            ROWS: pto.const_expr = 8,
+            COLS: pto.const_expr = 16,
         ):
             k_view = pto.make_tensor_view(K_ptr, shape=[ROWS, COLS], strides=[COLS, 1])
             v_view = pto.make_tensor_view(V_ptr, shape=[ROWS, COLS], strides=[COLS, 1])
@@ -624,7 +624,7 @@ FRAGMENT_FIXTURES = {
             A: pto.tensor_spec(rank=2, dtype=pto.f32),
             O: pto.tensor_spec(rank=2, dtype=pto.f32),
             *,
-            BLOCK: pto.constexpr = 16,
+            BLOCK: pto.const_expr = 16,
         ):
             a_view = pto.make_tensor_view(A, shape=A.shape, strides=A.strides)
             o_view = pto.make_tensor_view(O, shape=O.shape, strides=O.strides)
@@ -647,9 +647,9 @@ FRAGMENT_FIXTURES = {
         @pto.jit(target="a5", mode="explicit")
         def kernel_entry_cube_signature_probe(
             *,
-            BLOCK_M: pto.constexpr = 16,
-            BLOCK_K: pto.constexpr = 16,
-            BLOCK_N: pto.constexpr = 16,
+            BLOCK_M: pto.const_expr = 16,
+            BLOCK_K: pto.const_expr = 16,
+            BLOCK_N: pto.const_expr = 16,
         ):
             input_tile = pto.alloc_tile(shape=[BLOCK_M, BLOCK_K], dtype=pto.f16, valid_shape=[BLOCK_M, BLOCK_K])
             output_tile = pto.alloc_tile(shape=[BLOCK_M, BLOCK_N], dtype=pto.f32, valid_shape=[BLOCK_M, BLOCK_N])
@@ -665,7 +665,7 @@ FRAGMENT_FIXTURES = {
 
 
         @pto.jit(target="a5")
-        def kernel_entry_simd_signature_probe(*, BLOCK: pto.constexpr = 128):
+        def kernel_entry_simd_signature_probe(*, BLOCK: pto.const_expr = 128):
             input_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
             output_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
             my_simd_kernel(input_tile, output_tile, pto.const(1, dtype=pto.i32), pto.const(BLOCK, dtype=pto.i32))
@@ -677,7 +677,7 @@ FRAGMENT_FIXTURES = {
 
 
         @pto.jit(target="a5")
-        def kernel_entry_simd_body_probe(*, BLOCK: pto.constexpr = 128):
+        def kernel_entry_simd_body_probe(*, BLOCK: pto.const_expr = 128):
             a_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
             b_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
             o_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
@@ -696,7 +696,7 @@ FRAGMENT_FIXTURES = {
 
 
         @pto.jit(target="a5")
-        def kernel_entry_simt_signature_probe(*, BLOCK: pto.constexpr = 8):
+        def kernel_entry_simt_signature_probe(*, BLOCK: pto.const_expr = 8):
             tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32, valid_shape=[1, BLOCK])
             my_simt_kernel(tile, tile.as_ptr(), pto.const(0, dtype=pto.i32))
         """
@@ -715,7 +715,7 @@ FRAGMENT_FIXTURES = {
 
 
         @pto.jit(target="a5")
-        def kernel_entry_inline_simd_scope_probe(*, BLOCK: pto.constexpr = 128):
+        def kernel_entry_inline_simd_scope_probe(*, BLOCK: pto.const_expr = 128):
             a_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
             b_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
             o_tile = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
@@ -739,7 +739,7 @@ FRAGMENT_FIXTURES = {
 
 
         @pto.jit(target="a5")
-        def kernel_entry_inline_simt_scope_probe(*, BLOCK: pto.constexpr = 8):
+        def kernel_entry_inline_simt_scope_probe(*, BLOCK: pto.const_expr = 8):
             one = 1
             o_prev_tile = pto.alloc_tile(shape=[8, BLOCK], dtype=pto.f32, valid_shape=[2, BLOCK])
             pv_tile = pto.alloc_tile(shape=[8, BLOCK], dtype=pto.f32, valid_shape=[2, BLOCK])
@@ -754,9 +754,9 @@ FRAGMENT_FIXTURES = {
         @pto.jit(target="a5", mode="explicit")
         def kernel_entry_inline_cube_scope_probe(
             *,
-            BLOCK_M: pto.constexpr = 16,
-            BLOCK_K: pto.constexpr = 16,
-            BLOCK_N: pto.constexpr = 16,
+            BLOCK_M: pto.const_expr = 16,
+            BLOCK_K: pto.const_expr = 16,
+            BLOCK_N: pto.const_expr = 16,
         ):
             q_tile = pto.alloc_tile(shape=[BLOCK_M, BLOCK_K], dtype=pto.f16, memory_space=pto.MemorySpace.MAT, valid_shape=[BLOCK_M, BLOCK_K])
             k_tile = pto.alloc_tile(shape=[BLOCK_K, BLOCK_N], dtype=pto.f16, memory_space=pto.MemorySpace.MAT, valid_shape=[BLOCK_K, BLOCK_N])
@@ -789,7 +789,7 @@ FRAGMENT_FIXTURES = {
     "scalar_ops.chunk_loop": _fixture(
         f"""
         @pto.jit(target="a5")
-        def scalar_ops_chunk_loop_probe(*, BLOCK: pto.constexpr = 128):
+        def scalar_ops_chunk_loop_probe(*, BLOCK: pto.const_expr = 128):
             cols = pto.const(BLOCK, dtype=pto.i32)
             {SNIPPET_PLACEHOLDER}
         """
@@ -800,7 +800,7 @@ FRAGMENT_FIXTURES = {
 
 
         @pto.jit(target="a5")
-        def scalar_ops_simt_scale_probe(*, BLOCK: pto.constexpr = 8):
+        def scalar_ops_simt_scale_probe(*, BLOCK: pto.const_expr = 8):
             src_tile = pto.alloc_tile(shape=[8, BLOCK], dtype=pto.f32, valid_shape=[2, BLOCK])
             dst_tile = pto.alloc_tile(shape=[8, BLOCK], dtype=pto.f32, valid_shape=[2, BLOCK])
             elementwise_scale(
@@ -818,7 +818,7 @@ FRAGMENT_FIXTURES = {
 
 
         @pto.jit(target="a5")
-        def scalar_ops_simt_row_coeffs_probe(*, BLOCK: pto.constexpr = 8):
+        def scalar_ops_simt_row_coeffs_probe(*, BLOCK: pto.const_expr = 8):
             one = 1
             o_prev_tile = pto.alloc_tile(shape=[8, BLOCK], dtype=pto.f32, valid_shape=[2, BLOCK])
             pv_tile = pto.alloc_tile(shape=[8, BLOCK], dtype=pto.f32, valid_shape=[2, BLOCK])
@@ -865,7 +865,7 @@ FRAGMENT_FIXTURES = {
             rows: pto.i32,
             cols: pto.i32,
             *,
-            BLOCK: pto.constexpr = 8,
+            BLOCK: pto.const_expr = 8,
         ):
             a_view = pto.make_tensor_view(A_ptr, shape=[rows, cols], strides=[cols, 1])
             partition = pto.partition_view(a_view, offsets=[0, 0], sizes=[rows, cols])
@@ -891,7 +891,7 @@ FRAGMENT_FIXTURES = {
             rows: pto.i32,
             cols: pto.i32,
             *,
-            BLOCK: pto.constexpr = 128,
+            BLOCK: pto.const_expr = 128,
         ):
             offset = 0
             a_view = pto.make_tensor_view(A_ptr, shape=[rows, cols], strides=[cols, 1])
@@ -919,8 +919,8 @@ FRAGMENT_FIXTURES = {
             V_ptr: pto.ptr(pto.f16, "gm"),
             O_ptr: pto.ptr(pto.f32, "gm"),
             *,
-            ROWS: pto.constexpr = 8,
-            COLS: pto.constexpr = 16,
+            ROWS: pto.const_expr = 8,
+            COLS: pto.const_expr = 16,
         ):
             k_view = pto.make_tensor_view(K_ptr, shape=[ROWS, COLS], strides=[COLS, 1])
             v_view = pto.make_tensor_view(V_ptr, shape=[ROWS, COLS], strides=[COLS, 1])
@@ -955,8 +955,8 @@ FRAGMENT_FIXTURES = {
             V_ptr: pto.ptr(pto.f16, "gm"),
             O_ptr: pto.ptr(pto.f32, "gm"),
             *,
-            ROWS: pto.constexpr = 8,
-            COLS: pto.constexpr = 16,
+            ROWS: pto.const_expr = 8,
+            COLS: pto.const_expr = 16,
         ):
             k_view = pto.make_tensor_view(K_ptr, shape=[ROWS, COLS], strides=[COLS, 1])
             v_view = pto.make_tensor_view(V_ptr, shape=[ROWS, COLS], strides=[COLS, 1])
@@ -1013,8 +1013,8 @@ FRAGMENT_FIXTURES = {
             K_ptr: pto.ptr(pto.f16, "gm"),
             V_ptr: pto.ptr(pto.f16, "gm"),
             *,
-            ROWS: pto.constexpr = 8,
-            COLS: pto.constexpr = 16,
+            ROWS: pto.const_expr = 8,
+            COLS: pto.const_expr = 16,
         ):
             k_view = pto.make_tensor_view(K_ptr, shape=[ROWS, COLS], strides=[COLS, 1])
             v_view = pto.make_tensor_view(V_ptr, shape=[ROWS, COLS], strides=[COLS, 1])
@@ -1065,7 +1065,7 @@ FRAGMENT_FIXTURES = {
         @pto.jit(target="a5")
         def data_movement_tile_slice_2d_probe(
             *,
-            BLOCK: pto.constexpr = 128,
+            BLOCK: pto.const_expr = 128,
         ):
             tile = pto.alloc_tile(shape=[2, BLOCK], dtype=pto.f32)
             col = 0
@@ -1078,7 +1078,7 @@ FRAGMENT_FIXTURES = {
         @pto.jit(target="a5")
         def data_movement_tile_slice_1d_probe(
             *,
-            BLOCK: pto.constexpr = 128,
+            BLOCK: pto.const_expr = 128,
         ):
             tile = pto.alloc_tile(shape=[BLOCK], dtype=pto.f32)
             start = pto.const(0, dtype=pto.i32)
@@ -1102,9 +1102,9 @@ FRAGMENT_FIXTURES = {
         @pto.jit(target="a5", mode="explicit")
         def data_movement_cube_helper_probe(
             *,
-            BLOCK_M: pto.constexpr = 16,
-            BLOCK_K: pto.constexpr = 16,
-            BLOCK_N: pto.constexpr = 16,
+            BLOCK_M: pto.const_expr = 16,
+            BLOCK_K: pto.const_expr = 16,
+            BLOCK_N: pto.const_expr = 16,
         ):
             q_tile = pto.alloc_tile(shape=[BLOCK_M, BLOCK_K], dtype=pto.f16, memory_space=pto.MemorySpace.MAT, valid_shape=[BLOCK_M, BLOCK_K])
             k_tile = pto.alloc_tile(shape=[BLOCK_K, BLOCK_N], dtype=pto.f16, memory_space=pto.MemorySpace.MAT, valid_shape=[BLOCK_K, BLOCK_N])
@@ -1134,7 +1134,7 @@ FRAGMENT_FIXTURES = {
 
 
         @pto.jit(target="a5")
-        def compute_ops_vector_probe(*, BLOCK: pto.constexpr = 128):
+        def compute_ops_vector_probe(*, BLOCK: pto.const_expr = 128):
             inp_tile = pto.alloc_tile(shape=[2, BLOCK], dtype=pto.f32)
             out_tile = pto.alloc_tile(shape=[2, BLOCK], dtype=pto.f32)
             for row in range(0, 1, 1):
@@ -1146,11 +1146,11 @@ FRAGMENT_FIXTURES = {
         @pto.jit(target="a5")
         def compute_ops_tile_window_matmul_probe(
             *,
-            BLOCK_M: pto.constexpr = 16,
-            BLOCK_K: pto.constexpr = 16,
-            BLOCK_N: pto.constexpr = 16,
-            CARRIER_M: pto.constexpr = 64,
-            CARRIER_N: pto.constexpr = 64,
+            BLOCK_M: pto.const_expr = 16,
+            BLOCK_K: pto.const_expr = 16,
+            BLOCK_N: pto.const_expr = 16,
+            CARRIER_M: pto.const_expr = 64,
+            CARRIER_N: pto.const_expr = 64,
         ):
             src_mat = pto.alloc_tile(shape=[CARRIER_M, CARRIER_N], dtype=pto.f32, memory_space=pto.MemorySpace.MAT)
             dst_mat = pto.alloc_tile(
@@ -1250,10 +1250,10 @@ FRAGMENT_FIXTURES = {
             heads: pto.i32,
             dim: pto.i32,
             *,
-            BLOCK_Q: pto.constexpr = 128,
-            BLOCK_KV: pto.constexpr = 128,
-            CAUSAL: pto.constexpr = False,
-            NUM_STAGES: pto.constexpr = 2,
+            BLOCK_Q: pto.const_expr = 128,
+            BLOCK_KV: pto.const_expr = 128,
+            CAUSAL: pto.const_expr = False,
+            NUM_STAGES: pto.const_expr = 2,
         ):
             Br = BLOCK_Q
             Bc = BLOCK_KV
@@ -1278,10 +1278,10 @@ FRAGMENT_FIXTURES = {
             heads: pto.i32,
             dim: pto.i32,
             *,
-            BLOCK_Q: pto.constexpr = 128,
-            BLOCK_KV: pto.constexpr = 128,
-            CAUSAL: pto.constexpr = False,
-            NUM_STAGES: pto.constexpr = 2,
+            BLOCK_Q: pto.const_expr = 128,
+            BLOCK_KV: pto.const_expr = 128,
+            CAUSAL: pto.const_expr = False,
+            NUM_STAGES: pto.const_expr = 2,
         ):
             q_view = pto.make_tensor_view(Q_ptr, shape=[batch, seq_q, heads, dim], strides=[seq_q * heads * dim, heads * dim, dim, 1])
             k_view = pto.make_tensor_view(K_ptr, shape=[batch, seq_k, heads, dim], strides=[seq_k * heads * dim, heads * dim, dim, 1])
@@ -1307,9 +1307,9 @@ FRAGMENT_FIXTURES = {
             heads: pto.i32,
             dim: pto.i32,
             *,
-            BLOCK_Q: pto.constexpr = 128,
-            BLOCK_KV: pto.constexpr = 128,
-            HEAD_DIM: pto.constexpr = 128,
+            BLOCK_Q: pto.const_expr = 128,
+            BLOCK_KV: pto.const_expr = 128,
+            HEAD_DIM: pto.const_expr = 128,
         ):
             Br = BLOCK_Q
             Bc = BLOCK_KV
@@ -1370,11 +1370,11 @@ FRAGMENT_FIXTURES = {
             heads: pto.i32,
             dim: pto.i32,
             *,
-            BLOCK_Q: pto.constexpr = 128,
-            BLOCK_KV: pto.constexpr = 128,
-            HEAD_DIM: pto.constexpr = 128,
-            CAUSAL: pto.constexpr = False,
-            NUM_STAGES: pto.constexpr = 2,
+            BLOCK_Q: pto.const_expr = 128,
+            BLOCK_KV: pto.const_expr = 128,
+            HEAD_DIM: pto.const_expr = 128,
+            CAUSAL: pto.const_expr = False,
+            NUM_STAGES: pto.const_expr = 2,
         ):
             q_view = pto.make_tensor_view(Q_ptr, shape=[batch, seq_q, heads, dim], strides=[seq_q * heads * dim, heads * dim, dim, 1])
             k_view = pto.make_tensor_view(K_ptr, shape=[batch, seq_k, heads, dim], strides=[seq_k * heads * dim, heads * dim, dim, 1])
@@ -1551,8 +1551,8 @@ FRAGMENT_FIXTURES = {
             V_ptr: pto.ptr(pto.f32, "gm"),
             seq_k: pto.i32,
             *,
-            BLOCK_Q: pto.constexpr = 16,
-            BLOCK_KV: pto.constexpr = 16,
+            BLOCK_Q: pto.const_expr = 16,
+            BLOCK_KV: pto.const_expr = 16,
         ):
             Br = BLOCK_Q
             Bc = BLOCK_KV
@@ -1602,7 +1602,7 @@ FRAGMENT_FIXTURES = {
 
 
         @pto.jit(target="a5", mode="explicit")
-        def flash_attention_qk_cube_helper_probe(*, BLOCK_Q: pto.constexpr = 16, BLOCK_KV: pto.constexpr = 16):
+        def flash_attention_qk_cube_helper_probe(*, BLOCK_Q: pto.const_expr = 16, BLOCK_KV: pto.const_expr = 16):
             Br = BLOCK_Q
             Bc = BLOCK_KV
             D = 16
@@ -1621,7 +1621,7 @@ FRAGMENT_FIXTURES = {
 
 
         @pto.jit(target="a5", mode="explicit")
-        def flash_attention_pv_cube_helper_probe(*, BLOCK_Q: pto.constexpr = 16, BLOCK_KV: pto.constexpr = 16):
+        def flash_attention_pv_cube_helper_probe(*, BLOCK_Q: pto.const_expr = 16, BLOCK_KV: pto.const_expr = 16):
             Br = BLOCK_Q
             Bc = BLOCK_KV
             D = 16
@@ -1645,7 +1645,7 @@ FRAGMENT_FIXTURES = {
 
 
         @pto.jit(target="a5")
-        def flash_attention_inline_simt_scope_probe(*, BLOCK_Q: pto.constexpr = 16, BLOCK_KV: pto.constexpr = 16):
+        def flash_attention_inline_simt_scope_probe(*, BLOCK_Q: pto.const_expr = 16, BLOCK_KV: pto.const_expr = 16):
             Br = BLOCK_Q
             Bc = BLOCK_KV
             D = 16
@@ -1675,7 +1675,7 @@ FRAGMENT_FIXTURES = {
 
 
         @pto.jit(target="a5")
-        def flash_attention_online_softmax_loop_probe(*, BLOCK: pto.constexpr = 16):
+        def flash_attention_online_softmax_loop_probe(*, BLOCK: pto.const_expr = 16):
             one = 1
             s_tile = pto.alloc_tile(shape=[8, BLOCK], dtype=pto.f32, valid_shape=[2, BLOCK])
             p_tile = pto.alloc_tile(shape=[8, BLOCK], dtype=pto.f32, valid_shape=[2, BLOCK])
@@ -1719,7 +1719,7 @@ FRAGMENT_FIXTURES = {
 
 
         @pto.jit(target="a5")
-        def flash_attention_online_softmax_compute_probe(*, BLOCK: pto.constexpr = 16):
+        def flash_attention_online_softmax_compute_probe(*, BLOCK: pto.const_expr = 16):
             one = 1
             s_tile = pto.alloc_tile(shape=[8, BLOCK], dtype=pto.f32, valid_shape=[2, BLOCK])
             p_tile = pto.alloc_tile(shape=[8, BLOCK], dtype=pto.f32, valid_shape=[2, BLOCK])
@@ -1765,7 +1765,7 @@ FRAGMENT_FIXTURES = {
 
 
         @pto.jit(target="a5")
-        def flash_attention_online_softmax_store_probe(*, BLOCK: pto.constexpr = 16):
+        def flash_attention_online_softmax_store_probe(*, BLOCK: pto.const_expr = 16):
             one = 1
             s_tile = pto.alloc_tile(shape=[8, BLOCK], dtype=pto.f32, valid_shape=[2, BLOCK])
             p_tile = pto.alloc_tile(shape=[8, BLOCK], dtype=pto.f32, valid_shape=[2, BLOCK])
@@ -1804,7 +1804,7 @@ FRAGMENT_FIXTURES = {
 
 
         @pto.jit(target="a5")
-        def flash_attention_simt_blend_probe(*, BLOCK: pto.constexpr = 8):
+        def flash_attention_simt_blend_probe(*, BLOCK: pto.const_expr = 8):
             one = 1
             o_prev_tile = pto.alloc_tile(shape=[8, BLOCK], dtype=pto.f32, valid_shape=[2, BLOCK])
             pv_tile = pto.alloc_tile(shape=[8, BLOCK], dtype=pto.f32, valid_shape=[2, BLOCK])
@@ -1838,7 +1838,7 @@ FRAGMENT_FIXTURES = {
 
 
         @pto.jit(target="a5", mode="explicit")
-        def gemm_tile_probe(*, BLOCK_M: pto.constexpr = 64, BLOCK_K: pto.constexpr = 64, BLOCK_N: pto.constexpr = 64):
+        def gemm_tile_probe(*, BLOCK_M: pto.const_expr = 64, BLOCK_K: pto.const_expr = 64, BLOCK_N: pto.const_expr = 64):
             a_mat = pto.alloc_tile(shape=[BLOCK_M, BLOCK_K], dtype=pto.f32, memory_space=pto.MemorySpace.MAT, valid_shape=[BLOCK_M, BLOCK_K])
             b_mat = pto.alloc_tile(shape=[BLOCK_K, BLOCK_N], dtype=pto.f32, memory_space=pto.MemorySpace.MAT, valid_shape=[BLOCK_K, BLOCK_N])
             o_tile = pto.alloc_tile(shape=[BLOCK_M, BLOCK_N], dtype=pto.f32, valid_shape=[BLOCK_M, BLOCK_N])
@@ -1892,6 +1892,7 @@ FRAGMENT_FIXTURES = {
             c2v = pto.pipe.c2v(
                 gm_slot_tensor=gm_view,
                 id=0,
+                nosplit=True,
             )
 
             a_part = pto.partition_view(
@@ -1913,6 +1914,7 @@ FRAGMENT_FIXTURES = {
             c2v = pto.pipe.c2v(
                 gm_slot_tensor=gm_view,
                 id=0,
+                nosplit=True,
             )
 
             b_tile = pto.alloc_tile(shape=[16, 16], dtype=pto.f32)
@@ -1944,6 +1946,7 @@ FRAGMENT_FIXTURES = {
             v2c = pto.pipe.v2c(
                 gm_slot_tensor=gm_view,
                 id=0,
+                nosplit=True,
             )
 
             src_tile = pto.alloc_tile(shape=[16, 16], dtype=pto.f32)
@@ -1962,6 +1965,7 @@ FRAGMENT_FIXTURES = {
             v2c = pto.pipe.v2c(
                 gm_slot_tensor=gm_view,
                 id=0,
+                nosplit=True,
             )
 
             dst_tile = pto.alloc_tile(shape=[16, 16], dtype=pto.f32)
@@ -1978,29 +1982,51 @@ FRAGMENT_FIXTURES = {
     ),
     "pipe_communication.c2v_local_import": _fixture(
         f"""
-        @pto.simt
-        def vector_kernel():
-            c2v_buf = pto.reserve_buffer("c2v_fifo", size=8192, location="vec")
+        from mlir.dialects import func
+        from mlir.ir import InsertionPoint
+        from ptodsl._tracing import current_session
+
+
+        def declare_vector_kernel_peer():
+            session = current_session()
+            fn_ty = func.FunctionType.get([], [])
+            with InsertionPoint(session._function_symbol_table):
+                peer = func.FuncOp("vector_kernel", fn_ty)
+            entry = peer.add_entry_block()
+            with session.enter_function(peer), InsertionPoint(entry):
+                pto.reserve_buffer("c2v_fifo", size=8192, location="vec")
+                func.ReturnOp([])
 
 
         @pto.jit(target="a5")
         def pipe_communication_c2v_local_import_probe():
-            vector_kernel()
+            declare_vector_kernel_peer()
             {SNIPPET_PLACEHOLDER}
         """
     ),
     "pipe_communication.c2v_local_producer": _fixture(
         f"""
-        @pto.simt
-        def vector_kernel():
-            c2v_buf = pto.reserve_buffer("c2v_fifo", size=8192, location="vec")
+        from mlir.dialects import func
+        from mlir.ir import InsertionPoint
+        from ptodsl._tracing import current_session
+
+
+        def declare_vector_kernel_peer():
+            session = current_session()
+            fn_ty = func.FunctionType.get([], [])
+            with InsertionPoint(session._function_symbol_table):
+                peer = func.FuncOp("vector_kernel", fn_ty)
+            entry = peer.add_entry_block()
+            with session.enter_function(peer), InsertionPoint(entry):
+                pto.reserve_buffer("c2v_fifo", size=8192, location="vec")
+                func.ReturnOp([])
 
 
         @pto.jit(target="a5")
         def pipe_communication_c2v_local_producer_probe(
             src: pto.gm_ptr(pto.f32),
         ):
-            vector_kernel()
+            declare_vector_kernel_peer()
             c2v_buf = pto.import_reserved_buffer("c2v_fifo", peer_func="vector_kernel")
             c2v_peer = pto.pipe.c2v(
                 slot_size=1024,

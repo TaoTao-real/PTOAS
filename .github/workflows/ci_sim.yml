@@ -191,13 +191,14 @@ jobs:
 
           need_pip_install=0
           python3 -c "import numpy" >/dev/null 2>&1 || need_pip_install=1
+          python3 -c "import setuptools, wheel" >/dev/null 2>&1 || need_pip_install=1
           python3 -m pybind11 --cmakedir >/dev/null 2>&1 || need_pip_install=1
           python3 -m nanobind --cmake_dir >/dev/null 2>&1 || need_pip_install=1
           python3 -c "import ml_dtypes" >/dev/null 2>&1 || need_pip_install=1
 
           if [[ "${need_pip_install}" -eq 1 ]]; then
             python3 -m pip install --upgrade pip
-            python3 -m pip install 'pybind11<3' nanobind numpy ml-dtypes
+            python3 -m pip install setuptools wheel 'pybind11<3' nanobind numpy ml-dtypes
           fi
 
           if [[ -x /usr/bin/cc ]]; then
@@ -230,6 +231,7 @@ jobs:
           rm -rf "${PYPTO_WORKSPACE}"
           rm -rf "${PYPTO_RUN_WORKSPACE}"
           rm -rf "${PTO_ISA_ROOT}"
+          rm -rf "${GITHUB_WORKSPACE}/.work/camodel"
 
       - name: Prepare LLVM source
         shell: bash
@@ -477,6 +479,23 @@ jobs:
           run_pypto_core_smoke a2a3sim
           run_pypto_fa_ptoas_smoke a2a3sim
           run_pypto_int8_codegen_smoke a2a3sim
+
+      - name: Prepare quiet camodel
+        shell: bash
+        run: |
+          set -euo pipefail
+          readarray -t camodel_candidates < <(
+            find "${ASCEND_HOME_PATH}" -type d -path '*/simulator/dav_3510/lib' | sort
+          )
+          if [[ "${#camodel_candidates[@]}" -eq 0 ]]; then
+            echo "ERROR: cannot find dav_3510 camodel lib under ${ASCEND_HOME_PATH}" >&2
+            exit 1
+          fi
+          SIM_LIB_DIR="$(python3 scripts/prepare_quiet_camodel.py \
+            --source-dir "${camodel_candidates[0]}" \
+            --output-dir "${GITHUB_WORKSPACE}/.work/camodel")"
+          echo "SIM_LIB_DIR=${SIM_LIB_DIR}" >> "${GITHUB_ENV}"
+          echo "SIM_LIB_DIR=${SIM_LIB_DIR}"
 
       - name: Run VPTO SIM validation
         if: ${{ true }}

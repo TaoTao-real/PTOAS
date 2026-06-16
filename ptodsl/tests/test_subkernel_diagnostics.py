@@ -76,7 +76,7 @@ def illegal_simt_placement_probe():
 
 
 @pto.jit(target="a5")
-def nested_simt_from_simd_entry(*, TRACE_TOKEN: pto.constexpr = 0):
+def nested_simt_from_simd_entry(*, TRACE_TOKEN: pto.const_expr = 0):
     illegal_simt_placement_probe()
 
 
@@ -87,7 +87,7 @@ def illegal_inline_simt_placement_probe():
 
 
 @pto.jit(target="a5")
-def nested_inline_simt_from_simd_entry(*, TRACE_TOKEN: pto.constexpr = 0):
+def nested_inline_simt_from_simd_entry(*, TRACE_TOKEN: pto.const_expr = 0):
     illegal_inline_simt_placement_probe()
 
 
@@ -97,7 +97,7 @@ def simd_value_escape_probe():
 
 
 @pto.jit(target="a5")
-def simd_value_escape_entry(*, TRACE_TOKEN: pto.constexpr = 0):
+def simd_value_escape_entry(*, TRACE_TOKEN: pto.const_expr = 0):
     simd_value_escape_probe()
 
 

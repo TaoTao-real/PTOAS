@@ -50,7 +50,7 @@ Compile-time control flow stays explicit:
 
 ```python
 @pto.jit(target="a5")
-def kernel(*, BLOCK: pto.constexpr = 128):
+def kernel(*, BLOCK: pto.const_expr = 128):
     if pto.const_expr(BLOCK == 128):
         for stage in pto.static_range(4):
             ...

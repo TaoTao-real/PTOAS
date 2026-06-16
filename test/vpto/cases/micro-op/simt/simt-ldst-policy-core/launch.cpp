@@ -8,41 +8,11 @@
 #ifndef __VEC_SCOPE__
 #define __VEC_SCOPE__
 #endif
-
-#if defined(__CCE_AICORE__) && defined(__NPU_ARCH__) && (__NPU_ARCH__ == 2201)
-typedef struct { unsigned char v; } hifloat8_t;
-typedef struct { unsigned char v; } float8_e4m3_t;
-typedef struct { unsigned char v; } float8_e5m2_t;
-typedef struct { unsigned char v; } float8_e8m0_t;
-typedef struct { unsigned char v; } float4_e1m2x2_t;
-typedef struct { unsigned char v; } float4_e2m1x2_t;
-#endif
 #include <stdint.h>
-
-#if !defined(__CCE_AICORE__) && !defined(TMRGSORT_HPP)
-struct MrgSortExecutedNumList {
-  uint16_t mrgSortList0;
-  uint16_t mrgSortList1;
-  uint16_t mrgSortList2;
-  uint16_t mrgSortList3;
-};
-#endif
 #ifndef __CPU_SIM
 #include "acl/acl.h"
 #endif
-extern "C" __global__ [aicore] void simt_ldst_policy_core_kernel(
-    __gm__ int *v1, __gm__ half *v2, __gm__ bfloat16_t *v3,
-    __gm__ int8_t *v4, __gm__ int16_t *v5, __gm__ int64_t *v6,
-    __gm__ float *v7, __gm__ double *v8, __gm__ uint8_t *v9,
-    __gm__ uint8_t *v10);
-void LaunchSimt_ldst_policy_core_kernel(int *v1, uint16_t *v2, uint16_t *v3,
-                                        int8_t *v4, int16_t *v5, int64_t *v6,
-                                        float *v7, double *v8, uint8_t *v9,
-                                        uint8_t *v10,
-                                        void *stream) {
-  simt_ldst_policy_core_kernel<<<1, nullptr, stream>>>(
-      (__gm__ int *)v1, (__gm__ half *)v2, (__gm__ bfloat16_t *)v3,
-      (__gm__ int8_t *)v4, (__gm__ int16_t *)v5, (__gm__ int64_t *)v6,
-      (__gm__ float *)v7, (__gm__ double *)v8, (__gm__ uint8_t *)v9,
-      (__gm__ uint8_t *)v10);
+extern "C" __global__ [aicore] void simt_ldst_policy_core_kernel(__gm__ int *v1);
+void LaunchSimt_ldst_policy_core_kernel(int *v1, void *stream) {
+  simt_ldst_policy_core_kernel<<<1, nullptr, stream>>>((__gm__ int *)v1);
 }

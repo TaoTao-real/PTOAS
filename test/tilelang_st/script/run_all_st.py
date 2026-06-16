@@ -24,9 +24,6 @@ SOC_VERSION_MAP = {
     "a5": "Ascend950PR_9599",
 }
 
-SMOKE_CASE_LIMIT = 1
-
-
 def discover_testcases(testcase_root):
     testcases = []
     for entry in sorted(os.listdir(testcase_root)):
@@ -56,7 +53,16 @@ def resolve_case_filters(testcase_root, testcase, smoke_mode):
     case_names = load_case_names(testcase_root, testcase)
     if not case_names:
         raise ValueError(f"no cases found for smoke testcase: {testcase}")
-    return case_names[:SMOKE_CASE_LIMIT]
+    return []
+
+
+def resolve_smoke_case_names(testcase_root, testcase, smoke_mode):
+    if not smoke_mode:
+        return []
+    case_names = load_case_names(testcase_root, testcase)
+    if not case_names:
+        raise ValueError(f"no cases found for smoke testcase: {testcase}")
+    return case_names
 
 
 def parse_args():
@@ -122,7 +128,9 @@ def resolve_selected_testcases(all_testcases, requested):
     return requested_set
 
 
-def run_testcase_subprocess(run_st_script_path, run_mode, soc_version, ptoas_bin, testcase, case_filters=None):
+def run_testcase_subprocess(
+    run_st_script_path, run_mode, soc_version, ptoas_bin, target_dir, testcase, case_filters=None
+):
     command = [
         sys.executable,
         run_st_script_path,
@@ -130,6 +138,7 @@ def run_testcase_subprocess(run_st_script_path, run_mode, soc_version, ptoas_bin
         "-v", soc_version,
         "-t", testcase,
         "-p", ptoas_bin,
+        "--target-dir", target_dir,
         "-w",
     ]
     for case_filter in case_filters or []:
@@ -163,10 +172,15 @@ def main():
     batch_script_path = os.path.abspath(__file__)
     run_st_script_path = os.path.abspath(run_st.__file__)
     tilelang_st_root = os.path.dirname(os.path.dirname(batch_script_path))
-    testcase_root = os.path.join(
-        tilelang_st_root, "npu", args.soc_version, "src", "st", "testcase"
-    )
-    target_dir = os.path.dirname(testcase_root)
+    st_root = os.path.join(tilelang_st_root, "npu", args.soc_version, "src", "st")
+    full_testcase_root = os.path.join(st_root, "testcase")
+    smoke_testcase_root = os.path.join(st_root, "smoke", "testcase")
+    if args.smoke:
+        testcase_root = smoke_testcase_root
+        target_dir = os.path.dirname(smoke_testcase_root)
+    else:
+        testcase_root = full_testcase_root
+        target_dir = st_root
 
     if not os.path.isdir(testcase_root):
         print(f"[ERROR] Testcase root not found: {testcase_root}", file=sys.stderr)
@@ -213,17 +227,26 @@ def main():
         run_st.set_env_variables(args.run_mode, default_soc_version)
 
         if not args.without_build:
-            build_target = "all" if selected_testcases == all_testcases else ";".join(selected_testcases)
+            if args.smoke:
+                build_target = selected_testcases[0] if len(selected_testcases) == 1 else "all"
+            else:
+                build_target = "all" if selected_testcases == all_testcases else ";".join(selected_testcases)
             print(f"[INFO] build requested for {build_target}")
-            run_st.build_project(args.run_mode, default_soc_version, "all", ptoas_bin)
+            run_st.build_project(
+                args.run_mode,
+                default_soc_version,
+                build_target if args.smoke else "all",
+                ptoas_bin,
+            )
 
         total = len(selected_testcases)
         if args.jobs == 1:
             for index, testcase in enumerate(selected_testcases, start=1):
                 case_filters = resolve_case_filters(testcase_root, testcase, args.smoke)
+                smoke_case_names = resolve_smoke_case_names(testcase_root, testcase, args.smoke)
                 print(f"[INFO] [{index}/{total}] running testcase: {testcase}")
-                if case_filters:
-                    print(f"[INFO] smoke cases: {', '.join(case_filters)}")
+                if smoke_case_names:
+                    print(f"[INFO] smoke cases: {', '.join(smoke_case_names)}")
                 try:
                     run_st.run_gen_data(testcase, case_filters)
                     run_st.run_binary(testcase, case_filters)
@@ -241,15 +264,17 @@ def main():
                 future_to_testcase = {}
                 for index, testcase in enumerate(selected_testcases, start=1):
                     case_filters = resolve_case_filters(testcase_root, testcase, args.smoke)
+                    smoke_case_names = resolve_smoke_case_names(testcase_root, testcase, args.smoke)
                     print(f"[INFO] [{index}/{total}] queue testcase: {testcase}")
-                    if case_filters:
-                        print(f"[INFO] smoke cases: {', '.join(case_filters)}")
+                    if smoke_case_names:
+                        print(f"[INFO] smoke cases: {', '.join(smoke_case_names)}")
                     future = executor.submit(
                         run_testcase_subprocess,
                         run_st_script_path,
                         args.run_mode,
                         args.soc_version,
                         ptoas_bin,
+                        target_dir,
                         testcase,
                         case_filters,
                     )

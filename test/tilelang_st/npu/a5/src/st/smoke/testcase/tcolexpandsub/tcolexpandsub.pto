@@ -1,0 +1,140 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file in the compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// TileLang ST kernels for pto.tcolexpandsub: subtract src0 by expanded src1.
+// Matches PTO-ISA testcase parameters.
+// Golden: src0 - np.tile(src1, (reps, 1))[:, :dst_col]
+
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+  // Case 1: fp32_6_128_1_128 (float32, src0=(6,128), src1=(1,128), dst=(6,128))
+  func.func @TCOLEXPANDSUB_fp32_18_32_1_32(%src0_ptr: !pto.ptr<f32>, %src1_ptr: !pto.ptr<f32>, %dst_ptr: !pto.ptr<f32>) attributes {pto.kernel} {
+    %c0    = arith.constant 0    : index
+    %c1    = arith.constant 1    : index
+    %c18   = arith.constant 18   : index
+    %c32   = arith.constant 32   : index
+    %c576  = arith.constant 576  : index
+
+    %src0_view = pto.make_tensor_view %src0_ptr,
+      shape = [%c1, %c1, %c1, %c18, %c32],
+      strides = [%c576, %c576, %c576, %c32, %c1]
+      : !pto.tensor_view<1x1x1x18x32xf32>
+
+    %src1_view = pto.make_tensor_view %src1_ptr,
+      shape = [%c1, %c1, %c1, %c1, %c32],
+      strides = [%c32, %c32, %c32, %c32, %c1]
+      : !pto.tensor_view<1x1x1x1x32xf32>
+
+    %dst_view = pto.make_tensor_view %dst_ptr,
+      shape = [%c1, %c1, %c1, %c18, %c32],
+      strides = [%c576, %c576, %c576, %c32, %c1]
+      : !pto.tensor_view<1x1x1x18x32xf32>
+
+    %src0_part = pto.partition_view %src0_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c18, %c32]
+      : !pto.tensor_view<1x1x1x18x32xf32> -> !pto.partition_tensor_view<1x1x1x18x32xf32>
+
+    %src1_part = pto.partition_view %src1_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c1, %c32]
+      : !pto.tensor_view<1x1x1x1x32xf32> -> !pto.partition_tensor_view<1x1x1x1x32xf32>
+
+    %dst_part = pto.partition_view %dst_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c18, %c32]
+      : !pto.tensor_view<1x1x1x18x32xf32> -> !pto.partition_tensor_view<1x1x1x18x32xf32>
+
+    %src0 = pto.alloc_tile
+      : !pto.tile_buf<vec, 18x32xf32>
+
+    %src1 = pto.alloc_tile
+      : !pto.tile_buf<vec, 1x32xf32>
+
+    %dst = pto.alloc_tile
+      : !pto.tile_buf<vec, 18x32xf32>
+
+    pto.tload ins(%src0_part : !pto.partition_tensor_view<1x1x1x18x32xf32>)
+              outs(%src0 : !pto.tile_buf<vec, 18x32xf32>)
+
+    pto.tload ins(%src1_part : !pto.partition_tensor_view<1x1x1x1x32xf32>)
+              outs(%src1 : !pto.tile_buf<vec, 1x32xf32>)
+
+    pto.tcolexpandsub ins(%src0, %src1 : !pto.tile_buf<vec, 18x32xf32>,
+                                   !pto.tile_buf<vec, 1x32xf32>)
+                      outs(%dst : !pto.tile_buf<vec, 18x32xf32>)
+
+    pto.tstore ins(%dst : !pto.tile_buf<vec, 18x32xf32>)
+               outs(%dst_part : !pto.partition_tensor_view<1x1x1x18x32xf32>)
+    return
+  }
+
+  // Case 3: fp16_10_256_1_256 (float16, src0=(10,256), src1=(1,256), dst=(10,256))
+
+  func.func @TCOLEXPANDSUB_int32_16_32_1_32(%src0_ptr: !pto.ptr<i32>, %src1_ptr: !pto.ptr<i32>, %dst_ptr: !pto.ptr<i32>) attributes {pto.kernel} {
+    %c0    = arith.constant 0    : index
+    %c1    = arith.constant 1    : index
+    %c16   = arith.constant 16   : index
+    %c32   = arith.constant 32   : index
+    %c512  = arith.constant 512  : index
+
+    %src0_view = pto.make_tensor_view %src0_ptr,
+      shape = [%c1, %c1, %c1, %c16, %c32],
+      strides = [%c512, %c512, %c512, %c32, %c1]
+      : !pto.tensor_view<1x1x1x16x32xi32>
+
+    %src1_view = pto.make_tensor_view %src1_ptr,
+      shape = [%c1, %c1, %c1, %c1, %c32],
+      strides = [%c32, %c32, %c32, %c32, %c1]
+      : !pto.tensor_view<1x1x1x1x32xi32>
+
+    %dst_view = pto.make_tensor_view %dst_ptr,
+      shape = [%c1, %c1, %c1, %c16, %c32],
+      strides = [%c512, %c512, %c512, %c32, %c1]
+      : !pto.tensor_view<1x1x1x16x32xi32>
+
+    %src0_part = pto.partition_view %src0_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c16, %c32]
+      : !pto.tensor_view<1x1x1x16x32xi32> -> !pto.partition_tensor_view<1x1x1x16x32xi32>
+
+    %src1_part = pto.partition_view %src1_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c1, %c32]
+      : !pto.tensor_view<1x1x1x1x32xi32> -> !pto.partition_tensor_view<1x1x1x1x32xi32>
+
+    %dst_part = pto.partition_view %dst_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c16, %c32]
+      : !pto.tensor_view<1x1x1x16x32xi32> -> !pto.partition_tensor_view<1x1x1x16x32xi32>
+
+    %src0 = pto.alloc_tile
+      : !pto.tile_buf<vec, 16x32xi32>
+
+    %src1 = pto.alloc_tile
+      : !pto.tile_buf<vec, 1x32xi32>
+
+    %dst = pto.alloc_tile
+      : !pto.tile_buf<vec, 16x32xi32>
+
+    pto.tload ins(%src0_part : !pto.partition_tensor_view<1x1x1x16x32xi32>)
+              outs(%src0 : !pto.tile_buf<vec, 16x32xi32>)
+
+    pto.tload ins(%src1_part : !pto.partition_tensor_view<1x1x1x1x32xi32>)
+              outs(%src1 : !pto.tile_buf<vec, 1x32xi32>)
+
+    pto.tcolexpandsub ins(%src0, %src1 : !pto.tile_buf<vec, 16x32xi32>,
+                                   !pto.tile_buf<vec, 1x32xi32>)
+                       outs(%dst : !pto.tile_buf<vec, 16x32xi32>)
+
+    pto.tstore ins(%dst : !pto.tile_buf<vec, 16x32xi32>)
+               outs(%dst_part : !pto.partition_tensor_view<1x1x1x16x32xi32>)
+    return
+  }
+
+  // Case 6: int16_16_64_1_64 (int16, src0=(16,64), src1=(1,64), dst=(16,64))
+}

@@ -66,7 +66,7 @@ def float_bitwise_probe():
 
 
 @pto.jit(target="a5")
-def carry_update_mismatch_probe(*, BLOCK: pto.constexpr = 8):
+def carry_update_mismatch_probe(*, BLOCK: pto.const_expr = 8):
     acc = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
     loop = pto.for_(0, 1, step=1).carry(acc=acc)
     with loop:
@@ -74,7 +74,7 @@ def carry_update_mismatch_probe(*, BLOCK: pto.constexpr = 8):
 
 
 @pto.jit(target="a5")
-def carry_final_mismatch_probe(*, BLOCK: pto.constexpr = 8):
+def carry_final_mismatch_probe(*, BLOCK: pto.const_expr = 8):
     acc = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
     loop = pto.for_(0, 1, step=1).carry(acc=acc)
     with loop:
@@ -106,7 +106,7 @@ class BadDataHandleTensor:
 
 def define_missing_constexpr_default_probe():
     @pto.jit(target="a5")
-    def bad_probe(*, BLOCK: pto.constexpr):
+    def bad_probe(*, BLOCK: pto.const_expr):
         pto.pipe_barrier(pto.Pipe.ALL)
 
     return bad_probe
@@ -359,7 +359,7 @@ def main() -> None:
         TypeError,
         "native Python if/while condition",
         "pto.if_(...)",
-        "pto.constexpr",
+        "pto.const_expr",
     )
     expect_raises(
         native_python_range_runtime_metadata_probe.compile,
@@ -420,7 +420,7 @@ def main() -> None:
         define_illegal_keyword_only_probe,
         TypeError,
         "@pto.jit keyword-only parameter 'BLOCK' uses unsupported compile-time annotation",
-        "pto.constexpr",
+        "pto.const_expr",
         "move runtime data to positional pointer/scalar parameters",
     )
     expect_raises(

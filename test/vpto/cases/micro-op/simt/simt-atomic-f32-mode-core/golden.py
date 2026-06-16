@@ -12,20 +12,21 @@ from pathlib import Path
 
 import numpy as np
 
-ELEMS = 1024
+F32_ELEMS = 32
+PACKED_ELEMS = 16
 
 
 def generate(output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    v1 = np.full(ELEMS, -1.0, dtype=np.float32)
-    golden_v1 = np.full(ELEMS, -1.0, dtype=np.float32)
-    v2 = np.full(ELEMS, 0xBC00, dtype=np.uint16)
-    v3 = np.full(ELEMS, 0xBF80, dtype=np.uint16)
+    v1 = np.full(F32_ELEMS, -1.0, dtype=np.float32)
+    golden_v1 = np.full(F32_ELEMS, -1.0, dtype=np.float32)
+    v2 = np.full(PACKED_ELEMS, 0xBC00, dtype=np.uint16)
+    v3 = np.full(PACKED_ELEMS, 0xBF80, dtype=np.uint16)
     golden_v2 = v2.copy()
     golden_v3 = v3.copy()
-    v1[:16] = np.full(16, 10.0, dtype=np.float32)
-    golden_v1[:16] = np.full(16, 15.0, dtype=np.float32)
-    golden_v1[16:32] = np.full(16, 10.0, dtype=np.float32)
+    v1[:4] = np.full(4, 10.0, dtype=np.float32)
+    golden_v1[:4] = np.full(4, 15.0, dtype=np.float32)
+    golden_v1[16:20] = np.full(4, 10.0, dtype=np.float32)
     v2[:2] = np.array([0x3C00, 0x4000], dtype=np.uint16)  # f16: 1.0, 2.0
     v3[:2] = np.array([0x3F80, 0x4040], dtype=np.uint16)  # bf16: 1.0, 3.0
     golden_v2[:2] = np.array([0x4000, 0x4200], dtype=np.uint16)  # 2.0, 3.0

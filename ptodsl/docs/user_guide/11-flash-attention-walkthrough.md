@@ -75,10 +75,10 @@ def flash_attention_kernel(
     heads: pto.i32,
     dim: pto.i32,
     *,
-    BLOCK_Q: pto.constexpr = 128,
-    BLOCK_KV: pto.constexpr = 128,
-    CAUSAL: pto.constexpr = False,
-    NUM_STAGES: pto.constexpr = 2,
+    BLOCK_Q: pto.const_expr = 128,
+    BLOCK_KV: pto.const_expr = 128,
+    CAUSAL: pto.const_expr = False,
+    NUM_STAGES: pto.const_expr = 2,
 ):
     # Walkthrough body omitted in this signature overview.
     return

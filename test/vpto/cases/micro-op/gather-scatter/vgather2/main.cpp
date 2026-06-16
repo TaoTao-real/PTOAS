@@ -55,8 +55,8 @@ struct MrgSortExecutedNumList {
         }                                                                                        \
     } while (0)
 
-void LaunchVgather2_kernel_2d(float *v1, int *v2, float *v3, void *stream);
 
+void LaunchVgather2DeepMerged(float * p0, int * p1, float * p2, void *stream);
 int main() {
     size_t elemCount_v1 = 1024;
     size_t fileSize_v1 = elemCount_v1 * sizeof(float);
@@ -99,7 +99,7 @@ int main() {
     ACL_CHECK(aclrtMemcpy(v1Device, fileSize_v1, v1Host, fileSize_v1, ACL_MEMCPY_HOST_TO_DEVICE));
     ACL_CHECK(aclrtMemcpy(v2Device, fileSize_v2, v2Host, fileSize_v2, ACL_MEMCPY_HOST_TO_DEVICE));
     ACL_CHECK(aclrtMemcpy(v3Device, fileSize_v3, v3Host, fileSize_v3, ACL_MEMCPY_HOST_TO_DEVICE));
-    LaunchVgather2_kernel_2d(v1Device, v2Device, v3Device, stream);
+        LaunchVgather2DeepMerged(v1Device, v2Device, v3Device, stream);
 
     ACL_CHECK(aclrtSynchronizeStream(stream));
     ACL_CHECK(aclrtMemcpy(v3Host, fileSize_v3, v3Device, fileSize_v3, ACL_MEMCPY_DEVICE_TO_HOST));

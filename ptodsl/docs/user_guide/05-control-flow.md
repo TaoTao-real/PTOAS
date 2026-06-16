@@ -18,7 +18,7 @@ sequence with the body repeated:
 
 ```python
 @pto.jit(target="a5")
-def unrolled_kernel(A, O, *, N: pto.constexpr):
+def unrolled_kernel(A, O, *, N: pto.const_expr):
     a_view = pto.make_tensor_view(A, shape=[N], strides=A.strides)
     o_view = pto.make_tensor_view(O, shape=[N], strides=O.strides)
 
@@ -85,7 +85,7 @@ When a loop needs to propagate state from one iteration to the next, use the `.c
 <!-- ptodsl-doc-test: {"mode":"compile","symbol":"carry_loop_probe","compile":{"BLOCK":128}} -->
 ```python
 @pto.jit(target="a5")
-def carry_loop_probe(*, BLOCK: pto.constexpr = 128):
+def carry_loop_probe(*, BLOCK: pto.const_expr = 128):
     m_prev = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
     l_prev = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
     o_prev = pto.alloc_tile(shape=[1, BLOCK], dtype=pto.f32)
@@ -212,18 +212,18 @@ conditional closes, `br.val` is the SSA-merged result seen by downstream code.
 This surface avoids explicit result-type declarations and explicit
 `pto.yield_(...)` in user code while still keeping the merge contract explicit.
 
-## 5.4 `pto.constexpr` and tracing
+## 5.4 `pto.const_expr` and tracing
 
-`pto.constexpr` parameters (Section 3.8) are compile-time constants. They are fixed at `.compile()` time and cannot change between launches of the same compiled kernel. Because their values are known during tracing, they interact naturally with Python control flow:
+`pto.const_expr` parameters (Section 3.8) are compile-time constants. They are fixed at `.compile()` time and cannot change between launches of the same compiled kernel. Because their values are known during tracing, they interact naturally with Python control flow:
 
 ```python
 @pto.jit(target="a5")
 def kernel(
     A,
     *,
-    BLOCK: pto.constexpr = 128,
-    NUM_BLOCKS: pto.constexpr = 8,
-    UNROLL: pto.constexpr = False,
+    BLOCK: pto.const_expr = 128,
+    NUM_BLOCKS: pto.const_expr = 8,
+    UNROLL: pto.const_expr = False,
 ):
     N = A.shape[0]
     num_blocks = (N + BLOCK - 1) // BLOCK
@@ -370,7 +370,7 @@ Use `pto.const_expr(...)` for trace-time branches:
 <!-- ptodsl-doc-test: {"mode":"compile","symbol":"ast_rewrite_static_branch_kernel","compile":{"ENABLE":true}} -->
 ```python
 @pto.jit(target="a5")
-def ast_rewrite_static_branch_kernel(*, ENABLE: pto.constexpr = True):
+def ast_rewrite_static_branch_kernel(*, ENABLE: pto.const_expr = True):
     if pto.const_expr(ENABLE):
         pto.pipe_barrier(pto.Pipe.ALL)
 ```
@@ -460,7 +460,7 @@ It is not the recommended user-facing mode for new examples or kernels.
 
 ```python
 @pto.jit(target="a5", ast_rewrite=False)
-def debug_kernel(*, BLOCK: pto.constexpr = 4):
+def debug_kernel(*, BLOCK: pto.const_expr = 4):
     for _ in range(BLOCK):
         pto.pipe_barrier(pto.Pipe.ALL)
 
@@ -480,7 +480,7 @@ The same switch is available through `frontend_options`:
         "ast_rewrite": False,
     },
 )
-def debug_options_disable_rewrite_kernel(*, BLOCK: pto.constexpr = 4):
+def debug_options_disable_rewrite_kernel(*, BLOCK: pto.const_expr = 4):
     for _ in range(BLOCK):
         pto.pipe_barrier(pto.Pipe.ALL)
 ```

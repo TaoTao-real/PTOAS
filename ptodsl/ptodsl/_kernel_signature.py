@@ -22,7 +22,7 @@ from ._diagnostics import (
 )
 from ._host_tensors import TensorSpec
 from ._surface_values import wrap_surface_value
-from ._surface_types import constexpr as _constexpr_marker
+from ._surface_types import const_expr as _const_expr_marker
 from ._types import _DType, _MaskDescriptor, _PtrDescriptor, _VRegDescriptor, _resolve
 
 
@@ -206,7 +206,7 @@ def parse_jit_kernel_signature(py_fn) -> KernelSignature:
             continue
 
         if param.kind is inspect.Parameter.KEYWORD_ONLY:
-            if param.annotation is not _constexpr_marker:
+            if param.annotation is not _const_expr_marker:
                 raise jit_keyword_only_non_constexpr_error(param.name, param.annotation)
             if param.default is inspect.Parameter.empty:
                 raise jit_constexpr_missing_default_error(param.name)

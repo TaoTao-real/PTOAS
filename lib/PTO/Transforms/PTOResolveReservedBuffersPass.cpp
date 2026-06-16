@@ -84,6 +84,8 @@ struct PipeComponent {
   bool globalOnly = false;
   unsigned flagWidth = 0;
   std::optional<int32_t> explicitFlagBase;
+  std::optional<int32_t> frontendId;
+  size_t creationOrder = 0;
 };
 
 struct FlagInterval {
@@ -230,6 +232,12 @@ static void setFlagBaseAttr(Operation *op, IntegerAttr attr) {
     setFlagBaseAttr(initOp, attr);
 }
 
+static std::optional<int32_t> getFrontendPipeId(Operation *op) {
+  if (auto attr = op->getAttrOfType<IntegerAttr>(kFrontendPipeIdAttrName))
+    return attr.getInt();
+  return std::nullopt;
+}
+
 static bool samePipeInitSignature(const PipeInitInfo &lhs,
                                   const PipeInitInfo &rhs) {
   return std::tie(lhs.dirMask, lhs.slotSize, lhs.slotNum, lhs.localSlotNum,
@@ -299,6 +307,7 @@ buildPeerAwareComponents(const SmallVectorImpl<PipeInitInfo> &initInfos,
     component.slotNum = lhs.slotNum;
     component.localSlotNum = lhs.localSlotNum;
     component.globalOnly = lhs.globalOnly;
+    component.creationOrder = components.size();
     component.flagWidth = component.dirMask == kBidirectionalDirMask
                               ? kBidirectionalFlagWidth
                               : kSingleDirectionFlagWidth;
@@ -322,8 +331,29 @@ buildPeerAwareComponents(const SmallVectorImpl<PipeInitInfo> &initInfos,
           "from pto.reserve_buffer or pto.import_reserved_buffer");
     }
 
+    for (Operation *op : component.ops) {
+      if (auto frontendId = getFrontendPipeId(op)) {
+        if (component.frontendId && *component.frontendId != *frontendId) {
+          return op->emitOpError(
+              "conflicting __pto.frontend_id across peer pipe inits");
+        }
+        component.frontendId = *frontendId;
+      }
+    }
+
     components.push_back(std::move(component));
   }
+
+  llvm::stable_sort(components, [](const PipeComponent &lhs,
+                                   const PipeComponent &rhs) {
+    auto sortKey = [](const PipeComponent &component) {
+      if (component.frontendId)
+        return std::tuple(0, *component.frontendId, component.dirMask,
+                          component.creationOrder);
+      return std::tuple(1, 0, int8_t{0}, component.creationOrder);
+    };
+    return sortKey(lhs) < sortKey(rhs);
+  });
 
   return components;
 }

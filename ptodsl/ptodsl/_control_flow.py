@@ -23,6 +23,7 @@ Public API
 
 from ._bootstrap import make_context  # noqa: F401
 from ._runtime_index_ops import coerce_runtime_index
+from ._surface_types import const_expr
 from ._tracing.active import current_session
 from ._surface_values import unwrap_surface_value, wrap_like_surface_value, wrap_surface_value
 
@@ -56,12 +57,6 @@ def vecscope() -> _VecScopeCM:
 def static_range(*args):
     """Return ``range(*args)`` for trace-time unrolling under AST rewrite."""
     return range(*args)
-
-
-def const_expr(value):
-    """Return Python truthiness for trace-time branches under AST rewrite."""
-    return bool(value)
-
 
 # ── for_ ──────────────────────────────────────────────────────────────────────
 

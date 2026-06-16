@@ -16,7 +16,7 @@ def tile_copy(
     rows: pto.i32,
     cols: pto.i32,
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     """Copy one 2D tensor tile from A to O."""
 
@@ -43,10 +43,10 @@ Let us step through each piece.
 
 ```python
 @pto.jit(target="a5")
-def tile_copy(A, O, *, BLOCK: pto.constexpr = 128):
+def tile_copy(A, O, *, BLOCK: pto.const_expr = 128):
 ```
 
-`@pto.jit` marks this function as a launchable PTO kernel. The positional parameters `A_ptr` and `O_ptr` are explicit GM pointers, while `rows` and `cols` are runtime scalar metadata passed at launch time. The keyword-only argument `BLOCK` is a compile-time constant declared with `pto.constexpr`; the compiler specializes the kernel for each tile width.
+`@pto.jit` marks this function as a launchable PTO kernel. The positional parameters `A_ptr` and `O_ptr` are explicit GM pointers, while `rows` and `cols` are runtime scalar metadata passed at launch time. The keyword-only argument `BLOCK` is a compile-time constant declared with `pto.const_expr`; the compiler specializes the kernel for each tile width.
 
 ### Describing GM tensors
 
@@ -114,7 +114,7 @@ def blocked_copy(
     rows: pto.i32,
     cols: pto.i32,
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     a_view = pto.make_tensor_view(A_ptr, shape=[rows, cols], strides=[cols, 1])
     o_view = pto.make_tensor_view(O_ptr, shape=[rows, cols], strides=[cols, 1])
@@ -213,7 +213,7 @@ def vec_add_micro(
     O_ptr: pto.ptr(pto.f32, "gm"),
     N: pto.i32,
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     a_view = pto.make_tensor_view(A_ptr, shape=[N], strides=[1])
     b_view = pto.make_tensor_view(B_ptr, shape=[N], strides=[1])

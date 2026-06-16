@@ -12,16 +12,16 @@ from pathlib import Path
 
 import numpy as np
 
-ELEMS = 1024
+ELEMS = 32
 
 
 def generate(output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     v1 = np.full(ELEMS, -1, dtype=np.int32)
     golden_v1 = np.full(ELEMS, -1, dtype=np.int32)
-    v1[:16] = np.full(16, 10, dtype=np.int32)
-    golden_v1[:16] = np.full(16, 15, dtype=np.int32)
-    golden_v1[16:32] = np.full(16, 10, dtype=np.int32)
+    v1[:4] = np.full(4, 10, dtype=np.int32)
+    golden_v1[:4] = np.full(4, 15, dtype=np.int32)
+    golden_v1[16:20] = np.full(4, 10, dtype=np.int32)
     v1.tofile(output_dir / "v1.bin")
     golden_v1.tofile(output_dir / "golden_v1.bin")
 

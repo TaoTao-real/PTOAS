@@ -16,8 +16,8 @@ def mat_add(
     M: pto.i32,
     N_: pto.i32,
     *,
-    BLOCK_M: pto.constexpr = 64,
-    BLOCK_N: pto.constexpr = 128,
+    BLOCK_M: pto.const_expr = 64,
+    BLOCK_N: pto.const_expr = 128,
 ):
     a_view = pto.make_tensor_view(A_ptr, shape=[batch, M, N_], strides=[M * N_, N_, 1])
     b_view = pto.make_tensor_view(B_ptr, shape=[batch, M, N_], strides=[M * N_, N_, 1])
@@ -114,7 +114,7 @@ def vec_add_with_tail(
     O_ptr: pto.ptr(pto.f32, "gm"),
     N: pto.i32,
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     a_view = pto.make_tensor_view(A_ptr, shape=[N], strides=[1])
     b_view = pto.make_tensor_view(B_ptr, shape=[N], strides=[1])
@@ -192,9 +192,9 @@ def gemm(
     K_: pto.i32,
     N_: pto.i32,
     *,
-    BLOCK_M: pto.constexpr = 64,
-    BLOCK_K: pto.constexpr = 64,
-    BLOCK_N: pto.constexpr = 64,
+    BLOCK_M: pto.const_expr = 64,
+    BLOCK_K: pto.const_expr = 64,
+    BLOCK_N: pto.const_expr = 64,
 ):
     a_view = pto.make_tensor_view(A_ptr, shape=[M, K_], strides=[K_, 1])
     b_view = pto.make_tensor_view(B_ptr, shape=[K_, N_], strides=[N_, 1])
@@ -296,7 +296,7 @@ def online_layernorm(
     O_ptr: pto.ptr(pto.f32, "gm"),
     N: pto.i32,
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     x_view = pto.make_tensor_view(X_ptr, shape=[N], strides=[1])
     o_view = pto.make_tensor_view(O_ptr, shape=[N], strides=[1])

@@ -118,29 +118,37 @@ static void propagateGlobalTensorStrides(DeclareGlobalOp decl,
 }
 
 template <typename InitOpT>
-static FailureOr<Value> createFrontendPipe(InitOpT initOp, IRRewriter &rewriter,
-                                           PTOArch arch, Type pipeTy,
-                                           int8_t dirMask, int32_t slotNum,
-                                           Value localAddr,
-                                           Value peerLocalAddr = Value{}) {
+static FailureOr<Value> createFrontendGlobalTensorPipe(InitOpT initOp,
+                                                       IRRewriter &rewriter,
+                                                       Type pipeTy,
+                                                       int8_t dirMask,
+                                                       int32_t slotNum) {
   Location loc = initOp.getLoc();
   auto dirAttr = rewriter.getI8IntegerAttr(dirMask);
   auto slotSizeAttr = rewriter.getI32IntegerAttr(initOp.getSlotSize());
   auto slotNumAttr = rewriter.getI32IntegerAttr(slotNum);
   auto noSplitAttr = initOp.getNosplitAttr();
+  auto pipe = rewriter.create<InitializeL2G2LPipeOp>(
+      loc, pipeTy, dirAttr, slotSizeAttr, slotNumAttr, IntegerAttr{},
+      IntegerAttr{}, noSplitAttr, initOp.getGmSlotTensor(), Value{},
+      Value{});
+  propagateFrontendIdAttr(initOp, pipe.getOperation(), rewriter);
+  return pipe.getPipe();
+}
 
-  if (initOp.getGmSlotTensor()) {
-    if (arch == PTOArch::A5)
-      return initOp.emitOpError(
-          "globaltensor pipe entries are supported for a2/a3 l2g2l pipes");
-
-    auto pipe = rewriter.create<InitializeL2G2LPipeOp>(
-        loc, pipeTy, dirAttr, slotSizeAttr, slotNumAttr, IntegerAttr{},
-        IntegerAttr{}, noSplitAttr, initOp.getGmSlotTensor(), Value{},
-        Value{});
-    propagateFrontendIdAttr(initOp, pipe.getOperation(), rewriter);
-    return pipe.getPipe();
-  }
+template <typename InitOpT>
+static FailureOr<Value> createFrontendLocalPipe(InitOpT initOp,
+                                                IRRewriter &rewriter,
+                                                PTOArch arch, Type pipeTy,
+                                                int8_t dirMask,
+                                                int32_t slotNum,
+                                                Value localAddr,
+                                                Value peerLocalAddr = Value{}) {
+  Location loc = initOp.getLoc();
+  auto dirAttr = rewriter.getI8IntegerAttr(dirMask);
+  auto slotSizeAttr = rewriter.getI32IntegerAttr(initOp.getSlotSize());
+  auto slotNumAttr = rewriter.getI32IntegerAttr(slotNum);
+  auto noSplitAttr = initOp.getNosplitAttr();
 
   if (arch == PTOArch::A5) {
     if (!localAddr)
@@ -176,9 +184,11 @@ lowerSingleDirectionFrontendInit(InitOpT initOp, IRRewriter &rewriter,
                                  PTOArch arch, Type pipeTy, int8_t dirMask,
                                  Value localAddr) {
   int32_t slotNum = getFrontendSlotNum(initOp);
-  auto pipeOr =
-      createFrontendPipe(initOp, rewriter, arch, pipeTy, dirMask, slotNum,
-                         localAddr);
+  auto pipeOr = initOp.getGmSlotTensor()
+                    ? createFrontendGlobalTensorPipe(initOp, rewriter, pipeTy,
+                                                     dirMask, slotNum)
+                    : createFrontendLocalPipe(initOp, rewriter, arch, pipeTy,
+                                              dirMask, slotNum, localAddr);
   if (failed(pipeOr))
     return failure();
 
@@ -201,10 +211,14 @@ static FailureOr<FrontendPipeHandles>
 lowerBidirectionalFrontendInit(InitOpT initOp, IRRewriter &rewriter,
                                PTOArch arch, Type pipeTy) {
   int32_t slotNum = getFrontendSlotNum(initOp);
-  auto pipeOr = createFrontendPipe(initOp, rewriter, arch, pipeTy,
-                                   kBidirectionalDirMask, slotNum,
-                                   initOp.getC2vConsumerBuf(),
-                                   initOp.getV2cConsumerBuf());
+  auto pipeOr = initOp.getGmSlotTensor()
+                    ? createFrontendGlobalTensorPipe(
+                          initOp, rewriter, pipeTy, kBidirectionalDirMask,
+                          slotNum)
+                    : createFrontendLocalPipe(initOp, rewriter, arch, pipeTy,
+                                              kBidirectionalDirMask, slotNum,
+                                              initOp.getC2vConsumerBuf(),
+                                              initOp.getV2cConsumerBuf());
   if (failed(pipeOr))
     return failure();
 

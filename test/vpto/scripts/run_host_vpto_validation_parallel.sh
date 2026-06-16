@@ -229,6 +229,9 @@ log "JOBS=${JOBS}" | tee -a "${RUNNER_LOG}"
 log "TOTAL_CASES=${#DISCOVERED_CASES[@]}" | tee -a "${RUNNER_LOG}"
 log "RUNNABLE_CASES=${#CASES[@]}" | tee -a "${RUNNER_LOG}"
 log "SKIPPED_CASES=${#SKIPPED_CASES[@]}" | tee -a "${RUNNER_LOG}"
+if [[ -n "${SIM_LIB_DIR:-}" ]]; then
+  log "SIM_LIB_DIR=${SIM_LIB_DIR}" | tee -a "${RUNNER_LOG}"
+fi
 
 for case_name in "${SKIPPED_CASES[@]}"; do
   printf '%s\tSKIP\tknown-unsupported\n' "${case_name}" >> "${SUMMARY_FILE}"

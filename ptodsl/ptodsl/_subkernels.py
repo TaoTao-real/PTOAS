@@ -40,6 +40,8 @@ class SubkernelSpec:
     role: KernelRole
     symbol_name: str
     target: str = "a5"
+    simt_max_threads: int | None = None
+    simt_max_regs: int | None = None
 
 
 class SubkernelTemplate:
@@ -74,6 +76,18 @@ class SubkernelTemplate:
         self._validate_invocation(*args, **kwargs)
         return runtime.dispatch_subkernel_call(self, *args, **kwargs)
 
+    def __getitem__(self, dims):
+        if self.spec.role != KernelRole.SIMT:
+            raise TypeError(
+                f"@pto.{self.spec.role.value} kernels do not support launch dimensions; "
+                "only @pto.simt helpers support helper[dim_x, dim_y, dim_z](...)"
+            )
+        if not isinstance(dims, tuple):
+            dims = (dims,)
+        if len(dims) != 3:
+            raise TypeError("@pto.simt launch syntax expects helper[dim_x, dim_y, dim_z](...)")
+        return _SimtLaunchTemplate(self, dims)
+
     def _validate_definition(self) -> None:
         for param in self.signature.parameters.values():
             if isinstance(param.annotation, TensorSpec):
@@ -95,6 +109,19 @@ class SubkernelTemplate:
         escaped_type = _find_transient_simd_escape(result)
         if escaped_type is not None:
             raise simd_value_escape_error(escaped_type)
+
+
+class _SimtLaunchTemplate:
+    """Callable ``helper[x, y, z]`` launch descriptor for a decorated SIMT helper."""
+
+    def __init__(self, body: SubkernelTemplate, dims):
+        self._body = body
+        self._dims = dims
+
+    def __call__(self, *args, **kwargs):
+        from ._ops import simt_launch
+
+        return simt_launch(self._body, *args, dims=self._dims, **kwargs)
 
 
 def _find_transient_simd_escape(value):
@@ -140,11 +167,15 @@ class _SubkernelSurface:
         name: str | None = None,
         target: str = "a5",
         ast_rewrite: bool = True,
+        simt_max_threads: int | None = None,
+        simt_max_regs: int | None = None,
     ):
         self._role = role
         self._name = name
         self._target = target
         self._ast_rewrite = ast_rewrite
+        self._simt_max_threads = simt_max_threads
+        self._simt_max_regs = simt_max_regs
         self._session_cm = None
 
     def __call__(self, fn):
@@ -153,12 +184,18 @@ class _SubkernelSurface:
                 role=self._role,
                 symbol_name=self._name or fn.__name__,
                 target=self._target,
+                simt_max_threads=self._simt_max_threads,
+                simt_max_regs=self._simt_max_regs,
             ),
             fn,
             ast_rewrite=self._ast_rewrite,
         )
 
     def __enter__(self):
+        if self._role == KernelRole.SIMT and (
+            self._simt_max_threads is not None or self._simt_max_regs is not None
+        ):
+            raise TypeError("@pto.simt(max_threads=..., max_regs=...) is only supported as a function decorator")
         runtime = current_runtime()
         if runtime is None:
             raise RuntimeError(
@@ -190,8 +227,17 @@ def _subkernel_decorator(
     name: str | None = None,
     target: str = "a5",
     ast_rewrite: bool = True,
+    simt_max_threads: int | None = None,
+    simt_max_regs: int | None = None,
 ):
-    return _SubkernelSurface(role, name=name, target=target, ast_rewrite=ast_rewrite)
+    return _SubkernelSurface(
+        role,
+        name=name,
+        target=target,
+        ast_rewrite=ast_rewrite,
+        simt_max_threads=simt_max_threads,
+        simt_max_regs=simt_max_regs,
+    )
 
 
 def _decorate_subkernel(
@@ -201,10 +247,26 @@ def _decorate_subkernel(
     name: str | None = None,
     target: str = "a5",
     ast_rewrite: bool = True,
+    simt_max_threads: int | None = None,
+    simt_max_regs: int | None = None,
 ):
     if fn is not None:
-        return _subkernel_decorator(role, name=name, target=target, ast_rewrite=ast_rewrite)(fn)
-    return _subkernel_decorator(role, name=name, target=target, ast_rewrite=ast_rewrite)
+        return _subkernel_decorator(
+            role,
+            name=name,
+            target=target,
+            ast_rewrite=ast_rewrite,
+            simt_max_threads=simt_max_threads,
+            simt_max_regs=simt_max_regs,
+        )(fn)
+    return _subkernel_decorator(
+        role,
+        name=name,
+        target=target,
+        ast_rewrite=ast_rewrite,
+        simt_max_threads=simt_max_threads,
+        simt_max_regs=simt_max_regs,
+    )
 
 
 def cube(fn=None, *, name: str | None = None, target: str = "a5", ast_rewrite: bool = True):
@@ -215,8 +277,38 @@ def simd(fn=None, *, name: str | None = None, target: str = "a5", ast_rewrite: b
     return _decorate_subkernel(KernelRole.SIMD, fn, name=name, target=target, ast_rewrite=ast_rewrite)
 
 
-def simt(fn=None, *, name: str | None = None, target: str = "a5", ast_rewrite: bool = True):
-    return _decorate_subkernel(KernelRole.SIMT, fn, name=name, target=target, ast_rewrite=ast_rewrite)
+def _validate_simt_resource_attr(name: str, value: int | None) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"@pto.simt(..., {name}=...) expects a positive Python int")
+    if value <= 0:
+        raise ValueError(f"@pto.simt(..., {name}=...) expects a positive Python int")
+    if value > 2**31 - 1:
+        raise ValueError(f"@pto.simt(..., {name}=...) must fit in signless i32")
+    return value
+
+
+def simt(
+    fn=None,
+    *,
+    name: str | None = None,
+    target: str = "a5",
+    ast_rewrite: bool = True,
+    max_threads: int | None = None,
+    max_regs: int | None = None,
+):
+    max_threads = _validate_simt_resource_attr("max_threads", max_threads)
+    max_regs = _validate_simt_resource_attr("max_regs", max_regs)
+    return _decorate_subkernel(
+        KernelRole.SIMT,
+        fn,
+        name=name,
+        target=target,
+        ast_rewrite=ast_rewrite,
+        simt_max_threads=max_threads,
+        simt_max_regs=max_regs,
+    )
 
 
 __all__ = [

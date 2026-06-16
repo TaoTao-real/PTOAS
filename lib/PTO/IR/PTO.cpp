@@ -13169,10 +13169,11 @@ static LogicalResult verifyFrontendInitCommon(InitOpT op,
   PTOArch arch = getTargetArch(op.getOperation());
 
   bool hasGlobalSlotTensor = static_cast<bool>(op.getGmSlotTensor());
+  bool hasGmSlotBuffer = static_cast<bool>(op.getGmSlotBuffer());
   bool hasC2vConsumerBuf = static_cast<bool>(op.getC2vConsumerBuf());
   bool hasV2cConsumerBuf = static_cast<bool>(op.getV2cConsumerBuf());
   if (hasGlobalSlotTensor) {
-    if (op.getGmSlotBuffer() || hasC2vConsumerBuf || hasV2cConsumerBuf) {
+    if (hasGmSlotBuffer || hasC2vConsumerBuf || hasV2cConsumerBuf) {
       return op.emitOpError(
           "globaltensor pipe init expects only 'gm_slot_tensor' and no "
           "'gm_slot_buffer', 'c2v_consumer_buf', or 'v2c_consumer_buf'");
@@ -13180,10 +13181,6 @@ static LogicalResult verifyFrontendInitCommon(InitOpT op,
     if (op.getLocalSlotNumAttr())
       return op.emitOpError(
           "globaltensor pipe init does not use 'local_slot_num'");
-    if (arch == PTOArch::A5) {
-      return op.emitOpError(
-          "globaltensor pipe entries are supported for a2/a3 l2g2l pipes");
-    }
     return verifyFrontendGlobalSlotTensor(
         op.getOperation(), op.getGmSlotTensor(), dirMask, op.getSlotSize());
   }
@@ -13558,7 +13555,7 @@ static LogicalResult verifyTensorEntryMatchesInternalPipeInit(Operation *op,
   Type slotElementType;
   ArrayRef<int64_t> slotShape;
   if (!getTensorLikeElementAndShape(initOp.getGmAddr().getType(),
-                                    slotElementType, slotShape)) {
+slotElementType, slotShape)) {
     return op->emitOpError()
            << "expects !pto.tensor_view pipe entry to use "
               "pto.initialize_l2g2l_pipe gm_addr with tensor/memref slot type";

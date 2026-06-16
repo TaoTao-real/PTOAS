@@ -34,7 +34,7 @@ from ._types import (           # noqa: F401
     _resolve,
 )
 from ._surface_types import (   # noqa: F401
-    constexpr,
+    const_expr,
     tensor_spec,
     TensorSpec,
     BarrierType,
@@ -111,7 +111,24 @@ from ._ops import (             # noqa: F401
     mte_l0c_l1, mte_l0c_gm, mte_l0c_ub,
     mad, mad_acc, mad_bias, mad_mx, mad_mx_acc, mad_mx_bias,
     get_block_idx, get_block_num, get_subblock_idx, get_subblock_num,
-    store_vfsimt_info, get_tid_x, get_tid_y, get_tid_z,
+    store_vfsimt_info, simt_launch,
+    get_tid, get_tid_x, get_tid_y, get_tid_z,
+    get_block_dim, get_block_dim_x, get_block_dim_y, get_block_dim_z,
+    get_grid_dim, get_grid_dim_x, get_grid_dim_y, get_grid_dim_z,
+    get_block_idx_x, get_block_idx_y, get_block_idx_z,
+    get_veccoreid, get_clock32, get_clock64,
+    get_laneid, get_lanemask_eq, get_lanemask_le, get_lanemask_lt,
+    get_lanemask_ge, get_lanemask_gt,
+    vote_all, vote_any, vote_uni, vote_ballot,
+    shuffle_idx, shuffle_up, shuffle_down, shuffle_bfly,
+    redux_add, redux_max, redux_min,
+    ldg, stg,
+    atomic_exch, atomic_add, atomic_sub, atomic_min, atomic_max,
+    atomic_and, atomic_or, atomic_xor, atomic_cas,
+    prmt, mulhi, mul_i32toi64,
+    absf, sqrt, exp, log, pow, ceil, floor, rint, round,
+    fmin, fmax, fma, convert,
+    syncthreads, threadfence, threadfence_block, keep, resume,
     pipe_barrier,
     get_buf, rls_buf,
     set_cross_flag, wait_cross_flag, set_intra_flag, wait_intra_flag,
@@ -122,7 +139,7 @@ from ._ops import (             # noqa: F401
 # ── Control flow ──────────────────────────────────────────────────────────────
 from ._control_flow import (    # noqa: F401
     for_, if_, yield_,
-    const_expr, static_range,
+    static_range,
     LoopHandle, BranchHandle,
 )
 
@@ -149,6 +166,6 @@ mask_b32 = mask_type("b32")
 
 
 def __getattr__(name):
-    if name in {"ukernel", "tile_buf_type", "vecscope", "as_ptr", "vbrc_load", "vsts_1pt"}:
+    if name in {"ukernel", "tile_buf_type", "vecscope", "as_ptr", "vbrc_load", "vsts_1pt", "constexpr"}:
         raise unsupported_public_surface_error(name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

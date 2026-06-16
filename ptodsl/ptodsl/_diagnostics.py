@@ -34,7 +34,7 @@ def native_python_control_flow_error(usage: str) -> PTODSLTracingMisuseError:
         f"native Python {usage} cannot consume a PTODSL runtime value during tracing. "
         "This value is a device-side SSA/runtime-metadata value, not a Python bool/int. "
         "Use pto.if_(...) or pto.for_(...) for device-side control flow, or keep the "
-        "bound/condition in pto.constexpr."
+        "bound/condition in pto.const_expr."
     )
 
 
@@ -52,7 +52,7 @@ def jit_missing_annotation_error(name: str) -> TypeError:
         f"@pto.jit positional parameter '{name}' does not declare an entry ABI annotation. "
         'Use an explicit GM pointer such as pto.ptr(pto.f32, "gm") for device buffers, '
         "a PTO scalar type such as pto.i32/pto.f32/pto.i1 for runtime scalars, "
-        "or move compile-time values to keyword-only pto.constexpr parameters."
+        "or move compile-time values to keyword-only pto.const_expr parameters."
     )
 
 
@@ -62,7 +62,7 @@ def jit_illegal_formal_annotation_error(name: str, annotation: object) -> TypeEr
         f"@pto.jit positional parameter '{name}' uses unsupported entry annotation {annotation!r}. "
         'The public @pto.jit entry ABI accepts explicit GM pointers such as pto.ptr(pto.f32, "gm"), '
         "PTO scalar annotations such as pto.i32/pto.f32/pto.i1 for runtime scalars, "
-        "and keyword-only pto.constexpr compile-time parameters. "
+        "and keyword-only pto.const_expr compile-time parameters. "
         "Legacy host tensor annotations such as pto.tensor_spec(...), and low-level PTODSL "
         "types such as Tile, PartitionTensorView, VReg, or non-entry pointer forms do not "
         "belong at the host/kernel entry."
@@ -91,16 +91,16 @@ def jit_non_gm_ptr_entry_error(name: str, annotation: object) -> TypeError:
 
 
 def jit_keyword_only_non_constexpr_error(name: str, annotation: object) -> TypeError:
-    """Return one diagnostic for keyword-only params that are not ``pto.constexpr``."""
+    """Return one diagnostic for keyword-only params that are not ``pto.const_expr``."""
     return TypeError(
         f"@pto.jit keyword-only parameter '{name}' uses unsupported compile-time annotation {annotation!r}. "
-        "Compile-time @pto.jit parameters must remain keyword-only pto.constexpr values in this change; "
+        "Compile-time @pto.jit parameters must remain keyword-only pto.const_expr values in this change; "
         "move runtime data to positional pointer/scalar parameters instead."
     )
 
 
 def jit_constexpr_missing_default_error(name: str) -> TypeError:
-    """Return one diagnostic for ``pto.constexpr`` params missing a default value."""
+    """Return one diagnostic for ``pto.const_expr`` params missing a default value."""
     return TypeError(
         f"@pto.jit constexpr parameter '{name}' must declare a default value until explicit "
         "compile-time specialization is implemented. Keep this parameter keyword-only and "
@@ -238,6 +238,9 @@ def unsupported_public_surface_error(name: str) -> AttributeError:
         ),
         "vsts_1pt": (
             'Use pto.vsts(vec, ptr, offset, mask, dist="1PT_B32") instead of the removed pto.vsts_1pt(...) helper.'
+        ),
+        "constexpr": (
+            "Use pto.const_expr for compile-time @pto.jit parameters and trace-time control-flow guards."
         ),
     }
     suffix = hints.get(name, "Use the documented PTODSL public surface instead.")

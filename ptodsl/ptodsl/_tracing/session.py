@@ -18,10 +18,11 @@ from .control_flow import (
     yield_carry_loop_state,
 )
 from .._surface_values import unwrap_surface_value, wrap_like_surface_value
+from .._types import _strip_integer_signedness
 
 from mlir.dialects import arith, func
 from mlir.dialects import pto as _pto
-from mlir.ir import InsertionPoint, IntegerType, UnitAttr
+from mlir.ir import FlatSymbolRefAttr, IndexType, InsertionPoint, IntegerAttr, IntegerType, Operation, UnitAttr
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,15 @@ class HelperFunctionSpec:
     arg_types: tuple
     result_types: tuple = ()
     attributes: tuple[tuple[str, object], ...] = ()
+
+
+@dataclass(frozen=True)
+class SimtHelperSpecializationKey:
+    """Cache key for one specialized ``@pto.simt`` helper body."""
+
+    symbol_name: str
+    arg_types: tuple
+    static_kwargs: tuple[tuple[str, object], ...]
 
 
 @dataclass(frozen=True)
@@ -54,6 +64,8 @@ class TraceSession:
         self._function_stack = [entry_function]
         self._function_symbol_table = entry_function.operation.parent.regions[0].blocks[0]
         self._helpers: dict[str, object] = {}
+        self._simt_helper_specializations: dict[SimtHelperSpecializationKey, object] = {}
+        self._simt_helper_symbol_counters: dict[str, int] = {}
         self._subkernel_stack: list[SubkernelTraceFrame] = []
         self._carry_loop_stack = []
 
@@ -157,18 +169,67 @@ class TraceSession:
 
     def lower_simt_helper_subkernel(self, subkernel, *args, **kwargs):
         """Lower one ``@pto.simt`` call through a dedicated helper function."""
+        helper_fn, arg_templates = self._get_or_create_simt_helper_function(subkernel, *args, **kwargs)
+
+        i32 = IntegerType.get_signless(32)
+        dim_z = arith.ConstantOp(i32, 1).result
+        dim_y = arith.ConstantOp(i32, 1).result
+        dim_x = arith.ConstantOp(i32, 1).result
+        _pto.StoreVfSimtInfoOp(dim_z, dim_y, dim_x)
+        func.CallOp(helper_fn, [unwrap_surface_value(arg) for arg in arg_templates])
+
+    def lower_simt_launch_subkernel(self, subkernel, *args, dims, **kwargs):
+        """Lower one explicit ``pto.simt_launch`` call through a SIMT helper."""
+        helper_fn, arg_templates = self._get_or_create_simt_helper_function(subkernel, *args, **kwargs)
+        dim_x, dim_y, dim_z = _coerce_simt_launch_dims(dims)
+        Operation.create(
+            "pto.simt_launch",
+            attributes={"callee": FlatSymbolRefAttr.get(_symbol_name(helper_fn))},
+            operands=[dim_x, dim_y, dim_z, *[unwrap_surface_value(arg) for arg in arg_templates]],
+        )
+
+    def _get_or_create_simt_helper_function(self, subkernel, *args, **kwargs):
+        """Return the reusable ``pto.simt_entry`` helper for *subkernel*."""
         outer_frame = self.current_subkernel
         if outer_frame is not None and outer_frame.role == "simt":
             raise RuntimeError("@pto.simt helper lowering does not support nested SIMT helper calls")
 
         arg_templates = tuple(args)
         arg_types = tuple(unwrap_surface_value(arg).type for arg in arg_templates)
-        helper_spec = HelperFunctionSpec(
+        static_kwargs = _simt_static_kwargs_signature(kwargs)
+        specialization_key = SimtHelperSpecializationKey(
             symbol_name=subkernel.spec.symbol_name,
             arg_types=arg_types,
-            attributes=(("pto.simt_entry", UnitAttr.get()),),
+            static_kwargs=static_kwargs,
+        )
+        helper_fn = self._simt_helper_specializations.get(specialization_key)
+        if helper_fn is not None:
+            return helper_fn, arg_templates
+
+        helper_symbol = self._next_simt_helper_symbol(subkernel.spec.symbol_name)
+        helper_attributes = [("pto.simt_entry", UnitAttr.get())]
+        i32_attr_type = IntegerType.get_signless(32)
+        if subkernel.spec.simt_max_threads is not None:
+            helper_attributes.append(
+                (
+                    "pto.simt_max_threads",
+                    IntegerAttr.get(i32_attr_type, subkernel.spec.simt_max_threads),
+                )
+            )
+        if subkernel.spec.simt_max_regs is not None:
+            helper_attributes.append(
+                (
+                    "pto.simt_max_regs",
+                    IntegerAttr.get(i32_attr_type, subkernel.spec.simt_max_regs),
+                )
+            )
+        helper_spec = HelperFunctionSpec(
+            symbol_name=helper_symbol,
+            arg_types=arg_types,
+            attributes=tuple(helper_attributes),
         )
         helper_fn, created = self.get_or_create_helper_function(helper_spec)
+        self._simt_helper_specializations[specialization_key] = helper_fn
 
         if created:
             entry_block = helper_fn.add_entry_block()
@@ -180,12 +241,37 @@ class TraceSession:
                 subkernel.emit_body(*wrapped_args, **kwargs)
                 func.ReturnOp([])
 
-        i32 = IntegerType.get_signless(32)
-        dim_z = arith.ConstantOp(i32, 1).result
-        dim_y = arith.ConstantOp(i32, 1).result
-        dim_x = arith.ConstantOp(i32, 1).result
-        _pto.StoreVfSimtInfoOp(dim_z, dim_y, dim_x)
-        func.CallOp(helper_fn, [unwrap_surface_value(arg) for arg in arg_templates])
+        return helper_fn, arg_templates
+
+    def _next_simt_helper_symbol(self, base_symbol: str) -> str:
+        index = self._simt_helper_symbol_counters.get(base_symbol, 0)
+        while True:
+            symbol = f"{base_symbol}__simt_{index}"
+            index += 1
+            if symbol not in self._helpers:
+                self._simt_helper_symbol_counters[base_symbol] = index
+                return symbol
+
+    def resolve_simt_peer_symbol(self, subkernel) -> str:
+        """Return the unique materialized helper symbol for a ``@pto.simt`` peer."""
+        symbol_name = subkernel.spec.symbol_name
+        matches = [
+            helper_fn
+            for key, helper_fn in self._simt_helper_specializations.items()
+            if key.symbol_name == symbol_name
+        ]
+        if not matches:
+            raise RuntimeError(
+                f"pto.import_reserved_buffer(..., peer_func={symbol_name}) cannot resolve "
+                "the @pto.simt helper symbol before the helper is called or launched"
+            )
+        if len(matches) > 1:
+            raise RuntimeError(
+                f"pto.import_reserved_buffer(..., peer_func={symbol_name}) is ambiguous "
+                "because the @pto.simt helper has multiple specializations; pass the "
+                "materialized peer function symbol explicitly"
+            )
+        return _symbol_name(matches[0])
 
     def lookup_helper(self, symbol_name: str):
         """Return a previously declared helper function, or ``None``."""
@@ -216,6 +302,91 @@ class TraceSession:
             raise RuntimeError("PTODSL trace-session exited with an open subkernel lowering frame")
         if self._carry_loop_stack:
             raise RuntimeError("PTODSL trace-session exited with an open loop-carry lowering frame")
+
+
+def _coerce_simt_launch_dims(dims):
+    if not isinstance(dims, (tuple, list)) or len(dims) != 3:
+        raise TypeError("pto.simt_launch(..., dims=...) expects a 3-item (dim_x, dim_y, dim_z) tuple")
+    return tuple(
+        _coerce_i32_dim(dim, context=f"pto.simt_launch(..., dims[{index}])")
+        for index, dim in enumerate(dims)
+    )
+
+
+def _coerce_i32_dim(value, *, context: str):
+    raw_value = unwrap_surface_value(value)
+    i32 = IntegerType.get_signless(32)
+    if isinstance(raw_value, bool):
+        raise TypeError(f"{context} does not accept bool values")
+    if isinstance(raw_value, int):
+        if raw_value < 0:
+            raise ValueError(f"{context} expects a non-negative i32 launch dimension, got {raw_value}")
+        return arith.ConstantOp(i32, raw_value).result
+    if IndexType.isinstance(raw_value.type):
+        return arith.IndexCastOp(i32, raw_value).result
+    if IntegerType.isinstance(raw_value.type):
+        width = IntegerType(raw_value.type).width
+        if width != 32:
+            raise TypeError(f"{context} expects i32 launch dimension, got {raw_value.type}")
+        return _strip_integer_signedness(raw_value)
+    raise TypeError(f"{context} expects i32 launch dimension, got {raw_value.type}")
+
+
+def _symbol_name(ir_fn) -> str:
+    try:
+        name_attr = ir_fn.attributes["sym_name"]
+    except KeyError as exc:
+        raise RuntimeError("PTODSL helper function is missing sym_name")
+    if name_attr is None:
+        raise RuntimeError("PTODSL helper function has empty sym_name")
+    return str(name_attr.value)
+
+
+def _simt_static_kwargs_signature(kwargs):
+    return tuple(
+        (name, _simt_static_signature_atom(value))
+        for name, value in sorted(kwargs.items())
+    )
+
+
+def _simt_static_signature_atom(value):
+    raw_value = unwrap_surface_value(value)
+    if hasattr(raw_value, "type"):
+        raise TypeError(
+            "pto.simt_launch keyword arguments must be static hashable values; "
+            "pass runtime SSA arguments positionally"
+        )
+    try:
+        hash(value)
+    except TypeError:
+        if isinstance(value, dict):
+            return (
+                "dict",
+                tuple(
+                    sorted(
+                        tuple(
+                            (
+                                _simt_static_signature_atom(key),
+                                _simt_static_signature_atom(item),
+                            )
+                            for key, item in value.items()
+                        ),
+                        key=repr,
+                    )
+                ),
+            )
+        if isinstance(value, (list, tuple)):
+            return (
+                type(value).__name__,
+                tuple(_simt_static_signature_atom(item) for item in value),
+            )
+        if isinstance(value, set):
+            return (
+                "set",
+                tuple(sorted((_simt_static_signature_atom(item) for item in value), key=repr)),
+            )
+        return (type(value).__name__, repr(value))
+    return value
 
 
 __all__ = [

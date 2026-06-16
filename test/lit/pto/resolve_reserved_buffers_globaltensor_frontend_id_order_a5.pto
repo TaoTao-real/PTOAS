@@ -1,0 +1,85 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+//
+// Guards A5 globaltensor frontend pipe flag-base assignment so frontend ids,
+// not source order, determine the final resolve-reserved-buffers ordering.
+//
+// RUN: ptoas --pto-arch=a5 --mlir-print-ir-after=pto-resolve-reserved-buffers %s -o /dev/null 2>&1 | FileCheck %s
+
+module {
+  func.func @cube_kernel(%gm_qk: !pto.ptr<f32>, %gm_pv: !pto.ptr<f32>, %gm_p: !pto.ptr<f16>)
+      attributes {pto.kernel_kind = #pto.kernel_kind<cube>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c128 = arith.constant 128 : index
+    %c256 = arith.constant 256 : index
+
+    %qk_slots = pto.make_tensor_view %gm_qk,
+      shape = [%c128, %c256], strides = [%c256, %c1]
+      : !pto.tensor_view<128x256xf32>
+    %pv_slots = pto.make_tensor_view %gm_pv,
+      shape = [%c128, %c128], strides = [%c128, %c1]
+      : !pto.tensor_view<128x128xf32>
+    %p_slots = pto.make_tensor_view %gm_p,
+      shape = [%c128, %c256], strides = [%c256, %c1]
+      : !pto.tensor_view<128x256xf16>
+
+    // Source order intentionally matches the cv-split demo:
+    // QK(id=0), PV(id=2), P(id=1).
+    pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 131072}
+      (gm_slot_tensor = %qk_slots : !pto.tensor_view<128x256xf32>)
+    pto.aic_initialize_pipe {id = 2, dir_mask = 1, slot_size = 65536}
+      (gm_slot_tensor = %pv_slots : !pto.tensor_view<128x128xf32>)
+    pto.aic_initialize_pipe {id = 1, dir_mask = 2, slot_size = 65536}
+      (gm_slot_tensor = %p_slots : !pto.tensor_view<128x256xf16>)
+    func.return
+  }
+
+  func.func @vector_kernel(%gm_qk: !pto.ptr<f32>, %gm_pv: !pto.ptr<f32>, %gm_p: !pto.ptr<f16>)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c64 = arith.constant 64 : index
+    %c128 = arith.constant 128 : index
+    %c256 = arith.constant 256 : index
+
+    %qk_slots = pto.make_tensor_view %gm_qk,
+      shape = [%c64, %c256], strides = [%c256, %c1]
+      : !pto.tensor_view<64x256xf32>
+    %pv_slots = pto.make_tensor_view %gm_pv,
+      shape = [%c64, %c128], strides = [%c128, %c1]
+      : !pto.tensor_view<64x128xf32>
+    %p_slots = pto.make_tensor_view %gm_p,
+      shape = [%c64, %c256], strides = [%c256, %c1]
+      : !pto.tensor_view<64x256xf16>
+
+    pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 131072}
+      (gm_slot_tensor = %qk_slots : !pto.tensor_view<64x256xf32>)
+    pto.aiv_initialize_pipe {id = 2, dir_mask = 1, slot_size = 65536}
+      (gm_slot_tensor = %pv_slots : !pto.tensor_view<64x128xf32>)
+    pto.aiv_initialize_pipe {id = 1, dir_mask = 2, slot_size = 65536}
+      (gm_slot_tensor = %p_slots : !pto.tensor_view<64x256xf16>)
+    func.return
+  }
+}
+
+// CHECK-LABEL: func.func @cube_kernel(
+// CHECK: pto.initialize_l2g2l_pipe{dir_mask = 1, slot_size = 131072, slot_num = 8, flag_base = 0, nosplit = false}
+// CHECK-SAME: __pto.frontend_id = 0 : i32
+// CHECK: pto.initialize_l2g2l_pipe{dir_mask = 1, slot_size = 65536, slot_num = 8, flag_base = 4, nosplit = false}
+// CHECK-SAME: __pto.frontend_id = 2 : i32
+// CHECK: pto.initialize_l2g2l_pipe{dir_mask = 2, slot_size = 65536, slot_num = 8, flag_base = 2, nosplit = false}
+// CHECK-SAME: __pto.frontend_id = 1 : i32
+
+// CHECK-LABEL: func.func @vector_kernel(
+// CHECK: pto.initialize_l2g2l_pipe{dir_mask = 1, slot_size = 131072, slot_num = 8, flag_base = 0, nosplit = false}
+// CHECK-SAME: __pto.frontend_id = 0 : i32
+// CHECK: pto.initialize_l2g2l_pipe{dir_mask = 1, slot_size = 65536, slot_num = 8, flag_base = 4, nosplit = false}
+// CHECK-SAME: __pto.frontend_id = 2 : i32
+// CHECK: pto.initialize_l2g2l_pipe{dir_mask = 2, slot_size = 65536, slot_num = 8, flag_base = 2, nosplit = false}
+// CHECK-SAME: __pto.frontend_id = 1 : i32

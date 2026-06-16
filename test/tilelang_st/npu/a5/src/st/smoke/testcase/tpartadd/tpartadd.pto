@@ -1,0 +1,135 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use the file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// TileLang ST kernels for pto.tpartadd: partial elementwise add with valid region handling.
+// Multiple cases with different valid_shape combinations in a single module.
+// Compiled by ptoas --enable-insert-sync --enable-tile-op-expand --pto-backend=vpto
+// to produce a fatobj object.
+
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+  // Case 0: f32 64x64 full (src0/src1/dst all have same valid_shape 64x64)
+  func.func @TPARTADD_f16_8x48_src0_col_less(%a_ptr: !pto.ptr<f16>, %b_ptr: !pto.ptr<f16>, %c_ptr: !pto.ptr<f16>) attributes {pto.kernel} {
+    %c0   = arith.constant 0   : index
+    %c1   = arith.constant 1   : index
+    %c8   = arith.constant 8   : index
+    %c16  = arith.constant 16  : index
+    %c48  = arith.constant 48  : index
+    %c384 = arith.constant 384 : index
+
+    %a_view = pto.make_tensor_view %a_ptr,
+      shape = [%c1, %c1, %c1, %c8, %c48],
+      strides = [%c384, %c384, %c384, %c48, %c1]
+      : !pto.tensor_view<1x1x1x8x48xf16>
+    %b_view = pto.make_tensor_view %b_ptr,
+      shape = [%c1, %c1, %c1, %c8, %c48],
+      strides = [%c384, %c384, %c384, %c48, %c1]
+      : !pto.tensor_view<1x1x1x8x48xf16>
+    %c_view = pto.make_tensor_view %c_ptr,
+      shape = [%c1, %c1, %c1, %c8, %c48],
+      strides = [%c384, %c384, %c384, %c48, %c1]
+      : !pto.tensor_view<1x1x1x8x48xf16>
+
+    %a_part = pto.partition_view %a_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c8, %c48]
+      : !pto.tensor_view<1x1x1x8x48xf16> -> !pto.partition_tensor_view<1x1x1x8x48xf16>
+    %b_part = pto.partition_view %b_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c8, %c48]
+      : !pto.tensor_view<1x1x1x8x48xf16> -> !pto.partition_tensor_view<1x1x1x8x48xf16>
+    %c_part = pto.partition_view %c_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c8, %c48]
+      : !pto.tensor_view<1x1x1x8x48xf16> -> !pto.partition_tensor_view<1x1x1x8x48xf16>
+
+    // src0: partial valid region (8,16)
+    %a = pto.alloc_tile
+      : !pto.tile_buf<vec, 8x48xf16, valid=8x16>
+    // src1: full valid region (8,48)
+    %b = pto.alloc_tile
+      : !pto.tile_buf<vec, 8x48xf16>
+    // dst: full valid region (8,48)
+    %c = pto.alloc_tile
+      : !pto.tile_buf<vec, 8x48xf16>
+
+    pto.tload ins(%a_part : !pto.partition_tensor_view<1x1x1x8x48xf16>)
+              outs(%a : !pto.tile_buf<vec, 8x48xf16, valid=8x16>)
+    pto.tload ins(%b_part : !pto.partition_tensor_view<1x1x1x8x48xf16>)
+              outs(%b : !pto.tile_buf<vec, 8x48xf16>)
+
+    pto.tpartadd ins(%a, %b : !pto.tile_buf<vec, 8x48xf16, valid=8x16>,
+                          !pto.tile_buf<vec, 8x48xf16>)
+             outs(%c : !pto.tile_buf<vec, 8x48xf16>)
+
+    pto.tstore ins(%c : !pto.tile_buf<vec, 8x48xf16>)
+               outs(%c_part : !pto.partition_tensor_view<1x1x1x8x48xf16>)
+    return
+  }
+
+  // Case 6: f16 8x768 src0 col less (src0 valid 8x512, src1/dst valid 8x768)
+
+  func.func @TPARTADD_i16_8x48_src1_col_less(%a_ptr: !pto.ptr<i16>, %b_ptr: !pto.ptr<i16>, %c_ptr: !pto.ptr<i16>) attributes {pto.kernel} {
+    %c0   = arith.constant 0   : index
+    %c1   = arith.constant 1   : index
+    %c8   = arith.constant 8   : index
+    %c16  = arith.constant 16  : index
+    %c48  = arith.constant 48  : index
+    %c384 = arith.constant 384 : index
+
+    %a_view = pto.make_tensor_view %a_ptr,
+      shape = [%c1, %c1, %c1, %c8, %c48],
+      strides = [%c384, %c384, %c384, %c48, %c1]
+      : !pto.tensor_view<1x1x1x8x48xi16>
+    %b_view = pto.make_tensor_view %b_ptr,
+      shape = [%c1, %c1, %c1, %c8, %c48],
+      strides = [%c384, %c384, %c384, %c48, %c1]
+      : !pto.tensor_view<1x1x1x8x48xi16>
+    %c_view = pto.make_tensor_view %c_ptr,
+      shape = [%c1, %c1, %c1, %c8, %c48],
+      strides = [%c384, %c384, %c384, %c48, %c1]
+      : !pto.tensor_view<1x1x1x8x48xi16>
+
+    %a_part = pto.partition_view %a_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c8, %c48]
+      : !pto.tensor_view<1x1x1x8x48xi16> -> !pto.partition_tensor_view<1x1x1x8x48xi16>
+    %b_part = pto.partition_view %b_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c8, %c48]
+      : !pto.tensor_view<1x1x1x8x48xi16> -> !pto.partition_tensor_view<1x1x1x8x48xi16>
+    %c_part = pto.partition_view %c_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c8, %c48]
+      : !pto.tensor_view<1x1x1x8x48xi16> -> !pto.partition_tensor_view<1x1x1x8x48xi16>
+
+    // src0: full valid region (8,48)
+    %a = pto.alloc_tile
+      : !pto.tile_buf<vec, 8x48xi16>
+    // src1: partial valid region (8,16)
+    %b = pto.alloc_tile
+      : !pto.tile_buf<vec, 8x48xi16, valid=8x16>
+    // dst: full valid region (8,48)
+    %c = pto.alloc_tile
+      : !pto.tile_buf<vec, 8x48xi16>
+
+    pto.tload ins(%a_part : !pto.partition_tensor_view<1x1x1x8x48xi16>)
+              outs(%a : !pto.tile_buf<vec, 8x48xi16>)
+    pto.tload ins(%b_part : !pto.partition_tensor_view<1x1x1x8x48xi16>)
+              outs(%b : !pto.tile_buf<vec, 8x48xi16, valid=8x16>)
+
+    pto.tpartadd ins(%a, %b : !pto.tile_buf<vec, 8x48xi16>,
+                          !pto.tile_buf<vec, 8x48xi16, valid=8x16>)
+             outs(%c : !pto.tile_buf<vec, 8x48xi16>)
+
+    pto.tstore ins(%c : !pto.tile_buf<vec, 8x48xi16>)
+               outs(%c_part : !pto.partition_tensor_view<1x1x1x8x48xi16>)
+    return
+  }
+
+  // Case 8: i32 64x64 src0 row less (src0 valid 8x64, src1/dst valid 64x64)
+}

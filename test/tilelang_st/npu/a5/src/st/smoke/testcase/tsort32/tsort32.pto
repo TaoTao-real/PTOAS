@@ -1,0 +1,127 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You can not use the file except of compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// TileLang ST kernels for pto.tsort32: sort 32-element blocks with interleaved output.
+// Multiple cases with different shapes and shared/broadcast index patterns.
+// Compiled by ptoas --enable-insert-sync --enable-tile-op-expand --pto-backend=vpto
+// to produce a fatobj object.
+
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+  // Case 0: f32 1x32 - single row, one 32-element block
+  func.func @TSORT32_f32_2x13(%src_ptr: !pto.ptr<f32>, %idx_ptr: !pto.ptr<ui32>, %dst_ptr: !pto.ptr<f32>) attributes {pto.kernel} {
+    %c0    = arith.constant 0     : index
+    %c1    = arith.constant 1     : index
+    %c2    = arith.constant 2     : index
+    %c13   = arith.constant 13    : index
+    %c16   = arith.constant 16    : index
+    %c26   = arith.constant 26    : index
+    %c32   = arith.constant 32    : index
+    %c64   = arith.constant 64    : index
+    %c128  = arith.constant 128   : index
+
+    %src_view = pto.make_tensor_view %src_ptr,
+      shape = [%c1, %c1, %c1, %c2, %c16],
+      strides = [%c32, %c32, %c32, %c16, %c1]
+      : !pto.tensor_view<1x1x1x2x16xf32>
+    %idx_view = pto.make_tensor_view %idx_ptr,
+      shape = [%c1, %c1, %c1, %c2, %c16],
+      strides = [%c32, %c32, %c32, %c16, %c1]
+      : !pto.tensor_view<1x1x1x2x16xui32>
+    %dst_view = pto.make_tensor_view %dst_ptr,
+      shape = [%c1, %c1, %c1, %c2, %c64],
+      strides = [%c128, %c128, %c128, %c64, %c1]
+      : !pto.tensor_view<1x1x1x2x64xf32>
+
+    %src_part = pto.partition_view %src_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c2, %c13]
+      : !pto.tensor_view<1x1x1x2x16xf32> -> !pto.partition_tensor_view<1x1x1x2x13xf32>
+    %idx_part = pto.partition_view %idx_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c2, %c13]
+      : !pto.tensor_view<1x1x1x2x16xui32> -> !pto.partition_tensor_view<1x1x1x2x13xui32>
+    %dst_part = pto.partition_view %dst_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c2, %c26]
+      : !pto.tensor_view<1x1x1x2x64xf32> -> !pto.partition_tensor_view<1x1x1x2x26xf32>
+
+    %src_tile = pto.alloc_tile : !pto.tile_buf<vec, 2x16xf32, valid=2x13>
+    %idx_tile = pto.alloc_tile : !pto.tile_buf<vec, 2x16xui32, valid=2x13>
+    %dst_tile = pto.alloc_tile : !pto.tile_buf<vec, 2x64xf32, valid=2x26>
+    %tmp_tile = pto.alloc_tile : !pto.tile_buf<vec, 1x16xf32>
+
+    pto.tload ins(%src_part : !pto.partition_tensor_view<1x1x1x2x13xf32>)
+              outs(%src_tile : !pto.tile_buf<vec, 2x16xf32, valid=2x13>)
+    pto.tload ins(%idx_part : !pto.partition_tensor_view<1x1x1x2x13xui32>)
+              outs(%idx_tile : !pto.tile_buf<vec, 2x16xui32, valid=2x13>)
+
+    pto.tsort32 ins(%src_tile, %idx_tile, %tmp_tile : !pto.tile_buf<vec, 2x16xf32, valid=2x13>,
+                          !pto.tile_buf<vec, 2x16xui32, valid=2x13>,
+                          !pto.tile_buf<vec, 1x16xf32>)
+             outs(%dst_tile : !pto.tile_buf<vec, 2x64xf32, valid=2x26>)
+
+    pto.tstore ins(%dst_tile : !pto.tile_buf<vec, 2x64xf32, valid=2x26>)
+               outs(%dst_part : !pto.partition_tensor_view<1x1x1x2x26xf32>)
+    return
+  }
+
+  // Case: f32 1x4164 - non-32-aligned large shape
+  // VALID_C=4164, tmp_cols=ceil(4164,8)=4168 (32-byte aligned)
+
+  func.func @TSORT32_f16_1x32(%src_ptr: !pto.ptr<f16>, %idx_ptr: !pto.ptr<ui32>, %dst_ptr: !pto.ptr<f16>) attributes {pto.kernel} {
+    %c0    = arith.constant 0    : index
+    %c1    = arith.constant 1    : index
+    %c32   = arith.constant 32   : index
+    %c128  = arith.constant 128  : index
+
+    %src_view = pto.make_tensor_view %src_ptr,
+      shape = [%c1, %c1, %c1, %c1, %c32],
+      strides = [%c32, %c32, %c32, %c32, %c1]
+      : !pto.tensor_view<1x1x1x1x32xf16>
+    %idx_view = pto.make_tensor_view %idx_ptr,
+      shape = [%c1, %c1, %c1, %c1, %c32],
+      strides = [%c32, %c32, %c32, %c32, %c1]
+      : !pto.tensor_view<1x1x1x1x32xui32>
+    %dst_view = pto.make_tensor_view %dst_ptr,
+      shape = [%c1, %c1, %c1, %c1, %c128],
+      strides = [%c128, %c128, %c128, %c128, %c1]
+      : !pto.tensor_view<1x1x1x1x128xf16>
+
+    %src_part = pto.partition_view %src_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c1, %c32]
+      : !pto.tensor_view<1x1x1x1x32xf16> -> !pto.partition_tensor_view<1x1x1x1x32xf16>
+    %idx_part = pto.partition_view %idx_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c1, %c32]
+      : !pto.tensor_view<1x1x1x1x32xui32> -> !pto.partition_tensor_view<1x1x1x1x32xui32>
+    %dst_part = pto.partition_view %dst_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c1, %c128]
+      : !pto.tensor_view<1x1x1x1x128xf16> -> !pto.partition_tensor_view<1x1x1x1x128xf16>
+
+    %src_tile = pto.alloc_tile : !pto.tile_buf<vec, 1x32xf16>
+    %idx_tile = pto.alloc_tile : !pto.tile_buf<vec, 1x32xui32>
+    %dst_tile = pto.alloc_tile : !pto.tile_buf<vec, 1x128xf16>
+
+    pto.tload ins(%src_part : !pto.partition_tensor_view<1x1x1x1x32xf16>)
+              outs(%src_tile : !pto.tile_buf<vec, 1x32xf16>)
+    pto.tload ins(%idx_part : !pto.partition_tensor_view<1x1x1x1x32xui32>)
+              outs(%idx_tile : !pto.tile_buf<vec, 1x32xui32>)
+
+    pto.tsort32 ins(%src_tile, %idx_tile : !pto.tile_buf<vec, 1x32xf16>,
+                          !pto.tile_buf<vec, 1x32xui32>)
+             outs(%dst_tile : !pto.tile_buf<vec, 1x128xf16>)
+
+    pto.tstore ins(%dst_tile : !pto.tile_buf<vec, 1x128xf16>)
+               outs(%dst_part : !pto.partition_tensor_view<1x1x1x1x128xf16>)
+    return
+  }
+
+  // Case: f16 4x64 - f16 dtype, 4 rows, two 32-element blocks per row
+}

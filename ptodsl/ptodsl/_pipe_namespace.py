@@ -47,6 +47,15 @@ def _infer_global_slot_size(gm_slot_tensor) -> int:
     return count * _element_bytewidth(tensor_view_type.element_type)
 
 
+def _infer_unambiguous_global_slot_size(gm_slot_tensor, *, nosplit, context: str) -> int:
+    if nosplit is True:
+        return _infer_global_slot_size(gm_slot_tensor)
+    raise TypeError(
+        f"{context} requires explicit slot_size for split-capable gm_slot_tensor pipes; "
+        "pass slot_size=... or set nosplit=True when one gm_slot_tensor shape equals one full slot"
+    )
+
+
 def _as_int(value, *, context: str):
     if value is None:
         return None
@@ -280,7 +289,11 @@ class _PipeNamespace:
         if slot_size is None:
             if gm_slot_tensor is None:
                 raise TypeError(f"pipe.{direction}(...) requires slot_size when gm_slot_tensor is not provided")
-            slot_size = _infer_global_slot_size(gm_slot_tensor)
+            slot_size = _infer_unambiguous_global_slot_size(
+                gm_slot_tensor,
+                nosplit=nosplit,
+                context=f"pipe.{direction}(...)",
+            )
         if gm_slot_tensor is not None:
             if consumer_buf is not None:
                 raise TypeError(f"pipe.{direction}(...) does not accept consumer_buf when gm_slot_tensor is provided")
@@ -290,7 +303,7 @@ class _PipeNamespace:
                 raise TypeError(f"pipe.{direction}(...) does not accept local_slot_num when gm_slot_tensor is provided")
             entry_type = unwrap_surface_value(gm_slot_tensor).type
         elif consumer_buf is None:
-            raise TypeError(f"pipe.{direction}(...) requires consumer_buf")
+            raise TypeError(f"pipe.{direction}(...) requires consumer_buf for local pipes")
         descriptor = _PipeDescriptor(
             kind="global" if gm_slot_tensor is not None else "local",
             direction=direction,

@@ -318,6 +318,11 @@ void PTOIRTranslator::RecursionIR(Region *region) {
         return WalkResult::interrupt();
       }
     }
+    else if (auto declareGlobalOp = dyn_cast<pto::DeclareGlobalOp>(op)) {
+      if (failed(UpdateDeclareGlobalOpMemInfo(declareGlobalOp))) {
+        return WalkResult::interrupt();
+      }
+    }
     else if (auto castOp = dyn_cast<pto::PointerCastOp>(op)) {
       if (failed(UpdatePointerCastOpMemInfo(castOp))) return WalkResult::interrupt();
     }
@@ -516,6 +521,44 @@ PTOIRTranslator::UpdateDeclareTileMemRefOpMemInfo(pto::DeclareTileMemRefOp op) {
       res,
       res,
       space,
+      SmallVector<uint64_t>{0},
+      sizeInBytes);
+
+  buffer2MemInfoMap_[res].emplace_back(newMemInfo->clone());
+  return success();
+}
+
+LogicalResult
+PTOIRTranslator::UpdateDeclareGlobalOpMemInfo(pto::DeclareGlobalOp op) {
+  Value res = op.getEntry();
+  auto tensorViewType = dyn_cast<pto::TensorViewType>(res.getType());
+  if (!tensorViewType)
+    return failure();
+
+  uint64_t sizeInBytes = 0;
+  ArrayRef<int64_t> shape = tensorViewType.getShape();
+  bool isStatic = llvm::all_of(shape, [](int64_t dim) {
+    return dim != ShapedType::kDynamic;
+  });
+  if (isStatic) {
+    int64_t elemSize = static_cast<int64_t>(
+        pto::getPTOStorageElemByteSize(tensorViewType.getElementType()));
+    if (elemSize == 0)
+      return failure();
+    int64_t numElements = 1;
+    for (int64_t dim : shape)
+      numElements *= dim;
+    sizeInBytes = static_cast<uint64_t>(numElements * elemSize);
+  }
+
+  // declare_global is a symbolic GM entry placeholder whose address gets bound
+  // later by talloc/tpop. Using the SSA result as both base/root lets
+  // partition_view/tstore/tload and tpush/tpop share one alias chain so
+  // InsertSync can recover the GM-slot handshake ordering.
+  auto newMemInfo = std::make_unique<BaseMemInfo>(
+      res,
+      res,
+      pto::AddressSpace::GM,
       SmallVector<uint64_t>{0},
       sizeInBytes);
 

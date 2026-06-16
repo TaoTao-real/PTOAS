@@ -1,0 +1,89 @@
+// Auto-generated trowargmin ST testcases
+
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+
+  func.func @TROWARGMIN_uint32_float_8x1_8x8_8x8(%src_ptr: !pto.ptr<f32>, %dst_ptr: !pto.ptr<ui32>) attributes {pto.kernel} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8_r = arith.constant 8 : index
+    %c8_c = arith.constant 8 : index
+    %c64_se = arith.constant 64 : index
+    %c8_de = arith.constant 8 : index
+    %c1_dc = arith.constant 1 : index
+    %c8_vr = arith.constant 8 : index
+    %c8_vc = arith.constant 8 : index
+    %src_view = pto.make_tensor_view %src_ptr,
+      shape = [%c1, %c1, %c1, %c8_r, %c8_c],
+      strides = [%c64_se, %c64_se, %c64_se, %c8_c, %c1]
+      : !pto.tensor_view<1x1x1x8x8xf32>
+    %dst_view = pto.make_tensor_view %dst_ptr,
+      shape = [%c1, %c1, %c1, %c8_r, %c1_dc],
+      strides = [%c8_de, %c8_de, %c8_de, %c1_dc, %c1]
+      : !pto.tensor_view<1x1x1x8x1xui32>
+    %src_part = pto.partition_view %src_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c8_vr, %c8_vc]
+      : !pto.tensor_view<1x1x1x8x8xf32> -> !pto.partition_tensor_view<1x1x1x8x8xf32>
+    %dst_part = pto.partition_view %dst_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c8_vr, %c1]
+      : !pto.tensor_view<1x1x1x8x1xui32> -> !pto.partition_tensor_view<1x1x1x8x1xui32>
+    %src = pto.alloc_tile
+      : !pto.tile_buf<vec, 8x8xf32>
+    %tmp = pto.alloc_tile
+      : !pto.tile_buf<vec, 8x8xf32>
+    %dst = pto.alloc_tile
+      : !pto.tile_buf<vec, 8x8xui32, valid=8x1>
+    pto.tload ins(%src_part : !pto.partition_tensor_view<1x1x1x8x8xf32>)
+              outs(%src : !pto.tile_buf<vec, 8x8xf32>)
+    pto.trowargmin ins(%src, %tmp : !pto.tile_buf<vec, 8x8xf32>,
+                                !pto.tile_buf<vec, 8x8xf32>)
+                    outs(%dst : !pto.tile_buf<vec, 8x8xui32, valid=8x1>)
+    pto.tstore ins(%dst : !pto.tile_buf<vec, 8x8xui32, valid=8x1>)
+                outs(%dst_part : !pto.partition_tensor_view<1x1x1x8x1xui32>)
+    return
+  }
+
+
+  func.func @TROWARGMIN_int32_half_16x1_13x16_13x13(%src_ptr: !pto.ptr<f16>, %dst_ptr: !pto.ptr<i32>) attributes {pto.kernel} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c13_r = arith.constant 13 : index
+    %c16_c = arith.constant 16 : index
+    %c208_se = arith.constant 208 : index
+    %c13_de = arith.constant 13 : index
+    %c1_dc = arith.constant 1 : index
+    %c13_vr = arith.constant 13 : index
+    %c13_vc = arith.constant 13 : index
+    %src_view = pto.make_tensor_view %src_ptr,
+      shape = [%c1, %c1, %c1, %c13_r, %c16_c],
+      strides = [%c208_se, %c208_se, %c208_se, %c16_c, %c1]
+      : !pto.tensor_view<1x1x1x13x16xf16>
+    %dst_view = pto.make_tensor_view %dst_ptr,
+      shape = [%c1, %c1, %c1, %c13_r, %c1_dc],
+      strides = [%c13_de, %c13_de, %c13_de, %c1_dc, %c1]
+      : !pto.tensor_view<1x1x1x13x1xi32>
+    %src_part = pto.partition_view %src_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c13_vr, %c13_vc]
+      : !pto.tensor_view<1x1x1x13x16xf16> -> !pto.partition_tensor_view<1x1x1x13x13xf16>
+    %dst_part = pto.partition_view %dst_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c13_vr, %c1]
+      : !pto.tensor_view<1x1x1x13x1xi32> -> !pto.partition_tensor_view<1x1x1x13x1xi32>
+    %src = pto.alloc_tile
+      : !pto.tile_buf<vec, 13x16xf16, valid=13x13>
+    %tmp = pto.alloc_tile
+      : !pto.tile_buf<vec, 13x16xf16, valid=13x13>
+    %dst = pto.alloc_tile
+      : !pto.tile_buf<vec, 13x8xi32, valid=13x1>
+    pto.tload ins(%src_part : !pto.partition_tensor_view<1x1x1x13x13xf16>)
+              outs(%src : !pto.tile_buf<vec, 13x16xf16, valid=13x13>)
+    pto.trowargmin ins(%src, %tmp : !pto.tile_buf<vec, 13x16xf16, valid=13x13>,
+                                !pto.tile_buf<vec, 13x16xf16, valid=13x13>)
+                    outs(%dst : !pto.tile_buf<vec, 13x8xi32, valid=13x1>)
+    pto.tstore ins(%dst : !pto.tile_buf<vec, 13x8xi32, valid=13x1>)
+                outs(%dst_part : !pto.partition_tensor_view<1x1x1x13x1xi32>)
+    return
+  }
+}

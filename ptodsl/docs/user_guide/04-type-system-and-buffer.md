@@ -183,7 +183,7 @@ def kernel(
     rows: pto.i32,
     cols: pto.i32,
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     tv = pto.make_tensor_view(A_ptr, shape=[rows, cols], strides=[cols, 1])
     return

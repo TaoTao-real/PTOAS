@@ -25,9 +25,16 @@ def main():
             continue
 
         case_dir = case["name"]
-        shape_c = case["shape_c"]
-        golden = np.fromfile(os.path.join(case_dir, "golden.bin"), dtype=np.float32).reshape(shape_c)
-        output = np.fromfile(os.path.join(case_dir, "output.bin"), dtype=np.float32).reshape(shape_c)
+        M, N = case["M"], case["N"]
+        c_dtype = case["c_dtype"]
+        # Golden and output are saved at aligned/padded sizes to match
+        # the full-tile mte_l0c_gm storeback. Slice to the valid region.
+        M_aligned = case.get("M_aligned", M)
+        N_aligned = case.get("N_aligned", N)
+        golden = np.fromfile(os.path.join(case_dir, "golden.bin"),
+                             dtype=c_dtype).reshape(M_aligned, N_aligned)[:M, :N]
+        output = np.fromfile(os.path.join(case_dir, "output.bin"),
+                             dtype=c_dtype).reshape(M_aligned, N_aligned)[:M, :N]
 
         ok = result_cmp(golden, output, case["eps"])
         if ok:

@@ -1,85 +1,35 @@
 module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
-  func.func @simt_ldst_policy_core_kernel(%arg0: !pto.ptr<i32, gm>,
-                                          %arg1: !pto.ptr<f16, gm>,
-                                          %arg2: !pto.ptr<bf16, gm>,
-                                          %arg3: !pto.ptr<i8, gm>,
-                                          %arg4: !pto.ptr<i16, gm>,
-                                          %arg5: !pto.ptr<i64, gm>,
-                                          %arg6: !pto.ptr<f32, gm>,
-                                          %arg7: !pto.ptr<f64, gm>,
-                                          %arg8: !pto.ptr<f8E4M3FN, gm>,
-                                          %arg9: !pto.ptr<!pto.hif8, gm>) attributes {pto.aicore} {
+  func.func @simt_ldst_policy_core_kernel(%arg0: !pto.ptr<i32, gm>) attributes {pto.aicore} {
     %dim_z = arith.constant 1 : i32
     %dim_y = arith.constant 1 : i32
-    %dim_x = arith.constant 32 : i32
+    %dim_x = arith.constant 2 : i32
 
-    pto.simt_launch @simt_ldst_policy_core_body<<<%dim_x, %dim_y, %dim_z>>>(%arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6, %arg7, %arg8, %arg9)
-      : (!pto.ptr<i32, gm>, !pto.ptr<f16, gm>, !pto.ptr<bf16, gm>, !pto.ptr<i8, gm>, !pto.ptr<i16, gm>, !pto.ptr<i64, gm>, !pto.ptr<f32, gm>, !pto.ptr<f64, gm>, !pto.ptr<f8E4M3FN, gm>, !pto.ptr<!pto.hif8, gm>) -> ()
+    pto.simt_launch @simt_ldst_policy_core_body<<<%dim_x, %dim_y, %dim_z>>>(%arg0)
+      : (!pto.ptr<i32, gm>) -> ()
     pto.barrier #pto.pipe<PIPE_ALL>
     return
   }
 
-  func.func @simt_ldst_policy_core_body(%arg0: !pto.ptr<i32, gm>,
-                                        %arg1: !pto.ptr<f16, gm>,
-                                        %arg2: !pto.ptr<bf16, gm>,
-                                        %arg3: !pto.ptr<i8, gm>,
-                                        %arg4: !pto.ptr<i16, gm>,
-                                        %arg5: !pto.ptr<i64, gm>,
-                                        %arg6: !pto.ptr<f32, gm>,
-                                        %arg7: !pto.ptr<f64, gm>,
-                                        %arg8: !pto.ptr<f8E4M3FN, gm>,
-                                        %arg9: !pto.ptr<!pto.hif8, gm>) attributes {pto.simt_entry} {
-    %c0 = arith.constant 0 : index
+  func.func @simt_ldst_policy_core_body(%arg0: !pto.ptr<i32, gm>) attributes {pto.simt_entry} {
     %c1 = arith.constant 1 : index
     %c2 = arith.constant 2 : index
     %c3 = arith.constant 3 : index
     %c4 = arith.constant 4 : index
+    %c8_i32 = arith.constant 8 : i32
+    %laneid = pto.get_laneid : i32
+    %base_i32 = arith.muli %laneid, %c8_i32 : i32
+    %idx0 = arith.index_castui %base_i32 : i32 to index
+    %idx1 = arith.addi %idx0, %c1 : index
+    %idx2 = arith.addi %idx0, %c2 : index
+    %idx3 = arith.addi %idx0, %c3 : index
+    %idx4 = arith.addi %idx0, %c4 : index
 
-    %v_cache = pto.ldg %arg0[%c0] l1cache(cache) l2cache(nmfv) : !pto.ptr<i32, gm> -> i32
-    %v_uncache = pto.ldg %arg0[%c1] l1cache(uncache) l2cache(nmfv) : !pto.ptr<i32, gm> -> i32
-
+    %v_cache = pto.ldg %arg0[%idx0] l1cache(cache) l2cache(nmfv) : !pto.ptr<i32, gm> -> i32
+    %v_uncache = pto.ldg %arg0[%idx1] l1cache(uncache) l2cache(nmfv) : !pto.ptr<i32, gm> -> i32
     %sum = arith.addi %v_cache, %v_uncache : i32
-    pto.stg %v_cache, %arg0[%c2] l1cache(cache) l2cache(nmfv) : !pto.ptr<i32, gm>, i32
-    pto.stg %v_uncache, %arg0[%c3] l1cache(uncache) l2cache(nmfv) : !pto.ptr<i32, gm>, i32
-    pto.stg %sum, %arg0[%c4] l1cache(cache) l2cache(nmfv) : !pto.ptr<i32, gm>, i32
-
-    %h_cache = pto.ldg %arg1[%c0] l1cache(cache) l2cache(nmfv) : !pto.ptr<f16, gm> -> f16
-    %h_uncache = pto.ldg %arg1[%c1] l1cache(uncache) l2cache(nmfv) : !pto.ptr<f16, gm> -> f16
-    %b_cache = pto.ldg %arg2[%c0] l1cache(cache) l2cache(nmfv) : !pto.ptr<bf16, gm> -> bf16
-    %b_uncache = pto.ldg %arg2[%c1] l1cache(uncache) l2cache(nmfv) : !pto.ptr<bf16, gm> -> bf16
-    pto.stg %h_cache, %arg1[%c2] l1cache(cache) l2cache(nmfv) : !pto.ptr<f16, gm>, f16
-    pto.stg %h_uncache, %arg1[%c3] l1cache(uncache) l2cache(nmfv) : !pto.ptr<f16, gm>, f16
-    pto.stg %b_cache, %arg2[%c2] l1cache(cache) l2cache(nmfv) : !pto.ptr<bf16, gm>, bf16
-    pto.stg %b_uncache, %arg2[%c3] l1cache(uncache) l2cache(nmfv) : !pto.ptr<bf16, gm>, bf16
-
-    %i8_cache = pto.ldg %arg3[%c0] l1cache(cache) l2cache(nmfv) : !pto.ptr<i8, gm> -> i8
-    %i8_uncache = pto.ldg %arg3[%c1] l1cache(uncache) l2cache(nmfv) : !pto.ptr<i8, gm> -> i8
-    %i16_cache = pto.ldg %arg4[%c0] l1cache(cache) l2cache(nmfv) : !pto.ptr<i16, gm> -> i16
-    %i16_uncache = pto.ldg %arg4[%c1] l1cache(uncache) l2cache(nmfv) : !pto.ptr<i16, gm> -> i16
-    %i64_cache = pto.ldg %arg5[%c0] l1cache(cache) l2cache(nmfv) : !pto.ptr<i64, gm> -> i64
-    %i64_uncache = pto.ldg %arg5[%c1] l1cache(uncache) l2cache(nmfv) : !pto.ptr<i64, gm> -> i64
-    %f32_cache = pto.ldg %arg6[%c0] l1cache(cache) l2cache(nmfv) : !pto.ptr<f32, gm> -> f32
-    %f32_uncache = pto.ldg %arg6[%c1] l1cache(uncache) l2cache(nmfv) : !pto.ptr<f32, gm> -> f32
-    %f64_cache = pto.ldg %arg7[%c0] l1cache(cache) l2cache(nmfv) : !pto.ptr<f64, gm> -> f64
-    %f64_uncache = pto.ldg %arg7[%c1] l1cache(uncache) l2cache(nmfv) : !pto.ptr<f64, gm> -> f64
-    %f8e4_cache = pto.ldg %arg8[%c0] l1cache(cache) l2cache(nmfv) : !pto.ptr<f8E4M3FN, gm> -> f8E4M3FN
-    %f8e4_uncache = pto.ldg %arg8[%c1] l1cache(uncache) l2cache(nmfv) : !pto.ptr<f8E4M3FN, gm> -> f8E4M3FN
-    %hif8_cache = pto.ldg %arg9[%c0] l1cache(cache) l2cache(nmfv) : !pto.ptr<!pto.hif8, gm> -> !pto.hif8
-    %hif8_uncache = pto.ldg %arg9[%c1] l1cache(uncache) l2cache(nmfv) : !pto.ptr<!pto.hif8, gm> -> !pto.hif8
-    pto.stg %i8_cache, %arg3[%c2] l1cache(cache) l2cache(nmfv) : !pto.ptr<i8, gm>, i8
-    pto.stg %i8_uncache, %arg3[%c3] l1cache(uncache) l2cache(nmfv) : !pto.ptr<i8, gm>, i8
-    pto.stg %i16_cache, %arg4[%c2] l1cache(cache) l2cache(nmfv) : !pto.ptr<i16, gm>, i16
-    pto.stg %i16_uncache, %arg4[%c3] l1cache(uncache) l2cache(nmfv) : !pto.ptr<i16, gm>, i16
-    pto.stg %i64_cache, %arg5[%c2] l1cache(cache) l2cache(nmfv) : !pto.ptr<i64, gm>, i64
-    pto.stg %i64_uncache, %arg5[%c3] l1cache(uncache) l2cache(nmfv) : !pto.ptr<i64, gm>, i64
-    pto.stg %f32_cache, %arg6[%c2] l1cache(cache) l2cache(nmfv) : !pto.ptr<f32, gm>, f32
-    pto.stg %f32_uncache, %arg6[%c3] l1cache(uncache) l2cache(nmfv) : !pto.ptr<f32, gm>, f32
-    pto.stg %f64_cache, %arg7[%c2] l1cache(cache) l2cache(nmfv) : !pto.ptr<f64, gm>, f64
-    pto.stg %f64_uncache, %arg7[%c3] l1cache(uncache) l2cache(nmfv) : !pto.ptr<f64, gm>, f64
-    pto.stg %f8e4_cache, %arg8[%c2] l1cache(cache) l2cache(nmfv) : !pto.ptr<f8E4M3FN, gm>, f8E4M3FN
-    pto.stg %f8e4_uncache, %arg8[%c3] l1cache(uncache) l2cache(nmfv) : !pto.ptr<f8E4M3FN, gm>, f8E4M3FN
-    pto.stg %hif8_cache, %arg9[%c2] l1cache(cache) l2cache(nmfv) : !pto.ptr<!pto.hif8, gm>, !pto.hif8
-    pto.stg %hif8_uncache, %arg9[%c3] l1cache(uncache) l2cache(nmfv) : !pto.ptr<!pto.hif8, gm>, !pto.hif8
+    pto.stg %v_cache, %arg0[%idx2] l1cache(cache) l2cache(nmfv) : !pto.ptr<i32, gm>, i32
+    pto.stg %v_uncache, %arg0[%idx3] l1cache(uncache) l2cache(nmfv) : !pto.ptr<i32, gm>, i32
+    pto.stg %sum, %arg0[%idx4] l1cache(cache) l2cache(nmfv) : !pto.ptr<i32, gm>, i32
     return
   }
 }

@@ -46,6 +46,7 @@ from ._surface_values import (
     emit_as_ptr,
     infer_tile_element_type,
     parse_tile_type_metadata,
+    resolve_address_access,
     unwrap_surface_value,
     wrap_surface_value,
 )
@@ -4402,6 +4403,21 @@ def store_vfsimt_info(dim_z, dim_y, dim_x):
     )
 
 
+def simt_launch(body, *args, dims=(1, 1, 1), **kwargs):
+    """``pto.simt_launch`` – launch a ``@pto.simt`` helper with ``(x, y, z)`` dimensions."""
+    spec = getattr(body, "spec", None)
+    role = getattr(spec, "role", None)
+    role_value = getattr(role, "value", role)
+    if role_value != "simt":
+        raise TypeError("pto.simt_launch(body, ...) expects body to be a @pto.simt-decorated function")
+
+    body._validate_invocation(*args, **kwargs)
+
+    from ._tracing.active import require_active_session
+    session = require_active_session("pto.simt_launch")
+    session.lower_simt_launch_subkernel(body, *args, dims=dims, **kwargs)
+
+
 def get_tid_x():
     """``pto.get_tid_x`` → i32 SIMT lane X coordinate."""
     return wrap_surface_value(_pto.GetTidXOp().result)
@@ -4415,6 +4431,550 @@ def get_tid_y():
 def get_tid_z():
     """``pto.get_tid_z`` → i32 SIMT lane Z coordinate."""
     return wrap_surface_value(_pto.GetTidZOp().result)
+
+
+def get_tid():
+    """``pto.get_tid`` → ``(x, y, z)`` SIMT lane coordinates."""
+    return get_tid_x(), get_tid_y(), get_tid_z()
+
+
+def get_block_dim_x():
+    """``pto.get_block_dim_x`` → i32 SIMT block X dimension."""
+    return wrap_surface_value(_pto.GetBlockDimXOp().result)
+
+
+def get_block_dim_y():
+    """``pto.get_block_dim_y`` → i32 SIMT block Y dimension."""
+    return wrap_surface_value(_pto.GetBlockDimYOp().result)
+
+
+def get_block_dim_z():
+    """``pto.get_block_dim_z`` → i32 SIMT block Z dimension."""
+    return wrap_surface_value(_pto.GetBlockDimZOp().result)
+
+
+def get_block_dim():
+    """``pto.get_block_dim`` → ``(x, y, z)`` SIMT block dimensions."""
+    return get_block_dim_x(), get_block_dim_y(), get_block_dim_z()
+
+
+def get_grid_dim_x():
+    """``pto.get_grid_dim_x`` → i32 SIMT grid X dimension."""
+    return wrap_surface_value(_pto.GetGridDimXOp().result)
+
+
+def get_grid_dim_y():
+    """``pto.get_grid_dim_y`` → i32 SIMT grid Y dimension."""
+    return wrap_surface_value(_pto.GetGridDimYOp().result)
+
+
+def get_grid_dim_z():
+    """``pto.get_grid_dim_z`` → i32 SIMT grid Z dimension."""
+    return wrap_surface_value(_pto.GetGridDimZOp().result)
+
+
+def get_grid_dim():
+    """``pto.get_grid_dim`` → ``(x, y, z)`` SIMT grid dimensions."""
+    return get_grid_dim_x(), get_grid_dim_y(), get_grid_dim_z()
+
+
+def get_block_idx_x():
+    """``pto.get_block_idx_x`` → i32 SIMT block X index."""
+    return wrap_surface_value(_pto.GetBlockIdxXOp().result)
+
+
+def get_block_idx_y():
+    """``pto.get_block_idx_y`` → i32 SIMT block Y index."""
+    return wrap_surface_value(_pto.GetBlockIdxYOp().result)
+
+
+def get_block_idx_z():
+    """``pto.get_block_idx_z`` → i32 SIMT block Z index."""
+    return wrap_surface_value(_pto.GetBlockIdxZOp().result)
+
+
+def get_veccoreid():
+    """``pto.get_veccoreid`` → i32 SIMT vector-core id."""
+    return wrap_surface_value(_pto.GetVecCoreIdOp().result)
+
+
+def get_clock32():
+    """``pto.get_clock32`` → i32 SIMT clock sample."""
+    return wrap_surface_value(_pto.GetClock32Op().result)
+
+
+def get_clock64():
+    """``pto.get_clock64`` → i64 SIMT clock sample."""
+    return wrap_surface_value(_pto.GetClock64Op().result)
+
+
+def get_laneid():
+    """``pto.get_laneid`` → i32 SIMT lane id."""
+    return wrap_surface_value(_pto.GetLaneIdOp().result)
+
+
+def get_lanemask_eq():
+    """``pto.get_lanemask_eq`` → i32 SIMT lane equality mask."""
+    return wrap_surface_value(_pto.GetLaneMaskEqOp().result)
+
+
+def get_lanemask_le():
+    """``pto.get_lanemask_le`` → i32 SIMT lane less-or-equal mask."""
+    return wrap_surface_value(_pto.GetLaneMaskLeOp().result)
+
+
+def get_lanemask_lt():
+    """``pto.get_lanemask_lt`` → i32 SIMT lane less-than mask."""
+    return wrap_surface_value(_pto.GetLaneMaskLtOp().result)
+
+
+def get_lanemask_ge():
+    """``pto.get_lanemask_ge`` → i32 SIMT lane greater-or-equal mask."""
+    return wrap_surface_value(_pto.GetLaneMaskGeOp().result)
+
+
+def get_lanemask_gt():
+    """``pto.get_lanemask_gt`` → i32 SIMT lane greater-than mask."""
+    return wrap_surface_value(_pto.GetLaneMaskGtOp().result)
+
+
+_SIGNEDNESS_TOKENS = {"signed", "unsigned"}
+_L1_CACHE_TOKENS = {"cache", "uncache"}
+_LD_L2_CACHE_TOKENS = {
+    "nmfv", "nmlv", "nmprs", "nmpref",
+    "nakeep", "naclean", "nadrop",
+    "idsfv", "idslv", "idsprs", "idspref",
+    "exfv", "exlv", "exprs", "expref",
+}
+_ST_L2_CACHE_TOKENS = {
+    "nmfv", "nmlv", "nmprs", "nmred",
+    "naci", "napw", "napi", "nared",
+    "wbhfv", "wbhlv", "wbhprs", "wbhred",
+    "wtsfv", "wtslv", "wtsprs", "wtsred",
+}
+_ROUNDING_TOKENS = {"r", "a", "f", "c", "z", "o", "h"}
+_SATURATION_TOKENS = {"sat", "nosat"}
+
+
+def _optional_signedness_attr(signedness, *, context: str):
+    if signedness is None:
+        return None
+    return _simt_enum_attr("signedness", signedness, supported=_SIGNEDNESS_TOKENS, context=context)
+
+
+def _required_signedness_attr(signedness, *, context: str):
+    if signedness is None:
+        raise TypeError(f"{context} requires signedness='signed' or 'unsigned'")
+    return _optional_signedness_attr(signedness, context=context)
+
+
+def _l1_cache_attr(value, *, context: str):
+    return _simt_enum_attr("l1cache", value, supported=_L1_CACHE_TOKENS, context=context)
+
+
+def _ld_l2_cache_attr(value, *, context: str):
+    return _simt_enum_attr("ld_l2cache", value, supported=_LD_L2_CACHE_TOKENS, context=context)
+
+
+def _st_l2_cache_attr(value, *, context: str):
+    return _simt_enum_attr("st_l2cache", value, supported=_ST_L2_CACHE_TOKENS, context=context)
+
+
+def _rounding_attr(value, *, context: str):
+    return _simt_enum_attr("rounding", value, supported=_ROUNDING_TOKENS, context=context)
+
+
+def _saturation_attr(value, *, context: str):
+    normalized = _normalize_token(value, context=context)
+    aliases = {"on": "sat", "off": "nosat", "sat": "sat", "nosat": "nosat"}
+    token = aliases.get(normalized)
+    if token is None:
+        expected = ", ".join(sorted((*_SATURATION_TOKENS, "on", "off")))
+        raise ValueError(f"{context} does not support {value!r}; expected one of {expected}")
+    return _simt_enum_attr("saturation", token, supported=_SATURATION_TOKENS, context=context)
+
+
+def _simt_enum_attr(kind, value, *, supported: set[str], context: str):
+    normalized = _normalize_token(value, context=context)
+    if normalized not in supported:
+        expected = ", ".join(sorted(supported))
+        raise ValueError(f"{context} does not support {value!r}; expected one of {expected}")
+    return Attribute.parse(f"#pto.{kind}<{normalized}>")
+
+
+def _coerce_i32_operand(value, *, context: str):
+    return coerce_scalar_to_type(value, IntegerType.get_signless(32), context=context)
+
+
+def _same_type_unary(op_cls, value):
+    return wrap_surface_value(op_cls(unwrap_surface_value(value)).result)
+
+
+def _same_type_binary(op_cls, lhs, rhs, *, context: str):
+    raw_lhs = unwrap_surface_value(lhs)
+    raw_rhs = coerce_scalar_to_type(rhs, raw_lhs.type, context=context)
+    return wrap_surface_value(op_cls(raw_lhs, raw_rhs).result)
+
+
+def _same_type_ternary(op_cls, lhs, rhs, acc, *, context: str):
+    raw_lhs = unwrap_surface_value(lhs)
+    raw_rhs = coerce_scalar_to_type(rhs, raw_lhs.type, context=context)
+    raw_acc = coerce_scalar_to_type(acc, raw_lhs.type, context=context)
+    return wrap_surface_value(op_cls(raw_lhs, raw_rhs, raw_acc).result)
+
+
+def _validate_redux_signedness(value_type, signedness, *, require_for_integer: bool, context: str):
+    if IntegerType.isinstance(value_type):
+        if require_for_integer and signedness is None:
+            raise TypeError(f"{context} requires signedness='signed' or 'unsigned' for integer values")
+        return
+    if signedness is not None:
+        raise TypeError(f"{context} does not accept signedness for floating-point values")
+
+
+def _validate_integer_signedness_only(value_type, signedness, *, context: str):
+    if signedness is not None and not IntegerType.isinstance(value_type):
+        raise TypeError(f"{context} does not accept signedness for non-integer values")
+
+
+def _validate_convert_signedness(src_type, dst_type, signedness, *, context: str):
+    src_int = IntegerType.isinstance(src_type)
+    dst_int = IntegerType.isinstance(dst_type)
+    if src_int and dst_int:
+        raise TypeError(f"{context} does not support integer-to-integer conversion")
+    if src_int or dst_int:
+        if signedness is None:
+            raise TypeError(f"{context} requires signedness='signed' or 'unsigned' when converting to or from integer types")
+        return
+    if signedness is not None:
+        raise TypeError(f"{context} does not accept signedness for floating-point or packed conversion")
+
+
+def vote_all(pred):
+    """``pto.vote_all`` – SIMT all-lane predicate vote."""
+    return wrap_surface_value(_pto.VoteAllOp(unwrap_surface_value(pred)).result)
+
+
+def vote_any(pred):
+    """``pto.vote_any`` – SIMT any-lane predicate vote."""
+    return wrap_surface_value(_pto.VoteAnyOp(unwrap_surface_value(pred)).result)
+
+
+def vote_uni(pred):
+    """``pto.vote_uni`` – SIMT uniform-predicate vote."""
+    return wrap_surface_value(_pto.VoteUniOp(unwrap_surface_value(pred)).result)
+
+
+def vote_ballot(pred):
+    """``pto.vote_ballot`` – SIMT ballot predicate vote."""
+    return wrap_surface_value(_pto.VoteBallotOp(unwrap_surface_value(pred)).result)
+
+
+def _validate_shuffle_width(width, *, context: str):
+    if width not in (16, 32):
+        raise ValueError(f"{context} expects width to be 16 or 32, got {width}")
+    return width
+
+
+def shuffle_idx(value, index, *, width=32):
+    """``pto.shuffle_idx`` – read a payload from an absolute SIMT lane index."""
+    return wrap_surface_value(_pto.ShuffleIdxOp(
+        unwrap_surface_value(value),
+        _coerce_i32_operand(index, context="shuffle_idx(..., index)"),
+        width=_validate_shuffle_width(width, context="shuffle_idx(..., width)"),
+    ).result)
+
+
+def shuffle_up(value, offset, *, width=32):
+    """``pto.shuffle_up`` – read a payload from a lower-index SIMT lane."""
+    return wrap_surface_value(_pto.ShuffleUpOp(
+        unwrap_surface_value(value),
+        _coerce_i32_operand(offset, context="shuffle_up(..., offset)"),
+        width=_validate_shuffle_width(width, context="shuffle_up(..., width)"),
+    ).result)
+
+
+def shuffle_down(value, offset, *, width=32):
+    """``pto.shuffle_down`` – read a payload from a higher-index SIMT lane."""
+    return wrap_surface_value(_pto.ShuffleDownOp(
+        unwrap_surface_value(value),
+        _coerce_i32_operand(offset, context="shuffle_down(..., offset)"),
+        width=_validate_shuffle_width(width, context="shuffle_down(..., width)"),
+    ).result)
+
+
+def shuffle_bfly(value, mask, *, width=32):
+    """``pto.shuffle_bfly`` – read a payload from a butterfly-selected SIMT lane."""
+    return wrap_surface_value(_pto.ShuffleBflyOp(
+        unwrap_surface_value(value),
+        _coerce_i32_operand(mask, context="shuffle_bfly(..., mask)"),
+        width=_validate_shuffle_width(width, context="shuffle_bfly(..., width)"),
+    ).result)
+
+
+def redux_add(value, *, signedness=None):
+    """``pto.redux_add`` – SIMT lane sum reduction."""
+    raw_value = unwrap_surface_value(value)
+    _validate_redux_signedness(raw_value.type, signedness, require_for_integer=False, context="redux_add(value)")
+    return wrap_surface_value(_pto.ReduxAddOp(
+        raw_value,
+        signedness=_optional_signedness_attr(signedness, context="redux_add(..., signedness)"),
+    ).result)
+
+
+def redux_max(value, *, signedness=None):
+    """``pto.redux_max`` – SIMT lane max reduction."""
+    raw_value = unwrap_surface_value(value)
+    _validate_redux_signedness(raw_value.type, signedness, require_for_integer=True, context="redux_max(value)")
+    return wrap_surface_value(_pto.ReduxMaxOp(
+        raw_value,
+        signedness=_optional_signedness_attr(signedness, context="redux_max(..., signedness)"),
+    ).result)
+
+
+def redux_min(value, *, signedness=None):
+    """``pto.redux_min`` – SIMT lane min reduction."""
+    raw_value = unwrap_surface_value(value)
+    _validate_redux_signedness(raw_value.type, signedness, require_for_integer=True, context="redux_min(value)")
+    return wrap_surface_value(_pto.ReduxMinOp(
+        raw_value,
+        signedness=_optional_signedness_attr(signedness, context="redux_min(..., signedness)"),
+    ).result)
+
+
+def ldg(ptr_or_ref, offset=None, *, l1cache="cache", l2cache="nmfv"):
+    """``pto.ldg`` – scalar GM load with cache controls."""
+    buffer_value, index_value = resolve_address_access(ptr_or_ref, offset)
+    result_type = _pointer_element_type(buffer_value, context="ldg(ptr, offset)")
+    return wrap_surface_value(_pto.PTOLdgOp(
+        result_type,
+        buffer_value,
+        index_value,
+        l1cache=_l1_cache_attr(l1cache, context="ldg(..., l1cache)"),
+        l2cache=_ld_l2_cache_attr(l2cache, context="ldg(..., l2cache)"),
+    ).value)
+
+
+def stg(value, ptr_or_ref, offset=None, *, l1cache="cache", l2cache="nmfv"):
+    """``pto.stg`` – scalar GM store with cache controls."""
+    buffer_value, index_value = resolve_address_access(ptr_or_ref, offset)
+    elem_type = _pointer_element_type(buffer_value, context="stg(value, ptr, offset)")
+    _pto.PTOStgOp(
+        buffer_value,
+        index_value,
+        coerce_scalar_to_type(value, elem_type, context="stg(value, ...)"),
+        l1cache=_l1_cache_attr(l1cache, context="stg(..., l1cache)"),
+        l2cache=_st_l2_cache_attr(l2cache, context="stg(..., l2cache)"),
+    )
+
+
+def _atomic_binary(op_cls, ptr, value, *, l2cache, signedness, context: str):
+    raw_ptr = unwrap_surface_value(ptr)
+    elem_type = _pointer_element_type(raw_ptr, context=context)
+    _validate_integer_signedness_only(elem_type, signedness, context=context)
+    raw_value = coerce_scalar_to_type(value, elem_type, context=context)
+    return wrap_surface_value(op_cls(
+        raw_value.type,
+        raw_ptr,
+        raw_value,
+        l2cache=_st_l2_cache_attr(l2cache, context=f"{context} l2cache"),
+        signedness=_optional_signedness_attr(signedness, context=f"{context} signedness"),
+    ).old)
+
+
+def atomic_exch(ptr, value, *, l2cache="nmfv", signedness=None):
+    """``pto.atomic_exch`` – SIMT scalar atomic exchange."""
+    return _atomic_binary(_pto.AtomicExchOp, ptr, value, l2cache=l2cache, signedness=signedness, context="atomic_exch(ptr, value)")
+
+
+def atomic_add(ptr, value, *, l2cache="nmfv", signedness=None):
+    """``pto.atomic_add`` – SIMT scalar atomic add."""
+    return _atomic_binary(_pto.AtomicAddOp, ptr, value, l2cache=l2cache, signedness=signedness, context="atomic_add(ptr, value)")
+
+
+def atomic_sub(ptr, value, *, l2cache="nmfv", signedness=None):
+    """``pto.atomic_sub`` – SIMT scalar atomic subtract."""
+    return _atomic_binary(_pto.AtomicSubOp, ptr, value, l2cache=l2cache, signedness=signedness, context="atomic_sub(ptr, value)")
+
+
+def atomic_min(ptr, value, *, l2cache="nmfv", signedness=None):
+    """``pto.atomic_min`` – SIMT scalar atomic min."""
+    return _atomic_binary(_pto.AtomicMinOp, ptr, value, l2cache=l2cache, signedness=signedness, context="atomic_min(ptr, value)")
+
+
+def atomic_max(ptr, value, *, l2cache="nmfv", signedness=None):
+    """``pto.atomic_max`` – SIMT scalar atomic max."""
+    return _atomic_binary(_pto.AtomicMaxOp, ptr, value, l2cache=l2cache, signedness=signedness, context="atomic_max(ptr, value)")
+
+
+def atomic_and(ptr, value, *, l2cache="nmfv", signedness=None):
+    """``pto.atomic_and`` – SIMT scalar atomic bitwise and."""
+    return _atomic_binary(_pto.AtomicAndOp, ptr, value, l2cache=l2cache, signedness=signedness, context="atomic_and(ptr, value)")
+
+
+def atomic_or(ptr, value, *, l2cache="nmfv", signedness=None):
+    """``pto.atomic_or`` – SIMT scalar atomic bitwise or."""
+    return _atomic_binary(_pto.AtomicOrOp, ptr, value, l2cache=l2cache, signedness=signedness, context="atomic_or(ptr, value)")
+
+
+def atomic_xor(ptr, value, *, l2cache="nmfv", signedness=None):
+    """``pto.atomic_xor`` – SIMT scalar atomic bitwise xor."""
+    return _atomic_binary(_pto.AtomicXorOp, ptr, value, l2cache=l2cache, signedness=signedness, context="atomic_xor(ptr, value)")
+
+
+def atomic_cas(ptr, compare, value, *, l2cache="nmfv", signedness=None):
+    """``pto.atomic_cas`` – SIMT scalar atomic compare-and-swap."""
+    raw_ptr = unwrap_surface_value(ptr)
+    elem_type = _pointer_element_type(raw_ptr, context="atomic_cas(ptr, compare, value)")
+    _validate_integer_signedness_only(elem_type, signedness, context="atomic_cas(ptr, compare, value)")
+    raw_compare = coerce_scalar_to_type(compare, elem_type, context="atomic_cas(compare)")
+    raw_value = coerce_scalar_to_type(value, elem_type, context="atomic_cas(value)")
+    return wrap_surface_value(_pto.AtomicCasOp(
+        raw_ptr,
+        raw_compare,
+        raw_value,
+        l2cache=_st_l2_cache_attr(l2cache, context="atomic_cas(..., l2cache)"),
+        signedness=_optional_signedness_attr(signedness, context="atomic_cas(..., signedness)"),
+    ).old)
+
+
+def prmt(lhs, rhs, selector):
+    """``pto.prmt`` – SIMT scalar byte permutation."""
+    return wrap_surface_value(_pto.PrmtOp(
+        _coerce_i32_operand(lhs, context="prmt(lhs, ...)"),
+        _coerce_i32_operand(rhs, context="prmt(..., rhs, ...)"),
+        _coerce_i32_operand(selector, context="prmt(..., selector)"),
+    ).result)
+
+
+def mulhi(lhs, rhs, *, signedness):
+    """``pto.mulhi`` – high half of an integer product."""
+    raw_lhs = unwrap_surface_value(lhs)
+    raw_rhs = coerce_scalar_to_type(rhs, raw_lhs.type, context="mulhi(lhs, rhs)")
+    return wrap_surface_value(_pto.MulhiOp(
+        raw_lhs,
+        raw_rhs,
+        _required_signedness_attr(signedness, context="mulhi(..., signedness)"),
+    ).result)
+
+
+def mul_i32toi64(lhs, rhs, *, signedness):
+    """``pto.mul_i32toi64`` – widened i32 product."""
+    return wrap_surface_value(_pto.MulI32ToI64Op(
+        _coerce_i32_operand(lhs, context="mul_i32toi64(lhs, ...)"),
+        _coerce_i32_operand(rhs, context="mul_i32toi64(..., rhs)"),
+        _required_signedness_attr(signedness, context="mul_i32toi64(..., signedness)"),
+    ).result)
+
+
+def absf(value):
+    """``pto.absf`` – SIMT floating absolute value."""
+    return _same_type_unary(_pto.AbsFOp, value)
+
+
+def sqrt(value):
+    """``pto.sqrt`` – SIMT floating square root."""
+    return _same_type_unary(_pto.SqrtOp, value)
+
+
+def exp(value):
+    """``pto.exp`` – SIMT floating exponential."""
+    return _same_type_unary(_pto.ExpOp, value)
+
+
+def log(value):
+    """``pto.log`` – SIMT floating natural logarithm."""
+    return _same_type_unary(_pto.LogOp, value)
+
+
+def pow(lhs, rhs):
+    """``pto.pow`` – SIMT floating power."""
+    return _same_type_binary(_pto.PowOp, lhs, rhs, context="pow(lhs, rhs)")
+
+
+def ceil(value):
+    """``pto.ceil`` – SIMT floating ceil."""
+    return _same_type_unary(_pto.CeilOp, value)
+
+
+def floor(value):
+    """``pto.floor`` – SIMT floating floor."""
+    return _same_type_unary(_pto.FloorOp, value)
+
+
+def rint(value):
+    """``pto.rint`` – SIMT floating rint."""
+    return _same_type_unary(_pto.RintOp, value)
+
+
+def round(value):
+    """``pto.round`` – SIMT floating round."""
+    return _same_type_unary(_pto.RoundOp, value)
+
+
+def fmin(lhs, rhs):
+    """``pto.fmin`` – SIMT floating minimum."""
+    return _same_type_binary(_pto.FMinOp, lhs, rhs, context="fmin(lhs, rhs)")
+
+
+def fmax(lhs, rhs):
+    """``pto.fmax`` – SIMT floating maximum."""
+    return _same_type_binary(_pto.FMaxOp, lhs, rhs, context="fmax(lhs, rhs)")
+
+
+def fma(lhs, rhs, acc):
+    """``pto.fma`` – SIMT floating fused multiply-add."""
+    return _same_type_ternary(_pto.FmaOp, lhs, rhs, acc, context="fma(lhs, rhs, acc)")
+
+
+def convert(src, dst_type, *, rounding, saturation, signedness=None):
+    """``pto.convert`` – SIMT scalar or packed conversion."""
+    raw_src = unwrap_surface_value(src)
+    raw_dst_type = _resolve(dst_type)
+    _validate_convert_signedness(raw_src.type, raw_dst_type, signedness, context="convert(src, dst_type)")
+    return wrap_surface_value(_pto.ConvertOp(
+        raw_dst_type,
+        raw_src,
+        _rounding_attr(rounding, context="convert(..., rounding)"),
+        _saturation_attr(saturation, context="convert(..., saturation)"),
+        signedness=_optional_signedness_attr(signedness, context="convert(..., signedness)"),
+    ).dst)
+
+
+def syncthreads():
+    """``pto.syncthreads`` – synchronize SIMT workitems."""
+    _pto.SyncthreadsOp()
+
+
+def threadfence():
+    """``pto.threadfence`` – issue a SIMT workitem memory fence."""
+    _pto.ThreadfenceOp()
+
+
+def threadfence_block():
+    """``pto.threadfence_block`` – issue a SIMT block-scoped memory fence."""
+    _pto.ThreadfenceBlockOp()
+
+
+def _slot_attr_value(slot, *, context: str):
+    if not isinstance(slot, int) or isinstance(slot, bool):
+        raise TypeError(f"{context} expects a non-negative Python int slot")
+    if slot < 0:
+        raise ValueError(f"{context} expects a non-negative slot, got {slot}")
+    return slot
+
+
+def keep(payload, *, slot):
+    """``pto.keep`` – preserve a SIMT scalar payload in an explicit slot."""
+    _pto.KeepOp(unwrap_surface_value(payload), _slot_attr_value(slot, context="keep(..., slot)"))
+
+
+def resume(result_type, *, slot):
+    """``pto.resume`` – restore a SIMT scalar payload from an explicit slot."""
+    return wrap_surface_value(_pto.ResumeOp(
+        _resolve(result_type),
+        _slot_attr_value(slot, context="resume(..., slot)"),
+    ).result)
 
 
 def pipe_barrier(pipe):
@@ -4533,9 +5093,17 @@ def reserve_buffer(name, *, size, location, auto=True, base=None):
 def import_reserved_buffer(name, *, peer_func):
     """``pto.import_reserved_buffer(name, peer_func=...)``."""
     if not isinstance(peer_func, str):
-        peer_func = getattr(getattr(peer_func, "spec", None), "symbol_name", None) \
-            or getattr(peer_func, "__name__", None) \
-            or str(peer_func)
+        spec = getattr(peer_func, "spec", None)
+        role = getattr(spec, "role", None)
+        role_value = getattr(role, "value", role)
+        if role_value == "simt":
+            from ._tracing.active import require_active_session
+            session = require_active_session("pto.import_reserved_buffer")
+            peer_func = session.resolve_simt_peer_symbol(peer_func)
+        else:
+            peer_func = getattr(spec, "symbol_name", None) \
+                or getattr(peer_func, "__name__", None) \
+                or str(peer_func)
     op = _pto.ImportReservedBufferOp(name, peer_func)
     return wrap_surface_value(op.result)
 
@@ -4590,7 +5158,24 @@ __all__ = [
     "mte_l0c_l1", "mte_l0c_gm", "mte_l0c_ub",
     "mad", "mad_acc", "mad_bias", "mad_mx", "mad_mx_acc", "mad_mx_bias",
     "get_block_idx", "get_block_num", "get_subblock_idx", "get_subblock_num",
-    "store_vfsimt_info", "get_tid_x", "get_tid_y", "get_tid_z",
+    "store_vfsimt_info", "simt_launch",
+    "get_tid", "get_tid_x", "get_tid_y", "get_tid_z",
+    "get_block_dim", "get_block_dim_x", "get_block_dim_y", "get_block_dim_z",
+    "get_grid_dim", "get_grid_dim_x", "get_grid_dim_y", "get_grid_dim_z",
+    "get_block_idx_x", "get_block_idx_y", "get_block_idx_z",
+    "get_veccoreid", "get_clock32", "get_clock64",
+    "get_laneid", "get_lanemask_eq", "get_lanemask_le", "get_lanemask_lt",
+    "get_lanemask_ge", "get_lanemask_gt",
+    "vote_all", "vote_any", "vote_uni", "vote_ballot",
+    "shuffle_idx", "shuffle_up", "shuffle_down", "shuffle_bfly",
+    "redux_add", "redux_max", "redux_min",
+    "ldg", "stg",
+    "atomic_exch", "atomic_add", "atomic_sub", "atomic_min", "atomic_max",
+    "atomic_and", "atomic_or", "atomic_xor", "atomic_cas",
+    "prmt", "mulhi", "mul_i32toi64",
+    "absf", "sqrt", "exp", "log", "pow", "ceil", "floor", "rint", "round",
+    "fmin", "fmax", "fma", "convert",
+    "syncthreads", "threadfence", "threadfence_block", "keep", "resume",
     "pipe_barrier", "get_buf", "rls_buf",
     "set_cross_flag", "wait_cross_flag", "set_intra_flag", "wait_intra_flag",
     "set_flag", "wait_flag",

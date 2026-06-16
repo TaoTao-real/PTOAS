@@ -5,17 +5,10 @@
 // THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
-
-// -----------------------------------------------------------------------------
-// case: micro-op/binary-vector/vand
-// family: binary-vector
-// target_ops: pto.vand
-// scenarios: core-i16-unsigned, full-mask
-// -----------------------------------------------------------------------------
+// Merged launch wrappers
 #ifndef __VEC_SCOPE__
 #define __VEC_SCOPE__
 #endif
-
 #if defined(__CCE_AICORE__) && defined(__NPU_ARCH__) && (__NPU_ARCH__ == 2201)
 typedef struct { unsigned char v; } hifloat8_t;
 typedef struct { unsigned char v; } float8_e4m3_t;
@@ -28,14 +21,8 @@ typedef struct { unsigned char v; } float4_e2m1x2_t;
 #if defined(__CCE_AICORE__) && defined(PTOAS_ENABLE_CCE_PRINT)
 #include <ccelib/print/print.h>
 #endif
-
 #if !defined(__CCE_AICORE__) && !defined(TMRGSORT_HPP)
-struct MrgSortExecutedNumList {
-  uint16_t mrgSortList0;
-  uint16_t mrgSortList1;
-  uint16_t mrgSortList2;
-  uint16_t mrgSortList3;
-};
+struct MrgSortExecutedNumList { uint16_t mrgSortList0,mrgSortList1,mrgSortList2,mrgSortList3; };
 #endif
 #ifndef __CPU_SIM
 #include "acl/acl.h"
@@ -45,9 +32,20 @@ extern "C" __global__ [aicore] void vand_i16_unsigned_kernel(__gm__ uint16_t *v1
                                                            __gm__ uint16_t *v2,
                                                            __gm__ uint16_t *v3);
 
-void LaunchVand_i16_unsigned_kernel(uint16_t *v1, uint16_t *v2, uint16_t *v3,
-                                    void *stream) {
-  vand_i16_unsigned_kernel<<<1, nullptr, stream>>>((__gm__ uint16_t *)v1,
-                                                   (__gm__ uint16_t *)v2,
-                                                   (__gm__ uint16_t *)v3);
+extern "C" __global__ [aicore] void vand_deep_merged_kernel(
+    __gm__ uint16_t * arg0,
+    __gm__ uint16_t * arg1,
+    __gm__ uint16_t * arg2,
+    __gm__ uint16_t * arg3,
+    __gm__ uint16_t * arg4,
+    __gm__ uint16_t * arg5);
+
+void LaunchVandDeepMerged(uint16_t * p0, uint16_t * p1, uint16_t * p2, uint16_t * p3, uint16_t * p4, uint16_t * p5, void *stream) {
+  vand_deep_merged_kernel<<<1, nullptr, stream>>>(
+      (__gm__ uint16_t *)p0,
+      (__gm__ uint16_t *)p1,
+      (__gm__ uint16_t *)p2,
+      (__gm__ uint16_t *)p3,
+      (__gm__ uint16_t *)p4,
+      (__gm__ uint16_t *)p5);
 }

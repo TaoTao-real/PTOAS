@@ -19,6 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "ptodsl"))
 
 from ptodsl import pto
+from ptodsl import scalar
 
 
 def expect(condition: bool, message: str) -> None:
@@ -71,7 +72,7 @@ def host_vec_copy(
     rows: pto.i32,
     cols: pto.i32,
     *,
-    BLOCK: pto.constexpr = 128,
+    BLOCK: pto.const_expr = 128,
 ):
     a_view = pto.make_tensor_view(A_ptr, shape=[rows, cols], strides=[cols, 1])
     o_view = pto.make_tensor_view(O_ptr, shape=[rows, cols], strides=[cols, 1])
@@ -81,6 +82,22 @@ def host_vec_copy(
     out = pto.partition_view(o_view, offsets=[0, 0], sizes=[rows, cols])
     pto.tile.load(part, a_tile)
     pto.tile.store(o_tile, out)
+
+
+@pto.simt
+def simt_gm_memory_core_body(gm: pto.ptr(pto.i32, "gm")):
+    tx = pto.get_tid_x()
+    src_idx = scalar.index_cast(tx)
+    loaded = scalar.load(gm, src_idx)
+    with_bias = loaded + tx + 1000
+    scalar.store(with_bias, gm, scalar.index_cast(tx + 32))
+    scalar.store(tx, gm, scalar.index_cast(tx + 64))
+
+
+@pto.jit(target="a5", mode="explicit")
+def simt_gm_memory_core_kernel(gm: pto.ptr(pto.i32, "gm")):
+    simt_gm_memory_core_body[32, 1, 1](gm)
+    pto.pipe_barrier(pto.Pipe.ALL)
 
 
 def main() -> None:
@@ -100,6 +117,30 @@ def main() -> None:
         "pto.tload" in simple_frontend_text and "pto.tstore" in simple_frontend_text,
         "host_vec_copy frontend verification output should keep the tile IO contract visible",
     )
+
+    simt_gm_memory_text = simt_gm_memory_core_kernel.compile().mlir_text()
+    simt_frontend_text = run_ptoas_frontend_verify(
+        ptoas_bin,
+        simt_gm_memory_text,
+        "simt_gm_memory_core PTODSL artifact",
+    )
+    expect(
+        "func.func @simt_gm_memory_core_kernel" in simt_frontend_text,
+        "simt_gm_memory_core frontend output should preserve the kernel symbol",
+    )
+    expect(
+        "pto.simt_launch @simt_gm_memory_core_body__simt_" in simt_frontend_text,
+        "simt_gm_memory_core frontend output should preserve the SIMT launch",
+    )
+    expect(
+        "pto.get_tid_x" in simt_frontend_text,
+        "simt_gm_memory_core frontend output should preserve SIMT thread queries",
+    )
+    expect(
+        "pto.load" in simt_frontend_text and simt_frontend_text.count("pto.store") >= 2,
+        "simt_gm_memory_core frontend output should preserve GM load/store operations",
+    )
+
     print("ptodsl_ptoas_frontend_verify: PASS")
 
 

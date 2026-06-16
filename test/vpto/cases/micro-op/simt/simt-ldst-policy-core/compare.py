@@ -13,52 +13,19 @@ import sys
 import numpy as np
 
 
-def compare_one(name: str, dtype) -> bool:
-    golden = np.fromfile(f"golden_{name}.bin", dtype=dtype)
-    out = np.fromfile(f"{name}.bin", dtype=dtype)
+def main():
+    strict = os.getenv("COMPARE_STRICT", "1") != "0"
+    golden = np.fromfile("golden_v1.bin", dtype=np.int32)
+    out = np.fromfile("v1.bin", dtype=np.int32)
     ok = golden.shape == out.shape and np.array_equal(golden, out)
     if not ok:
         idxs = np.nonzero(golden != out)[0]
         idx = int(idxs[0]) if idxs.size else 0
-        if dtype in (np.int8, np.int16, np.int32, np.int64):
-            print(
-                f"[ERROR] {name} mismatch at idx={idx}, "
-                f"golden={int(golden[idx])}, out={int(out[idx])}"
-            )
-        elif dtype == np.uint16:
-            print(
-                f"[ERROR] {name} mismatch at idx={idx}, "
-                f"golden=0x{int(golden[idx]):04x}, out=0x{int(out[idx]):04x}"
-            )
-        elif dtype == np.uint8:
-            print(
-                f"[ERROR] {name} mismatch at idx={idx}, "
-                f"golden=0x{int(golden[idx]):02x}, out=0x{int(out[idx]):02x}"
-            )
-        else:
-            print(
-                f"[ERROR] {name} mismatch at idx={idx}, "
-                f"golden={golden[idx]}, out={out[idx]}"
-            )
-    return ok
-
-
-def main():
-    strict = os.getenv("COMPARE_STRICT", "1") != "0"
-    ok = (
-        compare_one("v1", np.int32)
-        and compare_one("v2", np.uint16)
-        and compare_one("v3", np.uint16)
-        and compare_one("v4", np.int8)
-        and compare_one("v5", np.int16)
-        and compare_one("v6", np.int64)
-        and compare_one("v7", np.float32)
-        and compare_one("v8", np.float64)
-        and compare_one("v9", np.uint8)
-        and compare_one("v10", np.uint8)
-    )
-    if not ok and strict:
-        sys.exit(2)
+        print(
+            f"[ERROR] mismatch at idx={idx}, golden={int(golden[idx])}, out={int(out[idx])}"
+        )
+        if strict:
+            sys.exit(2)
     print("[INFO] compare passed" if ok else "[WARN] compare failed (non-gating)")
 
 

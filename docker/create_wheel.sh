@@ -43,6 +43,12 @@ if [ -z "${PTOAS_PYTHON_PACKAGE_VERSION}" ]; then
 fi
 export PTOAS_PYTHON_PACKAGE_VERSION
 
+"${PYTHON_BIN}" -c "import setuptools, wheel" >/dev/null 2>&1 || {
+  echo "Error: ${PYTHON_BIN} is missing required wheel build modules (setuptools, wheel)" >&2
+  echo "Hint: install them in the active environment before running pip with --no-build-isolation" >&2
+  exit 1
+}
+
 echo "Creating Python wheel..."
 echo "Wheel package version: ${PTOAS_PYTHON_PACKAGE_VERSION}"
 

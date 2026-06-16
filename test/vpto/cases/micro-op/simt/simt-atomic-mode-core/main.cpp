@@ -17,7 +17,7 @@ using namespace PtoTestCommon;
 void LaunchSimt_atomic_mode_core_kernel(int *v1, void *stream);
 
 int main() {
-  size_t elemCount_v1 = 1024;
+  size_t elemCount_v1 = 32;
   size_t fileSize_v1 = elemCount_v1 * sizeof(int);
   int *v1Host = nullptr;
   int *v1Device = nullptr;

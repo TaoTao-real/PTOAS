@@ -1,5 +1,17 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+//
+// Guards A3 frontend gm_slot_tensor lowering for a full-slot globaltensor pipe,
+// including resolve-reserved-buffers IR and final EmitC GlobalTensor ops.
+//
 // RUN: ptoas --pto-arch=a3 %s 2>&1 | FileCheck %s
 // RUN: ptoas --pto-arch=a3 --mlir-print-ir-after=pto-resolve-reserved-buffers %s 2>&1 >/dev/null | FileCheck %s --check-prefix=RESOLVE
+// RUN: ptoas --pto-arch=a3 --enable-graph-sync-solver --graph-sync-solver-event-id-max=64 %s 2>&1 | FileCheck %s --check-prefix=GSS
 
 module {
   func.func @cube_kernel(
@@ -71,12 +83,17 @@ module {
 // RESOLVE-LABEL: func.func @cube_kernel
 // RESOLVE-NOT: pto.reserve_buffer
 // RESOLVE-NOT: pto.import_reserved_buffer
-// RESOLVE: memref.reinterpret_cast %{{.*}} to offset: [0], sizes: [%{{.*}}, %{{.*}}], strides: [%{{.*}}, %{{.*}}]
-// RESOLVE: pto.initialize_l2g2l_pipe{{.*}}(%{{.*}} : memref<{{.*}}xf32{{.*}}>)
-// RESOLVE: pto.talloc(%{{.*}}, %{{.*}} : !pto.tensor_view<16x16xf32>, !pto.pipe)
-// RESOLVE: pto.tpush(%{{.*}}, %{{.*}} : !pto.tensor_view<16x16xf32>, !pto.pipe)
+// RESOLVE: pto.initialize_l2g2l_pipe{dir_mask = 1, slot_size = 1024, slot_num = 8, flag_base = 0, nosplit = true}
+// RESOLVE: %{{.*}} = pto.declare_global {__pto.globaltensor_strides = array<i64: 16, 1>} -> !pto.tensor_view<16x16xf32>
+// RESOLVE: pto.talloc(%{{.*}}, %{{.*}} : !pto.tensor_view<16x16xf32>, !pto.pipe) {split = 0}
+// RESOLVE: pto.tpush(%{{.*}}, %{{.*}} : !pto.tensor_view<16x16xf32>, !pto.pipe) {split = 0}
 // RESOLVE-LABEL: func.func @vector_kernel
 // RESOLVE-NOT: pto.reserve_buffer
 // RESOLVE-NOT: pto.import_reserved_buffer
-// RESOLVE: pto.tpop(%{{.*}}, %{{.*}} : !pto.tensor_view<16x16xf32>, !pto.pipe)
-// RESOLVE: pto.tfree(%{{.*}}, %{{.*}} : !pto.tensor_view<16x16xf32>, !pto.pipe)
+// RESOLVE: pto.tpop(%{{.*}}, %{{.*}} : !pto.tensor_view<16x16xf32>, !pto.pipe) {split = 0}
+// RESOLVE: pto.tfree(%{{.*}}, %{{.*}} : !pto.tensor_view<16x16xf32>, !pto.pipe) {split = 0}
+
+// GSS-LABEL: AICORE void cube_kernel
+// GSS: TALLOC<TPipe<0, Direction::DIR_C2V, 1024, 8, 8, true>
+// GSS: TSTORE
+// GSS: TPUSH<TPipe<0, Direction::DIR_C2V, 1024, 8, 8, true>

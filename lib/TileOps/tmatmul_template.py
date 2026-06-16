@@ -18,10 +18,16 @@ import tilelang_dsl as pto
         (pto.f16, pto.f16, pto.f32),
         (pto.bf16, pto.bf16, pto.f32),
         (pto.f32, pto.f32, pto.f32),
+        (pto.i8, pto.i8, pto.i32),
+        (pto.ScalarType("f8E4M3FN"), pto.ScalarType("f8E4M3FN"), pto.f32),
+        (pto.ScalarType("f8E4M3FN"), pto.ScalarType("f8E5M2"), pto.f32),
+        (pto.ScalarType("f8E5M2"), pto.ScalarType("f8E4M3FN"), pto.f32),
+        (pto.ScalarType("f8E5M2"), pto.ScalarType("f8E5M2"), pto.f32),
+        (pto.ScalarType("hif8"), pto.ScalarType("hif8"), pto.f32),
     ],
 )
 def template_tmatmul(lhs: pto.Tile, rhs: pto.Tile, acc: pto.Tile):
     m, k = lhs.valid_shape
-    n, _ = rhs.valid_shape
+    _, n = rhs.valid_shape
     pto.mad(lhs.as_ptr(), rhs.as_ptr(), acc.as_ptr(), m, n, k, disable_gemv=True)
     return None

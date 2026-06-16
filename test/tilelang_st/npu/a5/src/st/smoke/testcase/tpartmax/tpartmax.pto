@@ -1,0 +1,132 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You can not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// TileLang ST kernels for pto.tpartmax: partial elementwise max with valid region handling.
+// Multiple cases with different valid_shape combinations in a single module.
+// Compiled by ptoas --enable-insert-sync --enable-tile-op-expand --pto-backend=vpto
+// to produce a fatobj object.
+
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+  // Case: f32_64x64_full (src0 valid 64x64, src1 valid 64x64, dst valid 64x64)
+  func.func @TPARTMAX_f32_2x24_src1_col_less(%a_ptr: !pto.ptr<f32>, %b_ptr: !pto.ptr<f32>, %c_ptr: !pto.ptr<f32>) attributes {pto.kernel} {
+    %c0    = arith.constant 0    : index
+    %c1    = arith.constant 1    : index
+    %c2    = arith.constant 2    : index
+    %c24    = arith.constant 24    : index
+    %c48    = arith.constant 48    : index
+
+    %a_view = pto.make_tensor_view %a_ptr,
+      shape = [%c1, %c1, %c1, %c2, %c24],
+      strides = [%c48, %c48, %c48, %c24, %c1]
+      : !pto.tensor_view<1x1x1x2x24xf32>
+    %b_view = pto.make_tensor_view %b_ptr,
+      shape = [%c1, %c1, %c1, %c2, %c24],
+      strides = [%c48, %c48, %c48, %c24, %c1]
+      : !pto.tensor_view<1x1x1x2x24xf32>
+    %c_view = pto.make_tensor_view %c_ptr,
+      shape = [%c1, %c1, %c1, %c2, %c24],
+      strides = [%c48, %c48, %c48, %c24, %c1]
+      : !pto.tensor_view<1x1x1x2x24xf32>
+
+    %a_part = pto.partition_view %a_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c2, %c24]
+      : !pto.tensor_view<1x1x1x2x24xf32> -> !pto.partition_tensor_view<1x1x1x2x24xf32>
+    %b_part = pto.partition_view %b_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c2, %c24]
+      : !pto.tensor_view<1x1x1x2x24xf32> -> !pto.partition_tensor_view<1x1x1x2x24xf32>
+    %c_part = pto.partition_view %c_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c2, %c24]
+      : !pto.tensor_view<1x1x1x2x24xf32> -> !pto.partition_tensor_view<1x1x1x2x24xf32>
+
+    // src0: valid region (2,24)
+    %a = pto.alloc_tile
+      : !pto.tile_buf<vec, 2x24xf32>
+    // src1: valid region (2,8)
+    %b = pto.alloc_tile
+      : !pto.tile_buf<vec, 2x24xf32, valid=2x8>
+    // dst: valid region (2,24)
+    %c = pto.alloc_tile
+      : !pto.tile_buf<vec, 2x24xf32>
+
+    pto.tload ins(%a_part : !pto.partition_tensor_view<1x1x1x2x24xf32>)
+              outs(%a : !pto.tile_buf<vec, 2x24xf32>)
+    pto.tload ins(%b_part : !pto.partition_tensor_view<1x1x1x2x24xf32>)
+              outs(%b : !pto.tile_buf<vec, 2x24xf32, valid=2x8>)
+
+    pto.tpartmax ins(%a, %b : !pto.tile_buf<vec, 2x24xf32>,
+                          !pto.tile_buf<vec, 2x24xf32, valid=2x8>)
+             outs(%c : !pto.tile_buf<vec, 2x24xf32>)
+
+    pto.tstore ins(%c : !pto.tile_buf<vec, 2x24xf32>)
+               outs(%c_part : !pto.partition_tensor_view<1x1x1x2x24xf32>)
+    return
+  }
+
+  // Case: f32_128x64_src1_row_less (src0 valid 128x64, src1 valid 96x64, dst valid 128x64)
+
+  func.func @TPARTMAX_f32_64x64_full(%a_ptr: !pto.ptr<f32>, %b_ptr: !pto.ptr<f32>, %c_ptr: !pto.ptr<f32>) attributes {pto.kernel} {
+    %c0    = arith.constant 0    : index
+    %c1    = arith.constant 1    : index
+    %c64    = arith.constant 64    : index
+    %c4096    = arith.constant 4096    : index
+
+    %a_view = pto.make_tensor_view %a_ptr,
+      shape = [%c1, %c1, %c1, %c64, %c64],
+      strides = [%c4096, %c4096, %c4096, %c64, %c1]
+      : !pto.tensor_view<1x1x1x64x64xf32>
+    %b_view = pto.make_tensor_view %b_ptr,
+      shape = [%c1, %c1, %c1, %c64, %c64],
+      strides = [%c4096, %c4096, %c4096, %c64, %c1]
+      : !pto.tensor_view<1x1x1x64x64xf32>
+    %c_view = pto.make_tensor_view %c_ptr,
+      shape = [%c1, %c1, %c1, %c64, %c64],
+      strides = [%c4096, %c4096, %c4096, %c64, %c1]
+      : !pto.tensor_view<1x1x1x64x64xf32>
+
+    %a_part = pto.partition_view %a_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c64, %c64]
+      : !pto.tensor_view<1x1x1x64x64xf32> -> !pto.partition_tensor_view<1x1x1x64x64xf32>
+    %b_part = pto.partition_view %b_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c64, %c64]
+      : !pto.tensor_view<1x1x1x64x64xf32> -> !pto.partition_tensor_view<1x1x1x64x64xf32>
+    %c_part = pto.partition_view %c_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c64, %c64]
+      : !pto.tensor_view<1x1x1x64x64xf32> -> !pto.partition_tensor_view<1x1x1x64x64xf32>
+
+    // src0: valid region (64,64)
+    %a = pto.alloc_tile
+      : !pto.tile_buf<vec, 64x64xf32>
+    // src1: valid region (64,64)
+    %b = pto.alloc_tile
+      : !pto.tile_buf<vec, 64x64xf32>
+    // dst: valid region (64,64)
+    %c = pto.alloc_tile
+      : !pto.tile_buf<vec, 64x64xf32>
+
+    pto.tload ins(%a_part : !pto.partition_tensor_view<1x1x1x64x64xf32>)
+              outs(%a : !pto.tile_buf<vec, 64x64xf32>)
+    pto.tload ins(%b_part : !pto.partition_tensor_view<1x1x1x64x64xf32>)
+              outs(%b : !pto.tile_buf<vec, 64x64xf32>)
+
+    pto.tpartmax ins(%a, %b : !pto.tile_buf<vec, 64x64xf32>,
+                          !pto.tile_buf<vec, 64x64xf32>)
+             outs(%c : !pto.tile_buf<vec, 64x64xf32>)
+
+    pto.tstore ins(%c : !pto.tile_buf<vec, 64x64xf32>)
+               outs(%c_part : !pto.partition_tensor_view<1x1x1x64x64xf32>)
+    return
+  }
+
+  // Case: f32_2x24_src1_col_less (src0 valid 2x24, src1 valid 2x8, dst valid 2x24)
+}
