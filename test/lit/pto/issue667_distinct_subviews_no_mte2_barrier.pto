@@ -1,11 +1,11 @@
 // RUN: ptoas --pto-arch=a3 --pto-level=level3 --enable-insert-sync %s | FileCheck %s
 
 module {
-  func.func @issue667_tload_overlap_does_not_need_mte2_barrier(
+  func.func @issue667_distinct_subviews_do_not_need_mte2_barrier(
       %src0: memref<16x128xf32, #pto.address_space<gm>>,
       %src1: memref<16x128xf32, #pto.address_space<gm>>) {
     %c0 = arith.constant 0 : index
-    %c64 = arith.constant 64 : index
+    %c128 = arith.constant 128 : index
     %c0_i64 = arith.constant 0 : i64
 
     %tile = pto.alloc_tile addr = %c0_i64 :
@@ -14,7 +14,7 @@ module {
     %s0 = pto.subview %tile[%c0, %c0] sizes [16, 128] :
       !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=512, v_row=16, v_col=512, blayout=row_major, slayout=none_box, fractal=512, pad=0>
       -> !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=128, v_row=16, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-    %s1 = pto.subview %tile[%c0, %c64] sizes [16, 128] :
+    %s1 = pto.subview %tile[%c0, %c128] sizes [16, 128] :
       !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=512, v_row=16, v_col=512, blayout=row_major, slayout=none_box, fractal=512, pad=0>
       -> !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=128, v_row=16, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>
 
@@ -45,7 +45,7 @@ module {
   }
 }
 
-// CHECK-LABEL: AICORE void issue667_tload_overlap_does_not_need_mte2_barrier(
+// CHECK-LABEL: AICORE void issue667_distinct_subviews_do_not_need_mte2_barrier(
 // CHECK: TLOAD(
 // CHECK-NOT: pipe_barrier(PIPE_MTE2);
 // CHECK: TLOAD(

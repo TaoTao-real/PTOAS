@@ -184,11 +184,45 @@ static bool isTLoadCompound(const CompoundInstanceElement *compound) {
   return compound && compound->elementOp && isa<pto::TLoadOp>(compound->elementOp);
 }
 
-static bool isTLoadToTLoadWAWExempt(const CompoundInstanceElement *nowCompound,
-                                    const CompoundInstanceElement *frontCompound) {
+static bool isMTE2TLoadPair(const CompoundInstanceElement *nowCompound,
+                            const CompoundInstanceElement *frontCompound) {
   return isTLoadCompound(nowCompound) && isTLoadCompound(frontCompound) &&
          nowCompound->kPipeValue == PipelineType::PIPE_MTE2 &&
          frontCompound->kPipeValue == PipelineType::PIPE_MTE2;
+}
+
+static std::optional<Value> getDirectSubviewSource(Value value) {
+  if (!value) return std::nullopt;
+  if (auto op = value.getDefiningOp<pto::SubViewOp>())
+    return op.getSource();
+  if (auto op = value.getDefiningOp<memref::SubViewOp>())
+    return op.getSource();
+  return std::nullopt;
+}
+
+static bool isDistinctSiblingSubviewPair(const BaseMemInfo *lhs,
+                                         const BaseMemInfo *rhs) {
+  if (!lhs || !rhs) return false;
+  if (lhs->baseBuffer == rhs->baseBuffer) return false;
+  auto lhsSource = getDirectSubviewSource(lhs->baseBuffer);
+  auto rhsSource = getDirectSubviewSource(rhs->baseBuffer);
+  return lhsSource && rhsSource && *lhsSource == *rhsSource;
+}
+
+static bool isTLoadToTLoadWAWExempt(
+    const CompoundInstanceElement *nowCompound,
+    const CompoundInstanceElement *frontCompound,
+    const DepBaseMemInfoPairVec &wawDepVec) {
+  if (!isMTE2TLoadPair(nowCompound, frontCompound)) return false;
+
+  // PTOAS treats sibling subview SSA values of the same direct parent as
+  // non-overlapping by IR contract. Keep the exemption limited to that exact
+  // provenance so same-tile, nested-view, root-vs-view, different-parent, and
+  // unknown aliases still get an MTE2 pipe barrier.
+  return !wawDepVec.empty() &&
+         llvm::all_of(wawDepVec, [](const auto &pair) {
+           return isDistinctSiblingSubviewPair(pair.first, pair.second);
+         });
 }
 
 // ==============================================================================
@@ -476,9 +510,15 @@ bool InsertSyncAnalysis::IsMemInfoHasDependency(
                                           depBaseMemInfosVec);
   hasDependency |= memAnalyzer_.DepBetween(nowCompound->defVec, frontCompound->useVec,
                                           depBaseMemInfosVec);
-  if (!isTLoadToTLoadWAWExempt(nowCompound, frontCompound)) {
-    hasDependency |= memAnalyzer_.DepBetween(nowCompound->defVec, frontCompound->defVec,
-                                            depBaseMemInfosVec);
+
+  DepBaseMemInfoPairVec wawDepVec;
+  bool hasWAWDependency =
+      memAnalyzer_.DepBetween(nowCompound->defVec, frontCompound->defVec,
+                              wawDepVec);
+  if (hasWAWDependency &&
+      !isTLoadToTLoadWAWExempt(nowCompound, frontCompound, wawDepVec)) {
+    depBaseMemInfosVec.append(wawDepVec.begin(), wawDepVec.end());
+    hasDependency = true;
   }
 
   // Special hazard: ACC (L0C) read/read cross-pipe ordering.

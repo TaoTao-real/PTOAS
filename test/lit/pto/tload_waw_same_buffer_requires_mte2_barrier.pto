@@ -1,0 +1,71 @@
+// RUN: ptoas --pto-arch=a3 --pto-level=level3 --enable-insert-sync %s | FileCheck %s
+
+module {
+  func.func @tload_waw_same_tile_requires_mte2_barrier(
+      %src0: memref<16x128xf32, #pto.address_space<gm>>,
+      %src1: memref<16x128xf32, #pto.address_space<gm>>) {
+    %c0_i64 = arith.constant 0 : i64
+    %tile = pto.alloc_tile addr = %c0_i64 :
+      !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=128, v_row=16, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    pto.tload ins(%src0 : memref<16x128xf32, #pto.address_space<gm>>)
+              outs(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=128, v_row=16, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tload ins(%src1 : memref<16x128xf32, #pto.address_space<gm>>)
+              outs(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=128, v_row=16, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    return
+  }
+
+  func.func @tload_waw_same_subview_requires_mte2_barrier(
+      %src0: memref<16x128xf32, #pto.address_space<gm>>,
+      %src1: memref<16x128xf32, #pto.address_space<gm>>) {
+    %c0 = arith.constant 0 : index
+    %c0_i64 = arith.constant 0 : i64
+    %tile = pto.alloc_tile addr = %c0_i64 :
+      !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=128, v_row=16, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %view = pto.subview %tile[%c0, %c0] sizes [16, 128] :
+      !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=128, v_row=16, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      -> !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=128, v_row=16, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    pto.tload ins(%src0 : memref<16x128xf32, #pto.address_space<gm>>)
+              outs(%view : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=128, v_row=16, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tload ins(%src1 : memref<16x128xf32, #pto.address_space<gm>>)
+              outs(%view : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=128, v_row=16, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    return
+  }
+
+  func.func @tload_waw_nested_subview_requires_mte2_barrier(
+      %src0: memref<16x64xf32, #pto.address_space<gm>>,
+      %src1: memref<16x64xf32, #pto.address_space<gm>>) {
+    %c0 = arith.constant 0 : index
+    %c0_i64 = arith.constant 0 : i64
+    %tile = pto.alloc_tile addr = %c0_i64 :
+      !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=128, v_row=16, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %parent = pto.subview %tile[%c0, %c0] sizes [16, 64] :
+      !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=128, v_row=16, v_col=128, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      -> !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %child = pto.subview %parent[%c0, %c0] sizes [16, 64] :
+      !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+      -> !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    pto.tload ins(%src0 : memref<16x64xf32, #pto.address_space<gm>>)
+              outs(%parent : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tload ins(%src1 : memref<16x64xf32, #pto.address_space<gm>>)
+              outs(%child : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    return
+  }
+}
+
+// CHECK-LABEL: AICORE void tload_waw_same_tile_requires_mte2_barrier(
+// CHECK: TLOAD(
+// CHECK-NEXT: pipe_barrier(PIPE_MTE2);
+// CHECK-NEXT: TLOAD(
+
+// CHECK-LABEL: AICORE void tload_waw_same_subview_requires_mte2_barrier(
+// CHECK: TLOAD(
+// CHECK-NEXT: pipe_barrier(PIPE_MTE2);
+// CHECK-NEXT: TLOAD(
+
+// CHECK-LABEL: AICORE void tload_waw_nested_subview_requires_mte2_barrier(
+// CHECK: TLOAD(
+// CHECK-NEXT: pipe_barrier(PIPE_MTE2);
+// CHECK-NEXT: TLOAD(
