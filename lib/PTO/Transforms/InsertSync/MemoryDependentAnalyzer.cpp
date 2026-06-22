@@ -104,6 +104,10 @@ static Value GetRealRoot(Value v) {
   }
   return v;
 }
+
+static bool hasKnownPhysicalRange(const BaseMemInfo *info) {
+  return info && !info->baseAddresses.empty() && info->allocateSize != 0;
+}
  
 bool MemoryDependentAnalyzer::DepBetween(
     const SmallVector<const BaseMemInfo *> &a,
@@ -154,7 +158,15 @@ bool MemoryDependentAnalyzer::MemAlias(const BaseMemInfo *a,
   }
  
   // 2. Local Memory (UB/L1)
-  
+  if (hasKnownPhysicalRange(a) && hasKnownPhysicalRange(b)) {
+    bool overlap = isBufferAddressRangeOverlap(a, b);
+    if (isTraceEnabled())
+      llvm::errs() << "    -> Known local physical ranges "
+                   << (overlap ? "overlap. True.\n"
+                               : "do not overlap. False.\n");
+    return overlap;
+  }
+
   if (a->rootBuffer == b->rootBuffer) {
     if (a->baseAddresses.empty() || b->baseAddresses.empty()) return true;
     if (a->allocateSize == 0 || b->allocateSize == 0) return true;

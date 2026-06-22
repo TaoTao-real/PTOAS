@@ -1,0 +1,24 @@
+// RUN: ptoas --pto-level=level3 --pto-arch=a3 --enable-insert-sync --pto-insert-sync-debug=2 %s -o - 2>&1 | FileCheck %s
+
+module {
+  func.func @local_physical_overlap_war(%dst: memref<1x32xf32, #pto.address_space<gm>>) {
+    %c0_i64 = arith.constant 0 : i64
+    %cst = arith.constant 1.000000e+00 : f32
+    %old = pto.alloc_tile addr = %c0_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %new = pto.alloc_tile addr = %c0_i64 : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    pto.texpands ins(%cst : f32)
+      outs(%old : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tstore ins(%old : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+      outs(%dst : memref<1x32xf32, #pto.address_space<gm>>)
+    pto.texpands ins(%cst : f32)
+      outs(%new : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    return
+  }
+}
+
+// CHECK-LABEL: After Sync Motion
+// CHECK:      COMPOUND pto.tstore [PIPE_MTE3]
+// CHECK:        POST: set_flag <PIPE_MTE3 -> PIPE_V>
+// CHECK-NEXT: COMPOUND pto.texpands [PIPE_V]
+// CHECK-NEXT:   PRE : wait_flag <PIPE_MTE3 -> PIPE_V>

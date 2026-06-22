@@ -152,7 +152,7 @@ getMemrefSubViewBaseAddresses(memref::SubViewOp op, MemRefType sourceType,
 
   SmallVector<int64_t> strides;
   int64_t baseOffset = ShapedType::kDynamic;
-  if (failed(mlir::getStridesAndOffset(sourceType, strides, baseOffset)) ||
+  if (failed(sourceType.getStridesAndOffset(strides, baseOffset)) ||
       strides.size() != 2 ||
       llvm::is_contained(strides, ShapedType::kDynamic))
     return std::nullopt;
@@ -215,7 +215,7 @@ static std::pair<int64_t, int64_t> getStaticOffsetAndSize(Operation *op, Value s
   if (auto subView = dyn_cast<memref::SubViewOp>(op)) {
     int64_t baseOffset;
     StrideVector strides;
-    if (failed(mlir::getStridesAndOffset(srcType, strides, baseOffset))) {
+    if (failed(srcType.getStridesAndOffset(strides, baseOffset))) {
         return {-1, -1};
     }
 
@@ -387,16 +387,15 @@ LogicalResult PTOIRTranslator::UpdateAllocTileOpMemInfo(pto::AllocTileOp op) {
 
   auto tileType = dyn_cast<pto::TileBufType>(res.getType());
   uint64_t sizeInBytes = 0;
-  uint64_t baseAddr = 0;
+  SmallVector<uint64_t> baseAddresses;
 
   // If alloc_tile carries an explicit address, record it when it's a constant.
   if (Value addr = op.getAddr()) {
     llvm::APInt apIntValue;
     if (matchPattern(addr, m_ConstantInt(&apIntValue))) {
-        // 将 APInt 转换为 int64_t，再转为 uint64_t
-        int64_t c = apIntValue.getSExtValue();  // 有符号扩展转换
-        // 如果确定是无符号值，也可以用：apIntValue.getZExtValue()
-        baseAddr = static_cast<uint64_t>(c);
+      int64_t c = apIntValue.getSExtValue();
+      if (c >= 0)
+        baseAddresses.push_back(static_cast<uint64_t>(c));
     }
   }
 
@@ -440,7 +439,7 @@ LogicalResult PTOIRTranslator::UpdateAllocTileOpMemInfo(pto::AllocTileOp op) {
       res,
       res,
       space, // 使用解析出的 space
-      SmallVector<uint64_t>{baseAddr},
+      std::move(baseAddresses),
       sizeInBytes
   );
 
@@ -865,7 +864,7 @@ void PTOIRTranslator::UpdateMemrefSubViewAliasBufferInfo(memref::SubViewOp op) {
 
   SmallVector<int64_t> strides;
   int64_t baseOffset = ShapedType::kDynamic;
-  if (failed(mlir::getStridesAndOffset(sourceType, strides, baseOffset)) ||
+  if (failed(sourceType.getStridesAndOffset(strides, baseOffset)) ||
       strides.size() != 2) {
     UpdateConservativeAliasBufferInfo(result, source);
     return;
