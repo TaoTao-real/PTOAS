@@ -941,4 +941,20 @@ def VPTOPtrCastCleanup
                            "mlir::memref::MemRefDialect"];
 }
 
+def PTOInsertVMemBar
+    : Pass<"pto-insert-v-membar", "mlir::func::FuncOp"> {
+  let summary =
+      "Insert VPTO V-pipeline mem_bar for overlapping UB tile hazards";
+  let description = [{
+    Analyzes structured PIPE_V tile operations before TileLang expansion and
+    inserts `pto.mem_bar` for same-block UB RAW, WAR, and WAW hazards. The pass
+    uses DPS init operands as writes, other tile operands as reads, and constant
+    `pto.alloc_tile addr` ranges when available.
+  }];
+  let constructor = "mlir::pto::createPTOInsertVMemBarPass()";
+  let dependentDialects = ["mlir::pto::PTODialect",
+                           "mlir::arith::ArithDialect",
+                           "mlir::func::FuncDialect"];
+}
+
 #endif // MLIR_DIALECT_PTO_PASSES

@@ -1,0 +1,126 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: { ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --emit-vpto \
+// RUN:       --mlir-print-ir-after=pto-insert-v-membar %s -o /dev/null 2>&1 || true; } | FileCheck %s
+
+!tile = !pto.tile_buf<vec, 1x64xf32>
+
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+  func.func @vmembar_tile_hazards() attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : i64
+    %c256 = arith.constant 256 : i64
+    %c512 = arith.constant 512 : i64
+    %c768 = arith.constant 768 : i64
+    %c1024 = arith.constant 1024 : i64
+    %c1280 = arith.constant 1280 : i64
+    %c1536 = arith.constant 1536 : i64
+    %c4096 = arith.constant 4096 : i64
+    %c4352 = arith.constant 4352 : i64
+    %c4608 = arith.constant 4608 : i64
+    %c8192 = arith.constant 8192 : i64
+    %c8448 = arith.constant 8448 : i64
+    %c8704 = arith.constant 8704 : i64
+    %c8960 = arith.constant 8960 : i64
+    %c12288 = arith.constant 12288 : i64
+    %c12544 = arith.constant 12544 : i64
+    %c12800 = arith.constant 12800 : i64
+    %c16384 = arith.constant 16384 : i64
+    %c16640 = arith.constant 16640 : i64
+    %c16896 = arith.constant 16896 : i64
+    %c17152 = arith.constant 17152 : i64
+    %c20480 = arith.constant 20480 : i64
+    %c20736 = arith.constant 20736 : i64
+    %c20992 = arith.constant 20992 : i64
+    %c21248 = arith.constant 21248 : i64
+
+    // #866 shape: two producers write temporary UB tiles; tsub reads them.
+    %k_lo = pto.alloc_tile addr = %c0 : !tile
+    %k_hi = pto.alloc_tile addr = %c256 : !tile
+    %cos = pto.alloc_tile addr = %c512 : !tile
+    %sin = pto.alloc_tile addr = %c768 : !tile
+    %prod_lo = pto.alloc_tile addr = %c1024 : !tile
+    %prod_hi = pto.alloc_tile addr = %c1280 : !tile
+    %out0 = pto.alloc_tile addr = %c1536 : !tile
+    pto.tcolexpandmul ins(%k_lo, %cos : !tile, !tile) outs(%prod_lo : !tile)
+    pto.tcolexpandmul ins(%k_hi, %sin : !tile, !tile) outs(%prod_hi : !tile)
+    pto.tsub ins(%prod_lo, %prod_hi : !tile, !tile) outs(%out0 : !tile)
+
+    // WAW: two ops write the same UB tile range.
+    %waw_a = pto.alloc_tile addr = %c4096 : !tile
+    %waw_b = pto.alloc_tile addr = %c4352 : !tile
+    %waw_out0 = pto.alloc_tile addr = %c4608 : !tile
+    %waw_out1 = pto.alloc_tile addr = %c4608 : !tile
+    pto.tadd ins(%waw_a, %waw_b : !tile, !tile) outs(%waw_out0 : !tile)
+    pto.tsub ins(%waw_a, %waw_b : !tile, !tile) outs(%waw_out1 : !tile)
+
+    // WAR: previous op reads a range that the next op overwrites.
+    %war_a = pto.alloc_tile addr = %c8192 : !tile
+    %war_b = pto.alloc_tile addr = %c8448 : !tile
+    %war_tmp = pto.alloc_tile addr = %c8704 : !tile
+    %war_c = pto.alloc_tile addr = %c8960 : !tile
+    %war_overwrite_a = pto.alloc_tile addr = %c8192 : !tile
+    pto.tadd ins(%war_a, %war_b : !tile, !tile) outs(%war_tmp : !tile)
+    pto.tsub ins(%war_c, %war_b : !tile, !tile) outs(%war_overwrite_a : !tile)
+
+    // RAW + WAW together must become VV_ALL, not just VST_VLD.
+    %combo_a = pto.alloc_tile addr = %c12288 : !tile
+    %combo_b = pto.alloc_tile addr = %c12544 : !tile
+    %combo_tmp = pto.alloc_tile addr = %c12800 : !tile
+    %combo_out_alias = pto.alloc_tile addr = %c12800 : !tile
+    pto.tadd ins(%combo_a, %combo_b : !tile, !tile) outs(%combo_tmp : !tile)
+    pto.tsub ins(%combo_tmp, %combo_b : !tile, !tile) outs(%combo_out_alias : !tile)
+
+    // Existing covering barrier must be respected and not duplicated.
+    %cover_a = pto.alloc_tile addr = %c16384 : !tile
+    %cover_b = pto.alloc_tile addr = %c16640 : !tile
+    %cover_tmp = pto.alloc_tile addr = %c16896 : !tile
+    %cover_out = pto.alloc_tile addr = %c17152 : !tile
+    pto.tadd ins(%cover_a, %cover_b : !tile, !tile) outs(%cover_tmp : !tile)
+    pto.mem_bar "VST_VLD"
+    pto.tsub ins(%cover_tmp, %cover_b : !tile, !tile) outs(%cover_out : !tile)
+
+    // Existing non-covering barrier must not suppress the required RAW barrier.
+    %noncover_a = pto.alloc_tile addr = %c20480 : !tile
+    %noncover_b = pto.alloc_tile addr = %c20736 : !tile
+    %noncover_tmp = pto.alloc_tile addr = %c20992 : !tile
+    %noncover_out = pto.alloc_tile addr = %c21248 : !tile
+    pto.tadd ins(%noncover_a, %noncover_b : !tile, !tile) outs(%noncover_tmp : !tile)
+    pto.mem_bar "VLD_VST"
+    pto.tsub ins(%noncover_tmp, %noncover_b : !tile, !tile) outs(%noncover_out : !tile)
+
+    return
+  }
+}
+
+// CHECK-LABEL: func.func @vmembar_tile_hazards
+// CHECK: pto.tcolexpandmul
+// CHECK-NEXT: pto.tcolexpandmul
+// CHECK-NEXT: pto.mem_bar "VST_VLD"
+// CHECK-NEXT: pto.tsub
+
+// CHECK: pto.tadd
+// CHECK-NEXT: pto.mem_bar "VST_VST"
+// CHECK-NEXT: pto.tsub
+
+// CHECK: pto.tadd
+// CHECK-NEXT: pto.mem_bar "VLD_VST"
+// CHECK-NEXT: pto.tsub
+
+// CHECK: pto.tadd
+// CHECK-NEXT: pto.mem_bar "VV_ALL"
+// CHECK-NEXT: pto.tsub
+
+// CHECK: pto.tadd
+// CHECK-NEXT: pto.mem_bar "VST_VLD"
+// CHECK-NEXT: pto.tsub
+
+// CHECK: pto.tadd
+// CHECK-NEXT: pto.mem_bar "VLD_VST"
+// CHECK-NEXT: pto.mem_bar "VST_VLD"
+// CHECK-NEXT: pto.tsub

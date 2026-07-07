@@ -346,6 +346,12 @@ static llvm::cl::opt<bool> enableInjectBarrierAllSync(
                    "pto.barrier PIPE_ALL before memory-effecting PTO pipe ops"),
     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> disableVMembar(
+    "disable-v-membar",
+    llvm::cl::desc("Disable automatic VPTO V-pipeline mem_bar insertion "
+                   "(debug only; disabling may expose UB RAW/WAR/WAW hazards)"),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<bool> enableGraphSyncSolver(
     "enable-graph-sync-solver",
     llvm::cl::desc("Enable the graph-based intra-core sync solver "
@@ -2869,6 +2875,12 @@ int mlir::pto::compilePTOASModule(
   pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOA5NormalizeTMovPass());
   pm.addNestedPass<mlir::func::FuncOp>(
       pto::createPTOValidateIntToPtrUsesPass());
+  if (effectiveBackend == PTOBackend::VPTO && !disableVMembar) {
+    // Insert V-pipeline mem_bar while tile ops are still structured and before
+    // VPTO fusion plans contiguous tile spans. The inserted barriers then act
+    // as normal tile-native scheduling boundaries.
+    pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOInsertVMemBarPass());
+  }
 
   // Keep frontend fusion on tile-native PTO IR and annotate last_use directly
   // on scheduled block-local spans before the shared mainline lowers tiles.
