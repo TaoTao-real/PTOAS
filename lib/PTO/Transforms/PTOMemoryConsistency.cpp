@@ -17,6 +17,7 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 
 namespace mlir {
 namespace pto {
@@ -318,6 +319,17 @@ struct TNotifyReleaseState {
                    UnitAttr::get(cmo.getContext()));
     }
   }
+
+  void remapPayloads(llvm::function_ref<Value(Value)> mapper) {
+    for (PendingReleaseAccess &access : pendingAccesses)
+      if (access.payload)
+        access.payload = mapper(access.payload);
+    for (Value &payload : addressedCmoPayloads)
+      if (payload)
+        payload = mapper(payload);
+    if (hasReleaseCmoMarker())
+      recomputeAddressedState();
+  }
 };
 
 struct SignalAcquireState {
@@ -408,9 +420,57 @@ static TNotifyReleaseState getReleaseStateForMacroModel(Operation *op) {
   return state;
 }
 
-static TNotifyReleaseState getDirectTNotifyReleaseState(Operation *op) {
+static func::FuncOp lookupCallee(func::CallOp call) {
+  return SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+      call.getOperation(), call.getCalleeAttr());
+}
+
+static TNotifyReleaseState
+collectTNotifyReleaseState(Region &region,
+                           llvm::DenseSet<Operation *> &activeCallees);
+
+static Value remapCalleePayloadToCallOperand(Value payload, func::FuncOp callee,
+                                             func::CallOp call) {
+  if (!payload)
+    return payload;
+
+  Value root = getPayloadAliasRoot(payload);
+  auto arg = dyn_cast<BlockArgument>(root);
+  if (!arg)
+    return payload;
+  if (arg.getOwner() != &callee.getBody().front())
+    return payload;
+  if (arg.getArgNumber() >= call.getNumOperands())
+    return payload;
+  return call.getOperand(arg.getArgNumber());
+}
+
+static TNotifyReleaseState
+getReleaseStateForCall(func::CallOp call,
+                       llvm::DenseSet<Operation *> &activeCallees) {
+  func::FuncOp callee = lookupCallee(call);
+  if (!callee || callee.isExternal())
+    return {};
+  if (!activeCallees.insert(callee.getOperation()).second)
+    return {};
+
+  TNotifyReleaseState state =
+      collectTNotifyReleaseState(callee.getBody(), activeCallees);
+  activeCallees.erase(callee.getOperation());
+  state.remapPayloads([&](Value payload) {
+    return remapCalleePayloadToCallOperand(payload, callee, call);
+  });
+  return state;
+}
+
+static TNotifyReleaseState
+getDirectTNotifyReleaseState(Operation *op,
+                             llvm::DenseSet<Operation *> &activeCallees) {
   if (isa<pto::BarrierOp, pto::CmoCacheInvalidOp, pto::FenceBarrierAllOp>(op))
     return {};
+
+  if (auto call = dyn_cast<func::CallOp>(op))
+    return getReleaseStateForCall(call, activeCallees);
 
   if (auto store = dyn_cast<pto::StoreScalarOp>(op)) {
     if (isGmScalarMemory(store.getPtr().getType()))
@@ -442,21 +502,35 @@ static TNotifyReleaseState getDirectTNotifyReleaseState(Operation *op) {
   return {};
 }
 
-static TNotifyReleaseState collectTNotifyReleaseState(Operation *op) {
-  TNotifyReleaseState state = getDirectTNotifyReleaseState(op);
+static TNotifyReleaseState getDirectTNotifyReleaseState(Operation *op) {
+  llvm::DenseSet<Operation *> activeCallees;
+  return getDirectTNotifyReleaseState(op, activeCallees);
+}
+
+static TNotifyReleaseState
+collectTNotifyReleaseState(Operation *op,
+                           llvm::DenseSet<Operation *> &activeCallees) {
+  TNotifyReleaseState state = getDirectTNotifyReleaseState(op, activeCallees);
   for (Region &region : op->getRegions())
     for (Block &block : region)
       for (Operation &nested : block)
-        state.merge(collectTNotifyReleaseState(&nested));
+        state.merge(collectTNotifyReleaseState(&nested, activeCallees));
+  return state;
+}
+
+static TNotifyReleaseState
+collectTNotifyReleaseState(Region &region,
+                           llvm::DenseSet<Operation *> &activeCallees) {
+  TNotifyReleaseState state;
+  for (Block &block : region)
+    for (Operation &nested : block)
+      state.merge(collectTNotifyReleaseState(&nested, activeCallees));
   return state;
 }
 
 static TNotifyReleaseState collectTNotifyReleaseState(Region &region) {
-  TNotifyReleaseState state;
-  for (Block &block : region)
-    for (Operation &nested : block)
-      state.merge(collectTNotifyReleaseState(&nested));
-  return state;
+  llvm::DenseSet<Operation *> activeCallees;
+  return collectTNotifyReleaseState(region, activeCallees);
 }
 
 static void applyFenceBarrierAllForSummary(pto::FenceBarrierAllOp fence,
@@ -520,29 +594,12 @@ static bool isLoopLikeOp(Operation *op) {
   return isa<scf::ForOp, scf::WhileOp, scf::ParallelOp, scf::ForallOp>(op);
 }
 
-static func::FuncOp lookupCallee(func::CallOp call) {
-  return SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
-      call.getOperation(), call.getCalleeAttr());
+static bool isMemoryConsistencyBoundaryOp(Operation *op) {
+  return isa<pto::CmoCacheInvalidOp, pto::FenceBarrierAllOp, pto::TNotifyOp,
+             pto::TWaitOp, pto::TTestOp>(op);
 }
 
-static bool isMemoryConsistencyRelevantDirectOp(Operation *op) {
-  if (isa<pto::BarrierOp, pto::CmoCacheInvalidOp, pto::FenceBarrierAllOp, pto::TNotifyOp,
-          pto::TWaitOp, pto::TTestOp, pto::TLoadOp, pto::TPrefetchOp,
-          pto::TStoreOp, pto::TStoreFPOp>(op))
-    return true;
-
-  if (auto load = dyn_cast<pto::LoadScalarOp>(op))
-    return isGmScalarMemory(load.getPtr().getType());
-  if (auto store = dyn_cast<pto::StoreScalarOp>(op))
-    return isGmScalarMemory(store.getPtr().getType());
-
-  TNotifyReleaseState macroState = getReleaseStateForMacroModel(op);
-  return macroState.drainMte2 || macroState.drainMte3 ||
-         macroState.drainFix || macroState.needsDsbDdr ||
-         macroState.needsGmCacheCmo;
-}
-
-static bool calleeContainsMemoryConsistencyRelevantOps(
+static bool calleeContainsMemoryConsistencyBoundaryOps(
     func::FuncOp callee, llvm::DenseSet<Operation *> &activeCallees) {
   if (!callee || callee.isExternal())
     return false;
@@ -555,13 +612,13 @@ static bool calleeContainsMemoryConsistencyRelevantOps(
 
     if (auto nestedCall = dyn_cast<func::CallOp>(op)) {
       func::FuncOp nestedCallee = lookupCallee(nestedCall);
-      if (calleeContainsMemoryConsistencyRelevantOps(nestedCallee,
-                                                     activeCallees))
+      if (calleeContainsMemoryConsistencyBoundaryOps(nestedCallee,
+                                                    activeCallees))
         return WalkResult::interrupt();
       return WalkResult::advance();
     }
 
-    if (isMemoryConsistencyRelevantDirectOp(op))
+    if (isMemoryConsistencyBoundaryOp(op))
       return WalkResult::interrupt();
     return WalkResult::advance();
   });
@@ -590,14 +647,14 @@ static bool diagnoseNonInlinedMemoryConsistencyCalls(ModuleOp module) {
         return;
 
       llvm::DenseSet<Operation *> activeCallees;
-      if (!calleeContainsMemoryConsistencyRelevantOps(callee, activeCallees))
+      if (!calleeContainsMemoryConsistencyBoundaryOps(callee, activeCallees))
         return;
 
       call.emitOpError()
           << "calls @" << callee.getSymName()
-          << ", which contains PTO memory consistency relevant operations; "
+          << ", which contains PTO memory consistency boundary operations; "
              "inline the callee before `pto-memory-consistency` or keep "
-             "payload, CMO, fence, and signal operations in the caller";
+             "CMO, fence, and signal operations in the caller";
       hasFailure = true;
     });
   }

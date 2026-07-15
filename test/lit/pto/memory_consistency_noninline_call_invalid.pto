@@ -8,54 +8,23 @@
 
 // RUN: not ptoas --pto-arch=a3 %s -o - 2>&1 | FileCheck %s
 
-// Non-inlined calls are not context-sensitive: a caller-side TNotify cannot
-// safely observe release-relevant payload writes hidden in a callee body.  Such
-// callees must be inlined before the memory consistency pass.
+// Non-inlined calls must not hide memory-consistency boundary operations.  A
+// caller-side release/acquire analysis cannot safely reason about CMO, fence,
+// and signal ordering when those ops are hidden in a callee body.
 
 module {
-  func.func private @producer(
-      %tile: !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
-      %dst_ptr: !pto.ptr<f32>) {
-    %c0 = arith.constant 0 : index
-    %c1 = arith.constant 1 : index
-    %c32 = arith.constant 32 : index
-    %dst_view = pto.make_tensor_view %dst_ptr,
-      shape = [%c1, %c32], strides = [%c32, %c1] : !pto.tensor_view<?x?xf32>
-    %dst = pto.partition_view %dst_view,
-      offsets = [%c0, %c0], sizes = [%c1, %c32]
-      : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<1x32xf32>
-    pto.tstore ins(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
-               outs(%dst : !pto.partition_tensor_view<1x32xf32>)
+  func.func private @hidden_boundary(%payload_ptr: !pto.ptr<i32>) {
+    pto.cmo.cacheinvalid %payload_ptr single_cache_line : !pto.ptr<i32>
+    pto.fence.barrier_all #pto.fence_scope<gm>
     return
   }
 
-  func.func @call_hidden_payload_write(
-      %dst_ptr: !pto.ptr<f32>,
-      %signal_ptr: !pto.ptr<i32>)
+  func.func @call_hidden_boundary(%payload_ptr: !pto.ptr<i32>)
       attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
-    %c0 = arith.constant 0 : index
-    %c1 = arith.constant 1 : index
-    %c32 = arith.constant 32 : index
-    %v_i32 = arith.constant 1 : i32
-
-    %tile = pto.alloc_tile :
-      !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
-
-    func.call @producer(%tile, %dst_ptr) :
-      (!pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
-       !pto.ptr<f32>) -> ()
-    pto.fence.barrier_all #pto.fence_scope<gm>
-
-    %sig_view = pto.make_tensor_view %signal_ptr,
-      shape = [%c1], strides = [%c1] : !pto.tensor_view<1xi32>
-    %sig = pto.partition_view %sig_view,
-      offsets = [%c0], sizes = [%c1]
-      : !pto.tensor_view<1xi32> -> !pto.partition_tensor_view<1xi32>
-    pto.comm.tnotify(%sig, %v_i32 : !pto.partition_tensor_view<1xi32>, i32)
-        {notifyOp = #pto<notify_op set>}
+    func.call @hidden_boundary(%payload_ptr) : (!pto.ptr<i32>) -> ()
     return
   }
 }
 
-// CHECK: calls @producer, which contains PTO memory consistency relevant operations
+// CHECK: calls @hidden_boundary, which contains PTO memory consistency boundary operations
 // CHECK: inline the callee before `pto-memory-consistency`
