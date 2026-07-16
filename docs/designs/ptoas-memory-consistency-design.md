@@ -266,10 +266,16 @@ PyPTO 生成规则：
 marker。PTOAS 不会尝试从所有前序 memory op 里推断“可能相关”的 payload。
 
 `pto.entry` launcher 可以调用多个 kernel 函数；每个 kernel 函数会被
-`pto-memory-consistency` 独立分析。kernel body 内部若通过 `func.call` 调用包含 payload
-访问、CMO、fence 或 signal op 的 helper，PyPTO 应在 `pto-memory-consistency` 前将 helper
-inline，或者把 payload、CMO、fence 和 signal 保持在同一个 caller 中。否则 pass 会报错，
-避免 caller 侧 `TNotify` 或 `TWait` 看不到 callee 内部的 memory-consistency 状态。
+`pto-memory-consistency` 独立分析。kernel body 内部可以通过 `func.call` 调用只包含
+payload 访问的 helper，PTOAS 会把 callee 中的 payload producer 摘要回 caller，并继续由
+caller 侧的 `cmo.cacheinvalid` marker、`fence.barrier_all` 和 signal op 决定 release
+边界。如果 helper 内部已经插入 `pto.barrier`，callee 摘要也会消费对应 pipe drain，避免
+caller 侧重复补同一个 pipe barrier。
+
+但 CMO、fence、`TNotify`、`TWait` 和 `TTest` 这类 memory-consistency boundary op 不能藏在
+non-inline helper 中。PyPTO 应在 `pto-memory-consistency` 前将包含 boundary op 的 helper
+inline，或者把这些 boundary op 保持在 caller 中；否则 pass 会报错，避免 caller 侧看不到
+callee 内部的 release 或 acquire 边界。
 
 ### 6.1 Issue #872：TPUT 发布 Signal
 

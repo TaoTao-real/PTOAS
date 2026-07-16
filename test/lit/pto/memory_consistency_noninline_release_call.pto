@@ -30,6 +30,23 @@ module {
     return
   }
 
+  func.func private @producer_with_barrier(
+      %tile: !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+      %dst_ptr: !pto.ptr<f32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c32 = arith.constant 32 : index
+    %dst_view = pto.make_tensor_view %dst_ptr,
+      shape = [%c1, %c32], strides = [%c32, %c1] : !pto.tensor_view<?x?xf32>
+    %dst = pto.partition_view %dst_view,
+      offsets = [%c0, %c0], sizes = [%c1, %c32]
+      : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<1x32xf32>
+    pto.tstore ins(%tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+               outs(%dst : !pto.partition_tensor_view<1x32xf32>)
+    pto.barrier <PIPE_MTE3>
+    return
+  }
+
   func.func @call_hidden_payload_write_with_marker(
       %dst_ptr: !pto.ptr<f32>,
       %signal_ptr: !pto.ptr<i32>)
@@ -57,8 +74,44 @@ module {
         {notifyOp = #pto<notify_op set>}
     return
   }
+
+  func.func @call_hidden_payload_write_with_internal_barrier(
+      %dst_ptr: !pto.ptr<f32>,
+      %signal_ptr: !pto.ptr<i32>)
+      attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %v_i32 = arith.constant 1 : i32
+
+    %tile = pto.alloc_tile :
+      !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    func.call @producer_with_barrier(%tile, %dst_ptr) :
+      (!pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=32, v_row=1, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+       !pto.ptr<f32>) -> ()
+
+    pto.cmo.cacheinvalid %dst_ptr single_cache_line : !pto.ptr<f32>
+    pto.fence.barrier_all #pto.fence_scope<gm>
+
+    %sig_view = pto.make_tensor_view %signal_ptr,
+      shape = [%c1], strides = [%c1] : !pto.tensor_view<1xi32>
+    %sig = pto.partition_view %sig_view,
+      offsets = [%c0], sizes = [%c1]
+      : !pto.tensor_view<1xi32> -> !pto.partition_tensor_view<1xi32>
+    pto.comm.tnotify(%sig, %v_i32 : !pto.partition_tensor_view<1xi32>, i32)
+        {notifyOp = #pto<notify_op set>}
+    return
+  }
 }
 
-// CHECK: pipe_barrier(PIPE_MTE3)
-// CHECK: dsb(
-// CHECK: pto::comm::TNOTIFY(
+// CHECK-LABEL: AICORE void call_hidden_payload_write_with_marker(
+// CHECK:      producer(
+// CHECK:      pipe_barrier(PIPE_MTE3);
+// CHECK-NEXT: dsb(DSB_DDR);
+// CHECK:      pto::comm::TNOTIFY(
+
+// CHECK-LABEL: AICORE void call_hidden_payload_write_with_internal_barrier(
+// CHECK:      producer_with_barrier(
+// CHECK-NOT:  pipe_barrier(PIPE_MTE3);
+// CHECK:      dsb(DSB_DDR);
+// CHECK:      pto::comm::TNOTIFY(

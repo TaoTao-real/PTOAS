@@ -429,6 +429,11 @@ static TNotifyReleaseState
 collectTNotifyReleaseState(Region &region,
                            llvm::DenseSet<Operation *> &activeCallees);
 
+static TNotifyReleaseState
+getTNotifyReleaseExitStateForBlock(Block &block,
+                                   TNotifyReleaseState pendingState,
+                                   llvm::DenseSet<Operation *> &activeCallees);
+
 static Value remapCalleePayloadToCallOperand(Value payload, func::FuncOp callee,
                                              func::CallOp call) {
   if (!payload)
@@ -455,7 +460,11 @@ getReleaseStateForCall(func::CallOp call,
     return {};
 
   TNotifyReleaseState state =
-      collectTNotifyReleaseState(callee.getBody(), activeCallees);
+      callee.getBody().hasOneBlock()
+          ? getTNotifyReleaseExitStateForBlock(callee.getBody().front(),
+                                               TNotifyReleaseState{},
+                                               activeCallees)
+          : collectTNotifyReleaseState(callee.getBody(), activeCallees);
   activeCallees.erase(callee.getOperation());
   state.remapPayloads([&](Value payload) {
     return remapCalleePayloadToCallOperand(payload, callee, call);
@@ -548,28 +557,26 @@ static void applyFenceBarrierAllForSummary(pto::FenceBarrierAllOp fence,
   state.applyFenceBarrierAll(fence.getScope().getScope());
 }
 
-static TNotifyReleaseState getTNotifyReleaseExitStateForBlock(
-    Block &block, TNotifyReleaseState pendingState);
-
 static TNotifyReleaseState
-getTNotifyReleaseExitState(Operation *op,
-                           TNotifyReleaseState pendingState = {}) {
+getTNotifyReleaseExitState(Operation *op, TNotifyReleaseState pendingState,
+                           llvm::DenseSet<Operation *> &activeCallees) {
   if (isa<pto::TNotifyOp>(op))
     pendingState.clear();
 
-  pendingState.merge(getDirectTNotifyReleaseState(op));
+  pendingState.merge(getDirectTNotifyReleaseState(op, activeCallees));
 
   TNotifyReleaseState regionEntryState = pendingState;
   TNotifyReleaseState combinedRegionExitState;
   for (Region &region : op->getRegions()) {
     if (region.hasOneBlock()) {
       combinedRegionExitState.merge(
-          getTNotifyReleaseExitStateForBlock(region.front(), regionEntryState));
+          getTNotifyReleaseExitStateForBlock(region.front(), regionEntryState,
+                                             activeCallees));
       continue;
     }
 
     TNotifyReleaseState regionExitState = regionEntryState;
-    regionExitState.merge(collectTNotifyReleaseState(region));
+    regionExitState.merge(collectTNotifyReleaseState(region, activeCallees));
     combinedRegionExitState.merge(regionExitState);
   }
   pendingState.merge(combinedRegionExitState);
@@ -583,10 +590,18 @@ getTNotifyReleaseExitState(Operation *op,
   return pendingState;
 }
 
-static TNotifyReleaseState getTNotifyReleaseExitStateForBlock(
-    Block &block, TNotifyReleaseState pendingState) {
+static TNotifyReleaseState
+getTNotifyReleaseExitState(Operation *op, TNotifyReleaseState pendingState = {}) {
+  llvm::DenseSet<Operation *> activeCallees;
+  return getTNotifyReleaseExitState(op, pendingState, activeCallees);
+}
+
+static TNotifyReleaseState
+getTNotifyReleaseExitStateForBlock(Block &block,
+                                   TNotifyReleaseState pendingState,
+                                   llvm::DenseSet<Operation *> &activeCallees) {
   for (Operation &op : block)
-    pendingState = getTNotifyReleaseExitState(&op, pendingState);
+    pendingState = getTNotifyReleaseExitState(&op, pendingState, activeCallees);
   return pendingState;
 }
 
