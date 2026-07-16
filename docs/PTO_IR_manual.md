@@ -8713,6 +8713,89 @@ pto.barrier_sync [<TVEC>]
 
 ---
 
+##### `pto.cmo.cacheinvalid`
+
+**Summary:** Explicit GM cache-maintenance op and payload marker.
+
+**Semantics:**
+
+```text
+cacheinvalid(addr?, space)
+```
+
+**Forms:**
+
+- Whole-cache form: `pto.cmo.cacheinvalid all #pto.address_space<gm>`
+- Single-cache-line form: `pto.cmo.cacheinvalid %addr single_cache_line`
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `addr` | optional GM address-like value | Optional payload address. In practice this can be a GM `!pto.ptr<...>` or a GM `!pto.partition_tensor_view<...>` value. Omit it for whole-cache form. |
+| `space` | `AddressSpaceAttr` | Memory space selector, usually `#pto.address_space<gm>` |
+
+**Results:** None.
+
+**Constraints & Verification:**
+
+- `space` must name a valid address space.
+- The whole-cache form is the conservative GM cache-maintenance form.
+- The single-cache-line form is used either as a real single-line CMO or as a payload marker for memory-consistency analysis.
+
+**Hardware Mapping:**
+
+- `pto.cmo.cacheinvalid all #pto.address_space<gm>` lowers to `dcci((__gm__ void*)0, cache_line_t::ENTIRE_DATA_CACHE)`.
+- `pto.cmo.cacheinvalid %addr single_cache_line` lowers to `dcci((__gm__ void*)addr, cache_line_t::SINGLE_CACHE_LINE)` when the path is cacheable.
+- On non-cacheable payload paths, the single-line form may be consumed as marker-only by later passes.
+
+**Basic Examples:**
+
+```mlir
+pto.cmo.cacheinvalid all #pto.address_space<gm>
+pto.cmo.cacheinvalid %payload_ptr single_cache_line : !pto.ptr<f32>
+pto.cmo.cacheinvalid %payload_view single_cache_line : !pto.partition_tensor_view<128xf32>
+```
+
+---
+
+##### `pto.fence.barrier_all`
+
+**Summary:** Visibility fence for the selected memory scope.
+
+**Semantics:**
+
+```text
+barrier_all(scope)
+```
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `scope` | `FenceScopeAttr` | Visibility scope: `local_memory`, `gm`, or `all` |
+
+**Results:** None.
+
+**Constraints & Verification:**
+
+- `local_memory` is reserved for local-buffer semantics.
+- `gm` and `all` are the scopes currently used for GM visibility ordering.
+
+**Hardware Mapping:**
+
+- `pto.fence.barrier_all #pto.fence_scope<gm>` lowers to `dsb(DSB_DDR)`.
+- `pto.fence.barrier_all #pto.fence_scope<all>` currently lowers to the same `dsb(DSB_DDR)` form.
+
+**Basic Examples:**
+
+```mlir
+pto.fence.barrier_all #pto.fence_scope<gm>
+pto.fence.barrier_all #pto.fence_scope<all>
+```
+
+---
+
 ##### `pto.record_event`
 
 **Summary:** Records an event for synchronization between producer and consumer operation classes.
@@ -10423,10 +10506,10 @@ pto.local_array_set %m[%i, %j], %v
 | Integer Sequence Generation | 1 | V |
 | Scalar Element Access | 2 | V |
 | MX Quantized | 3 | M/V |
-| Synchronization | 5 | - |
+| Synchronization | 7 | - |
 | CV-Related | 2 | - |
 | Runtime Intrinsics | 4 | - (Pure) |
 | Debug | 3 | - |
 | Stack-Local Array | 3 | - (Scalar / Host) |
 
-**Total: 110 operations**
+**Total: 112 operations**
