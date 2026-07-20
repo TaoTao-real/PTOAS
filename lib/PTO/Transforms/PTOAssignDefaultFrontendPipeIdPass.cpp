@@ -33,11 +33,11 @@ struct PTOAssignDefaultFrontendPipeIdPass
     : public mlir::pto::impl::PTOAssignDefaultFrontendPipeIdBase<
           PTOAssignDefaultFrontendPipeIdPass> {
   void runOnOperation() override {
-    func::FuncOp funcOp = getOperation();
-    Builder builder(funcOp.getContext());
+    ModuleOp moduleOp = getOperation();
+    Builder builder(moduleOp.getContext());
     auto zeroAttr = builder.getI32IntegerAttr(0);
 
-    funcOp.walk([&](Operation *op) {
+    moduleOp.walk([&](Operation *op) {
       if (auto init = dyn_cast<AicInitializePipeOp>(op)) {
         assignDefaultIdIfMissing(init, zeroAttr);
         return WalkResult::advance();

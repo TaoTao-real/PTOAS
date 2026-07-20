@@ -2952,8 +2952,7 @@ int mlir::pto::compilePTOASModule(
   // lifted to make it unconditional for all backends.
   if (effectiveBackend == PTOBackend::VPTO)
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOCanonicalizeIRPass());
-  pm.addNestedPass<mlir::func::FuncOp>(
-      pto::createPTOAssignDefaultFrontendPipeIdPass());
+  pm.addPass(pto::createPTOAssignDefaultFrontendPipeIdPass());
   pm.addPass(pto::createPTOLowerFrontendPipeOpsPass());
   //pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOVerifyTFreePass());
   pm.addPass(pto::createPTOInferValidatePipeInitPass());

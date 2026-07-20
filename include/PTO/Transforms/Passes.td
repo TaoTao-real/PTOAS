@@ -416,13 +416,17 @@ def PTOLowerFrontendPipeOps : Pass<"pto-lower-frontend-pipe-ops", "ModuleOp"> {
   ];
 }
 
-def PTOAssignDefaultFrontendPipeId : Pass<"pto-assign-default-frontend-pipe-id", "func::FuncOp"> {
+def PTOAssignDefaultFrontendPipeId : Pass<"pto-assign-default-frontend-pipe-id", "ModuleOp"> {
   let summary = "Materialize default id = 0 on frontend TPUSH/TPOP pipe ops";
   let description = [{
     Preserves backward compatibility with older frontend pipe syntax that
     omitted `id`. This pass rewrites missing `id` attrs on
     `aic/aiv_initialize_pipe`, `tpush_to_*`, `tpop_from_*`, and
     `tfree_from_*` to an explicit `id = 0` before frontend pipe lowering.
+
+    This is a module pass so frontend pipe ops are not verified by MLIR's
+    asynchronous nested function pass adaptor before the module-level frontend
+    pipe lowering removes them.
   }];
 
   let constructor = "mlir::pto::createPTOAssignDefaultFrontendPipeIdPass()";
