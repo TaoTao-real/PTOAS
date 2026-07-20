@@ -617,19 +617,27 @@ struct PTOLowerFrontendPipeOpsPass
     : public mlir::pto::impl::PTOLowerFrontendPipeOpsBase<
           PTOLowerFrontendPipeOpsPass> {
   void runOnOperation() override {
-    func::FuncOp funcOp = getOperation();
-    if (!hasFrontendPipeOps(funcOp))
-      return;
+    ModuleOp moduleOp = getOperation();
+    SmallVector<func::FuncOp> funcs;
+    moduleOp.walk([&](func::FuncOp funcOp) {
+      if (hasFrontendPipeOps(funcOp))
+        funcs.push_back(funcOp);
+      return WalkResult::advance();
+    });
 
-    IRRewriter rewriter(funcOp.getContext());
-    auto loweredOr = lowerInitIfPresent(funcOp, rewriter);
-    if (failed(loweredOr)) {
-      signalPassFailure();
-      return;
+    IRRewriter rewriter(moduleOp.getContext());
+    for (func::FuncOp funcOp : funcs) {
+      auto loweredOr = lowerInitIfPresent(funcOp, rewriter);
+      if (failed(loweredOr)) {
+        signalPassFailure();
+        return;
+      }
+
+      if (failed(lowerFrontendDataOps(funcOp, *loweredOr, rewriter))) {
+        signalPassFailure();
+        return;
+      }
     }
-
-    if (failed(lowerFrontendDataOps(funcOp, *loweredOr, rewriter)))
-      signalPassFailure();
   }
 };
 

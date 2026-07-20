@@ -393,13 +393,19 @@ def VPTONormalizeContainer : Pass<"vpto-normalize-container", "ModuleOp"> {
   ];
 }
 
-def PTOLowerFrontendPipeOps : Pass<"pto-lower-frontend-pipe-ops", "func::FuncOp"> {
+def PTOLowerFrontendPipeOps : Pass<"pto-lower-frontend-pipe-ops", "ModuleOp"> {
   let summary = "Lower frontend TPUSH/TPOP pipe ops to internal pipe ops";
   let description = [{
     Converts frontend `aic/aiv_initialize_pipe`, `tpush_to_*`,
     `tpop_from_*`, and `tfree_from_*` ops into the internal unified pipe IR:
     `initialize_l2l_pipe` / `initialize_l2g2l_pipe`, `tpush`,
     `declare_tile`, `tpop`, and `tfree`.
+
+    This is a module pass because frontend pipe verification and fixpipe peer
+    contract checks may inspect peer functions while the lowering mutates the
+    producer and consumer functions. Running it as a nested function pass lets
+    MLIR schedule producer and consumer functions concurrently, which is unsafe
+    for these cross-function contracts.
   }];
 
   let constructor = "mlir::pto::createPTOLowerFrontendPipeOpsPass()";

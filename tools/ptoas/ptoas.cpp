@@ -2954,8 +2954,7 @@ int mlir::pto::compilePTOASModule(
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOCanonicalizeIRPass());
   pm.addNestedPass<mlir::func::FuncOp>(
       pto::createPTOAssignDefaultFrontendPipeIdPass());
-  pm.addNestedPass<mlir::func::FuncOp>(
-      pto::createPTOLowerFrontendPipeOpsPass());
+  pm.addPass(pto::createPTOLowerFrontendPipeOpsPass());
   //pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOVerifyTFreePass());
   pm.addPass(pto::createPTOInferValidatePipeInitPass());
   pm.addNestedPass<mlir::func::FuncOp>(pto::createLoweringSyncToPipePass());
