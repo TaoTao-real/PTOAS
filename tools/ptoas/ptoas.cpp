@@ -2777,8 +2777,12 @@ static LogicalResult runVPTOBackendPipeline(OwningOpRef<ModuleOp> &module,
 }
 
 static void appendVMISemanticPipeline(OpPassManager &pm) {
-  // Expand unified VMI ops to legacy ops before layout assignment,
-  // so downstream passes only see legacy ops.
+  pm.addPass(pto::createPTOPlanVmiFusionRegionPass());
+  pm.addPass(pto::createPTOVmiLoopFusionPass());
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(createCSEPass());
+  pm.addNestedPass<mlir::func::FuncOp>(
+      pto::createPTOVmiLoadStoreElisionPass());
   pm.addPass(pto::createVMILowerUnifiedToLegacyPass());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(pto::createVMILegalizeArithSelectPass());
@@ -2804,6 +2808,8 @@ static void appendVMISemanticPipeline(OpPassManager &pm) {
   pm.addPass(createCSEPass());
   pm.addPass(pto::createVMILegalizeArithSelectPass());
   pm.addPass(pto::createPTOValidateVMILayoutIRPass());
+  pm.addNestedPass<mlir::func::FuncOp>(
+      pto::createPTOFlattenFusionRegionPass());
   pm.addPass(pto::createVMIToVPTOPass());
 }
 

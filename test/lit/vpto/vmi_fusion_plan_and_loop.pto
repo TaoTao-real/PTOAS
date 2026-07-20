@@ -1,0 +1,137 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software; you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root directory of the software repository for the full text of the License.
+
+// Boundary-condition regression tests for the two VMI VF planning passes
+// (PTOPlanVmiFusionRegion, PTOVmiLoopFusion). The fa softmax sample exercises
+// the happy path only; these cover the planner's judgment boundaries with
+// hand-written IR:
+//   PLAN_F3   - a fusion_region whose body contains a sync op (pto.set_flag)
+//               is an F3 boundary: it forms its own group and closes the open
+//               group, so three adjacent regions stay three (NOT merged to 1).
+//   LOOP_STUCK - two same-header scf.for separated by a between-op that is
+//                stuck (operand is for1's result -> cannot hoist; write is read
+//                by for2 -> cannot sink) stay two separate for's (NOT fused).
+//   LOOP_FUSE  - two same-header scf.for separated only by a loop-invariant
+//                pointer_cast (no UB dependency, no member-result operand)
+//                fuse into one scf.for (between op hoisted above it).
+
+// RUN: pto-test-opt %s -pto-plan-vmi-fusion-region \
+// RUN:   | FileCheck %s --check-prefix=PLAN
+// RUN: pto-test-opt %s -pto-vmi-loop-fusion \
+// RUN:   | FileCheck %s --check-prefix=LOOP
+
+module {
+  // PLAN_F3: region 2 contains pto.set_flag -> boundary. Regions 1,2,3 each
+  // stay separate (no merge into one group region): three pto.fusion_region
+  // blocks survive, and the single pto.set_flag stays inside the middle one.
+  // PLAN-LABEL: func.func @plan_f3_boundary
+  // PLAN: pto.fusion_region {
+  // PLAN: pto.fusion_region {
+  // PLAN: pto.set_flag
+  // PLAN: pto.fusion_region {
+  func.func @plan_f3_boundary() -> () {
+    %c0_i64 = arith.constant 0 : i64
+    %c0 = arith.constant 0 : index
+    %c64 = arith.constant 64 : index
+    %c1 = arith.constant 1.0 : f32
+    %pc = pto.pointer_cast(%c0_i64) {config = #pto.tile_buf_config<blayout=#pto.blayout<row_major>, slayout=#pto.slayout<none_box>, s_fractal_size=512, pad=#pto.pad_value<null>, compact=#pto.compact_mode<null>>} : memref<128x64xf32, #pto.address_space<vec>>
+    %ub = pto.castptr %pc : memref<128x64xf32, #pto.address_space<vec>> -> !pto.ptr<f32, ub>
+    %mask = pto.vmi.create_mask %c64 : index -> !pto.vmi.mask<64xpred>
+    %r1 = pto.fusion_region {
+      %l = pto.vmi.vload %ub[%c0] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+      %m = pto.vmi.vmuls %l, %c1, %mask : !pto.vmi.vreg<64xf32>, f32, !pto.vmi.mask<64xpred> -> !pto.vmi.vreg<64xf32>
+      pto.vmi.vstore %m, %ub[%c0], %mask : !pto.vmi.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.vmi.mask<64xpred>
+      pto.yield(%m) : (!pto.vmi.vreg<64xf32>) -> ()
+    } : !pto.vmi.vreg<64xf32>
+    %r2 = pto.fusion_region {
+      pto.set_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
+      %l = pto.vmi.vload %ub[%c0] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+      pto.yield(%l) : (!pto.vmi.vreg<64xf32>) -> ()
+    } : !pto.vmi.vreg<64xf32>
+    %r3 = pto.fusion_region {
+      %l = pto.vmi.vload %ub[%c0] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+      %m = pto.vmi.vmuls %l, %c1, %mask : !pto.vmi.vreg<64xf32>, f32, !pto.vmi.mask<64xpred> -> !pto.vmi.vreg<64xf32>
+      pto.vmi.vstore %m, %ub[%c0], %mask : !pto.vmi.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.vmi.mask<64xpred>
+      pto.yield(%m) : (!pto.vmi.vreg<64xf32>) -> ()
+    } : !pto.vmi.vreg<64xf32>
+    return
+  }
+
+  // LOOP_STUCK: between vstore takes for1's result (cannot hoist) and writes a
+  // UB read by for2 (cannot sink) -> stuck -> two for's stay separate.
+  // LOOP-LABEL: func.func @loop_stuck
+  // LOOP: pto.fusion_region {
+  // LOOP: scf.for
+  // LOOP: pto.vmi.vstore {{.*}}, %{{.*}}[%c0], %{{.*}}
+  // LOOP: scf.for
+  func.func @loop_stuck() -> () {
+    %c0_i64 = arith.constant 0 : i64
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c128 = arith.constant 128 : index
+    %c64 = arith.constant 64 : index
+    %pc = pto.pointer_cast(%c0_i64) {config = #pto.tile_buf_config<blayout=#pto.blayout<row_major>, slayout=#pto.slayout<none_box>, s_fractal_size=512, pad=#pto.pad_value<null>, compact=#pto.compact_mode<null>>} : memref<128x64xf32, #pto.address_space<vec>>
+    %ub = pto.castptr %pc : memref<128x64xf32, #pto.address_space<vec>> -> !pto.ptr<f32, ub>
+    %mask = pto.vmi.create_mask %c64 : index -> !pto.vmi.mask<64xpred>
+    %init = pto.vmi.vload %ub[%c0] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+    pto.fusion_region {
+      %f1 = scf.for %arg4 = %c0 to %c128 step %c1 iter_args(%arg5 = %init) -> (!pto.vmi.vreg<64xf32>) {
+        %off = arith.muli %arg4, %c64 : index
+        %row = pto.vmi.vload %ub[%off] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+        %acc = pto.vmi.vmax %arg5, %row, %mask : !pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32>, !pto.vmi.mask<64xpred> -> !pto.vmi.vreg<64xf32>
+        scf.yield %acc : !pto.vmi.vreg<64xf32>
+      }
+      pto.vmi.vstore %f1, %ub[%c0], %mask : !pto.vmi.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.vmi.mask<64xpred>
+      %f2 = scf.for %arg4 = %c0 to %c128 step %c1 iter_args(%arg5 = %init) -> (!pto.vmi.vreg<64xf32>) {
+        %off = arith.muli %arg4, %c64 : index
+        %row = pto.vmi.vload %ub[%off] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+        %acc = pto.vmi.vmax %arg5, %row, %mask : !pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32>, !pto.vmi.mask<64xpred> -> !pto.vmi.vreg<64xf32>
+        scf.yield %acc : !pto.vmi.vreg<64xf32>
+      }
+      pto.yield(%f2) : (!pto.vmi.vreg<64xf32>) -> ()
+    } : !pto.vmi.vreg<64xf32>
+    return
+  }
+
+  // LOOP_FUSE: between op is a loop-invariant pointer_cast (no member-result
+  // operand, no UB write) -> hoists above the fused for -> two for's fuse into
+  // one.
+  // LOOP-LABEL: func.func @loop_fuse_hoistable
+  // LOOP: pto.fusion_region {
+  // LOOP: %[[HOIST:.*]] = pto.pointer_cast
+  // LOOP: scf.for
+  // LOOP-NOT: scf.for
+  func.func @loop_fuse_hoistable() -> () {
+    %c0_i64 = arith.constant 0 : i64
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c128 = arith.constant 128 : index
+    %c64 = arith.constant 64 : index
+    %pc = pto.pointer_cast(%c0_i64) {config = #pto.tile_buf_config<blayout=#pto.blayout<row_major>, slayout=#pto.slayout<none_box>, s_fractal_size=512, pad=#pto.pad_value<null>, compact=#pto.compact_mode<null>>} : memref<128x64xf32, #pto.address_space<vec>>
+    %ub = pto.castptr %pc : memref<128x64xf32, #pto.address_space<vec>> -> !pto.ptr<f32, ub>
+    %mask = pto.vmi.create_mask %c64 : index -> !pto.vmi.mask<64xpred>
+    %init = pto.vmi.vload %ub[%c0] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+    pto.fusion_region {
+      %f1 = scf.for %arg4 = %c0 to %c128 step %c1 iter_args(%arg5 = %init) -> (!pto.vmi.vreg<64xf32>) {
+        %off = arith.muli %arg4, %c64 : index
+        %row = pto.vmi.vload %ub[%off] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+        %acc = pto.vmi.vmax %arg5, %row, %mask : !pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32>, !pto.vmi.mask<64xpred> -> !pto.vmi.vreg<64xf32>
+        scf.yield %acc : !pto.vmi.vreg<64xf32>
+      }
+      %hoist = pto.pointer_cast(%c0_i64) {config = #pto.tile_buf_config<blayout=#pto.blayout<row_major>, slayout=#pto.slayout<none_box>, s_fractal_size=512, pad=#pto.pad_value<null>, compact=#pto.compact_mode<null>>} : memref<128x64xf32, #pto.address_space<vec>>
+      %f2 = scf.for %arg4 = %c0 to %c128 step %c1 iter_args(%arg5 = %init) -> (!pto.vmi.vreg<64xf32>) {
+        %off = arith.muli %arg4, %c64 : index
+        %row = pto.vmi.vload %ub[%off] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+        %acc = pto.vmi.vmax %arg5, %row, %mask : !pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32>, !pto.vmi.mask<64xpred> -> !pto.vmi.vreg<64xf32>
+        scf.yield %acc : !pto.vmi.vreg<64xf32>
+      }
+      pto.yield(%f2) : (!pto.vmi.vreg<64xf32>) -> ()
+    } : !pto.vmi.vreg<64xf32>
+    return
+  }
+}

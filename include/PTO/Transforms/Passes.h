@@ -136,6 +136,9 @@ std::unique_ptr<Pass> createFoldTileBufIntrinsicsPass(llvm::StringRef foldMode);
 std::unique_ptr<Pass> createPTOCanonicalizeIRPass();
 std::unique_ptr<Pass>
 createPTOInlineLibCallPass(const PTOInlineLibCallOptions &options = {});
+std::unique_ptr<Pass> createPTOPlanVmiFusionRegionPass();
+std::unique_ptr<Pass> createPTOVmiLoopFusionPass();
+std::unique_ptr<Pass> createPTOVmiLoadStoreElisionPass();
 std::unique_ptr<Pass> createPTOInlineBackendHelpersPass(
     const PTOInlineBackendHelpersOptions &options = {});
 void registerPTOViewToMemrefPass();

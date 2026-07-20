@@ -638,6 +638,68 @@ def PTOInlineLibCall : Pass<"pto-inline-libcall", "ModuleOp"> {
       "Enable verbose debug logging for OP-Lib instantiation/inlining">];
 }
 
+def PTOPlanVmiFusionRegion : Pass<"pto-plan-vmi-fusion-region", "ModuleOp"> {
+  let summary = "Merge adjacent pto.fusion_region into VMI fusion groups";
+  let description = [{
+    `pto.fusion_region` is wrapped around each expanded TileOp body by OP-Lib
+    inlining (one region per compute TileOp). This pass merges adjacent regions
+    into VMI fusion groups following the VF Fusion rules: F1 (fusible VMI ops
+    share one region), F2 (a ColReduce result is complete only after its region,
+    so the reduce loop and a consumer element-wise loop stay as separate for-row
+    but may share one region), F3 (mte/set_flag/wait_flag/barrier/vecscope/
+    unknown ops close the current group), and rule 1 (a candidate region's UB
+    set must be identical-to or disjoint-from every UB already in the group;
+    partial overlap rejects). Merging splices the candidate region's body into
+    the tail of the current group region and concatenates their `pto.yield`
+    operands (and region results). It runs in the VMI semantic pipeline before
+    `VMILowerUnifiedToLegacy` and before `PTOFlattenFusionRegion`.
+  }];
+  let constructor = "mlir::pto::createPTOPlanVmiFusionRegionPass()";
+  let dependentDialects = ["mlir::pto::PTODialect"];
+}
+
+def PTOVmiLoopFusion : Pass<"pto-vmi-loop-fusion", "ModuleOp"> {
+  let summary = "Fuse same-header scf.for loops inside each pto.fusion_region";
+  let description = [{
+    Runs after `PTOPlanVmiFusionRegion` has merged `pto.fusion_region` regions
+    into VMI fusion groups (and before `VMILowerUnifiedToLegacy`). Adjacent
+    `scf.for` ops with identical headers (same lower/upper bound, step, and
+    attributes, compared through the `pointer_cast`/`castptr` UB alias chain)
+    are merged into one fused loop: each original loop's region iter-args (reduce
+    carry) and body operations are concatenated in source order, and the fused
+    `scf.yield` concatenates the original yield operands mapped through the
+    fused loop's iter-args. The fused loop is built with a body-builder callback
+    so the yield is constructed in place. The pass operates only inside
+    `pto.fusion_region` regions; IR outside regions is untouched. It does not
+    perform mem2reg (UB roundtrip elimination) and does not build
+    `pto.vecscope`.
+  }];
+  let constructor = "mlir::pto::createPTOVmiLoopFusionPass()";
+  let dependentDialects = ["mlir::pto::PTODialect",
+                           "mlir::scf::SCFDialect",
+                           "mlir::arith::ArithDialect"];
+}
+
+def PTOVmiLoadStoreElision : Pass<"pto-vmi-load-store-elision", "func::FuncOp"> {
+  let summary = "Elide fusion-region-local VMI load/store round trips";
+  let description = [{
+    Adapted from `PTOFusionLoadStoreElision` for the unified VMI path: it tracks
+    `pto.vmi.vstore` ops inside each `pto.fusion_region` (and the `scf.for` leaf
+    bodies it contains) and forwards the stored value to matching
+    `pto.vmi.vload` ops, erasing both. The canonical tracked value is resolved
+    through the `pto.pointer_cast`/`pto.castptr` UB alias chain; a
+    `pto.vmi.vload` has no mask operand so the matching mask is inferred from
+    its consuming op while a `pto.vmi.vstore` carries its own mask. Tail-store
+    elision preserves stores whose UB escapes the region via the `pto.yield`
+    frontier. This performs the UB roundtrip elimination (US-005 mem2reg) for
+    the ptodsl-vmi path.
+  }];
+  let constructor = "mlir::pto::createPTOVmiLoadStoreElisionPass()";
+  let dependentDialects = ["mlir::pto::PTODialect",
+                           "mlir::scf::SCFDialect",
+                           "mlir::memref::MemRefDialect"];
+}
+
 def PTOInlineBackendHelpers
     : Pass<"pto-inline-backend-helpers", "ModuleOp"> {
   let summary = "Inline backend helper functions shared by VPTO and EmitC";

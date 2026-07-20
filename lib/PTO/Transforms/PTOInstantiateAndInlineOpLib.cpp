@@ -160,6 +160,23 @@ static LogicalResult inlineCall(func::CallOp call, func::FuncOp callee) {
     return call.emitOpError("callee return/result arity mismatch during inlining");
 
   OpBuilder builder(call);
+  // Wrap the inlined VMI compute-op body in one pto.fusion_region so subsequent
+  // fusion passes have a clean region granularity (one region per expanded
+  // compute TileOp). The region is erased uniformly by PTOFlattenFusionRegion
+  // right before VMIToVPTO. tload/tstore and other tilelang-backed DMA
+  // templates are NOT wrapped: they are memory-traffic boundaries (F3) that
+  // never fuse, so a region around them would be a meaningless load on the
+  // planner and the flatten pass. fa's compute TileOps are DPS (in-place UB),
+  // so nothing escapes the region and the yield is empty; a later pass may
+  // promote values to region results if needed.
+  const bool wrapInFusionRegion = isTileOpProviderFunc(callee);
+  pto::FusionRegionOp fusionRegion;
+  if (wrapInFusionRegion) {
+    fusionRegion = builder.create<pto::FusionRegionOp>(call.getLoc(),
+                                                       TypeRange());
+    builder.createBlock(&fusionRegion.getBody());
+  }
+
   IRMapping mapping;
   for (auto [arg, operand] :
        llvm::zip(entry.getArguments(), call.getOperands()))
@@ -178,6 +195,9 @@ static LogicalResult inlineCall(func::CallOp call, func::FuncOp callee) {
          llvm::zip(op.getResults(), newOp->getResults()))
       mapping.map(oldRes, newRes);
   }
+
+  if (wrapInFusionRegion)
+    builder.create<pto::YieldOp>(call.getLoc(), ValueRange());
 
   for (auto [callResult, returnOperand] :
        llvm::zip(call.getResults(), returnOp.getOperands())) {
