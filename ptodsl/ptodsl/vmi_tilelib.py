@@ -14,22 +14,28 @@ from collections.abc import Callable, Sequence
 from ._surface_types import Tile
 from ._tile_template_tracing import (
     CanonicalBlockMap,
+    Scalar,
+    ScalarType,
     _MaskValue,
     _TileProxy,
     _Value,
     _VectorValue,
-    f16,
     bf16,
+    f16,
     f32,
     for_,
     index_add,
     index_mul,
+    i16,
+    i32,
+    i8,
     tile_template as _trace_tile_template,
     vmi_create_mask,
     vmi_create_mask_lanes,
     vmi_prepare_tile_access,
     vmi_vadd,
     vmi_vadds,
+    vmi_vabs,
     vmi_vbroadcast,
     vmi_vbroadcast_scalar,
     vmi_scalar_constant,
@@ -40,9 +46,11 @@ from ._tile_template_tracing import (
     vmi_vload_linear,
     vmi_vmax,
     vmi_vmaxs,
+    vmi_vmin,
     vmi_vmins,
     vmi_vmuls,
     vmi_vmul,
+    vmi_vneg,
     vmi_vreduce_add,
     vmi_vreduce_max,
     vmi_vsub,
@@ -53,6 +61,12 @@ from .tilelib.registry import TileTemplateRegistry
 
 
 ElementwiseCompute = Callable[[Sequence[_VectorValue], _MaskValue], _VectorValue]
+
+
+NUMERIC_DTYPES = (f32, f16, bf16, i32, i16, i8)
+FLOAT_DTYPES = (f32, f16)
+SUB_DTYPES = (f32, f16, i32, i16, i8)
+MUL_DTYPES = (f32, f16, i32, i16)
 
 
 VMI_TILELIB_REGISTRY = TileTemplateRegistry()
@@ -78,6 +92,7 @@ def canonical_vmi_template(
     target: str = "a5",
     op: str,
     name: str | None = None,
+    semantic_form: str = "default",
     context_constraints: dict[str, tuple[object, ...]] | None = None,
 ):
     """Register one canonical VMI implementation in this provider module."""
@@ -89,6 +104,7 @@ def canonical_vmi_template(
             op=normalized_op,
             name=name,
             ir_level="vmi",
+            semantic_form=semantic_form,
             context_constraints=context_constraints,
         )(fn)
         VMI_TILELIB_REGISTRY.register(descriptor)
@@ -103,6 +119,7 @@ def emit_elementwise_vmi(
     compute: ElementwiseCompute,
     *,
     logical_lanes: int | None = None,
+    allowed_dtypes: Sequence[ScalarType] = NUMERIC_DTYPES,
 ) -> None:
     """Emit one flat logical-block loop for a standalone elementwise candidate."""
 
@@ -110,7 +127,12 @@ def emit_elementwise_vmi(
         raise ValueError("emit_elementwise_vmi requires at least one source tile")
     if logical_lanes is None:
         logical_lanes = dst.element_type.lanes
-    _validate_elementwise_tiles(dst, sources, logical_lanes=logical_lanes)
+    _validate_elementwise_tiles(
+        dst,
+        sources,
+        logical_lanes=logical_lanes,
+        allowed_dtypes=allowed_dtypes,
+    )
     block_map = CanonicalBlockMap.from_tile(dst, logical_lanes=logical_lanes)
 
     vmi_prepare_tile_access(*sources, dst)
@@ -127,12 +149,21 @@ def _validate_elementwise_tiles(
     sources: Sequence[_TileProxy],
     *,
     logical_lanes: int,
+    allowed_dtypes: Sequence[ScalarType],
 ) -> None:
     if not isinstance(dst, _TileProxy):
         raise TypeError("elementwise VMI candidate destination must be a traced Tile")
-    if dst.element_type != f32 or logical_lanes != f32.lanes:
+    if dst.element_type not in allowed_dtypes:
         raise ValueError(
-            "VMI elementwise candidates require exactly one 64-lane f32 VL per row"
+            "VMI elementwise candidate does not support dtype "
+            f"{dst.element_type}; supported dtypes are "
+            f"{', '.join(dtype.name for dtype in allowed_dtypes)}"
+        )
+    if logical_lanes != dst.element_type.lanes:
+        raise ValueError(
+            "VMI elementwise candidates require one dtype-native VL per row; "
+            f"got logical_lanes={logical_lanes}, dtype={dst.element_type} "
+            f"with VL={dst.element_type.lanes}"
         )
     if dst._spec.b_layout != "row_major":
         raise ValueError("VMI elementwise candidates require row-major tiles")
@@ -183,10 +214,28 @@ def _max(values: Sequence[_VectorValue], mask: _MaskValue) -> _VectorValue:
     return vmi_vmax(values[0], values[1], mask)
 
 
+def _min(values: Sequence[_VectorValue], mask: _MaskValue) -> _VectorValue:
+    if len(values) != 2:
+        raise ValueError("tmin VMI candidate expects two source vectors")
+    return vmi_vmin(values[0], values[1], mask)
+
+
 def _move(values: Sequence[_VectorValue], mask: _MaskValue) -> _VectorValue:
     if len(values) != 1:
         raise ValueError("tmov VMI candidate expects one source vector")
     return values[0]
+
+
+def _abs(values: Sequence[_VectorValue], mask: _MaskValue) -> _VectorValue:
+    if len(values) != 1:
+        raise ValueError("tabs VMI candidate expects one source vector")
+    return vmi_vabs(values[0], mask)
+
+
+def _neg(values: Sequence[_VectorValue], mask: _MaskValue) -> _VectorValue:
+    if len(values) != 1:
+        raise ValueError("tneg VMI candidate expects one source vector")
+    return vmi_vneg(values[0], mask)
 
 
 def _divide_by_scalar(
@@ -194,6 +243,38 @@ def _divide_by_scalar(
 ) -> _VectorValue:
     scalar_vector = vmi_vbroadcast_scalar(scalar, like=value)
     return vmi_vdiv(value, scalar_vector, mask)
+
+
+def _divide_scalar_by_vector(
+    scalar: _Value, value: _VectorValue, mask: _MaskValue
+) -> _VectorValue:
+    scalar_vector = vmi_vbroadcast_scalar(scalar, like=value)
+    return vmi_vdiv(scalar_vector, value, mask)
+
+
+def _subtract_scalar(
+    value: _VectorValue, scalar: _Value, mask: _MaskValue
+) -> _VectorValue:
+    scalar_vector = vmi_vbroadcast_scalar(scalar, like=value)
+    return vmi_vsub(value, scalar_vector, mask)
+
+
+def emit_scalar_fill_vmi(scalar: _Value, dst: _TileProxy) -> None:
+    _validate_elementwise_tiles(
+        dst,
+        (),
+        logical_lanes=dst.element_type.lanes,
+        allowed_dtypes=NUMERIC_DTYPES,
+    )
+    block_map = CanonicalBlockMap.from_tile(
+        dst, logical_lanes=dst.element_type.lanes
+    )
+    vmi_prepare_tile_access(dst)
+    mask = vmi_create_mask(block_map, dst.element_type)
+    value = vmi_vbroadcast_scalar(scalar, dtype=dst.element_type)
+    with for_(0, block_map.logical_block_count, step=1) as logical_block:
+        coordinate = block_map.coordinate(logical_block)
+        vmi_vstore(value, dst, coordinate, mask)
 
 
 def _validate_row_reduce_tiles(
@@ -491,22 +572,24 @@ def vmi_tadd_block64(src0: Tile, src1: Tile, dst: Tile):
     context_constraints={"precisionType": ("default",)},
 )
 def vmi_texp_block64(src: Tile, dst: Tile):
-    emit_elementwise_vmi(dst, (src,), _exp)
+    emit_elementwise_vmi(dst, (src,), _exp, allowed_dtypes=FLOAT_DTYPES)
 
 
 @canonical_vmi_template(target="a5", op="tsub", name="vmi_tsub")
 def vmi_tsub(src0: Tile, src1: Tile, dst: Tile):
-    emit_elementwise_vmi(dst, (src0, src1), _sub)
+    emit_elementwise_vmi(dst, (src0, src1), _sub, allowed_dtypes=SUB_DTYPES)
 
 
 @canonical_vmi_template(target="a5", op="tmul", name="vmi_tmul")
 def vmi_tmul(src0: Tile, src1: Tile, dst: Tile):
-    emit_elementwise_vmi(dst, (src0, src1), _mul)
+    emit_elementwise_vmi(dst, (src0, src1), _mul, allowed_dtypes=MUL_DTYPES)
 
 
 @canonical_vmi_template(target="a5", op="tmax", name="vmi_tmax")
 def vmi_tmax(src0: Tile, src1: Tile, dst: Tile):
-    emit_elementwise_vmi(dst, (src0, src1), _max)
+    emit_elementwise_vmi(
+        dst, (src0, src1), _max, allowed_dtypes=FLOAT_DTYPES
+    )
 
 
 @canonical_vmi_template(target="a5", op="tmov", name="vmi_tmov")
@@ -515,7 +598,7 @@ def vmi_tmov(src: Tile, dst: Tile):
 
 
 @canonical_vmi_template(target="a5", op="tmuls", name="vmi_tmuls")
-def vmi_tmuls(src: Tile, scale: f32, dst: Tile):
+def vmi_tmuls(src: Tile, scale: Scalar, dst: Tile):
     emit_elementwise_vmi(
         dst,
         (src,),
@@ -524,7 +607,7 @@ def vmi_tmuls(src: Tile, scale: f32, dst: Tile):
 
 
 @canonical_vmi_template(target="a5", op="tadds", name="vmi_tadds")
-def vmi_tadds(src: Tile, scalar: f32, dst: Tile):
+def vmi_tadds(src: Tile, scalar: Scalar, dst: Tile):
     emit_elementwise_vmi(
         dst,
         (src,),
@@ -533,20 +616,22 @@ def vmi_tadds(src: Tile, scalar: f32, dst: Tile):
 
 
 @canonical_vmi_template(target="a5", op="tmaxs", name="vmi_tmaxs")
-def vmi_tmaxs(src: Tile, scalar: f32, dst: Tile):
+def vmi_tmaxs(src: Tile, scalar: Scalar, dst: Tile):
     emit_elementwise_vmi(
         dst,
         (src,),
         lambda values, mask: vmi_vmaxs(values[0], scalar, mask),
+        allowed_dtypes=FLOAT_DTYPES,
     )
 
 
 @canonical_vmi_template(target="a5", op="tmins", name="vmi_tmins")
-def vmi_tmins(src: Tile, scalar: f32, dst: Tile):
+def vmi_tmins(src: Tile, scalar: Scalar, dst: Tile):
     emit_elementwise_vmi(
         dst,
         (src,),
         lambda values, mask: vmi_vmins(values[0], scalar, mask),
+        allowed_dtypes=FLOAT_DTYPES,
     )
 
 
@@ -554,14 +639,86 @@ def vmi_tmins(src: Tile, scalar: f32, dst: Tile):
     target="a5",
     op="tdivs",
     name="vmi_tdivs",
+    semantic_form="tile_scalar",
     context_constraints={"precisionType": ("default",)},
 )
-def vmi_tdivs(src: Tile, scalar: f32, dst: Tile):
+def vmi_tdivs(src: Tile, scalar: Scalar, dst: Tile):
     emit_elementwise_vmi(
         dst,
         (src,),
         lambda values, mask: _divide_by_scalar(values[0], scalar, mask),
+        allowed_dtypes=FLOAT_DTYPES,
     )
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="tdivs",
+    name="vmi_tdivs_scalar_tile",
+    semantic_form="scalar_tile",
+    context_constraints={"precisionType": ("default",)},
+)
+def vmi_tdivs_scalar_tile(scalar: Scalar, src: Tile, dst: Tile):
+    emit_elementwise_vmi(
+        dst,
+        (src,),
+        lambda values, mask: _divide_scalar_by_vector(scalar, values[0], mask),
+        allowed_dtypes=FLOAT_DTYPES,
+    )
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="tdiv",
+    name="vmi_tdiv",
+    context_constraints={"precisionType": ("default",)},
+)
+def vmi_tdiv(src0: Tile, src1: Tile, dst: Tile):
+    emit_elementwise_vmi(
+        dst, (src0, src1),
+        lambda values, mask: vmi_vdiv(values[0], values[1], mask),
+        allowed_dtypes=FLOAT_DTYPES,
+    )
+
+
+@canonical_vmi_template(target="a5", op="tmin", name="vmi_tmin")
+def vmi_tmin(src0: Tile, src1: Tile, dst: Tile):
+    emit_elementwise_vmi(
+        dst, (src0, src1), _min, allowed_dtypes=FLOAT_DTYPES
+    )
+
+
+@canonical_vmi_template(target="a5", op="tsubs", name="vmi_tsubs")
+def vmi_tsubs(src: Tile, scalar: Scalar, dst: Tile):
+    emit_elementwise_vmi(
+        dst,
+        (src,),
+        lambda values, mask: _subtract_scalar(values[0], scalar, mask),
+    )
+
+
+@canonical_vmi_template(target="a5", op="tabs", name="vmi_tabs")
+def vmi_tabs(src: Tile, dst: Tile):
+    emit_elementwise_vmi(
+        dst, (src,), _abs, allowed_dtypes=FLOAT_DTYPES
+    )
+
+
+@canonical_vmi_template(target="a5", op="tneg", name="vmi_tneg")
+def vmi_tneg(src: Tile, dst: Tile):
+    emit_elementwise_vmi(
+        dst, (src,), _neg, allowed_dtypes=FLOAT_DTYPES
+    )
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="texpands",
+    name="vmi_texpands",
+    semantic_form="scalar_fill",
+)
+def vmi_texpands(scalar: Scalar, dst: Tile):
+    emit_scalar_fill_vmi(scalar, dst)
 
 
 @canonical_vmi_template(target="a5", op="trowmax", name="vmi_trowmax")
@@ -635,6 +792,7 @@ __all__ = [
     "VMI_TILELIB_REGISTRY",
     "canonical_vmi_template",
     "emit_elementwise_vmi",
+    "emit_scalar_fill_vmi",
     "vmi_tadd_block64",
     "vmi_texp_block64",
     "vmi_tsub",
@@ -646,6 +804,13 @@ __all__ = [
     "vmi_tmaxs",
     "vmi_tmins",
     "vmi_tdivs",
+    "vmi_tdivs_scalar_tile",
+    "vmi_tdiv",
+    "vmi_tmin",
+    "vmi_tsubs",
+    "vmi_tabs",
+    "vmi_tneg",
+    "vmi_texpands",
     "vmi_trowmax",
     "vmi_trowsum",
     "vmi_trowexpandsub",

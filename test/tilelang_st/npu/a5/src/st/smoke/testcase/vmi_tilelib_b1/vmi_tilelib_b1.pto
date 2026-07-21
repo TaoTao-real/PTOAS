@@ -1,0 +1,81 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+  func.func @VMI_TILELIB_B1_f32_4x64(
+      %a_ptr: !pto.ptr<f32>,
+      %b_ptr: !pto.ptr<f32>,
+      %out_ptr: !pto.ptr<f32>) attributes {pto.kernel} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %c64 = arith.constant 64 : index
+    %c256 = arith.constant 256 : index
+    %half = arith.constant 5.000000e-01 : f32
+    %three = arith.constant 3.000000e+00 : f32
+
+    %a_view = pto.make_tensor_view %a_ptr,
+      shape = [%c1, %c1, %c1, %c4, %c64],
+      strides = [%c256, %c256, %c256, %c64, %c1]
+      : !pto.tensor_view<1x1x1x4x64xf32>
+    %b_view = pto.make_tensor_view %b_ptr,
+      shape = [%c1, %c1, %c1, %c4, %c64],
+      strides = [%c256, %c256, %c256, %c64, %c1]
+      : !pto.tensor_view<1x1x1x4x64xf32>
+    %out_view = pto.make_tensor_view %out_ptr,
+      shape = [%c1, %c1, %c1, %c4, %c64],
+      strides = [%c256, %c256, %c256, %c64, %c1]
+      : !pto.tensor_view<1x1x1x4x64xf32>
+
+    %a_part = pto.partition_view %a_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c4, %c64]
+      : !pto.tensor_view<1x1x1x4x64xf32>
+        -> !pto.partition_tensor_view<1x1x1x4x64xf32>
+    %b_part = pto.partition_view %b_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c4, %c64]
+      : !pto.tensor_view<1x1x1x4x64xf32>
+        -> !pto.partition_tensor_view<1x1x1x4x64xf32>
+    %out_part = pto.partition_view %out_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c4, %c64]
+      : !pto.tensor_view<1x1x1x4x64xf32>
+        -> !pto.partition_tensor_view<1x1x1x4x64xf32>
+
+    %a = pto.alloc_tile : !pto.tile_buf<vec, 4x64xf32>
+    %b = pto.alloc_tile : !pto.tile_buf<vec, 4x64xf32>
+    %x = pto.alloc_tile : !pto.tile_buf<vec, 4x64xf32>
+    %y = pto.alloc_tile : !pto.tile_buf<vec, 4x64xf32>
+    %fill = pto.alloc_tile : !pto.tile_buf<vec, 4x64xf32>
+
+    pto.tload ins(%a_part : !pto.partition_tensor_view<1x1x1x4x64xf32>)
+      outs(%a : !pto.tile_buf<vec, 4x64xf32>)
+    pto.tload ins(%b_part : !pto.partition_tensor_view<1x1x1x4x64xf32>)
+      outs(%b : !pto.tile_buf<vec, 4x64xf32>)
+    pto.tdiv ins(%a, %b : !pto.tile_buf<vec, 4x64xf32>, !pto.tile_buf<vec, 4x64xf32>)
+      outs(%x : !pto.tile_buf<vec, 4x64xf32>)
+    pto.tmin ins(%x, %a : !pto.tile_buf<vec, 4x64xf32>, !pto.tile_buf<vec, 4x64xf32>)
+      outs(%y : !pto.tile_buf<vec, 4x64xf32>)
+    pto.tsubs ins(%y, %half : !pto.tile_buf<vec, 4x64xf32>, f32)
+      outs(%x : !pto.tile_buf<vec, 4x64xf32>)
+    pto.tabs ins(%x : !pto.tile_buf<vec, 4x64xf32>)
+      outs(%y : !pto.tile_buf<vec, 4x64xf32>)
+    pto.tneg ins(%y : !pto.tile_buf<vec, 4x64xf32>)
+      outs(%x : !pto.tile_buf<vec, 4x64xf32>)
+    pto.texpands ins(%three : f32)
+      outs(%fill : !pto.tile_buf<vec, 4x64xf32>)
+    pto.tdivs ins(%three, %x : f32, !pto.tile_buf<vec, 4x64xf32>)
+      outs(%y : !pto.tile_buf<vec, 4x64xf32>)
+    pto.tadd ins(%y, %fill : !pto.tile_buf<vec, 4x64xf32>, !pto.tile_buf<vec, 4x64xf32>)
+      outs(%x : !pto.tile_buf<vec, 4x64xf32>)
+    pto.tstore ins(%x : !pto.tile_buf<vec, 4x64xf32>)
+      outs(%out_part : !pto.partition_tensor_view<1x1x1x4x64xf32>)
+    return
+  }
+}

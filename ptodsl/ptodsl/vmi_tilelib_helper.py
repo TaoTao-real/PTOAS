@@ -151,6 +151,46 @@ def _find_candidates(module, *, target: str, op_name: str) -> list:
     return registry.lookup(op_name, target)
 
 
+def _annotation_kind(annotation) -> str | None:
+    token = annotation if isinstance(annotation, str) else getattr(annotation, "__name__", None)
+    if not isinstance(token, str):
+        return None
+    token = token.rsplit(".", 1)[-1]
+    if token == "Tile":
+        return "tile"
+    if token == "Scalar" or token in _DTYPE_MAP:
+        return "scalar"
+    return None
+
+
+def _specialize_candidate(candidate, operand_specs, context_attrs):
+    signature = inspect.signature(candidate.py_fn)
+    parameters = tuple(signature.parameters.items())
+    if len(parameters) != len(operand_specs):
+        raise ValueError(
+            f"candidate {candidate.name!r} expects {len(parameters)} operands, "
+            f"got {len(operand_specs)}"
+        )
+
+    parameter_specs = {}
+    for index, ((name, parameter), raw_spec) in enumerate(
+        zip(parameters, operand_specs)
+    ):
+        raw_kind = raw_spec.get("kind") if isinstance(raw_spec, dict) else None
+        expected_kind = _annotation_kind(parameter.annotation)
+        if expected_kind is not None and raw_kind != expected_kind:
+            raise TypeError(
+                f"candidate {candidate.name!r} parameter {name!r} expects "
+                f"{expected_kind}, got {raw_kind!r}"
+            )
+        parameter_specs[name] = _parse_parameter_spec(raw_spec, index)
+
+    return candidate.specialize(
+        context_attrs=context_attrs or {},
+        **parameter_specs,
+    )
+
+
 def instantiate_candidate(
     *,
     target: str,
@@ -167,29 +207,55 @@ def instantiate_candidate(
             f"no PTODSL VMI candidate for target={target!r}, op={normalized_op!r} "
             f"in module {provider_module!r}"
         )
-    if len(candidates) != 1:
-        names = ", ".join(candidate.name for candidate in candidates)
+    if len(candidates) == 1:
+        return _specialize_candidate(candidates[0], operand_specs, context_attrs)
+
+    forms: dict[str, list[str]] = {}
+    for candidate in candidates:
+        forms.setdefault(candidate.semantic_form, []).append(candidate.name)
+    duplicate_forms = {
+        form: names for form, names in forms.items() if len(names) > 1
+    }
+    if duplicate_forms:
+        details = "; ".join(
+            f"{form}: {', '.join(names)}"
+            for form, names in sorted(duplicate_forms.items())
+        )
         raise LookupError(
-            "RFC-mode PTODSL VMI provider requires exactly one canonical "
-            f"candidate per (target, op); target={target!r}, op={normalized_op!r}, "
-            f"found {len(candidates)} in module {provider_module!r}: {names}"
+            "PTODSL VMI provider requires one canonical candidate per "
+            f"(target, op, semantic_form); duplicate forms for "
+            f"target={target!r}, op={normalized_op!r}: {details}"
         )
 
-    candidate = candidates[0]
-    parameters = tuple(inspect.signature(candidate.py_fn).parameters)
-    if len(parameters) != len(operand_specs):
-        raise ValueError(
-            f"candidate {candidate.name!r} expects {len(parameters)} operands, "
-            f"got {len(operand_specs)}"
+    legal = []
+    failures = []
+    for candidate in candidates:
+        try:
+            artifact = _specialize_candidate(
+                candidate, operand_specs, context_attrs
+            )
+            artifact.mlir_text()
+            legal.append((candidate, artifact))
+        except Exception as exc:
+            failures.append(
+                f"{candidate.semantic_form}/{candidate.name}: {exc}"
+            )
+
+    if not legal:
+        raise LookupError(
+            f"no legal PTODSL VMI semantic form for target={target!r}, "
+            f"op={normalized_op!r}; " + "; ".join(failures)
         )
-    parameter_specs = {
-        name: _parse_parameter_spec(raw_spec, index)
-        for index, (name, raw_spec) in enumerate(zip(parameters, operand_specs))
-    }
-    return candidate.specialize(
-        context_attrs=context_attrs or {},
-        **parameter_specs,
-    )
+    if len(legal) != 1:
+        names = ", ".join(
+            f"{candidate.semantic_form}/{candidate.name}"
+            for candidate, _ in legal
+        )
+        raise LookupError(
+            f"ambiguous PTODSL VMI semantic forms for target={target!r}, "
+            f"op={normalized_op!r}: {names}"
+        )
+    return legal[0][1]
 
 
 def main(argv: list[str] | None = None) -> int:

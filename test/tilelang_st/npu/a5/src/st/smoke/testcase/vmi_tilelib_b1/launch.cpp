@@ -6,19 +6,14 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// RUN: not ptoas --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl-vmi --emit-vpto %s -o /dev/null 2>&1 | FileCheck %s
+#ifndef AICORE
+#define AICORE [aicore]
+#endif
 
-module {
-  func.func @ptodsl_vmi_no_vector_fallback() {
-    %lhs = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
-    %rhs = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
-    %dst = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
-    pto.tsqrt
-      ins(%lhs : !pto.tile_buf<vec, 1x64xf32>)
-      outs(%dst : !pto.tile_buf<vec, 1x64xf32>)
-    return
-  }
+extern "C" __global__ AICORE void VMI_TILELIB_B1_f32_4x64(
+    __gm__ float *a, __gm__ float *b, __gm__ float *out);
+
+void LaunchVMITileLibB1(float *a, float *b, float *out, void *stream) {
+  VMI_TILELIB_B1_f32_4x64<<<1, nullptr, stream>>>(
+      (__gm__ float *)a, (__gm__ float *)b, (__gm__ float *)out);
 }
-
-// CHECK: no PTODSL VMI candidate for target='a5', op='tsqrt'
-// CHECK: ExpandTileOp: failed to instantiate canonical VMI implementation for tsqrt

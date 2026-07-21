@@ -141,10 +141,10 @@ def check_candidate_ir() -> tuple[str, str]:
     expect(texp_text.count("pto.vmi.vexp") == 1, "texp should issue one VMI exp")
     expect(texp_text.count("pto.vmi.vstore") == 1, "texp should issue one VMI store")
 
-    expect_raises(
-        lambda: specialize_tadd(dtype=f16).mlir_text(),
-        ValueError,
-        "require exactly one 64-lane f32 VL per row",
+    f16_tadd = specialize_tadd(dtype=f16, shape=(32, 128)).mlir_text()
+    expect(
+        "!pto.vmi.vreg<128xf16>" in f16_tadd,
+        "f16 tadd should use its native 128-lane VL",
     )
     expect_raises(
         lambda: specialize_texp(shape=(32, 128)).mlir_text(),
@@ -154,7 +154,8 @@ def check_candidate_ir() -> tuple[str, str]:
     return tadd_text, texp_text
 
 
-def check_provider_helper() -> None:
+def check_provider_helper() -> dict[str, str]:
+    b1_artifacts = {}
     registered_tadd = VMI_TILELIB_REGISTRY.lookup("tadd", "a5")
     expect(
         len(registered_tadd) == 1,
@@ -286,9 +287,154 @@ def check_provider_helper() -> None:
             provider_module="ptodsl.vmi_tilelib",
             context_attrs={"precisionType": "high_precision"},
         ),
-        ValueError,
-        "does not support context attrs",
+        LookupError,
+        "no legal PTODSL VMI semantic form",
+        "precisionType",
     )
+
+    scalar_lhs_tdivs = instantiate_candidate(
+        target="a5",
+        op_name="pto.tdivs",
+        operand_specs=[scalar_spec, raw_tile_spec, raw_tile_spec],
+        provider_module="ptodsl.vmi_tilelib",
+        context_attrs={"precisionType": "default"},
+    ).mlir_text()
+    expect(
+        "pto.vmi.vdiv" in scalar_lhs_tdivs,
+        "scalar/tile tdivs should select its scalar_tile semantic form",
+    )
+    b1_artifacts["vmi_tdivs_scalar_tile"] = scalar_lhs_tdivs
+
+    base_op_expectations = {
+        "tdiv": "pto.vmi.vdiv",
+        "tmin": "pto.vmi.vmin",
+        "tabs": "pto.vmi.vabs",
+        "tneg": "pto.vmi.vneg",
+    }
+    for op_name, expected_op in base_op_expectations.items():
+        text = instantiate_candidate(
+            target="a5",
+            op_name=f"pto.{op_name}",
+            operand_specs=(
+                [raw_tile_spec, raw_tile_spec, raw_tile_spec]
+                if op_name in {"tdiv", "tmin"}
+                else [raw_tile_spec, raw_tile_spec]
+            ),
+            provider_module="ptodsl.vmi_tilelib",
+            context_attrs={"precisionType": "default"} if op_name == "tdiv" else {},
+        ).mlir_text()
+        expect(expected_op in text, f"{op_name} should lower to {expected_op}")
+        b1_artifacts[f"vmi_{op_name}"] = text
+
+    tsubs = instantiate_candidate(
+        target="a5",
+        op_name="pto.tsubs",
+        operand_specs=[raw_tile_spec, scalar_spec, raw_tile_spec],
+        provider_module="ptodsl.vmi_tilelib",
+        context_attrs={},
+    ).mlir_text()
+    expect("pto.vmi.vbrc" in tsubs, "tsubs should broadcast its scalar operand")
+    expect("pto.vmi.vsub" in tsubs, "tsubs should lower to VMI subtract")
+    b1_artifacts["vmi_tsubs"] = tsubs
+
+    texpands = instantiate_candidate(
+        target="a5",
+        op_name="pto.texpands",
+        operand_specs=[scalar_spec, raw_tile_spec],
+        provider_module="ptodsl.vmi_tilelib",
+        context_attrs={},
+    ).mlir_text()
+    expect("pto.vmi.vbrc" in texpands, "texpands should broadcast its scalar")
+    expect("pto.vmi.vstore" in texpands, "texpands should store one logical vector")
+    b1_artifacts["vmi_texpands"] = texpands
+
+    f16_tile_spec = {
+        **raw_tile_spec,
+        "dtype": "f16",
+        "shape": [32, 128],
+        "valid_shape": [32, 128],
+    }
+    f16_tadd = instantiate_candidate(
+        target="a5",
+        op_name="pto.tadd",
+        operand_specs=[f16_tile_spec, f16_tile_spec, f16_tile_spec],
+        provider_module="ptodsl.vmi_tilelib",
+        context_attrs={},
+    ).mlir_text()
+    expect(
+        "!pto.vmi.vreg<128xf16>" in f16_tadd,
+        "provider should select the f16 native-VL form",
+    )
+    b1_artifacts["vmi_tadd_f16"] = f16_tadd
+
+    dtype_lanes = {
+        "f32": 64,
+        "f16": 128,
+        "bf16": 128,
+        "i32": 64,
+        "i16": 128,
+        "i8": 256,
+    }
+    generic_forms = {
+        "tadd": ("binary", set(dtype_lanes)),
+        "tsub": ("binary", {"f32", "f16", "i32", "i16", "i8"}),
+        "tmul": ("binary", {"f32", "f16", "i32", "i16"}),
+        "tmov": ("unary", set(dtype_lanes)),
+        "tadds": ("scalar", set(dtype_lanes)),
+        "tmuls": ("scalar", set(dtype_lanes)),
+        "tsubs": ("scalar", set(dtype_lanes)),
+        "texpands": ("fill", set(dtype_lanes)),
+    }
+    for dtype, lanes in dtype_lanes.items():
+        tile_spec = {
+            **raw_tile_spec,
+            "dtype": dtype,
+            "shape": [2, lanes],
+            "valid_shape": [2, lanes],
+        }
+        typed_scalar_spec = {"kind": "scalar", "dtype": dtype}
+        for op_name, (form, supported_dtypes) in generic_forms.items():
+            if dtype not in supported_dtypes:
+                continue
+            form_specs = {
+                "binary": [tile_spec, tile_spec, tile_spec],
+                "unary": [tile_spec, tile_spec],
+                "scalar": [tile_spec, typed_scalar_spec, tile_spec],
+                "fill": [typed_scalar_spec, tile_spec],
+            }[form]
+            text = instantiate_candidate(
+                target="a5",
+                op_name=f"pto.{op_name}",
+                operand_specs=form_specs,
+                provider_module="ptodsl.vmi_tilelib",
+                context_attrs={},
+            ).mlir_text()
+            expect(
+                f"!pto.vmi.vreg<{lanes}x{dtype}>" in text,
+                f"{op_name}/{dtype} should use its dtype-native VL",
+            )
+            if op_name == "tadd" and dtype not in {"f32", "f16"}:
+                b1_artifacts[f"vmi_tadd_{dtype}"] = text
+
+    for op_name, dtype in (("tsub", "bf16"), ("tmul", "bf16"), ("tmul", "i8")):
+        lanes = dtype_lanes[dtype]
+        tile_spec = {
+            **raw_tile_spec,
+            "dtype": dtype,
+            "shape": [2, lanes],
+            "valid_shape": [2, lanes],
+        }
+        expect_raises(
+            lambda op_name=op_name, tile_spec=tile_spec: instantiate_candidate(
+                target="a5",
+                op_name=f"pto.{op_name}",
+                operand_specs=[tile_spec, tile_spec, tile_spec],
+                provider_module="ptodsl.vmi_tilelib",
+                context_attrs={},
+            ).mlir_text(),
+            ValueError,
+            f"does not support dtype {dtype}",
+        )
 
     reduced_tile_spec = {
         **raw_tile_spec,
@@ -329,17 +475,6 @@ def check_provider_helper() -> None:
     expect_raises(
         lambda: instantiate_candidate(
             target="a5",
-            op_name="pto.tdiv",
-            operand_specs=[raw_tile_spec, raw_tile_spec, raw_tile_spec],
-            provider_module="ptodsl.vmi_tilelib",
-            context_attrs={},
-        ),
-        LookupError,
-        "no PTODSL VMI candidate",
-    )
-    expect_raises(
-        lambda: instantiate_candidate(
-            target="a5",
             op_name="pto.texp",
             operand_specs=[raw_tile_spec, raw_tile_spec],
             provider_module="ptodsl.vmi_tilelib",
@@ -373,11 +508,55 @@ def check_provider_helper() -> None:
                 context_attrs={},
             ),
             LookupError,
-            "requires exactly one canonical candidate",
-            "found 2",
+            "requires one canonical candidate per (target, op, semantic_form)",
+            "default",
         )
     finally:
         del sys.modules[duplicate_module.__name__]
+
+    ambiguous_module = ModuleType("ptodsl_test_ambiguous_vmi_forms")
+    ambiguous_module.VMI_TILELIB_REGISTRY = TileTemplateRegistry()
+
+    @tile_template(
+        target="a5",
+        op="tadd",
+        name="ambiguous_tadd_a",
+        ir_level="vmi",
+        semantic_form="form_a",
+    )
+    def ambiguous_tadd_a(src0: Tile, src1: Tile, dst: Tile):
+        pass
+
+    @tile_template(
+        target="a5",
+        op="tadd",
+        name="ambiguous_tadd_b",
+        ir_level="vmi",
+        semantic_form="form_b",
+    )
+    def ambiguous_tadd_b(src0: Tile, src1: Tile, dst: Tile):
+        pass
+
+    ambiguous_module.VMI_TILELIB_REGISTRY.register(ambiguous_tadd_a)
+    ambiguous_module.VMI_TILELIB_REGISTRY.register(ambiguous_tadd_b)
+    sys.modules[ambiguous_module.__name__] = ambiguous_module
+    try:
+        expect_raises(
+            lambda: instantiate_candidate(
+                target="a5",
+                op_name="pto.tadd",
+                operand_specs=[raw_tile_spec, raw_tile_spec, raw_tile_spec],
+                provider_module=ambiguous_module.__name__,
+                context_attrs={},
+            ),
+            LookupError,
+            "ambiguous PTODSL VMI semantic forms",
+            "form_a/ambiguous_tadd_a",
+            "form_b/ambiguous_tadd_b",
+        )
+    finally:
+        del sys.modules[ambiguous_module.__name__]
+    return b1_artifacts
 
 
 def check_col_reduce_candidate() -> tuple[str, str, str]:
@@ -656,7 +835,7 @@ def check_vmi_to_vpto_lowering(name: str, mlir_text: str, expected_op: str) -> N
 def main() -> None:
     check_canonical_block_map()
     check_legacy_vpto_compatibility()
-    check_provider_helper()
+    b1_artifacts = check_provider_helper()
     tadd_text, texp_text = check_candidate_ir()
     check_vmi_to_vpto_lowering("vmi_tadd_block64", tadd_text, "pto.vadd")
     check_vmi_to_vpto_lowering("vmi_texp_block64", texp_text, "pto.vexp")
@@ -664,6 +843,22 @@ def main() -> None:
     check_col_expand_candidate()
     check_tcvt_bf16_candidate()
     check_col_reduce_vmi_to_vpto_lowering()
+    expected_b1_ops = {
+        "vmi_tdivs_scalar_tile": "pto.vdiv",
+        "vmi_tdiv": "pto.vdiv",
+        "vmi_tmin": "pto.vmin",
+        "vmi_tabs": "pto.vabs",
+        "vmi_tneg": "pto.vneg",
+        "vmi_tsubs": "pto.vsub",
+        "vmi_texpands": "pto.vdup",
+        "vmi_tadd_f16": "pto.vadd",
+        "vmi_tadd_bf16": "pto.vadd",
+        "vmi_tadd_i32": "pto.vadd",
+        "vmi_tadd_i16": "pto.vadd",
+        "vmi_tadd_i8": "pto.vadd",
+    }
+    for name, expected_op in expected_b1_ops.items():
+        check_vmi_to_vpto_lowering(name, b1_artifacts[name], expected_op)
     print("ptodsl_vmi_tile_template: PASS")
 
 

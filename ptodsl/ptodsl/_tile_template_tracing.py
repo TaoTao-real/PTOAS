@@ -76,6 +76,10 @@ class ScalarType:
         return self.name
 
 
+class Scalar:
+    """Template annotation for a scalar whose dtype comes from specialization."""
+
+
 f32 = ScalarType("f32", lanes=64, mask_bits=32, bytewidth=4)
 f16 = ScalarType("f16", lanes=128, mask_bits=16, bytewidth=2)
 bf16 = ScalarType("bf16", lanes=128, mask_bits=16, bytewidth=2)
@@ -479,6 +483,12 @@ class _TraceBuilder(TracingRuntime):
                         f"parameter {param_name!r} is annotated as Tile but uses {spec!r}"
                     )
                 arg_type = spec.mlir_type()
+            elif _is_scalar_annotation(param.annotation):
+                if not isinstance(spec, ScalarType):
+                    raise TypeError(
+                        f"parameter {param_name!r} is annotated as Scalar but uses {spec!r}"
+                    )
+                arg_type = _resolve(_scalar_descriptor(spec))
             else:
                 annotation_dtype = _scalar_type_from_annotation(param.annotation)
                 if annotation_dtype is None:
@@ -772,6 +782,7 @@ class TileTemplate:
     name: str
     source_label: str
     ir_level: str
+    semantic_form: str
     context_constraints: tuple[tuple[str, tuple[object, ...]], ...]
 
     def validate_context_attrs(self, context_attrs=None) -> None:
@@ -819,12 +830,15 @@ def tile_template(
     op: str,
     name: str | None = None,
     ir_level: str = "vpto",
+    semantic_form: str = "default",
     context_constraints: dict[str, tuple[object, ...]] | None = None,
 ):
     if target != "a5":
         raise ValueError("tile-template tracing currently only supports target='a5'")
     if ir_level not in {"vpto", "vmi"}:
         raise ValueError("tile-template tracing ir_level must be 'vpto' or 'vmi'")
+    if not isinstance(semantic_form, str) or not semantic_form:
+        raise ValueError("tile-template tracing semantic_form must be a non-empty string")
 
     normalized_context_constraints = tuple(
         (key, tuple(values)) for key, values in (context_constraints or {}).items()
@@ -840,6 +854,7 @@ def tile_template(
             name=descriptor_name,
             source_label=f"{source_path}:{fn.__name__}",
             ir_level=ir_level,
+            semantic_form=semantic_form,
             context_constraints=normalized_context_constraints,
         )
 
@@ -1048,6 +1063,10 @@ def vmi_vmax(lhs: _VectorValue, rhs: _VectorValue, mask: _MaskValue) -> _VectorV
     return _vmi_binary("vmi_vmax", lhs, rhs, mask)
 
 
+def vmi_vmin(lhs: _VectorValue, rhs: _VectorValue, mask: _MaskValue) -> _VectorValue:
+    return _vmi_binary("vmi_vmin", lhs, rhs, mask)
+
+
 def _vmi_vec_scalar(
     operation: str,
     source: _VectorValue,
@@ -1097,6 +1116,25 @@ def vmi_vexp(source: _VectorValue, mask: _MaskValue) -> _VectorValue:
         raise TypeError("vmi_vexp source and mask must use the same dtype")
     result = _vmi.vexp(source.value, mask.value)
     return _VectorValue(unwrap_surface_value(result), source.dtype)
+
+
+def _vmi_unary(
+    operation: str, source: _VectorValue, mask: _MaskValue
+) -> _VectorValue:
+    _require_vmi_trace(operation)
+    if source.dtype != mask.dtype:
+        raise TypeError(f"{operation} source and mask must use the same dtype")
+    emitter = getattr(_vmi, operation.removeprefix("vmi_"))
+    result = emitter(source.value, mask.value)
+    return _VectorValue(unwrap_surface_value(result), source.dtype)
+
+
+def vmi_vabs(source: _VectorValue, mask: _MaskValue) -> _VectorValue:
+    return _vmi_unary("vmi_vabs", source, mask)
+
+
+def vmi_vneg(source: _VectorValue, mask: _MaskValue) -> _VectorValue:
+    return _vmi_unary("vmi_vneg", source, mask)
 
 
 def vmi_vbroadcast(source: _VectorValue, *, lanes: int) -> _VectorValue:
@@ -1233,6 +1271,14 @@ def _is_tile_annotation(annotation) -> bool:
     return getattr(annotation, "__name__", None) == "Tile"
 
 
+def _is_scalar_annotation(annotation) -> bool:
+    if annotation is Scalar:
+        return True
+    if isinstance(annotation, str):
+        return annotation == "Scalar" or annotation.endswith(".Scalar")
+    return getattr(annotation, "__name__", None) == "Scalar"
+
+
 def _scalar_type_from_annotation(annotation) -> ScalarType | None:
     if isinstance(annotation, ScalarType):
         return annotation
@@ -1297,6 +1343,7 @@ __all__ = [
     "SpecializedTileTemplate",
     "CanonicalBlockMap",
     "CanonicalBlockCoordinate",
+    "Scalar",
     "ScalarType",
     "f32",
     "f16",
@@ -1326,11 +1373,14 @@ __all__ = [
     "vmi_vmul",
     "vmi_vdiv",
     "vmi_vmax",
+    "vmi_vmin",
     "vmi_vadds",
     "vmi_vmuls",
     "vmi_vmaxs",
     "vmi_vmins",
     "vmi_vexp",
+    "vmi_vabs",
+    "vmi_vneg",
     "vmi_vbroadcast",
     "vmi_vbroadcast_scalar",
     "vmi_vreduce_max",

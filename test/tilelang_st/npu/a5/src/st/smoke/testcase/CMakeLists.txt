@@ -114,6 +114,7 @@ endfunction()
 # Test case registry — add new ops here.
 # --------------------------------------------------------------------------
 set(ALL_TESTCASES
+    vmi_tilelib_b1
     tadd
     tsub
     tmul

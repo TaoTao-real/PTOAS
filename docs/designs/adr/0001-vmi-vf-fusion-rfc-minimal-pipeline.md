@@ -21,8 +21,12 @@ region-aware cost model 选择并锁定实现；该方案会把实现版本选�
 
 ## Decision
 
-1. RFC 首期对每个 `(target, TileOp)` 只允许一个 canonical VMI 实现。
-   该实现必须脱离融合独立正确执行；不存在 candidate 竞争、锁定或回退选择。
+1. RFC 首期对每个 `(target, TileOp, semantic_form)` 只允许一个 canonical VMI 实现。
+   `semantic_form` 只区分影响正确性的操作数 schema 或属性语义，例如
+   `tdivs:tile_scalar` / `tdivs:scalar_tile`、convert round mode 或带 tmp 的精度形式；它不能
+   表示多个性能 schedule。Provider 必须从 operand kinds、dtype 和 context attrs 唯一匹配
+   semantic form。每个实现必须脱离融合独立正确执行；不存在同一 semantic form 内的
+   candidate 竞争、锁定或性能回退选择。
 2. 用户切分的 dense vector Tile 必须满足 physical inner 等于 candidate 的一个
    logical VL。每行只有一个 block，canonical candidate 只生成 row 主循环；不支持
    将多 VL inner Tile 平坦化为更多 blocks。Reduce compact result 和沿用源 iteration
@@ -59,7 +63,7 @@ predicate 和地址模式对融合分析的干扰。
 
 ### Pros
 
-- 首期输入唯一、结果确定，便于建立 IR contract 和正确性测试。
+- 每个 semantic form 输入唯一、结果确定，同时允许正确表达操作数 schema 不同的 TileOp。
 - Elementwise、Reduce 输入和 Broadcast dense 输出共享 row iteration domain，减少
   loop mapping、alias offset 和 mask compatibility 的状态空间。
 - 单个 TileOp 在融合失败时仍能独立 lower，天然具备保守 fallback。
