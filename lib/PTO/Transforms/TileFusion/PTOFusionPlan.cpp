@@ -636,18 +636,31 @@ struct FusionPlanPass : public pto::impl::FusionPlanBase<FusionPlanPass> {
     MLIRContext *ctx = &getContext();
     int64_t nextGroupId = 0;
     ConservativeDAGGreedyCostModel costModel;
-    // Strategy selection: the legacy a5 path uses ConservativeDAGGreedy; the
-    // VMI path (ptodsl-vmi) uses VMIUBDisjoint, which groups plannable compute
-    // nodes by tile_buf SSA disjointness and keeps single-node groups so every
-    // compute TileOp gets a fusion_region. The VMI strategy ignores cost /
-    // iteration-domain / direct-dependency criteria that the VMI loop-fusion
-    // pass does not care about.
+    // Strategy selection. Only these two enumerated values are accepted; any
+    // other string (including typos) fails the pass instead of silently
+    // falling back, so a misconfigured --fusion-strategy cannot quietly change
+    // compilation behavior. The legacy a5 path uses ConservativeDAGGreedy; the
+    // VMI path uses VMIUBDisjoint, which groups plannable compute nodes by
+    // F3 adjacency (a non-plannable op between two plannable nodes closes the
+    // group) and keeps single-node groups so every compute TileOp gets a
+    // fusion_region. It does NOT judge UB disjointness, DFG dependency,
+    // iteration-domain class, or cost here — the resulting fusion_region is a
+    // *container* for downstream VMI analysis, not a proof that its inner
+    // scf.for loops can be fused (that is PTOVmiLoopFusion's job).
     std::unique_ptr<StrategyEngine> strategyEngine;
-    if (strategy.getValue() == "vmi-ub-disjoint")
-      strategyEngine = std::make_unique<VMIUBDisjointStrategyEngine>();
-    else
+    const std::string strategyVal = strategy.getValue();
+    if (strategyVal == "conservative-dag-greedy")
       strategyEngine =
           std::make_unique<ConservativeDAGGreedyStrategyEngine>();
+    else if (strategyVal == "vmi-ub-disjoint")
+      strategyEngine = std::make_unique<VMIUBDisjointStrategyEngine>();
+    else {
+      emitError(getOperation()->getLoc())
+          << "unknown pto-fusion-plan --fusion-strategy='" << strategyVal
+          << "'; expected 'conservative-dag-greedy' or 'vmi-ub-disjoint'";
+      signalPassFailure();
+      return;
+    }
 
     for (const pto::FusionBlockAnalysis &blockAnalysis : analysis.blocks) {
       PlanningContext planningCtx{blockAnalysis};
