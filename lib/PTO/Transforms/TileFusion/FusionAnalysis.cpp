@@ -421,7 +421,8 @@ static void applyShapeConstraintsForNode(
     const FusionComputeNode &node) {
   const FusionOpSemantics &semantics = node.semantics;
   switch (semantics.computeFamily) {
-  case FusionComputeFamily::Elementwise: {
+  case FusionComputeFamily::Elementwise:
+  case FusionComputeFamily::Convert: {
     SmallVector<Value, 6> values;
     values.append(semantics.tileInputs.begin(), semantics.tileInputs.end());
     values.append(semantics.tileOutputs.begin(), semantics.tileOutputs.end());
@@ -456,6 +457,17 @@ static void applyShapeConstraintsForNode(
       mergeShapes(solver, output,
                   getValueDims(solver, dimsByValue, symbolDimByValue,
                                canonicalByValue, signatureMap, extraOutput));
+    return;
+  }
+  case FusionComputeFamily::ColBroadcastBinary: {
+    // Col-expand (tcolexpandsub/add/mul/div): reads [1,cols] col_values and
+    // [rows,cols] src, writes [rows,cols]. Conservatively merge all tile
+    // shapes so the iteration domain (rows,cols) propagates correctly.
+    SmallVector<Value, 6> values;
+    values.append(semantics.tileInputs.begin(), semantics.tileInputs.end());
+    values.append(semantics.tileOutputs.begin(), semantics.tileOutputs.end());
+    mergeAllShapes(solver, dimsByValue, symbolDimByValue, canonicalByValue,
+                   signatureMap, values);
     return;
   }
   case FusionComputeFamily::ReduceRow:
@@ -497,8 +509,10 @@ static ShapeValueDims getIterationDomainDimsForNode(
   const FusionOpSemantics &semantics = node.semantics;
   switch (semantics.computeFamily) {
   case FusionComputeFamily::Elementwise:
+  case FusionComputeFamily::Convert:
   case FusionComputeFamily::ScalarExpand:
   case FusionComputeFamily::RowBroadcastBinary:
+  case FusionComputeFamily::ColBroadcastBinary:
     if (!semantics.tileOutputs.empty())
       return getValueDims(solver, dimsByValue, symbolDimByValue,
                           canonicalByValue, signatureMap,
@@ -657,7 +671,8 @@ inferConsensusIterationDomain(ArrayRef<Value> anchorValues) {
 static IterationDomainInfo
 inferIterationDomainInfo(const FusionOpSemantics &semantics) {
   switch (semantics.computeFamily) {
-  case FusionComputeFamily::Elementwise: {
+  case FusionComputeFamily::Elementwise:
+  case FusionComputeFamily::Convert: {
     SmallVector<Value, 6> anchors;
     anchors.append(semantics.tileInputs.begin(), semantics.tileInputs.end());
     anchors.append(semantics.tileOutputs.begin(), semantics.tileOutputs.end());
@@ -665,6 +680,7 @@ inferIterationDomainInfo(const FusionOpSemantics &semantics) {
   }
   case FusionComputeFamily::ScalarExpand:
   case FusionComputeFamily::RowBroadcastBinary:
+  case FusionComputeFamily::ColBroadcastBinary:
     return inferConsensusIterationDomain(semantics.tileOutputs);
   case FusionComputeFamily::ReduceRow:
   case FusionComputeFamily::ReduceCol:
