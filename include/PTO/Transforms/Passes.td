@@ -280,7 +280,13 @@ def FusionPlan : Pass<"pto-fusion-plan", "func::FuncOp"> {
            "iteration-domain inference.  Only FusionPlan consumes this option; "
            "FusionRegionGen consumes only the shared pre-fusion dataflow graph "
            "(cached by the analysis manager) and never consults iteration-domain "
-           "classes, so it does not need the option.">
+           "classes, so it does not need the option.">,
+    Option<"strategy", "fusion-strategy",
+           "std::string", /*default=*/"\"conservative-dag-greedy\"",
+           "Fusion strategy: 'conservative-dag-greedy' (default, legacy a5) "
+           "or 'vmi-ub-disjoint' (VMI path: group plannable compute nodes by "
+           "tile_buf SSA disjointness; single-node groups kept so every "
+           "compute TileOp gets a fusion_region).">
   ];
 }
 
