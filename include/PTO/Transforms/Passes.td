@@ -890,6 +890,33 @@ def PTOValidateVMIIR : Pass<"pto-validate-vmi-ir", "ModuleOp"> {
                            "mlir::scf::SCFDialect"];
 }
 
+def VMIAnalyzeFusionReady
+    : Pass<"pto-analyze-vmi-fusion-ready", "ModuleOp"> {
+  let summary = "Classify canonical VMI TileLib row loops for future fusion";
+  let description = [{
+    An analysis-only pass for canonical VMI TileLib implementations after
+    ExpandTileOp, inlining, and shape-only intrinsic folding. It verifies the
+    one-logical-row loop contract, rejects nested loops and
+    inconsistent logical lane widths, checks that VMI memory operations expose
+    memory effects, and records one machine-readable `pto.vmi.fusion_candidate`
+    dictionary on each marked principal loop.
+
+    The status is one of `structural_fusion_candidate`, `layout_phase`,
+    `boundary_only`, or `unsupported`. A positive status proves only the
+    canonical row-loop shape; dependency, alias, mask, escape, and phase
+    legality remain for the fusion planner. This pass does not build fusion
+    regions, fuse loops, perform mem2reg, add per-TileOp fusion scopes, or
+    estimate physical register pressure. Physical feasibility remains a
+    backend responsibility.
+  }];
+  let constructor = "mlir::pto::createVMIAnalyzeFusionReadyPass()";
+  let dependentDialects = ["mlir::func::FuncDialect",
+                           "mlir::pto::PTODialect",
+                           "mlir::arith::ArithDialect",
+                           "mlir::memref::MemRefDialect",
+                           "mlir::scf::SCFDialect"];
+}
+
 def PTOValidateVMILayoutIR
     : Pass<"pto-validate-vmi-layout-ir", "ModuleOp"> {
   let summary = "Validate layout-assigned VMI IR";
