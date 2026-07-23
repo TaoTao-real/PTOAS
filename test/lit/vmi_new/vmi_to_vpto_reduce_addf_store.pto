@@ -64,7 +64,4 @@ module {
 // LOWER: %[[VL1:.*]] = pto.pge_b32 "PAT_VL1" : !pto.mask<b32>
 // LOWER: %[[REDUCED:.*]] = pto.vcadd %[[SUM]], %[[REDUCE_MASK]]
 // LOWER: %[[REDUCED_SUM:.*]] = pto.vadd %[[REDUCED]], {{.*}}, %[[VL1]]
-// LOWER: %[[ONE:.*]] = arith.constant 1 : i32
-// LOWER: %[[PREFIX:.*]], %{{.*}} = pto.plt_b32 %[[ONE]]
-// LOWER: %[[MASKED:.*]] = pto.pand %[[STORE_MASK]], %[[PREFIX]]
-// LOWER: pto.vsts %[[REDUCED_SUM]], %[[DST]][%[[OFF]]], %[[MASKED]]
+// LOWER: pto.vsts %[[REDUCED_SUM]], %[[DST]][%[[OFF]]], %[[STORE_MASK]] {dist = "1PT_B32"}

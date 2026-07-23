@@ -1,0 +1,85 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+  func.func @vmi_tilelib_logical_row_rmsnorm_kernel(
+      %src_gm: !pto.ptr<f16, gm>, %dst_gm: !pto.ptr<f16, gm>) attributes {pto.kernel} {
+    %c0_i64 = arith.constant 0 : i64
+    %c1_i64 = arith.constant 1 : i64
+    %c8_i64 = arith.constant 8 : i64
+    %c256_i64 = arith.constant 256 : i64
+    %c2048_i64 = arith.constant 2048 : i64
+    %c4096_i64 = arith.constant 4096 : i64
+    %c8192_i64 = arith.constant 8192 : i64
+    %c12288_i64 = arith.constant 12288 : i64
+    %c16384_i64 = arith.constant 16384 : i64
+    %c16416_i64 = arith.constant 16416 : i64
+    %c16448_i64 = arith.constant 16448 : i64
+    %c20480_i64 = arith.constant 20480 : i64
+    %c24576_i64 = arith.constant 24576 : i64
+
+    %src_ub = pto.castptr %c0_i64 : i64 -> !pto.ptr<f16, ub>
+    %dst_ub = pto.castptr %c24576_i64 : i64 -> !pto.ptr<f16, ub>
+
+    pto.mte_gm_ub %src_gm, %src_ub, %c0_i64, %c256_i64
+      nburst(%c8_i64, %c256_i64, %c256_i64)
+      : !pto.ptr<f16, gm>, !pto.ptr<f16, ub>, i64, i64, i64, i64, i64
+    pto.set_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
+    pto.wait_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
+
+    %src = pto.alloc_tile addr = %c0_i64
+      : !pto.tile_buf<vec, 8x128xf16>
+    %src_f32 = pto.alloc_tile addr = %c4096_i64
+      : !pto.tile_buf<vec, 8x128xf32>
+    %square = pto.alloc_tile addr = %c8192_i64
+      : !pto.tile_buf<vec, 8x128xf32>
+    %workspace = pto.alloc_tile addr = %c12288_i64
+      : !pto.tile_buf<vec, 8x128xf32>
+    %row_sum = pto.alloc_tile addr = %c16384_i64
+      : !pto.tile_buf<vec, 8x1xf32, blayout=col_major>
+    %row_sum_row = pto.alloc_tile addr = %c16384_i64
+      : !pto.tile_buf<vec, 1x8xf32>
+    %inv_row = pto.alloc_tile addr = %c16416_i64
+      : !pto.tile_buf<vec, 1x8xf32>
+    %inv_col = pto.alloc_tile addr = %c16416_i64
+      : !pto.tile_buf<vec, 8x1xf32, blayout=col_major>
+    %rsqrt_tmp = pto.alloc_tile addr = %c16448_i64
+      : !pto.tile_buf<vec, 1x8xf32>
+    %normalized = pto.alloc_tile addr = %c20480_i64
+      : !pto.tile_buf<vec, 8x128xf32>
+    %dst = pto.alloc_tile addr = %c24576_i64
+      : !pto.tile_buf<vec, 8x128xf16>
+
+    pto.tcvt ins(%src {rmode = #pto<round_mode ROUND>, satmode = #pto<saturation_mode OFF>}
+      : !pto.tile_buf<vec, 8x128xf16>)
+      outs(%src_f32 : !pto.tile_buf<vec, 8x128xf32>)
+    pto.tmul ins(%src_f32, %src_f32
+      : !pto.tile_buf<vec, 8x128xf32>, !pto.tile_buf<vec, 8x128xf32>)
+      outs(%square : !pto.tile_buf<vec, 8x128xf32>)
+    pto.trowsum ins(%square, %workspace
+      : !pto.tile_buf<vec, 8x128xf32>, !pto.tile_buf<vec, 8x128xf32>)
+      outs(%row_sum : !pto.tile_buf<vec, 8x1xf32, blayout=col_major>)
+    pto.trsqrt ins(%row_sum_row, %rsqrt_tmp
+      : !pto.tile_buf<vec, 1x8xf32>, !pto.tile_buf<vec, 1x8xf32>)
+      outs(%inv_row : !pto.tile_buf<vec, 1x8xf32>)
+    pto.trowexpandmul ins(%src_f32, %inv_col
+      : !pto.tile_buf<vec, 8x128xf32>, !pto.tile_buf<vec, 8x1xf32, blayout=col_major>)
+      outs(%normalized : !pto.tile_buf<vec, 8x128xf32>)
+    pto.tcvt ins(%normalized {rmode = #pto<round_mode RINT>, satmode = #pto<saturation_mode OFF>}
+      : !pto.tile_buf<vec, 8x128xf32>)
+      outs(%dst : !pto.tile_buf<vec, 8x128xf16>)
+
+    pto.set_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
+    pto.wait_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
+    pto.mte_ub_gm %dst_ub, %dst_gm, %c256_i64
+      nburst(%c8_i64, %c256_i64, %c256_i64)
+      : !pto.ptr<f16, ub>, !pto.ptr<f16, gm>, i64, i64, i64, i64
+    pto.barrier #pto.pipe<PIPE_ALL>
+    return
+  }
+}

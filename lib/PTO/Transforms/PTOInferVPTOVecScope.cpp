@@ -76,10 +76,28 @@ static bool isForbiddenInsideInferredVectorScope(Operation *op) {
   return isa<pto::VbitsortOp, pto::Vmrgsort4Op>(op);
 }
 
-static bool isCloneableMaskProducer(Operation *op) {
-  return isa<pto::PsetB8Op, pto::PsetB16Op, pto::PsetB32Op, pto::PgeB8Op,
-             pto::PgeB16Op, pto::PgeB32Op, pto::PltB8Op, pto::PltB16Op,
-             pto::PltB32Op>(op);
+static bool isCloneableScopeProducer(Operation *op) {
+  if (isa<pto::VdupOp>(op))
+    return true;
+
+  if (op->getNumRegions() != 0 || !isMemoryEffectFree(op))
+    return false;
+
+  bool producesMask = false;
+  for (Type type : op->getResultTypes()) {
+    if (isa<pto::MaskType>(type)) {
+      producesMask = true;
+      continue;
+    }
+    if (isa<pto::VRegType, pto::AlignType>(type))
+      return false;
+  }
+  if (!producesMask)
+    return false;
+
+  return llvm::none_of(op->getOperandTypes(), [](Type type) {
+    return isa<pto::VRegType, pto::AlignType>(type);
+  });
 }
 
 static bool isVectorScopeBoundaryOperation(Operation *op) {
@@ -280,18 +298,21 @@ static void keepEarliestUseFirst(SmallVectorImpl<OpOperand *> &uses,
     std::swap(uses.front(), uses[earliest]);
 }
 
-static void cloneSharedMaskProducers(Block &block, MLIRContext *context) {
+static void cloneSharedScopeProducers(Block &block, MLIRContext *context) {
   IRRewriter rewriter(context);
   SmallVector<Operation *, 32> ops;
   for (Operation &op : block)
     ops.push_back(&op);
 
-  for (Operation *op : ops) {
-    if (!isCloneableMaskProducer(op))
+  // Visit consumers before their mask producers. Cloning a vdup or a composed
+  // predicate creates new mask uses; the later producer visit must see and
+  // split those uses as well.
+  for (Operation *op : llvm::reverse(ops)) {
+    if (!isCloneableScopeProducer(op))
       continue;
 
     for (OpResult result : op->getOpResults()) {
-      if (!isa<pto::MaskType>(result.getType()) || result.use_empty())
+      if (!isVecScopeType(result.getType()) || result.use_empty())
         continue;
 
       SmallVector<OpOperand *, 8> uses;
@@ -491,7 +512,10 @@ static LogicalResult wrapGreedySubclusters(ArrayRef<Operation *> ops,
 }
 
 static LogicalResult inferVecScopesInBlock(Block &block, MLIRContext *context) {
-  cloneSharedMaskProducers(block, context);
+  // CSE can share cheap scalar-derived predicates and vdup values across
+  // control-flow or MTE boundaries. Clone them at secondary uses so resultless
+  // vecscopes never need to carry physical mask/vreg values across boundaries.
+  cloneSharedScopeProducers(block, context);
 
   SmallVector<Operation *, 16> pending;
 

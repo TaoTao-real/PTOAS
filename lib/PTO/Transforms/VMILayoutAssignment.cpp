@@ -714,7 +714,14 @@ struct LayoutSolver {
         return WalkResult::advance();
       }
       if (auto fptosi = dyn_cast<VMIFPToSIOp>(op)) {
-        if (failed(unite(fptosi.getSource(), fptosi.getResult(), op)))
+        auto sourceType = cast<VMIVRegType>(fptosi.getSource().getType());
+        auto resultType = cast<VMIVRegType>(fptosi.getResult().getType());
+        unsigned sourceBits =
+            pto::getPTOStorageElemBitWidth(sourceType.getElementType());
+        unsigned resultBits =
+            pto::getPTOStorageElemBitWidth(resultType.getElementType());
+        if (sourceBits == resultBits &&
+            failed(unite(fptosi.getSource(), fptosi.getResult(), op)))
           return WalkResult::interrupt();
         return WalkResult::advance();
       }
@@ -1113,6 +1120,32 @@ struct LayoutSolver {
         if (failed(setPreferredLayout(truncf.getResult(), resultLayout, op,
                                       DataLayoutSeedPhase::Cast)))
           return WalkResult::interrupt();
+        return WalkResult::advance();
+      }
+      if (auto fptosi = dyn_cast<VMIFPToSIOp>(op)) {
+        auto sourceType = cast<VMIVRegType>(fptosi.getSource().getType());
+        auto resultType = cast<VMIVRegType>(fptosi.getResult().getType());
+        unsigned sourceBits =
+            pto::getPTOStorageElemBitWidth(sourceType.getElementType());
+        unsigned resultBits =
+            pto::getPTOStorageElemBitWidth(resultType.getElementType());
+        if (sourceBits != resultBits) {
+          VMILayoutSupport supports;
+          FailureOr<VMICastLayoutFact> fact =
+              supports.getPreferredCastLayoutFact(sourceType, resultType);
+          if (failed(fact)) {
+            fptosi.emitError()
+                << kVMIDiagLayoutContractPrefix
+                << "pto.vmi.fptosi has no preferred width-changing cast "
+                   "layout";
+            return WalkResult::interrupt();
+          }
+          requestDataUse(fptosi.getSourceMutable(), fact->sourceLayout,
+                         /*late=*/false, DataLayoutSeedPhase::Cast);
+          if (failed(setPreferredLayout(fptosi.getResult(), fact->resultLayout,
+                                        op, DataLayoutSeedPhase::Cast)))
+            return WalkResult::interrupt();
+        }
         return WalkResult::advance();
       }
       if (auto trunci = dyn_cast<VMITruncIOp>(op)) {

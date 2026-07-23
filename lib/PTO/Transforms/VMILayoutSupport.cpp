@@ -419,6 +419,7 @@ static constexpr PreferredCastLayoutPattern kPreferredCastLayoutPatterns[] = {
     {bits<8>(), bits<32>(), 64, ls(4), c()},
     {bits<32>(), bits<16>(), 64, c(), ls(2)},
     {bits<32>(), bits<8>(), 64, c(), ls(4)},
+    {bits<16>(), bits<8>(), 128, c(), ls(2)},
     {bits<32>(), bits<8>(), 128, d(2), ls(2)},
 
     // Default rows for the storage-width cast families.

@@ -1,0 +1,59 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// SPDX-License-Identifier: CANN-Open-Software-License-Agreement-Version-2.0
+
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl-vmi --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-inline-libcall 2>&1 | FileCheck %s --check-prefix=INLINE --implicit-check-not=pto.vecscope
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl-vmi --analyze-vmi-fusion-ready --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-analyze-vmi-fusion-ready 2>&1 | FileCheck %s --check-prefix=READY
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl-vmi --emit-vpto %s -o - | FileCheck %s --check-prefix=FINAL --implicit-check-not=!pto.vmi.
+
+module {
+  func.func @ds_v4_prefill_fa_vmi() {
+    %scores = pto.alloc_tile : !pto.tile_buf<vec, 64x256xf32>
+    %work = pto.alloc_tile : !pto.tile_buf<vec, 64x256xf32>
+    %row_max = pto.alloc_tile : !pto.tile_buf<vec, 64x1xf32, blayout=col_major>
+    %shifted = pto.alloc_tile : !pto.tile_buf<vec, 64x256xf32>
+    %prob = pto.alloc_tile : !pto.tile_buf<vec, 64x256xf32>
+    %row_sum = pto.alloc_tile : !pto.tile_buf<vec, 64x1xf32, blayout=col_major>
+    %softmax = pto.alloc_tile : !pto.tile_buf<vec, 64x256xf32>
+    %rope = pto.alloc_tile : !pto.tile_buf<vec, 64x64xf32>
+    %rope_idx = pto.alloc_tile : !pto.tile_buf<vec, 64x64xi32>
+    %gather_tmp = pto.alloc_tile : !pto.tile_buf<vec, 1x8xi32>
+    %swapped = pto.alloc_tile : !pto.tile_buf<vec, 64x64xf32>
+    %cos = pto.alloc_tile : !pto.tile_buf<vec, 64x64xf32>
+    %sin = pto.alloc_tile : !pto.tile_buf<vec, 64x64xf32>
+    %base = pto.alloc_tile : !pto.tile_buf<vec, 64x64xf32>
+    %delta = pto.alloc_tile : !pto.tile_buf<vec, 64x64xf32>
+    %rotated = pto.alloc_tile : !pto.tile_buf<vec, 64x64xf32>
+
+    pto.trowmax ins(%scores, %work : !pto.tile_buf<vec, 64x256xf32>, !pto.tile_buf<vec, 64x256xf32>) outs(%row_max : !pto.tile_buf<vec, 64x1xf32, blayout=col_major>)
+    pto.trowexpandsub ins(%scores, %row_max : !pto.tile_buf<vec, 64x256xf32>, !pto.tile_buf<vec, 64x1xf32, blayout=col_major>) outs(%shifted : !pto.tile_buf<vec, 64x256xf32>)
+    pto.texp ins(%shifted : !pto.tile_buf<vec, 64x256xf32>) outs(%prob : !pto.tile_buf<vec, 64x256xf32>)
+    pto.trowsum ins(%prob, %work : !pto.tile_buf<vec, 64x256xf32>, !pto.tile_buf<vec, 64x256xf32>) outs(%row_sum : !pto.tile_buf<vec, 64x1xf32, blayout=col_major>)
+    pto.trowexpanddiv ins(%prob, %row_sum : !pto.tile_buf<vec, 64x256xf32>, !pto.tile_buf<vec, 64x1xf32, blayout=col_major>) outs(%softmax : !pto.tile_buf<vec, 64x256xf32>)
+    pto.tgather ins(%rope, %rope_idx, %gather_tmp : !pto.tile_buf<vec, 64x64xf32>, !pto.tile_buf<vec, 64x64xi32>, !pto.tile_buf<vec, 1x8xi32>) outs(%swapped : !pto.tile_buf<vec, 64x64xf32>)
+    pto.tmul ins(%rope, %cos : !pto.tile_buf<vec, 64x64xf32>, !pto.tile_buf<vec, 64x64xf32>) outs(%base : !pto.tile_buf<vec, 64x64xf32>)
+    pto.tmul ins(%swapped, %sin : !pto.tile_buf<vec, 64x64xf32>, !pto.tile_buf<vec, 64x64xf32>) outs(%delta : !pto.tile_buf<vec, 64x64xf32>)
+    pto.tadd ins(%base, %delta : !pto.tile_buf<vec, 64x64xf32>, !pto.tile_buf<vec, 64x64xf32>) outs(%rotated : !pto.tile_buf<vec, 64x64xf32>)
+    return
+  }
+}
+
+// INLINE-LABEL: func.func @ds_v4_prefill_fa_vmi
+// INLINE: !pto.vmi.vreg<256xf32>
+// INLINE: pto.vmi.vcmax
+// INLINE: pto.vmi.vexp
+// INLINE: pto.vmi.vgather
+// INLINE: pto.vmi.vmul
+// INLINE: pto.vmi.vadd
+// READY: status = "structural_fusion_candidate"}, pto.vmi.tilelib.op = "trowmax"
+// READY: status = "structural_fusion_candidate"}, pto.vmi.tilelib.op = "trowexpandsub"
+// READY: status = "structural_fusion_candidate"}, pto.vmi.tilelib.op = "texp"
+// READY: status = "structural_fusion_candidate"}, pto.vmi.tilelib.op = "trowsum"
+// READY: status = "structural_fusion_candidate"}, pto.vmi.tilelib.op = "trowexpanddiv"
+// READY: status = "layout_phase"}, pto.vmi.tilelib.op = "tgather"
+// READY: status = "structural_fusion_candidate"}, pto.vmi.tilelib.op = "tmul"
+// READY: status = "structural_fusion_candidate"}, pto.vmi.tilelib.op = "tmul"
+// READY: status = "structural_fusion_candidate"}, pto.vmi.tilelib.op = "tadd"
+// READY-NOT: status = "unsupported"
+// FINAL-LABEL: func.func @ds_v4_prefill_fa_vmi
+// FINAL: pto.vgather2
+// FINAL: pto.vadd

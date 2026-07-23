@@ -1,0 +1,71 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// SPDX-License-Identifier: CANN-Open-Software-License-Agreement-Version-2.0
+
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl-vmi --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-expand-tile-op 2>&1 | FileCheck %s --check-prefix=EXPAND
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl-vmi --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-inline-libcall 2>&1 | FileCheck %s --check-prefix=INLINE --implicit-check-not=pto.vecscope
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl-vmi --analyze-vmi-fusion-ready --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-analyze-vmi-fusion-ready 2>&1 | FileCheck %s --check-prefix=READY
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl-vmi --emit-vpto %s -o - | FileCheck %s --check-prefix=FINAL --implicit-check-not=!pto.vmi. --implicit-check-not=pto.vgather2_bc
+
+module {
+  func.func @ds_v4_qkv_rope_vmi() {
+    %i32_256 = pto.alloc_tile : !pto.tile_buf<vec, 8x256xi32>
+    %f32_256 = pto.alloc_tile : !pto.tile_buf<vec, 8x256xf32>
+    %f32_round_from_i32 = pto.alloc_tile : !pto.tile_buf<vec, 8x256xf32>
+    %i32_roundtrip = pto.alloc_tile : !pto.tile_buf<vec, 8x256xi32>
+    %i32_round_from_f32 = pto.alloc_tile : !pto.tile_buf<vec, 8x256xi32>
+    %f16_256 = pto.alloc_tile : !pto.tile_buf<vec, 8x256xf16>
+    %i8_256 = pto.alloc_tile : !pto.tile_buf<vec, 8x256xi8>
+    %f32_448_a = pto.alloc_tile : !pto.tile_buf<vec, 8x448xf32>
+    %f32_448_b = pto.alloc_tile : !pto.tile_buf<vec, 8x448xf32>
+    %f32_448_out = pto.alloc_tile : !pto.tile_buf<vec, 8x448xf32>
+    %f32_512 = pto.alloc_tile : !pto.tile_buf<vec, 8x512xf32>
+    %work_512 = pto.alloc_tile : !pto.tile_buf<vec, 8x512xf32>
+    %row_512 = pto.alloc_tile : !pto.tile_buf<vec, 8x1xf32, blayout=col_major>
+    %scaled_512 = pto.alloc_tile : !pto.tile_buf<vec, 8x512xf32>
+    %gather_src = pto.alloc_tile : !pto.tile_buf<vec, 8x64xf32>
+    %gather_indices = pto.alloc_tile : !pto.tile_buf<vec, 8x64xi32>
+    %gather_tmp = pto.alloc_tile : !pto.tile_buf<vec, 1x8xi32>
+    %gather_dst = pto.alloc_tile : !pto.tile_buf<vec, 8x64xf32>
+    %gather_parent = pto.alloc_tile : !pto.tile_buf<vec, 16x512xf32>
+    %gather_index_parent = pto.alloc_tile : !pto.tile_buf<vec, 16x64xi32>
+    %gather_row_tmp = pto.alloc_tile : !pto.tile_buf<vec, 1x64xi32>
+    %gather_row_dst = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    %c0 = arith.constant 0 : index
+    %gather_source_row = pto.subview %gather_parent[%c0, %c0] sizes [1, 64]
+      : !pto.tile_buf<vec, 16x512xf32> -> !pto.tile_buf<vec, 1x64xf32>
+    %gather_index_row = pto.subview %gather_index_parent[%c0, %c0] sizes [1, 64]
+      : !pto.tile_buf<vec, 16x64xi32> -> !pto.tile_buf<vec, 1x64xi32>
+
+    pto.tcvt ins(%i32_256 {rmode = #pto<round_mode CAST_RINT>, satmode = #pto<saturation_mode OFF>} : !pto.tile_buf<vec, 8x256xi32>) outs(%f32_256 : !pto.tile_buf<vec, 8x256xf32>)
+    pto.tcvt ins(%i32_256 {rmode = #pto<round_mode ROUND>, satmode = #pto<saturation_mode OFF>} : !pto.tile_buf<vec, 8x256xi32>) outs(%f32_round_from_i32 : !pto.tile_buf<vec, 8x256xf32>)
+    pto.tcvt ins(%f32_256 {rmode = #pto<round_mode TRUNC>, satmode = #pto<saturation_mode OFF>} : !pto.tile_buf<vec, 8x256xf32>) outs(%i32_roundtrip : !pto.tile_buf<vec, 8x256xi32>)
+    pto.tcvt ins(%f32_256 {rmode = #pto<round_mode ROUND>, satmode = #pto<saturation_mode OFF>} : !pto.tile_buf<vec, 8x256xf32>) outs(%i32_round_from_f32 : !pto.tile_buf<vec, 8x256xi32>)
+    pto.tcvt ins(%i32_roundtrip {rmode = #pto<round_mode ROUND>, satmode = #pto<saturation_mode OFF>} : !pto.tile_buf<vec, 8x256xi32>) outs(%f16_256 : !pto.tile_buf<vec, 8x256xf16>)
+    pto.tcvt ins(%f16_256 {rmode = #pto<round_mode TRUNC>, satmode = #pto<saturation_mode OFF>} : !pto.tile_buf<vec, 8x256xf16>) outs(%i8_256 : !pto.tile_buf<vec, 8x256xi8>)
+    pto.tadd ins(%f32_448_a, %f32_448_b : !pto.tile_buf<vec, 8x448xf32>, !pto.tile_buf<vec, 8x448xf32>) outs(%f32_448_out : !pto.tile_buf<vec, 8x448xf32>)
+    pto.trowsum ins(%f32_512, %work_512 : !pto.tile_buf<vec, 8x512xf32>, !pto.tile_buf<vec, 8x512xf32>) outs(%row_512 : !pto.tile_buf<vec, 8x1xf32, blayout=col_major>)
+    pto.trowexpandmul ins(%f32_512, %row_512 : !pto.tile_buf<vec, 8x512xf32>, !pto.tile_buf<vec, 8x1xf32, blayout=col_major>) outs(%scaled_512 : !pto.tile_buf<vec, 8x512xf32>)
+    pto.tgather ins(%gather_src, %gather_indices, %gather_tmp : !pto.tile_buf<vec, 8x64xf32>, !pto.tile_buf<vec, 8x64xi32>, !pto.tile_buf<vec, 1x8xi32>) outs(%gather_dst : !pto.tile_buf<vec, 8x64xf32>)
+    pto.tgather ins(%gather_source_row, %gather_index_row, %gather_row_tmp : !pto.tile_buf<vec, 1x64xf32>, !pto.tile_buf<vec, 1x64xi32>, !pto.tile_buf<vec, 1x64xi32>) outs(%gather_row_dst : !pto.tile_buf<vec, 1x64xf32>)
+    return
+  }
+}
+
+// EXPAND-COUNT-6: call {{.*}}__pto_ptodsl_vmi_a5_tcvt
+// EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_tadd
+// EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_trowsum
+// EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_trowexpandmul
+// EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_tgather
+// INLINE-LABEL: func.func @ds_v4_qkv_rope_vmi
+// INLINE: !pto.vmi.vreg<256xf32>
+// INLINE: !pto.vmi.vreg<448xf32>
+// INLINE: !pto.vmi.vreg<512xf32>
+// INLINE: pto.vmi.vgather
+// READY-COUNT-6: status = "structural_fusion_candidate"
+// READY-COUNT-3: status = "structural_fusion_candidate_with_pressure_gate"
+// READY: status = "layout_phase"}, pto.vmi.tilelib.op = "tgather"
+// READY-NOT: status = "unsupported"
+// FINAL-LABEL: func.func @ds_v4_qkv_rope_vmi
+// FINAL: rnd = "A"
+// FINAL: pto.vand {{.*}} : !pto.vreg<128xi16>, !pto.vreg<128xi16>
+// FINAL: pto.vgather2 {{.*}} : !pto.ptr<f32, ub>, !pto.vreg<64xi32>

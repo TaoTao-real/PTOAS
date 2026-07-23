@@ -1,0 +1,59 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// SPDX-License-Identifier: CANN-Open-Software-License-Agreement-Version-2.0
+
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl-vmi --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-inline-libcall 2>&1 | FileCheck %s --check-prefix=INLINE --implicit-check-not=pto.vecscope
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl-vmi --analyze-vmi-fusion-ready --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-analyze-vmi-fusion-ready 2>&1 | FileCheck %s --check-prefix=READY
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl-vmi --emit-vpto %s -o - | FileCheck %s --check-prefix=FINAL --implicit-check-not=!pto.vmi.
+
+module {
+  func.func @ds_v4_decode_fa_vmi() {
+    %scores = pto.alloc_tile : !pto.tile_buf<vec, 32x128xf32>
+    %work = pto.alloc_tile : !pto.tile_buf<vec, 32x128xf32>
+    %row_max = pto.alloc_tile : !pto.tile_buf<vec, 32x1xf32, blayout=col_major>
+    %shifted = pto.alloc_tile : !pto.tile_buf<vec, 32x128xf32>
+    %prob = pto.alloc_tile : !pto.tile_buf<vec, 32x128xf32>
+    %row_sum = pto.alloc_tile : !pto.tile_buf<vec, 32x1xf32, blayout=col_major>
+    %softmax = pto.alloc_tile : !pto.tile_buf<vec, 32x128xf32>
+    %old_o = pto.alloc_tile : !pto.tile_buf<vec, 16x512xf32>
+    %new_o = pto.alloc_tile : !pto.tile_buf<vec, 16x512xf32>
+    %alpha = pto.alloc_tile : !pto.tile_buf<vec, 16x1xf32, blayout=col_major>
+    %beta = pto.alloc_tile : !pto.tile_buf<vec, 16x1xf32, blayout=col_major>
+    %old_scaled = pto.alloc_tile : !pto.tile_buf<vec, 16x512xf32>
+    %new_scaled = pto.alloc_tile : !pto.tile_buf<vec, 16x512xf32>
+    %merged = pto.alloc_tile : !pto.tile_buf<vec, 16x512xf32>
+    %denom = pto.alloc_tile : !pto.tile_buf<vec, 16x1xf32, blayout=col_major>
+    %normalized = pto.alloc_tile : !pto.tile_buf<vec, 16x512xf32>
+    %wide_lhs = pto.alloc_tile : !pto.tile_buf<vec, 1x1024xf32>
+    %wide_rhs = pto.alloc_tile : !pto.tile_buf<vec, 1x1024xf32>
+    %wide_sum = pto.alloc_tile : !pto.tile_buf<vec, 1x1024xf32>
+
+    pto.trowmax ins(%scores, %work : !pto.tile_buf<vec, 32x128xf32>, !pto.tile_buf<vec, 32x128xf32>) outs(%row_max : !pto.tile_buf<vec, 32x1xf32, blayout=col_major>)
+    pto.trowexpandsub ins(%scores, %row_max : !pto.tile_buf<vec, 32x128xf32>, !pto.tile_buf<vec, 32x1xf32, blayout=col_major>) outs(%shifted : !pto.tile_buf<vec, 32x128xf32>)
+    pto.texp ins(%shifted : !pto.tile_buf<vec, 32x128xf32>) outs(%prob : !pto.tile_buf<vec, 32x128xf32>)
+    pto.trowsum ins(%prob, %work : !pto.tile_buf<vec, 32x128xf32>, !pto.tile_buf<vec, 32x128xf32>) outs(%row_sum : !pto.tile_buf<vec, 32x1xf32, blayout=col_major>)
+    pto.trowexpanddiv ins(%prob, %row_sum : !pto.tile_buf<vec, 32x128xf32>, !pto.tile_buf<vec, 32x1xf32, blayout=col_major>) outs(%softmax : !pto.tile_buf<vec, 32x128xf32>)
+    pto.trowexpandmul ins(%old_o, %alpha : !pto.tile_buf<vec, 16x512xf32>, !pto.tile_buf<vec, 16x1xf32, blayout=col_major>) outs(%old_scaled : !pto.tile_buf<vec, 16x512xf32>)
+    pto.trowexpandmul ins(%new_o, %beta : !pto.tile_buf<vec, 16x512xf32>, !pto.tile_buf<vec, 16x1xf32, blayout=col_major>) outs(%new_scaled : !pto.tile_buf<vec, 16x512xf32>)
+    pto.tadd ins(%old_scaled, %new_scaled : !pto.tile_buf<vec, 16x512xf32>, !pto.tile_buf<vec, 16x512xf32>) outs(%merged : !pto.tile_buf<vec, 16x512xf32>)
+    pto.trowexpanddiv ins(%merged, %denom : !pto.tile_buf<vec, 16x512xf32>, !pto.tile_buf<vec, 16x1xf32, blayout=col_major>) outs(%normalized : !pto.tile_buf<vec, 16x512xf32>)
+    pto.tadd ins(%wide_lhs, %wide_rhs : !pto.tile_buf<vec, 1x1024xf32>, !pto.tile_buf<vec, 1x1024xf32>) outs(%wide_sum : !pto.tile_buf<vec, 1x1024xf32>)
+    return
+  }
+}
+
+// INLINE-LABEL: func.func @ds_v4_decode_fa_vmi
+// INLINE: !pto.vmi.vreg<128xf32>
+// INLINE: pto.vmi.vcmax
+// INLINE: pto.vmi.vexp
+// INLINE: !pto.vmi.vreg<512xf32>
+// INLINE: pto.vmi.vmul
+// INLINE: pto.vmi.vadd
+// INLINE: pto.vmi.vdiv
+// INLINE: !pto.vmi.vreg<1024xf32>
+// INLINE: pto.vmi.vadd
+// READY-COUNT-5: status = "structural_fusion_candidate"
+// READY-COUNT-5: status = "structural_fusion_candidate_with_pressure_gate"
+// READY-NOT: status = "unsupported"
+// FINAL-LABEL: func.func @ds_v4_decode_fa_vmi
+// FINAL: pto.vexp
+// FINAL: pto.vdiv

@@ -1,0 +1,31 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// SPDX-License-Identifier: CANN-Open-Software-Agreement-Version-2.0
+
+// RUN: pto-test-opt %s -vmi-to-vpto | FileCheck %s
+
+module {
+  func.func @f16_to_i8_nonsat(
+      %source: !pto.vmi.vreg<256xf16, #pto.vmi.layout<deinterleaved = 2>>)
+      -> !pto.vreg<256xi8> {
+    %result = pto.vmi.fptosi %source {rounding = "Z", saturate = "OFF"}
+      : !pto.vmi.vreg<256xf16, #pto.vmi.layout<deinterleaved = 2>>
+      -> !pto.vmi.vreg<256xi8, #pto.vmi.layout<contiguous>>
+    %physical = "pto.vmi.unpack"(%result)
+      : (!pto.vmi.vreg<256xi8, #pto.vmi.layout<contiguous>>)
+      -> !pto.vreg<256xi8>
+    return %physical : !pto.vreg<256xi8>
+  }
+}
+
+// CHECK-LABEL: func.func @f16_to_i8_nonsat
+// CHECK: %[[C255:.*]] = arith.constant 255 : i16
+// CHECK: %[[BYTE_MASK:.*]] = pto.vdup %[[C255]], {{.*}} : i16, !pto.mask<b16> -> !pto.vreg<128xi16>
+// CHECK: %[[I16_0:.*]] = pto.vcvt {{.*}} {rnd = "Z", sat = "NOSAT"} : !pto.vreg<128xf16>, !pto.mask<b16> -> !pto.vreg<128xi16>
+// CHECK: %[[LOW_0:.*]] = pto.vand %[[I16_0]], %[[BYTE_MASK]], {{.*}} : !pto.vreg<128xi16>, !pto.vreg<128xi16>, !pto.mask<b16> -> !pto.vreg<128xi16>
+// CHECK: %[[F16_0:.*]] = pto.vcvt %[[LOW_0]], {{.*}} {rnd = "Z"} : !pto.vreg<128xi16>, !pto.mask<b16> -> !pto.vreg<128xf16>
+// CHECK: %[[EVEN:.*]] = pto.vcvt %[[F16_0]], {{.*}} {part = "EVEN", rnd = "Z", sat = "NOSAT"} : !pto.vreg<128xf16>, !pto.mask<b16> -> !pto.vreg<256xi8>
+// CHECK: %[[I16_1:.*]] = pto.vcvt {{.*}} {rnd = "Z", sat = "NOSAT"} : !pto.vreg<128xf16>, !pto.mask<b16> -> !pto.vreg<128xi16>
+// CHECK: %[[LOW_1:.*]] = pto.vand %[[I16_1]], %[[BYTE_MASK]], {{.*}} : !pto.vreg<128xi16>, !pto.vreg<128xi16>, !pto.mask<b16> -> !pto.vreg<128xi16>
+// CHECK: %[[F16_1:.*]] = pto.vcvt %[[LOW_1]], {{.*}} {rnd = "Z"} : !pto.vreg<128xi16>, !pto.mask<b16> -> !pto.vreg<128xf16>
+// CHECK: %[[ODD:.*]] = pto.vcvt %[[F16_1]], {{.*}} {part = "ODD", rnd = "Z", sat = "NOSAT"} : !pto.vreg<128xf16>, !pto.mask<b16> -> !pto.vreg<256xi8>
+// CHECK: pto.vor %[[EVEN]], %[[ODD]], {{.*}} : !pto.vreg<256xi8>, !pto.vreg<256xi8>, !pto.mask<b8> -> !pto.vreg<256xi8>

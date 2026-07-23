@@ -11,6 +11,7 @@
 
 #include "PTO/Transforms/VMILayoutPropagation.h"
 
+#include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/IR/VMIUtils.h"
 #include "PTO/Transforms/VMILayoutSupport.h"
 
@@ -169,17 +170,26 @@ public:
 };
 
 static bool isSameLayoutOp(Operation *op) {
-  return isa<VMIAddFOp, VMIAddIOp, VMISubFOp, VMISubIOp, VMIMulFOp,
-             VMIMulIOp, VMIFmaOp, VMIDivFOp, VMIMinFOp, VMIMaxFOp, VMINegFOp,
-             VMIAbsFOp, VMIAbsIOp, VMISqrtOp, VMIExpOp, VMILnOp, VMIReluOp,
-             VMIFPToSIOp, VMISIToFPOp, VMIAndIOp, VMIOrIOp, VMIXOrIOp,
-             VMIShLIOp, VMIShRUIOp, VMINotOp, VMICmpFOp, VMICmpIOp,
-             VMISelectOp, VMIBitcastOp, VMIMaskAndOp, VMIMaskOrOp,
-             VMIMaskXOrOp, VMIMaskNotOp, VMIActivePrefixIndexOp,
-             VMICompressOp, VMIExpandLoadOp>(op);
+  if (isa<VMIFPToSIOp, VMISIToFPOp>(op)) {
+    auto sourceType = dyn_cast<VMIVRegType>(op->getOperand(0).getType());
+    auto resultType = dyn_cast<VMIVRegType>(op->getResult(0).getType());
+    if (!sourceType || !resultType)
+      return false;
+    return pto::getPTOStorageElemBitWidth(sourceType.getElementType()) ==
+           pto::getPTOStorageElemBitWidth(resultType.getElementType());
+  }
+  return isa<VMIAddFOp, VMIAddIOp, VMISubFOp, VMISubIOp, VMIMulFOp, VMIMulIOp,
+             VMIFmaOp, VMIDivFOp, VMIMinFOp, VMIMaxFOp, VMINegFOp, VMIAbsFOp,
+             VMIAbsIOp, VMISqrtOp, VMIExpOp, VMILnOp, VMIReluOp, VMIAndIOp,
+             VMIOrIOp, VMIXOrIOp, VMIShLIOp, VMIShRUIOp, VMINotOp, VMICmpFOp,
+             VMICmpIOp, VMISelectOp, VMIBitcastOp, VMIMaskAndOp, VMIMaskOrOp,
+             VMIMaskXOrOp, VMIMaskNotOp, VMIActivePrefixIndexOp, VMICompressOp,
+             VMIExpandLoadOp>(op);
 }
 
 static bool isCastOp(Operation *op) {
+  if (isa<VMIFPToSIOp, VMISIToFPOp>(op))
+    return !isSameLayoutOp(op);
   return isa<VMIExtFOp, VMIExtSIOp, VMIExtUIOp, VMITruncFOp, VMITruncIOp>(op);
 }
 

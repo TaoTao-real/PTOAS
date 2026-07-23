@@ -27,10 +27,10 @@ module {
 }
 
 // vgather (pmode="zero") lowers to a legacy gather with a synthesised zero
-// passthru, then to pto.vgather2_bc + pto.vsel; inactive lanes select the zero
+// passthru, then to pto.vgather2 + pto.vsel; inactive lanes select the zero
 // constant (wildcarded below) instead of an explicit passthru operand.
 // CHECK-LABEL: func.func @vmi_to_vpto_gather(
-// CHECK: %[[GATHER:.*]] = pto.vgather2_bc %arg0, %arg1, %arg2 : !pto.ptr<f32, ub>, !pto.vreg<64xi32>, !pto.mask<b32> -> !pto.vreg<64xf32>
+// CHECK: %[[GATHER:.*]] = pto.vgather2 %arg0, %arg1, %arg2 : !pto.ptr<f32, ub>, !pto.vreg<64xi32>, !pto.mask<b32> -> !pto.vreg<64xf32>
 // CHECK: %[[OUT:.*]] = pto.vsel %[[GATHER]], %{{.*}}, %arg2 : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xf32>
 // CHECK: return %[[OUT]]
 // CHECK-NOT: pto.vmi.
