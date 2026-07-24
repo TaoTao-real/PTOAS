@@ -224,7 +224,7 @@ VMI 路由只复用 `FusionPlan/OpScheduling/FusionRegionGen` 的 Tile 层规划
 tgather:index
 tgather:mask_pattern
 trsqrt:basic
-trsqrt:high_precision_with_tmp
+trsqrt:high_precision_with_tmp（reserved follow-up）
 tmrgsort:format1
 tmrgsort:format2
 tcvt:<src,dst,round,sat>
@@ -335,9 +335,13 @@ Elementwise、Convert、RowReduce 和 RowBroadcast 必须共享 `iterationDomain
 按同一 row phase 融合。ColReduce 使用一个 `scf.for row` 携带 wide accumulator；最终
 Reduce 结果的 consumer 从下一 phase 开始。
 
-本批次两种 `trsqrt` form 都严格复用当前 A5 PTO-ISA 的 `vsqrt + 1/vdiv` 实现。带 tmp
-的 form 保留参数、operand schema 和语义身份，但不虚构额外精度算法，也不宣称其结果
-高于现有 PTO-ISA 实现。若后续引入专用高精度算法，必须单独完成 PTO-ISA 对齐和数值验收。
+本批次只把 `trsqrt` default/basic form 作为 VMI TileLib 支持项。`precisionType =
+high_precision` 是 DSv4 RMSNorm/QKV-RoPE 的真实需求，但当前 VMI candidate 不能把
+high-precision rsqrt 语义等价保留到 VMI/VPTO；因此该 form 暂作为遗留事项，不进入
+当前 VMI fusion-ready 覆盖范围。后续修复需要参考 A5 PTO-ISA `TRsqrt.hpp` 中的
+`SqrtFloatImpl/SqrtPrecisionImpl + DivIEEE754FloatImpl/DivIEEE754HalfImpl` 组合算法，
+分别补齐 PTODSL TileLib `trsqrt.py`、VMI TileLib candidate、必要的 VMI primitive/tracing
+以及 VMIToVPTO lowering，并通过 legacy/A5 数值对齐后再打开。
 
 ### 6.3 P1：Compressor、HC 和完整 Attention 辅助路径
 
@@ -735,7 +739,7 @@ PTODSL/VPTO 或专项 lowering，只作为 VMI Fusion 边界。
 | B0 Coverage 与协议 | 2 天 | 从 DS v4 实际 PTO IR 生成 `(op, pipe, semantic_form, dtype, logical_width, valid_shape, attrs)` manifest；冻结 logical-row、form key、fallback 和诊断协议 | 所有 `PIPE_V` form 均归类，无未知项；非 Vector op 不进入 VMI provider |
 | B1 静态基础族（当前基线） | 已具备 | semantic-form dispatch；基础 unary/binary/scalar 模板；静态 full-1VL Elementwise 和现有 Reduce/Expand/Convert | 保持现有 PTODSL 和 VMI lit 回归通过 |
 | B1W Wide logical-row 基础 | 3 天 | 用 logical-row map 替换 `cols == dtype-native VL`；wide/compact load-store；`tcvt` 接入 `extf/truncf`；Elementwise 支持已验证的 wide logical width | `[8,128]xbf16 -> [8,128]xf32 -> tmul` 和 `[8,256]xf32` Expand/Inline 语义正确；每个 TileOp 只有一个 row loop |
-| B2 FA/RMSNorm Reduce/Expand | 4 天 | wide `trowmax/trowsum`，compact state，`trowexpandsub/trowexpandmul/trowexpanddiv`，`trecip/trsqrt`，P0 convert 矩阵 | Online Softmax、RMSNorm 生成语义完整 VMI；Reduce 结合顺序和 precision/tmp form 有测试 |
+| B2 FA/RMSNorm Reduce/Expand | 4 天 | wide `trowmax/trowsum`，compact state，`trowexpandsub/trowexpandmul/trowexpanddiv`，`trecip/trsqrt` default，P0 convert 矩阵 | Online Softmax、RMSNorm 生成语义完整 VMI；Reduce 结合顺序有测试；`trsqrt high_precision` 作为 legacy fallback/fusion boundary 记录 |
 | B3 动态 valid shape 与 mask | 3 天 | valid row/inner SSA 进入模板；typed prefix mask；masked store；tail-safe load 契约；`tfillpad` 最小 form | `valid=0/1/VL-1/VL`、随机动态值通过；inactive lane 不越界且无可观察写入 |
 | B4 RoPE/Attention 辅助与重排 | 4 天 | `tgather:index`、`tgather:mask_pattern`、`trowexpand/tcolexpand*`、`tcolmax/tcolsum`、`tcolexpandexpdif`、`ttrans` | QKV/RoPE、Attention 辅助路径无未知 `PIPE_V` form；lane 顺序、layout 和 col-reduce phase 正确 |
 | B5 Gate/Indexer 专项 | 独立评审 | `tsort32`、`tmrgsort:format1/format2`；先补 VMI sort 语义和 verifier | 设计评审通过后再写模板；不允许模板内直接拼物理 VPTO，layout/VMIToVPTO 单独跟踪 |
