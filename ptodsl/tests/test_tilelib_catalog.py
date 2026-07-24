@@ -26,6 +26,7 @@ CATALOG = {
     "pto.tands": ("template_tands", "pto.vand", ("src", "scalar", "dst"), "i32"),
     "pto.tcmp": ("template_tcmp", "pto.vcmp", ("src0", "src1", "dst"), "f32"),
     "pto.tcmps": ("template_tcmps", "pto.vcmps", ("src", "scalar", "dst"), "f32"),
+    "pto.tci": ("template_tci", "pto.store", ("start", "dst"), "i32"),
     "pto.tcolexpand": ("template_tcolexpand", "pto.vlds", ("src", "dst"), "f32"),
     "pto.tcolexpandadd": ("template_tcolexpandadd", "pto.vadd", ("src0", "src1", "dst"), "f32"),
     "pto.tcolexpanddiv": ("template_tcolexpanddiv", "pto.vdiv", ("src0", "src1", "dst"), "f32"),
@@ -228,6 +229,7 @@ ROW_REDUCTIONS = {
     "pto.trowsum",
 }
 SPECIAL_VALID_SHAPES = {
+    ("pto.tci", "dst"): (1, 64),
     ("pto.tcolexpand", "src"): (1, 64),
     ("pto.trowexpand", "src"): (8, 1),
 }
@@ -258,14 +260,14 @@ SHARED_RENDERED_OPS = (
     "pto.vsts",
     "pto.tilelang.instance",
 )
-OPS_WITHOUT_TILE_LOAD = {"pto.texpands"}
+OPS_WITHOUT_TILE_LOAD = {"pto.texpands", "pto.tci"}
 OPS_WITHOUT_TILE_LOAD = OPS_WITHOUT_TILE_LOAD | {"pto.trandom", "pto.tsort32", "pto.tload", "pto.tstore", "pto.tstore_fp", "pto.textract_fp"}
 OPS_WITHOUT_TILE_LOAD = OPS_WITHOUT_TILE_LOAD | {"pto.tfillpad_inplace"}
 OPS_WITHOUT_TILE_LOAD = OPS_WITHOUT_TILE_LOAD | CUBE_OPS
-OPS_WITHOUT_VECTOR_STORE = {"pto.tcmp", "pto.tcmps", "pto.tsort32"}
+OPS_WITHOUT_VECTOR_STORE = {"pto.tci", "pto.tcmp", "pto.tcmps", "pto.tsort32"}
 OPS_WITHOUT_VECTOR_STORE = OPS_WITHOUT_VECTOR_STORE | {"pto.tload", "pto.tstore", "pto.tstore_fp", "pto.textract_fp"}
 OPS_WITHOUT_VECTOR_STORE = OPS_WITHOUT_VECTOR_STORE | CUBE_OPS
-OPS_WITHOUT_MEMREF_SUBVIEW = {"pto.tcmps", "pto.tsort32"}
+OPS_WITHOUT_MEMREF_SUBVIEW = {"pto.tci", "pto.tcmps", "pto.tsort32"}
 OPS_WITHOUT_MEMREF_SUBVIEW = OPS_WITHOUT_MEMREF_SUBVIEW | {"pto.texpands", "pto.tdivs", "pto.tfillpad_inplace"}
 OPS_WITHOUT_MEMREF_SUBVIEW = OPS_WITHOUT_MEMREF_SUBVIEW | {"pto.tload", "pto.tstore", "pto.tstore_fp", "pto.textract_fp"}
 OPS_WITHOUT_MEMREF_SUBVIEW = OPS_WITHOUT_MEMREF_SUBVIEW | ROW_REDUCTIONS
@@ -276,6 +278,7 @@ OPS_WITHOUT_LOOP = OPS_WITHOUT_LOOP | {"pto.tstore_fp", "pto.textract_fp"}
 OPS_WITHOUT_LOOP = OPS_WITHOUT_LOOP | CUBE_OPS
 OPS_ALLOWING_CASTPTR = {"pto.tsel", "pto.tsels"}
 SCALAR_OPERANDS = {
+    "start",
     "scalar",
     "slope",
     "index_row",
@@ -289,6 +292,7 @@ SCALAR_OPERANDS = {
     "block_len",
 }
 SPECIAL_SCALAR_DTYPES = {
+    ("pto.tci", "start"): "i32",
     ("pto.tshls", "scalar"): "i16",
     ("pto.tshrs", "scalar"): "i16",
     ("pto.textract", "index_row"): "i32",
@@ -387,8 +391,11 @@ def _entry_parts(entry):
 
 def _tile_spec_for(op, operand, dtype_name):
     valid_shape = SPECIAL_VALID_SHAPES.get((op, operand), (8, 64))
+    shape = (1, 64) if op == "pto.tci" else (8, 64)
+    if op == "pto.tci":
+        valid_shape = shape
     return TileSpec(
-        shape=(8, 64),
+        shape=shape,
         dtype=ScalarType(dtype_name),
         memory_space=SPECIAL_MEMORY_SPACES.get((op, operand), "ub"),
         valid_shape=valid_shape,
@@ -536,6 +543,43 @@ class TileLibCatalogTest(unittest.TestCase):
         self.assertEqual(selected_store.name, "template_tstore_nd")
         store_mlir = selected_store.specialize(**store_specs).mlir_text()
         self.assertIn("pto.mte_ub_gm", store_mlir)
+
+    def test_rank1_row_major_load_store_views_render(self):
+        load_specs = {
+            "src": ViewSpec(
+                shape=(128,),
+                dtype=ScalarType("bf16"),
+                memory_space="gm",
+                strides=(1,),
+            ),
+            "dst": TileSpec(
+                shape=(1, 128),
+                dtype=ScalarType("bf16"),
+                memory_space="ub",
+                valid_shape=(1, 128),
+            ),
+        }
+        selected_load = select("pto.tload", "a5", load_specs)
+        self.assertEqual(selected_load.name, "template_tload_nd2nd")
+        self.assertIn("pto.mte_gm_ub", selected_load.specialize(**load_specs).mlir_text())
+
+        store_specs = {
+            "src": TileSpec(
+                shape=(1, 128),
+                dtype=ScalarType("bf16"),
+                memory_space="ub",
+                valid_shape=(1, 128),
+            ),
+            "dst": ViewSpec(
+                shape=(128,),
+                dtype=ScalarType("bf16"),
+                memory_space="gm",
+                strides=(1,),
+            ),
+        }
+        selected_store = select("pto.tstore", "a5", store_specs)
+        self.assertEqual(selected_store.name, "template_tstore_nd")
+        self.assertIn("pto.mte_ub_gm", selected_store.specialize(**store_specs).mlir_text())
 
     def test_tstore_accepts_dynamic_valid_shape_metadata(self):
         dynamic_dim = -(2**63)

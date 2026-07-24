@@ -1505,6 +1505,8 @@ static LogicalResult lowerSubViewOps(func::FuncOp func, MLIRContext *ctx) {
                                resultTileTy && resultTileTy.hasDynamicValid(),
                                ctx);
     bindOp->setAttr("pto.view_semantics", rewriter.getStringAttr("subview"));
+    bindOp->setAttr("pto.logical_shape",
+                    rewriter.getDenseI64ArrayAttr(staticSizes));
     rewriter.replaceOp(op, bindOp.getResult());
   }
   return success();
@@ -2933,13 +2935,8 @@ struct PTOViewToMemrefPass
           return;
         }
 
-        rewriter.replaceOpWithNewOp<pto::TCIOp>(
-            op,
-            TypeRange{},
-            s,
-            tmp,
-            dst,
-            descending);
+        replaceOpWithClonedAttrs<pto::TCIOp>(rewriter, op, TypeRange{}, s, tmp,
+                                             dst, descending);
       }
 
       DefaultInlineVector<mlir::pto::TCmpOp> cmpops;
@@ -3626,11 +3623,8 @@ struct PTOViewToMemrefPass
         }
 
         if (maskPattern) {
-          rewriter.replaceOpWithNewOp<pto::TGatherOp>(
-              op,
-              TypeRange{},
-              src,
-              dst,
+          replaceOpWithClonedAttrs<pto::TGatherOp>(
+              rewriter, op, TypeRange{}, src, dst,
               /*cdst=*/Value(),
               /*indices=*/Value(),
               /*tmp=*/Value(),
@@ -3650,18 +3644,10 @@ struct PTOViewToMemrefPass
             return;
           }
 
-          rewriter.replaceOpWithNewOp<pto::TGatherOp>(
-              op,
-              TypeRange{},
-              src,
-              dst,
-              cdst,
-              /*indices=*/Value(),
-              tmp,
-              kValue,
-              /*maskPattern=*/pto::MaskPatternAttr(),
-              cmpMode,
-              offset);
+          replaceOpWithClonedAttrs<pto::TGatherOp>(
+              rewriter, op, TypeRange{}, src, dst, cdst,
+              /*indices=*/Value(), tmp, kValue,
+              /*maskPattern=*/pto::MaskPatternAttr(), cmpMode, offset);
           continue;
         }
 
@@ -3674,14 +3660,9 @@ struct PTOViewToMemrefPass
             return;
           }
 
-          rewriter.replaceOpWithNewOp<pto::TGatherOp>(
-              op,
-              TypeRange{},
-              src,
-              dst,
-              /*cdst=*/Value(),
-              indices,
-              tmp,
+          replaceOpWithClonedAttrs<pto::TGatherOp>(
+              rewriter, op, TypeRange{}, src, dst,
+              /*cdst=*/Value(), indices, tmp,
               /*kValue=*/Value(),
               /*maskPattern=*/pto::MaskPatternAttr(),
               /*cmpMode=*/pto::CmpModeAttr(),
