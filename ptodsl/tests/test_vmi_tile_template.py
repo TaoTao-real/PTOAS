@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ptodsl"))
 
 from ptodsl._tile_template_tracing import (
     CanonicalBlockMap,
+    LogicalRowMap,
     Tile,
     TileSpec,
     bf16,
@@ -89,8 +90,8 @@ def specialize_texp(dtype=f32, shape=TILE_SHAPE):
     return vmi_texp_block64.specialize(src=spec, dst=spec)
 
 
-def check_canonical_block_map() -> None:
-    block_map = CanonicalBlockMap(TILE_SHAPE, logical_lanes=64)
+def check_logical_row_map() -> None:
+    block_map = LogicalRowMap(TILE_SHAPE, logical_lanes=64)
     expect(block_map.blocks_per_row == 1, "[32,64]xf32 should contain one block per row")
     expect(block_map.logical_block_count == 32, "[32,64]xf32 should contain 32 blocks")
 
@@ -101,15 +102,24 @@ def check_canonical_block_map() -> None:
     expect(coordinate.linear_offset == 1088, "logical block 17 should start at offset 1088")
     expect(coordinate.active_lanes == 64, "the f32 contract should activate 64 lanes")
 
-    expect_raises(
-        lambda: CanonicalBlockMap((32, 128), logical_lanes=64),
-        ValueError,
-        "exactly one logical VL block per row",
+    wide_map = LogicalRowMap((32, 128), logical_lanes=128)
+    expect(wide_map.blocks_per_row == 1, "a wide row must remain one logical block")
+    expect(wide_map.logical_block_count == 32, "wide rows must iterate only over rows")
+    expect(wide_map.coordinate(17).linear_offset == 2176, "wide row offsets must use 128 lanes")
+    very_wide_map = LogicalRowMap((1, 1024), logical_lanes=1024)
+    expect(
+        very_wide_map.logical_block_count == 1
+        and very_wide_map.blocks_per_row == 1,
+        "a 1024-lane DSv4 row must remain one logical block",
+    )
+    expect(
+        CanonicalBlockMap is LogicalRowMap,
+        "CanonicalBlockMap must remain a compatibility alias",
     )
     expect_raises(
         lambda: CanonicalBlockMap((32, 32), logical_lanes=64),
         ValueError,
-        "exactly one logical VL block per row",
+        "logical_lanes to equal the tile inner extent",
     )
 
 
@@ -144,12 +154,13 @@ def check_candidate_ir() -> tuple[str, str]:
     f16_tadd = specialize_tadd(dtype=f16, shape=(32, 128)).mlir_text()
     expect(
         "!pto.vmi.vreg<128xf16>" in f16_tadd,
-        "f16 tadd should use its native 128-lane VL",
+        "f16 tadd should use its 128-lane logical row",
     )
-    expect_raises(
-        lambda: specialize_texp(shape=(32, 128)).mlir_text(),
-        ValueError,
-        "exactly one logical VL block per row",
+    wide_texp = specialize_texp(shape=(32, 128)).mlir_text()
+    expect(
+        wide_texp.count("scf.for") == 1
+        and "!pto.vmi.vreg<128xf32>" in wide_texp,
+        "wide f32 texp should remain one row loop over a 128-lane logical vreg",
     )
     return tadd_text, texp_text
 
@@ -232,16 +243,17 @@ def check_provider_helper() -> dict[str, str]:
         "shape": [1, 32],
         "valid_shape": [1, 32],
     }
-    expect_raises(
-        lambda: instantiate_candidate(
-            target="a5",
-            op_name="pto.tadd",
-            operand_specs=[compact_tile_spec, compact_tile_spec, compact_tile_spec],
-            provider_module="ptodsl.vmi_tilelib",
-            context_attrs={},
-        ).mlir_text(),
-        ValueError,
-        "exactly one logical VL block per row",
+    compact_tadd = instantiate_candidate(
+        target="a5",
+        op_name="pto.tadd",
+        operand_specs=[compact_tile_spec, compact_tile_spec, compact_tile_spec],
+        provider_module="ptodsl.vmi_tilelib",
+        context_attrs={},
+    ).mlir_text()
+    expect(
+        compact_tadd.count("scf.for") == 1
+        and "!pto.vmi.vreg<32xf32>" in compact_tadd,
+        "compact tadd should use one 32-lane logical row",
     )
 
     scalar_spec = {"kind": "scalar", "dtype": "f32"}
@@ -833,7 +845,7 @@ def check_vmi_to_vpto_lowering(name: str, mlir_text: str, expected_op: str) -> N
 
 
 def main() -> None:
-    check_canonical_block_map()
+    check_logical_row_map()
     check_legacy_vpto_compatibility()
     b1_artifacts = check_provider_helper()
     tadd_text, texp_text = check_candidate_ir()
