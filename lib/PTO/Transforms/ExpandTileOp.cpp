@@ -375,6 +375,16 @@ static std::optional<std::string> getTCvtRoundModeString(pto::TCvtOp op) {
   return std::nullopt;
 }
 
+static StringRef getTCvtSatModeString(pto::TCvtOp op) {
+  switch (op.getSatMode()) {
+  case pto::SaturationMode::ON:
+    return "ON";
+  case pto::SaturationMode::OFF:
+    return "OFF";
+  }
+  llvm_unreachable("unknown SaturationMode");
+}
+
 static StringRef getPrecisionTypeString(pto::DivPrecision precision) {
   switch (precision) {
   case pto::DivPrecision::Default:
@@ -459,6 +469,7 @@ static void appendOpContextAttrs(
     std::optional<std::string> roundMode = getTCvtRoundModeString(tcvt);
     if (roundMode)
       attrs.emplace_back("round_mode", *roundMode);
+    attrs.emplace_back("sat_mode", getTCvtSatModeString(tcvt).str());
   }
   if (auto trandom = dyn_cast<pto::TRandomOp>(op))
     attrs.emplace_back("rounds", getTRandomRoundsString(trandom));

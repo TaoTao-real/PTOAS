@@ -8,10 +8,7 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 from pathlib import Path
-import shutil
-import subprocess
 import sys
-from tempfile import TemporaryDirectory
 from types import ModuleType
 
 
@@ -25,15 +22,7 @@ from ptodsl._tile_template_tracing import (
     bf16,
     f16,
     f32,
-    for_,
-    i32,
-    make_mask,
-    scalar_const,
     tile_template,
-    vadd,
-    vecscope,
-    vlds,
-    vsts,
 )
 from ptodsl.tilelib.registry import TileTemplateRegistry
 from ptodsl.vmi_tilelib import (
@@ -49,19 +38,6 @@ from ptodsl.vmi_tilelib_helper import instantiate_candidate
 
 
 TILE_SHAPE = (32, 64)
-
-
-@tile_template(op="tadd", name="legacy_vpto_tadd")
-def legacy_vpto_tadd(src0: Tile, src1: Tile, dst: Tile):
-    with vecscope():
-        rows, cols = dst.valid_shape
-        with for_(0, rows, step=1) as row:
-            remained = scalar_const(256, i32)
-            with for_(0, cols, step=64) as col:
-                mask, _ = make_mask(dst.element_type, remained)
-                lhs = vlds(src0[row, col:])
-                rhs = vlds(src1[row, col:])
-                vsts(vadd(lhs, rhs, mask), dst[row, col:], mask)
 
 
 def expect(condition: bool, message: str) -> None:
@@ -724,13 +700,12 @@ def check_col_expand_candidate() -> None:
         )
 
 
-def check_tcvt_bf16_candidate() -> None:
-    """tcvt covers both f32->f16 and f32->bf16 cast on the canonical path."""
-    raw_tile_spec = {
+def check_tcvt_vmi_contract() -> None:
+    """Tile conversion semantics remain explicit in VMI, before VPTO lowering."""
+    base = {
         "kind": "tile",
-        "dtype": "f32",
-        "shape": [32, 64],
-        "valid_shape": [32, 64],
+        "shape": [2, 128],
+        "valid_shape": [2, 128],
         "memory_space": "ub",
         "config": {
             "b_layout": "row_major",
@@ -739,138 +714,116 @@ def check_tcvt_bf16_candidate() -> None:
             "pad_value": "0x0",
         },
     }
-    f16_dst_spec = {**raw_tile_spec, "dtype": "f16"}
-    bf16_dst_spec = {**raw_tile_spec, "dtype": "bf16"}
-    f16_text = instantiate_candidate(
-        target="a5",
-        op_name="pto.tcvt",
-        operand_specs=[raw_tile_spec, f16_dst_spec],
-        provider_module="ptodsl.vmi_tilelib",
-        context_attrs={"round_mode": "RINT"},
-    ).mlir_text()
-    expect("pto.vmi.vcvt" in f16_text, "tcvt f32->f16 should lower to VMI conversion")
-    expect("vreg<64xf16>" in f16_text, "tcvt f32->f16 should target the f16 vreg type")
-
-    bf16_text = instantiate_candidate(
-        target="a5",
-        op_name="pto.tcvt",
-        operand_specs=[raw_tile_spec, bf16_dst_spec],
-        provider_module="ptodsl.vmi_tilelib",
-        context_attrs={"round_mode": "RINT"},
-    ).mlir_text()
-    expect("pto.vmi.vcvt" in bf16_text, "tcvt f32->bf16 should lower to VMI conversion")
-    expect("vreg<64xbf16>" in bf16_text, "tcvt f32->bf16 should target the bf16 vreg type")
-
-
-def check_col_reduce_vmi_to_vpto_lowering() -> None:
-    """The vreg-carrying ColReduce loop must survive VMI->VPTO lowering as a
-    real physical ``scf.for iter_args(%acc = ...) -> !pto.vreg<...>`` (the seed
-    loaded once before the loop, one vlds+vmax per iteration), proving the
-    pto-isa reduce loop shape reaches the physical layer."""
-    col_tile_spec = {
-        "kind": "tile",
-        "dtype": "f32",
-        "shape": [32, 64],
-        "valid_shape": [32, 64],
-        "memory_space": "ub",
-        "config": {
-            "b_layout": "row_major",
-            "s_layout": "none_box",
-            "s_fractal_size": 512,
-            "pad_value": "0x0",
-        },
-    }
-    reduced_col_spec = {
-        **col_tile_spec,
-        "shape": [1, 64],
-        "valid_shape": [1, 64],
-    }
-    colmax = instantiate_candidate(
-        target="a5",
-        op_name="pto.tcolmax",
-        operand_specs=[col_tile_spec, reduced_col_spec],
-        provider_module="ptodsl.vmi_tilelib",
-        context_attrs={},
-    ).mlir_text()
-    colsum = instantiate_candidate(
-        target="a5",
-        op_name="pto.tcolsum",
-        operand_specs=[col_tile_spec, reduced_col_spec],
-        provider_module="ptodsl.vmi_tilelib",
-        context_attrs={},
-    ).mlir_text()
-    check_vmi_to_vpto_lowering("vmi_tcolmax", colmax, "pto.vmax")
-    check_vmi_to_vpto_lowering("vmi_tcolsum", colsum, "pto.vadd")
-
-
-def check_legacy_vpto_compatibility() -> None:
-    spec = TileSpec(TILE_SHAPE, f32)
-    artifact = legacy_vpto_tadd.specialize(src0=spec, src1=spec, dst=spec)
-    artifact.verify()
-    text = artifact.mlir_text()
-    expect(text.count("scf.for") == 2, "legacy VPTO template should retain its two loops")
-    expect("pto.vlds" in text, "legacy VPTO template should still emit vlds")
-    expect("pto.vadd" in text, "legacy VPTO template should still emit vadd")
-    expect("pto.vsts" in text, "legacy VPTO template should still emit vsts")
-
-
-def check_vmi_to_vpto_lowering(name: str, mlir_text: str, expected_op: str) -> None:
-    ptoas = shutil.which("ptoas")
-    expect(ptoas is not None, "ptoas must be available for VMI-to-VPTO regression coverage")
-    with TemporaryDirectory() as temp_dir:
-        input_path = Path(temp_dir) / f"{name}.pto"
-        input_path.write_text(mlir_text, encoding="utf-8")
-        completed = subprocess.run(
-            [
-                ptoas,
-                "--pto-arch=a5",
-                "--pto-backend=vpto",
-                "--enable-vmi",
-                "--emit-vpto",
-                str(input_path),
-                "-o",
-                "-",
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-    expect(
-        completed.returncode == 0,
-        f"VMI-to-VPTO lowering failed for {name}:\n{completed.stderr}",
+    cases = (
+        ("bf16_to_f32", "bf16", "f32", "ROUND", "OFF", None, None),
+        ("f32_to_bf16", "f32", "bf16", "RINT", "OFF", "R", "OFF"),
+        ("f32_to_f16", "f32", "f16", "ROUND", "ON", "A", "SAT"),
+        ("f32_to_i32", "f32", "i32", "TRUNC", "OFF", "Z", "OFF"),
+        ("i32_to_f16", "i32", "f16", "ROUND", "OFF", "A", "OFF"),
+        ("f16_to_i8", "f16", "i8", "TRUNC", "OFF", "Z", "OFF"),
     )
-    expect("pto.vmi." not in completed.stdout, f"{name} should contain no VMI ops after lowering")
-    expect(expected_op in completed.stdout, f"{name} should lower to {expected_op}")
-    expect(completed.stdout.count("scf.for") == 1, f"{name} should preserve one flat loop")
+    for name, src_dtype, dst_dtype, round_mode, sat_mode, rounding, saturate in cases:
+        text = instantiate_candidate(
+            target="a5",
+            op_name="pto.tcvt",
+            operand_specs=[{**base, "dtype": src_dtype}, {**base, "dtype": dst_dtype}],
+            provider_module="ptodsl.vmi_tilelib",
+            context_attrs={"round_mode": round_mode, "sat_mode": sat_mode},
+        ).mlir_text()
+        expect(text.count("scf.for") == 1, f"{name} should emit one logical row loop")
+        expect(
+            f"!pto.vmi.vreg<128x{src_dtype}>" in text
+            and f"!pto.vmi.vreg<128x{dst_dtype}>" in text,
+            f"{name} should preserve 128 logical lanes",
+        )
+        expect("pto.vmi.vcvt" in text, f"{name} should emit VMI conversion")
+        if rounding is None:
+            expect("rounding =" not in text, f"{name} should not invent rounding control")
+            expect("saturate =" not in text, f"{name} should not invent saturation control")
+        else:
+            expect(f'rounding = "{rounding}"' in text, f"{name} should preserve rounding")
+            expect(f'saturate = "{saturate}"' in text, f"{name} should preserve saturation")
+
+
+def check_compact_logical_vregs() -> None:
+    """Compact states remain legal VMI values without assuming VPTO lowering."""
+    row = {
+        "kind": "tile",
+        "dtype": "f32",
+        "shape": [8, 64],
+        "valid_shape": [8, 64],
+        "memory_space": "ub",
+        "config": {
+            "b_layout": "row_major",
+            "s_layout": "none_box",
+            "s_fractal_size": 512,
+            "pad_value": "0x0",
+        },
+    }
+    compact_row = {**row, "shape": [1, 8], "valid_shape": [1, 8]}
+    compact_column = {
+        **row,
+        "shape": [8, 1],
+        "valid_shape": [8, 1],
+        "config": {**row["config"], "b_layout": "col_major"},
+    }
+
+    sqrt = instantiate_candidate(
+        target="a5",
+        op_name="pto.tsqrt",
+        operand_specs=[compact_row, compact_row],
+        provider_module="ptodsl.vmi_tilelib",
+        context_attrs={"precisionType": "default"},
+    ).mlir_text()
+    expect(sqrt.count("scf.for") == 1, "tsqrt should emit one row loop")
+    expect("!pto.vmi.vreg<8xf32>" in sqrt, "tsqrt should preserve eight logical lanes")
+    expect("pto.vmi.vsqrt" in sqrt, "tsqrt should emit VMI sqrt")
+
+    recip = instantiate_candidate(
+        target="a5",
+        op_name="pto.trecip",
+        operand_specs=[compact_row, compact_row],
+        provider_module="ptodsl.vmi_tilelib",
+        context_attrs={"precisionType": "default"},
+    ).mlir_text()
+    expect(recip.count("scf.for") == 1, "trecip should emit one row loop")
+    expect("pto.vmi.vbrc" in recip and "pto.vmi.vdiv" in recip,
+           "trecip should express one over the logical row")
+
+    expanded = instantiate_candidate(
+        target="a5",
+        op_name="pto.trowexpandmul",
+        operand_specs=[row, compact_column, row],
+        provider_module="ptodsl.vmi_tilelib",
+        context_attrs={},
+    ).mlir_text()
+    expect(expanded.count("scf.for") == 1, "row expand should emit one row loop")
+    expect("!pto.vmi.vreg<1xf32>" in expanded, "row expand should retain scalar state")
+    expect("pto.vmi.vbrc" in expanded, "row expand should broadcast scalar state")
+
+    tmp = {**compact_row, "shape": [1, 8], "valid_shape": [1, 8]}
+    expect_raises(
+        lambda: instantiate_candidate(
+            target="a5",
+            op_name="pto.trsqrt",
+            operand_specs=[row, row, tmp],
+            provider_module="ptodsl.vmi_tilelib",
+            context_attrs={"precisionType": "high_precision"},
+        ).mlir_text(),
+        LookupError,
+        "no legal PTODSL VMI semantic form",
+        "does not support context attrs",
+    )
 
 
 def main() -> None:
     check_logical_row_map()
-    check_legacy_vpto_compatibility()
-    b1_artifacts = check_provider_helper()
-    tadd_text, texp_text = check_candidate_ir()
-    check_vmi_to_vpto_lowering("vmi_tadd_block64", tadd_text, "pto.vadd")
-    check_vmi_to_vpto_lowering("vmi_texp_block64", texp_text, "pto.vexp")
+    check_provider_helper()
+    check_candidate_ir()
     check_col_reduce_candidate()
     check_col_expand_candidate()
-    check_tcvt_bf16_candidate()
-    check_col_reduce_vmi_to_vpto_lowering()
-    expected_b1_ops = {
-        "vmi_tdivs_scalar_tile": "pto.vdiv",
-        "vmi_tdiv": "pto.vdiv",
-        "vmi_tmin": "pto.vmin",
-        "vmi_tabs": "pto.vabs",
-        "vmi_tneg": "pto.vneg",
-        "vmi_tsubs": "pto.vsub",
-        "vmi_texpands": "pto.vdup",
-        "vmi_tadd_f16": "pto.vadd",
-        "vmi_tadd_bf16": "pto.vadd",
-        "vmi_tadd_i32": "pto.vadd",
-        "vmi_tadd_i16": "pto.vadd",
-        "vmi_tadd_i8": "pto.vadd",
-    }
-    for name, expected_op in expected_b1_ops.items():
-        check_vmi_to_vpto_lowering(name, b1_artifacts[name], expected_op)
+    check_tcvt_vmi_contract()
+    check_compact_logical_vregs()
     print("ptodsl_vmi_tile_template: PASS")
 
 

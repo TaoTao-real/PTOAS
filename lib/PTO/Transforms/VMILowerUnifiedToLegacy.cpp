@@ -415,15 +415,40 @@ static LogicalResult lowerVCvt(VMICvtOp op, OpBuilder &builder) {
     result = builder.create<VMIExtFOp>(loc, resultType, source).getResult();
   } else if (direction == "narrow_fp") {
     StringAttr roundingAttr = op.getRoundingAttr();
-    result =
-        builder.create<VMITruncFOp>(loc, resultType, source, roundingAttr)
-            .getResult();
+    StringAttr saturateAttr = op.getSaturateAttr();
+    result = builder
+                 .create<VMITruncFOp>(loc, resultType, source, roundingAttr,
+                                      saturateAttr)
+                 .getResult();
   } else if (direction == "fptosi") {
     result =
-        builder.create<VMIFPToSIOp>(loc, resultType, source).getResult();
+        builder
+            .create<VMIFPToSIOp>(loc, resultType, source, op.getRoundingAttr(),
+                                 op.getSaturateAttr())
+            .getResult();
   } else if (direction == "sitofp") {
-    result =
-        builder.create<VMISIToFPOp>(loc, resultType, source).getResult();
+    if (dstElem.isF16()) {
+      auto logicalType = cast<VMIVRegType>(resultType);
+      auto f32Type =
+          VMIVRegType::get(builder.getContext(), logicalType.getElementCount(),
+                           builder.getF32Type(), Attribute());
+      Value asF32 = builder
+                        .create<VMISIToFPOp>(loc, f32Type, source,
+                                             /*rounding=*/nullptr,
+                                             /*saturate=*/nullptr)
+                        .getResult();
+      result =
+          builder
+              .create<VMITruncFOp>(loc, resultType, asF32, op.getRoundingAttr(),
+                                   op.getSaturateAttr())
+              .getResult();
+    } else {
+      result =
+          builder
+              .create<VMISIToFPOp>(loc, resultType, source,
+                                   op.getRoundingAttr(), op.getSaturateAttr())
+              .getResult();
+    }
   } else if (direction == "widen_int") {
     // Use source type signedness to decide signed vs unsigned extension.
     bool useSigned = true;
