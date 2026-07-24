@@ -1,0 +1,57 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// SPDX-License-Identifier: CANN-Open-Software-License-Agreement-Version-2.0
+
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl-vmi --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-expand-tile-op 2>&1 | FileCheck %s --check-prefix=EXPAND
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl-vmi --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-inline-libcall 2>&1 | FileCheck %s --check-prefix=INLINE --implicit-check-not=pto.vecscope
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl-vmi --analyze-vmi-fusion-ready --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-analyze-vmi-fusion-ready 2>&1 | FileCheck %s --check-prefix=READY
+
+module {
+  func.func @ds_v4_rmsnorm_vmi() {
+    %src_bf16 = pto.alloc_tile : !pto.tile_buf<vec, 8x128xbf16>
+    %src_f32 = pto.alloc_tile : !pto.tile_buf<vec, 8x128xf32>
+    %square = pto.alloc_tile : !pto.tile_buf<vec, 8x128xf32>
+    %workspace = pto.alloc_tile : !pto.tile_buf<vec, 8x128xf32>
+    %row_sum = pto.alloc_tile : !pto.tile_buf<vec, 8x1xf32, blayout=col_major>
+    %row_sum_r = pto.treshape %row_sum : !pto.tile_buf<vec, 8x1xf32, blayout=col_major> -> !pto.tile_buf<vec, 1x8xf32>
+    %mean = pto.alloc_tile : !pto.tile_buf<vec, 1x8xf32>
+    %variance = pto.alloc_tile : !pto.tile_buf<vec, 1x8xf32>
+    %sqrt_row = pto.alloc_tile : !pto.tile_buf<vec, 1x8xf32>
+    %inv_row = pto.alloc_tile : !pto.tile_buf<vec, 1x8xf32>
+    %inv_col = pto.treshape %inv_row : !pto.tile_buf<vec, 1x8xf32> -> !pto.tile_buf<vec, 8x1xf32, blayout=col_major>
+    %normalized = pto.alloc_tile : !pto.tile_buf<vec, 8x128xf32>
+    %gamma = pto.alloc_tile : !pto.tile_buf<vec, 1x128xf32>
+    %scaled = pto.alloc_tile : !pto.tile_buf<vec, 8x128xf32>
+    %dst_bf16 = pto.alloc_tile : !pto.tile_buf<vec, 8x128xbf16>
+    %hidden_inv = arith.constant 2.44140625e-4 : f32
+    %eps = arith.constant 1.0e-6 : f32
+
+    pto.tcvt ins(%src_bf16 {rmode = #pto<round_mode CAST_RINT>, satmode = #pto<saturation_mode OFF>} : !pto.tile_buf<vec, 8x128xbf16>) outs(%src_f32 : !pto.tile_buf<vec, 8x128xf32>)
+    pto.tmul ins(%src_f32, %src_f32 : !pto.tile_buf<vec, 8x128xf32>, !pto.tile_buf<vec, 8x128xf32>) outs(%square : !pto.tile_buf<vec, 8x128xf32>)
+    pto.trowsum ins(%square, %workspace : !pto.tile_buf<vec, 8x128xf32>, !pto.tile_buf<vec, 8x128xf32>) outs(%row_sum : !pto.tile_buf<vec, 8x1xf32, blayout=col_major>)
+    pto.tmuls ins(%row_sum_r, %hidden_inv : !pto.tile_buf<vec, 1x8xf32>, f32) outs(%mean : !pto.tile_buf<vec, 1x8xf32>)
+    pto.tadds ins(%mean, %eps : !pto.tile_buf<vec, 1x8xf32>, f32) outs(%variance : !pto.tile_buf<vec, 1x8xf32>)
+    pto.tsqrt ins(%variance : !pto.tile_buf<vec, 1x8xf32>) outs(%sqrt_row : !pto.tile_buf<vec, 1x8xf32>)
+    pto.trecip ins(%sqrt_row : !pto.tile_buf<vec, 1x8xf32>) outs(%inv_row : !pto.tile_buf<vec, 1x8xf32>)
+    pto.trowexpandmul ins(%src_f32, %inv_col : !pto.tile_buf<vec, 8x128xf32>, !pto.tile_buf<vec, 8x1xf32, blayout=col_major>) outs(%normalized : !pto.tile_buf<vec, 8x128xf32>)
+    pto.tcolexpandmul ins(%normalized, %gamma : !pto.tile_buf<vec, 8x128xf32>, !pto.tile_buf<vec, 1x128xf32>) outs(%scaled : !pto.tile_buf<vec, 8x128xf32>)
+    pto.tcvt ins(%scaled {rmode = #pto<round_mode CAST_RINT>, satmode = #pto<saturation_mode OFF>} : !pto.tile_buf<vec, 8x128xf32>) outs(%dst_bf16 : !pto.tile_buf<vec, 8x128xbf16>)
+    return
+  }
+}
+
+// EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_tcvt
+// EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_trowsum
+// EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_tmuls
+// EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_tadds
+// EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_tsqrt
+// EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_trecip
+// EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_trowexpandmul
+// EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_tcolexpandmul
+// INLINE-LABEL: func.func @ds_v4_rmsnorm_vmi
+// INLINE: !pto.vmi.vreg<128xf32>
+// INLINE: pto.vmi.vcadd
+// INLINE: pto.vmi.vsqrt
+// INLINE: pto.vmi.vdiv
+// INLINE: pto.vmi.vmul
+// READY-COUNT-10: status = "structural_fusion_candidate"
+// READY-NOT: status = "unsupported"
