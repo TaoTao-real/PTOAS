@@ -951,18 +951,58 @@ def check_ds_v4_unary_row_expand_and_gather() -> None:
         "valid_shape": [8, 1],
         "config": {**base["config"], "b_layout": "col_major"},
     }
+    compact_row = {
+        **base,
+        "shape": [1, 8],
+        "valid_shape": [1, 8],
+    }
+
+    sqrt = instantiate_candidate(
+        target="a5",
+        op_name="pto.tsqrt",
+        operand_specs=[compact_row, compact_row],
+        provider_module="ptodsl.vmi_tilelib",
+        context_attrs={"precisionType": "default"},
+    ).mlir_text()
+    expect(sqrt.count("scf.for") == 1, "tsqrt should emit one row loop")
+    expect(
+        "!pto.vmi.vreg<8xf32>" in sqrt,
+        "DSv4 tsqrt should preserve 8 logical lanes",
+    )
+    expect("pto.vmi.vsqrt" in sqrt, "tsqrt should emit sqrt")
+    expect(
+        "pto.vmi.vdiv" not in sqrt,
+        "tsqrt must not fold the following reciprocal",
+    )
+    check_vmi_to_vpto_rejects_unsafe_tail_load("vmi_tsqrt", sqrt)
+
+    expect_raises(
+        lambda: instantiate_candidate(
+            target="a5",
+            op_name="pto.tsqrt",
+            operand_specs=[compact_row, compact_row],
+            provider_module="ptodsl.vmi_tilelib",
+            context_attrs={"precisionType": "high_precision"},
+        ).mlir_text(),
+        ValueError,
+        "does not support context attrs",
+    )
 
     recip = instantiate_candidate(
         target="a5",
         op_name="pto.trecip",
-        operand_specs=[base, base],
+        operand_specs=[compact_row, compact_row],
         provider_module="ptodsl.vmi_tilelib",
         context_attrs={"precisionType": "default"},
     ).mlir_text()
     expect(recip.count("scf.for") == 1, "trecip should emit one row loop")
+    expect(
+        "!pto.vmi.vreg<8xf32>" in recip,
+        "DSv4 trecip should preserve 8 logical lanes",
+    )
     expect("pto.vmi.vbrc" in recip, "trecip should broadcast scalar one")
     expect("pto.vmi.vdiv" in recip, "trecip should divide one by the source")
-    check_vmi_to_vpto_lowering("vmi_trecip", recip, "pto.vdiv")
+    check_vmi_to_vpto_rejects_unsafe_tail_load("vmi_trecip", recip)
 
     rsqrt = instantiate_candidate(
         target="a5",
@@ -1072,7 +1112,13 @@ def check_legacy_vpto_compatibility() -> None:
     expect("pto.vsts" in text, "legacy VPTO template should still emit vsts")
 
 
-def check_vmi_to_vpto_lowering(name: str, mlir_text: str, expected_op: str) -> str:
+def check_vmi_to_vpto_lowering(
+    name: str,
+    mlir_text: str,
+    expected_op: str,
+    *,
+    expected_loop_count: int = 1,
+) -> str:
     ptoas = shutil.which("ptoas")
     expect(ptoas is not None, "ptoas must be available for VMI-to-VPTO regression coverage")
     with TemporaryDirectory() as temp_dir:
@@ -1099,8 +1145,42 @@ def check_vmi_to_vpto_lowering(name: str, mlir_text: str, expected_op: str) -> s
     )
     expect("pto.vmi." not in completed.stdout, f"{name} should contain no VMI ops after lowering")
     expect(expected_op in completed.stdout, f"{name} should lower to {expected_op}")
-    expect(completed.stdout.count("scf.for") == 1, f"{name} should preserve one flat loop")
+    expect(
+        completed.stdout.count("scf.for") == expected_loop_count,
+        f"{name} should contain {expected_loop_count} lowered loop(s)",
+    )
     return completed.stdout
+
+
+def check_vmi_to_vpto_rejects_unsafe_tail_load(
+    name: str, mlir_text: str
+) -> None:
+    ptoas = shutil.which("ptoas")
+    expect(ptoas is not None, "ptoas must be available for VMI-to-VPTO regression coverage")
+    with TemporaryDirectory() as temp_dir:
+        input_path = Path(temp_dir) / f"{name}.pto"
+        input_path.write_text(mlir_text, encoding="utf-8")
+        completed = subprocess.run(
+            [
+                ptoas,
+                "--pto-arch=a5",
+                "--pto-backend=vpto",
+                "--enable-vmi",
+                "--emit-vpto",
+                str(input_path),
+                "-o",
+                "-",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    expect(completed.returncode != 0, f"{name} must reject an unsafe tail load")
+    expect(
+        "full physical chunks or statically safe full-read footprint"
+        in completed.stderr,
+        f"{name} should explain why the tail load is unsafe:\n{completed.stderr}",
+    )
 
 
 def main() -> None:

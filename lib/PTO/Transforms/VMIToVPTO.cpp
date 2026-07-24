@@ -1262,10 +1262,6 @@ FailureOr<int64_t> verifyFullOrSafeReadVRegChunks(Operation *op,
       return *lanesPerPart;
   }
 
-  lanesPerPart = getDataLanesPerPart(type.getElementType());
-  if (succeeded(lanesPerPart))
-    return *lanesPerPart;
-
   (void)rewriter.notifyMatchFailure(
       op, Twine("memory lowering ") + fullChunkReason +
               "; safe full-read proof failed: " + safeReadProof.reason);
@@ -1292,12 +1288,24 @@ checkSupportedLoadShape(VMIVRegType type, Value source, Type sourceType,
   if (failed(supports.getLoadLayoutFact(type, reason)))
     return failure();
 
-  if (getDenseLaneStrideLoadDistToken(type))
+  VMILayoutAttr layout = type.getLayoutAttr();
+  if (type.getElementCount() == 1 && layout && layout.isContiguous() &&
+      getBroadcastLoadDistToken(type.getElementType()))
     return success();
 
-  if (failed(getDataLanesPerPart(type.getElementType())))
-    return fail("requires element type with known physical lane width");
-  return success();
+  std::string fullChunkReason;
+  if (succeeded(checkFullDataPhysicalChunks(type, &fullChunkReason)))
+    return success();
+  if (accessPlan.safeReadProof.proven)
+    return success();
+
+  requireUnavailableReadFallback(accessPlan);
+  return fail((Twine("requires full physical chunks or statically safe "
+                     "full-read footprint; value ") +
+               fullChunkReason + ", safe-read proof " +
+               accessPlan.safeReadProof.reason + "; fallback decision: " +
+               accessPlan.fallbackDecision.reason)
+                  .str());
 }
 
 LogicalResult checkSupportedDeinterleaveLoadShape(
@@ -5609,6 +5617,10 @@ struct OneToNVMILoadOpPattern : OpConversionPattern<VMILoadOp> {
                                        *this->getTypeConverter());
       return success();
     }
+    FailureOr<int64_t> lanesPerPart = verifyFullOrSafeReadVRegChunks(
+        op, resultVMIType, op.getSource().getType(), *offset, rewriter);
+    if (failed(lanesPerPart))
+      return failure();
     if (std::optional<std::string> dist =
             getDenseLaneStrideLoadDistToken(resultVMIType)) {
       SmallVector<Value> results;
@@ -5635,11 +5647,6 @@ struct OneToNVMILoadOpPattern : OpConversionPattern<VMILoadOp> {
       replaceOpWithFlatConvertedValues(rewriter, op, results, *this->getTypeConverter());
       return success();
     }
-
-    FailureOr<int64_t> lanesPerPart = verifyFullOrSafeReadVRegChunks(
-        op, resultVMIType, op.getSource().getType(), *offset, rewriter);
-    if (failed(lanesPerPart))
-      return failure();
 
     VMILayoutAttr contiguousLayout =
         VMILayoutAttr::getContiguous(rewriter.getContext());
