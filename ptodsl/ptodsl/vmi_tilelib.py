@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 
 from ._surface_types import Tile
+from ._ops import get_op_attr
 from ._tile_template_tracing import (
     LogicalRowMap,
     Scalar,
@@ -70,6 +71,14 @@ MUL_DTYPES = (f32, f16, i32, i16)
 SUPPORTED_LOGICAL_WIDTHS = frozenset(
     (1, 8, 16, 32, 64, 128, 256, 448, 512, 1024)
 )
+ROUND_MODE_TO_VMI = {
+    "RINT": "R",
+    "ROUND": "A",
+    "FLOOR": "F",
+    "CEIL": "C",
+    "TRUNC": "Z",
+    "ODD": "O",
+}
 
 
 VMI_TILELIB_REGISTRY = TileTemplateRegistry()
@@ -422,15 +431,6 @@ def emit_recip_vmi(src: _TileProxy, dst: _TileProxy) -> None:
     )
 
 
-def emit_sqrt_vmi(src: _TileProxy, dst: _TileProxy) -> None:
-    emit_elementwise_vmi(
-        dst,
-        (src,),
-        lambda values, mask: vmi_vsqrt(values[0], mask),
-        allowed_dtypes=FLOAT_DTYPES,
-    )
-
-
 def emit_rsqrt_vmi(
     src: _TileProxy,
     dst: _TileProxy,
@@ -647,11 +647,40 @@ def emit_col_expand_binary_vmi(
         vmi_vstore(result, dst, coordinate, full_mask)
 
 
-def emit_convert_vmi(src: _TileProxy, dst: _TileProxy) -> None:
-    if src.element_type != f32:
-        raise ValueError("tcvt VMI candidate currently supports f32 source")
-    if dst.element_type not in (f16, bf16):
-        raise ValueError("tcvt VMI candidate currently supports f32 -> f16/bf16")
+def emit_convert_vmi(
+    src: _TileProxy,
+    dst: _TileProxy,
+    *,
+    round_mode: str,
+    sat_mode: str,
+) -> None:
+    widening_round_modes = set(ROUND_MODE_TO_VMI)
+    supported_modes = {
+        # The Tile round mode is semantically inert for 16-bit float widening,
+        # but real PyPTO emits both RINT and ROUND. Accept every named mode and
+        # omit the physical rounding control below.
+        (bf16, f32): widening_round_modes,
+        (f16, f32): widening_round_modes,
+        (f32, bf16): {"RINT"},
+        (f32, f16): {"RINT", "ROUND"},
+        (f32, i32): {"RINT", "ROUND", "TRUNC"},
+        (i32, f32): {"RINT", "ROUND"},
+        (i32, f16): {"ROUND"},
+        (f16, i8): {"TRUNC"},
+    }
+    modes = supported_modes.get((src.element_type, dst.element_type))
+    if modes is None:
+        raise ValueError(
+            "tcvt VMI candidate does not support conversion "
+            f"{src.element_type}->{dst.element_type}"
+        )
+    if round_mode not in modes:
+        raise ValueError(
+            f"tcvt {src.element_type}->{dst.element_type} does not support "
+            f"round_mode={round_mode}; expected one of {sorted(modes)}"
+        )
+    if sat_mode not in {"ON", "OFF"}:
+        raise ValueError("tcvt sat_mode must be ON or OFF")
     if src._spec.shape != dst._spec.shape:
         raise ValueError("tcvt source and destination shapes must match")
     if src._spec.b_layout != "row_major" or dst._spec.b_layout != "row_major":
@@ -664,7 +693,29 @@ def emit_convert_vmi(src: _TileProxy, dst: _TileProxy) -> None:
     dst_mask = vmi_create_mask_lanes(logical_lanes, logical_lanes, dst.element_type)
     with for_(0, block_map.logical_block_count, step=1) as logical_block:
         coordinate = block_map.coordinate(logical_block)
-        converted = vmi_vcvt(vmi_vload(src, coordinate), dst.element_type)
+        no_sat_control = dst.element_type == f32 and src.element_type in (
+            f16,
+            bf16,
+            i32,
+        )
+        if no_sat_control and sat_mode != "OFF":
+            raise ValueError(
+                f"tcvt {src.element_type}->{dst.element_type} requires sat_mode=OFF"
+            )
+        converted = vmi_vcvt(
+            vmi_vload(src, coordinate),
+            dst.element_type,
+            rounding=(
+                None
+                if src.element_type in (f16, bf16) and dst.element_type == f32
+                else ROUND_MODE_TO_VMI[round_mode]
+            ),
+            saturate=(
+                None
+                if no_sat_control
+                else ("SAT" if sat_mode == "ON" else "OFF")
+            ),
+        )
         vmi_vstore(converted, dst, coordinate, dst_mask)
 
 
@@ -869,16 +920,6 @@ def vmi_trowexpanddiv(src: Tile, row_values: Tile, dst: Tile):
 
 @canonical_vmi_template(
     target="a5",
-    op="tsqrt",
-    name="vmi_tsqrt",
-    context_constraints={"precisionType": ("default",)},
-)
-def vmi_tsqrt(src: Tile, dst: Tile):
-    emit_sqrt_vmi(src, dst)
-
-
-@canonical_vmi_template(
-    target="a5",
     op="trecip",
     name="vmi_trecip",
     context_constraints={"precisionType": ("default",)},
@@ -961,10 +1002,18 @@ def vmi_tcolexpanddiv(src: Tile, col_values: Tile, dst: Tile):
     target="a5",
     op="tcvt",
     name="vmi_tcvt",
-    context_constraints={"round_mode": ("RINT",)},
+    context_constraints={
+        "round_mode": ("RINT", "ROUND", "FLOOR", "CEIL", "TRUNC", "ODD"),
+        "sat_mode": ("ON", "OFF"),
+    },
 )
 def vmi_tcvt(src: Tile, dst: Tile):
-    emit_convert_vmi(src, dst)
+    emit_convert_vmi(
+        src,
+        dst,
+        round_mode=get_op_attr("round_mode", "RINT"),
+        sat_mode=get_op_attr("sat_mode", "OFF"),
+    )
 
 
 __all__ = [
@@ -972,7 +1021,6 @@ __all__ = [
     "canonical_vmi_template",
     "emit_elementwise_vmi",
     "emit_scalar_fill_vmi",
-    "emit_sqrt_vmi",
     "vmi_tadd_block64",
     "vmi_texp_block64",
     "vmi_tsub",
@@ -996,7 +1044,6 @@ __all__ = [
     "vmi_trowexpandsub",
     "vmi_trowexpandmul",
     "vmi_trowexpanddiv",
-    "vmi_tsqrt",
     "vmi_trecip",
     "vmi_trsqrt",
     "vmi_trsqrt_with_tmp",

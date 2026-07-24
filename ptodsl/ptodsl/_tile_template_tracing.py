@@ -1271,7 +1271,13 @@ def vmi_vreduce_add(source: _VectorValue, mask: _MaskValue) -> _VectorValue:
     return _VectorValue(unwrap_surface_value(result), source.dtype)
 
 
-def vmi_vcvt(source: _VectorValue, dst_dtype: ScalarType) -> _VectorValue:
+def vmi_vcvt(
+    source: _VectorValue,
+    dst_dtype: ScalarType,
+    *,
+    rounding: str | None = None,
+    saturate: str | None = None,
+) -> _VectorValue:
     _require_vmi_trace("vmi_vcvt")
     if not isinstance(dst_dtype, ScalarType):
         raise TypeError("vmi_vcvt expects a tile-template destination ScalarType")
@@ -1280,7 +1286,12 @@ def vmi_vcvt(source: _VectorValue, dst_dtype: ScalarType) -> _VectorValue:
         source_type.element_count,
         _resolve(_scalar_descriptor(dst_dtype)),
     )
-    result = _vmi.vcvt(source.value, result_type=result_type)
+    result = _vmi.vcvt(
+        source.value,
+        result_type=result_type,
+        rounding=rounding,
+        saturate=saturate,
+    )
     return _VectorValue(unwrap_surface_value(result), dst_dtype)
 
 

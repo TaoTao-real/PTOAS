@@ -1663,8 +1663,14 @@ LogicalResult VMITruncFOp::verify() {
         "requires result element type to be narrower than source element type");
   if (auto roundingAttr = (*this)->getAttrOfType<StringAttr>("rounding")) {
     StringRef rounding = roundingAttr.getValue();
-    if (rounding != "A" && rounding != "H" && rounding != "Z")
-      return emitOpError("rounding attr must be A, H, or Z");
+    if (rounding != "R" && rounding != "A" && rounding != "F" &&
+        rounding != "C" && rounding != "Z" && rounding != "O" &&
+        rounding != "H")
+      return emitOpError("rounding attr must be R, A, F, C, Z, O, or H");
+  }
+  if (auto saturateAttr = (*this)->getAttrOfType<StringAttr>("saturate")) {
+    if (saturateAttr.getValue() != "SAT" && saturateAttr.getValue() != "OFF")
+      return emitOpError("saturate attr must be SAT or OFF");
   }
   return success();
 }
@@ -1680,8 +1686,21 @@ LogicalResult VMIFPToSIOp::verify() {
   if (!isVMISignedOrSignlessIntegerType(resultType.getElementType()))
     return emitOpError("requires signed or signless integer result element "
                        "type");
-  if (getVMIElementBitWidth(resultType.getElementType()) != 32)
-    return emitOpError("requires 32-bit integer result element type");
+  unsigned resultBits = getVMIElementBitWidth(resultType.getElementType());
+  if (resultBits != 8 && resultBits != 16 && resultBits != 32)
+    return emitOpError(
+        "requires 8-bit, 16-bit, or 32-bit integer result element type");
+  if (auto roundingAttr = (*this)->getAttrOfType<StringAttr>("rounding")) {
+    StringRef rounding = roundingAttr.getValue();
+    if (rounding != "R" && rounding != "A" && rounding != "F" &&
+        rounding != "C" && rounding != "Z" && rounding != "O" &&
+        rounding != "H")
+      return emitOpError("rounding attr must be R, A, F, C, Z, O, or H");
+  }
+  if (auto saturateAttr = (*this)->getAttrOfType<StringAttr>("saturate")) {
+    if (saturateAttr.getValue() != "SAT" && saturateAttr.getValue() != "OFF")
+      return emitOpError("saturate attr must be SAT or OFF");
+  }
   return success();
 }
 
@@ -1700,6 +1719,17 @@ LogicalResult VMISIToFPOp::verify() {
     return emitOpError("requires 32-bit integer source element type");
   if (!resultType.getElementType().isF32())
     return emitOpError("requires f32 result element type");
+  if (auto roundingAttr = (*this)->getAttrOfType<StringAttr>("rounding")) {
+    StringRef rounding = roundingAttr.getValue();
+    if (rounding != "R" && rounding != "A" && rounding != "F" &&
+        rounding != "C" && rounding != "Z" && rounding != "O" &&
+        rounding != "H")
+      return emitOpError("rounding attr must be R, A, F, C, Z, O, or H");
+  }
+  if (auto saturateAttr = (*this)->getAttrOfType<StringAttr>("saturate")) {
+    if (saturateAttr.getValue() != "SAT" && saturateAttr.getValue() != "OFF")
+      return emitOpError("saturate attr must be SAT or OFF");
+  }
   return success();
 }
 
@@ -3370,22 +3400,24 @@ LogicalResult VMICvtOp::verify() {
 
   // --- rounding ---
   if (auto roundingAttr = (*this)->getAttrOfType<StringAttr>("rounding")) {
-    if (dir != CvtDirection::FpNarrow)
+    if (dir != CvtDirection::FpNarrow && dir != CvtDirection::FpToSi &&
+        dir != CvtDirection::SiToFp)
       return emitOpError("'rounding' attribute is only valid for "
-                         "fp-narrowing conversions");
+                         "fp-narrowing, fp-to-int, or int-to-fp conversions");
     StringRef rnd = roundingAttr.getValue();
-    if (rnd != "A" && rnd != "H" && rnd != "Z")
-      return emitOpError("rounding must be 'A' (away-from-zero), "
-                         "'H' (half-up), or 'Z' (toward-zero)");
+    if (rnd != "R" && rnd != "A" && rnd != "F" && rnd != "C" && rnd != "Z" &&
+        rnd != "O" && rnd != "H")
+      return emitOpError("rounding must be R, A, F, C, Z, O, or H");
   }
 
   // --- saturate ---
   if (auto satAttr = (*this)->getAttrOfType<StringAttr>("saturate")) {
-    if (dir != CvtDirection::FpNarrow && dir != CvtDirection::IntNarrow)
+    if (dir != CvtDirection::FpNarrow && dir != CvtDirection::FpToSi &&
+        dir != CvtDirection::SiToFp && dir != CvtDirection::IntNarrow)
       return emitOpError("'saturate' attribute is only valid for "
-                         "narrowing conversions (fp or int)");
-    if (satAttr.getValue() != "SAT")
-      return emitOpError("saturate must be 'SAT'");
+                         "hardware conversions with saturation control");
+    if (satAttr.getValue() != "SAT" && satAttr.getValue() != "OFF")
+      return emitOpError("saturate must be 'SAT' or 'OFF'");
   }
 
   // --- sign ---
