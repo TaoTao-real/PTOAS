@@ -12427,7 +12427,16 @@ struct VMIToVPTOPass : public mlir::pto::impl::VMIToVPTOBase<VMIToVPTOPass> {
     }
     if (failed(verifyNoResidualVMIIR(module))) {
       signalPassFailure();
+      return;
     }
+
+    // Canonical TileLib provenance is consumed before VMI-to-VPTO. Keep final
+    // VPTO IR free of VMI-only attributes as well as VMI operations and types.
+    module.walk([](Operation *op) {
+      op->removeAttr("pto.vmi.tilelib.principal");
+      op->removeAttr("pto.vmi.tilelib.op");
+      op->removeAttr("pto.vmi.fusion_candidate");
+    });
   }
 };
 
