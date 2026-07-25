@@ -1,0 +1,47 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// SPDX-License-Identifier: CANN-Open-Software-License-Agreement-Version-2.0
+
+// RUN: pto-test-opt %s -pto-analyze-vmi-fusion-ready | FileCheck %s
+
+module {
+  func.func private @unknown_side_effect()
+
+  func.func @fusion_ready_rejections(
+      %n: index,
+      %a: !pto.vmi.vreg<128xf32>,
+      %b: !pto.vmi.vreg<128xf32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+
+    scf.for %i = %c0 to %n step %c1 {
+      %0 = pto.vmi.addf %a, %b
+          : !pto.vmi.vreg<128xf32>, !pto.vmi.vreg<128xf32>
+          -> !pto.vmi.vreg<128xf32>
+    } {pto.vmi.tilelib.op = "dynamic", pto.vmi.tilelib.principal}
+
+    scf.for %i = %c0 to %c8 step %c1 {
+      scf.for %j = %c0 to %c8 step %c1 {
+        %0 = pto.vmi.addf %a, %b
+            : !pto.vmi.vreg<128xf32>, !pto.vmi.vreg<128xf32>
+            -> !pto.vmi.vreg<128xf32>
+      }
+    } {pto.vmi.tilelib.op = "nested", pto.vmi.tilelib.principal}
+
+    scf.for %i = %c0 to %c8 step %c1 {
+      func.call @unknown_side_effect() : () -> ()
+      %0 = pto.vmi.addf %a, %b
+          : !pto.vmi.vreg<128xf32>, !pto.vmi.vreg<128xf32>
+          -> !pto.vmi.vreg<128xf32>
+    } {pto.vmi.tilelib.op = "call_boundary", pto.vmi.tilelib.principal}
+    return
+  }
+}
+
+// CHECK: pto.vmi.fusion_candidate = {reason = "dynamic_iteration_domain", status = "unsupported"}
+// CHECK-SAME: pto.vmi.tilelib.op = "dynamic"
+// CHECK: pto.vmi.fusion_candidate = {reason = "nested_loop", status = "unsupported"}
+// CHECK-SAME: pto.vmi.tilelib.op = "nested"
+// CHECK: reason = "non_vector_or_unknown_call_boundary"
+// CHECK-SAME: status = "boundary_only"
+// CHECK-SAME: pto.vmi.tilelib.op = "call_boundary"

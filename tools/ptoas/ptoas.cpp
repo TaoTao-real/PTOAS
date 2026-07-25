@@ -564,6 +564,12 @@ static llvm::cl::opt<bool> enableVMI(
                    "disable)"),
     llvm::cl::init(true));
 
+static llvm::cl::opt<bool> analyzeVMIFusionReady(
+    "analyze-vmi-fusion-ready",
+    llvm::cl::desc("Classify inlined canonical VMI TileLib row loops for "
+                   "future fusion without changing the fusion plan"),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<bool> emitAddPtrTrace(
     "emit-addptr-trace",
     llvm::cl::desc("Emit addptr trace comments in generated C++ output"),
@@ -2676,6 +2682,8 @@ lowerPTOToVPTOBackend(PassManager &pm, ModuleOp module,
   kernelModulePM.addPass(pto::createPTOInlineLibCallPass());
   kernelModulePM.addNestedPass<mlir::func::FuncOp>(
       pto::createFoldTileBufIntrinsicsPass("shape-only"));
+  if (analyzeVMIFusionReady)
+    kernelModulePM.addPass(pto::createVMIAnalyzeFusionReadyPass());
   if (enableA5VPTOPostLoweringFusionLifecycle) {
     kernelModulePM.addPass(pto::createPTOLowLevelLoopFusionPass());
     kernelModulePM.addPass(mlir::createCanonicalizerPass());

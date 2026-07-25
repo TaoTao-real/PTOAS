@@ -37,6 +37,7 @@ add_mlir_dialect_library(PTOTransforms
   PTOValidateVPTOIR.cpp
   PTOUnrollSIMTForPass.cpp
   PTOValidateVMIIR.cpp
+  VMIAnalyzeFusionReady.cpp
   VMIPreAssignmentCombine.cpp
   VMILegalizeArithSelect.cpp
   VMIMaskGranularityAssignment.cpp
