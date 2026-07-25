@@ -2455,7 +2455,7 @@ def vmi_invalid_rounding_vcvt_probe():
     _ = pto.vmi.vcvt(
         src,
         pto.f8e4m3,
-        rounding=pto.VcvtRoundMode.R,
+        rounding="Q",
         saturate=pto.VcvtSatMode.SAT,
     )
 
@@ -5742,8 +5742,8 @@ def main() -> None:
         "rounding",
     )
     expect(
-        "expected one of A, H, Z" in str(invalid_rounding_vcvt_error),
-        "pto.vmi.vcvt should reject low-level-only rounding tokens before IR verification",
+        "expected one of A, C, F, H, O, R, Z" in str(invalid_rounding_vcvt_error),
+        "pto.vmi.vcvt should reject unsupported rounding tokens before IR verification",
     )
     unpack_missing_dtype_error = expect_raises(
         TypeError,
