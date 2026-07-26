@@ -1,0 +1,27 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// SPDX-License-Identifier: CANN-Open-Software-Agreement-Version-2.0
+
+// RUN: not ptoas --pto-arch=a5 --pto-level=level3 --pto-backend=vpto --tile-lib-backend=ptodsl-vmi --emit-vpto %s -o /dev/null 2>&1 | FileCheck %s
+
+module {
+  func.func @dynamic_valid_shape_is_not_a_full_mask_candidate(
+      %valid_rows: index, %valid_cols: index) {
+    %c0_i64 = arith.constant 0 : i64
+    %c4096_i64 = arith.constant 4096 : i64
+    %c8192_i64 = arith.constant 8192 : i64
+    %lhs = pto.alloc_tile addr = %c0_i64 valid_row = %valid_rows valid_col = %valid_cols
+      : !pto.tile_buf<vec, 2x64xf32, valid=?x?>
+    %rhs = pto.alloc_tile addr = %c4096_i64 valid_row = %valid_rows valid_col = %valid_cols
+      : !pto.tile_buf<vec, 2x64xf32, valid=?x?>
+    %dst = pto.alloc_tile addr = %c8192_i64 valid_row = %valid_rows valid_col = %valid_cols
+      : !pto.tile_buf<vec, 2x64xf32, valid=?x?>
+    pto.tadd
+      ins(%lhs, %rhs
+          : !pto.tile_buf<vec, 2x64xf32, valid=?x?>,
+            !pto.tile_buf<vec, 2x64xf32, valid=?x?>)
+      outs(%dst : !pto.tile_buf<vec, 2x64xf32, valid=?x?>)
+    return
+  }
+}
+
+// CHECK: initial PTODSL VMI provider does not support dynamic valid_shape

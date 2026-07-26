@@ -13,12 +13,11 @@ module {
     %lhs = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
     %rhs = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
     %dst = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
-    pto.tsqrt
+    pto.tlog
       ins(%lhs : !pto.tile_buf<vec, 1x64xf32>)
       outs(%dst : !pto.tile_buf<vec, 1x64xf32>)
     return
   }
 }
 
-// CHECK: no PTODSL VMI candidate for target='a5', op='tsqrt'
-// CHECK: ExpandTileOp: failed to instantiate canonical VMI implementation for tsqrt
+// CHECK: canonical PTODSL VMI provider has no candidate for this PIPE_V operation

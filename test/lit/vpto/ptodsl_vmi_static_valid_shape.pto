@@ -1,0 +1,89 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// SPDX-License-Identifier: CANN-Open-Software-Agreement-Version-2.0
+
+// RUN: ptoas --pto-arch=a5 --pto-level=level3 --pto-backend=vpto --tile-lib-backend=ptodsl-vmi --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-inline-libcall 2>&1 | FileCheck %s --check-prefix=INLINE --implicit-check-not=pto.vecscope
+// RUN: ptoas --pto-arch=a5 --pto-level=level3 --pto-backend=vpto --tile-lib-backend=ptodsl-vmi --emit-vpto %s -o - | FileCheck %s --check-prefix=FINAL --implicit-check-not=!pto.vmi.
+
+module {
+  func.func @static_valid_shape_from_alloc_operands() {
+    %c0_i64 = arith.constant 0 : i64
+    %c4096_i64 = arith.constant 4096 : i64
+    %c8192_i64 = arith.constant 8192 : i64
+    %c2 = arith.constant 2 : index
+    %c64 = arith.constant 64 : index
+    %lhs = pto.alloc_tile addr = %c0_i64 valid_row = %c2 valid_col = %c64
+      : !pto.tile_buf<vec, 2x64xf32, valid=?x?>
+    %rhs = pto.alloc_tile addr = %c4096_i64 valid_row = %c2 valid_col = %c64
+      : !pto.tile_buf<vec, 2x64xf32, valid=?x?>
+    %dst = pto.alloc_tile addr = %c8192_i64 valid_row = %c2 valid_col = %c64
+      : !pto.tile_buf<vec, 2x64xf32, valid=?x?>
+    pto.tadd
+      ins(%lhs, %rhs
+          : !pto.tile_buf<vec, 2x64xf32, valid=?x?>,
+            !pto.tile_buf<vec, 2x64xf32, valid=?x?>)
+      outs(%dst : !pto.tile_buf<vec, 2x64xf32, valid=?x?>)
+    return
+  }
+
+  func.func @static_valid_shape_from_get_set_swap() {
+    %c0_i64 = arith.constant 0 : i64
+    %c1024_i64 = arith.constant 1024 : i64
+    %c16 = arith.constant 16 : index
+    %c1 = arith.constant 1 : index
+    %src = pto.alloc_tile addr = %c0_i64 valid_row = %c16 valid_col = %c1
+      : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=1, v_row=?, v_col=?,
+                      blayout=col_major, slayout=none_box, fractal=512, pad=0>
+    %dst = pto.alloc_tile addr = %c1024_i64 valid_row = %c16 valid_col = %c1
+      : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=1, v_row=?, v_col=?,
+                      blayout=col_major, slayout=none_box, fractal=512, pad=0>
+    pto.tmov
+      ins(%src
+          : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=1, v_row=?, v_col=?,
+                          blayout=col_major, slayout=none_box, fractal=512, pad=0>)
+      outs(%dst
+          : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=1, v_row=?, v_col=?,
+                          blayout=col_major, slayout=none_box, fractal=512, pad=0>)
+    return
+  }
+
+  func.func @future_valid_shape_update_does_not_change_specialization() {
+    %c0_i64 = arith.constant 0 : i64
+    %c16384_i64 = arith.constant 16384 : i64
+    %c32768_i64 = arith.constant 32768 : i64
+    %c16 = arith.constant 16 : index
+    %c256 = arith.constant 256 : index
+    %src = pto.alloc_tile addr = %c0_i64
+      : !pto.tile_buf<vec, 16x256xf32>
+    %row = pto.alloc_tile addr = %c16384_i64
+      : !pto.tile_buf<vec, 16x1xf32, blayout=col_major>
+    %dst = pto.alloc_tile addr = %c32768_i64
+      valid_row = %c16 valid_col = %c256
+      : !pto.tile_buf<vec, 16x256xf32, valid=?x?>
+    pto.trowexpandmul
+      ins(%src, %row
+          : !pto.tile_buf<vec, 16x256xf32>,
+            !pto.tile_buf<vec, 16x1xf32, blayout=col_major>)
+      outs(%dst : !pto.tile_buf<vec, 16x256xf32, valid=?x?>)
+    pto.set_validshape %dst, %c16, %c16
+      : !pto.tile_buf<vec, 16x256xf32, valid=?x?>
+    return
+  }
+}
+
+// INLINE-LABEL: func.func @static_valid_shape_from_alloc_operands
+// INLINE: scf.for
+// INLINE: pto.vmi.vadd
+// FINAL-LABEL: func.func @static_valid_shape_from_alloc_operands
+// FINAL: pto.vadd
+// INLINE-LABEL: func.func @static_valid_shape_from_get_set_swap
+// INLINE: scf.for
+// INLINE: pto.vmi.vload
+// INLINE: pto.vmi.vstore
+// FINAL-LABEL: func.func @static_valid_shape_from_get_set_swap
+// FINAL: pto.vlds
+// FINAL: pto.vsts
+// INLINE-LABEL: func.func @future_valid_shape_update_does_not_change_specialization
+// INLINE: !pto.vmi.vreg<256xf32>
+// INLINE: pto.vmi.vmul
+// FINAL-LABEL: func.func @future_valid_shape_update_does_not_change_specialization
+// FINAL: pto.vmul

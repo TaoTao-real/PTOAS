@@ -141,7 +141,8 @@ static int64_t getConstantIndexOrDynamic(Value value) {
 
 static void copyTileHandleAttrs(Operation *from,
                                 SmallVectorImpl<NamedAttribute> &attrs) {
-  StringRef names[] = {"pto.view_semantics", kForceDynamicValidShapeAttrName};
+  StringRef names[] = {"pto.view_semantics", "pto.logical_shape",
+                       kForceDynamicValidShapeAttrName};
   for (StringRef name : names) {
     if (Attribute attr = from->getAttr(name))
       attrs.push_back(NamedAttribute(StringAttr::get(from->getContext(), name),
@@ -960,6 +961,8 @@ static void copyMaterializedTileAttrs(ArrayRef<NamedAttribute> attrs,
                                       Operation *to) {
   if (Attribute attr = getAttr(attrs, kForceDynamicValidShapeAttrName))
     to->setAttr(kForceDynamicValidShapeAttrName, attr);
+  if (Attribute attr = getAttr(attrs, "pto.logical_shape"))
+    to->setAttr("pto.logical_shape", attr);
 }
 
 static void updateResultTypesAfterMaterializingOperand(Operation *op,

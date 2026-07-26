@@ -499,7 +499,10 @@ def InsertTemplateAttributes
            "PYTHONPATH root for PTODSL">,
     Option<"daemonHelperModule", "daemon-helper-module", "std::string",
            /*default=*/"\"ptodsl.tilelib.serving.helper\"",
-           "Python module used for daemon metadata RPC calls">
+           "Python module used for daemon metadata RPC calls">,
+    Option<"ptodslVMIProviderModule", "ptodsl-vmi-provider-module", "std::string",
+           /*default=*/"\"\"",
+           "Canonical VMI provider module for PIPE_V candidate discovery">
   ];
 }
 

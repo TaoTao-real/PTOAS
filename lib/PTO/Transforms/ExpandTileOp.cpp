@@ -48,7 +48,6 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringMap.h"
-#include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/FileSystem.h"
@@ -80,6 +79,10 @@ namespace pto {
 namespace {
 
 constexpr llvm::StringLiteral kCandidatesAttr = "candidates";
+constexpr llvm::StringLiteral kVMITileLibPrincipalAttr =
+    "pto.vmi.tilelib.principal";
+constexpr llvm::StringLiteral kVMITileLibOpAttr = "pto.vmi.tilelib.op";
+constexpr unsigned kPTODSLVMIHelperTimeoutSeconds = 120;
 
 // ============================================================================
 // OperandTypeInfo: describes one operand for template specialization.
@@ -432,42 +435,16 @@ static StringRef getPrecisionTypeString(pto::SqrtPrecision precision) {
   llvm_unreachable("unknown SqrtPrecision");
 }
 
-// MUST stay in sync with template behavior. Adding an op here without a real
-// high_precision code path would silence the warning while preserving default
-// behavior.
-static const llvm::StringSet<> &highPrecisionImplementedOps() {
-  static const llvm::StringSet<> kImplementedOps{
-    "pto.tlog",
-    "pto.tdiv",
-    "pto.tdivs",
-    "pto.trecip",
-    "pto.trowexpanddiv",
-    "pto.tcolexpanddiv",
-    "pto.texp",
-    "pto.tsqrt",
-  };
-  return kImplementedOps;
-}
-
-template <typename OpT, typename PrecisionT>
+template <typename OpT>
 static bool tryAppendPrecisionType(
     Operation *op,
-    SmallVectorImpl<std::pair<std::string, std::string>> &attrs,
-    PrecisionT highPrecision) {
+    SmallVectorImpl<std::pair<std::string, std::string>> &attrs) {
   auto typed = dyn_cast<OpT>(op);
   if (!typed)
     return false;
 
-  PrecisionT precision = typed.getPrecisionType();
-  attrs.emplace_back("precisionType", getPrecisionTypeString(precision).str());
-
-  if (precision == highPrecision &&
-      !highPrecisionImplementedOps().contains(op->getName().getStringRef())) {
-    StringRef opName = op->getName().getStringRef();
-    llvm::errs() << "warning: '" << opName << "' op " << opName
-                 << ": precisionType = high_precision requested but not yet "
-                    "implemented; falling back to default behavior\n";
-  }
+  attrs.emplace_back(
+      "precisionType", getPrecisionTypeString(typed.getPrecisionType()).str());
   return true;
 }
 
@@ -485,6 +462,8 @@ static void appendOpContextAttrs(
   }
   if (auto trandom = dyn_cast<pto::TRandomOp>(op))
     attrs.emplace_back("rounds", getTRandomRoundsString(trandom));
+  if (auto tci = dyn_cast<pto::TCIOp>(op))
+    attrs.emplace_back("descending", tci.getDescending() ? "1" : "0");
   if (auto tcmp = dyn_cast<pto::TCmpOp>(op)) {
     if (auto cmpModeAttr = tcmp.getCmpModeAttr()) {
       attrs.emplace_back("cmp_mode",
@@ -504,24 +483,15 @@ static void appendOpContextAttrs(
           stringifyMaskPattern(maskPatternAttr.getValue()).str());
     }
   }
-  (void)(tryAppendPrecisionType<pto::TExpOp>(
-             op, attrs, pto::ExpPrecision::HighPrecision) ||
-         tryAppendPrecisionType<pto::TLogOp>(
-             op, attrs, pto::LogPrecision::HighPrecision) ||
-         tryAppendPrecisionType<pto::TSqrtOp>(
-             op, attrs, pto::SqrtPrecision::HighPrecision) ||
-         tryAppendPrecisionType<pto::TRecipOp>(
-             op, attrs, pto::RecipPrecision::HighPrecision) ||
-         tryAppendPrecisionType<pto::TRsqrtOp>(
-             op, attrs, pto::RsqrtPrecision::HighPrecision) ||
-         tryAppendPrecisionType<pto::TDivOp>(
-             op, attrs, pto::DivPrecision::HighPrecision) ||
-         tryAppendPrecisionType<pto::TDivSOp>(
-             op, attrs, pto::DivPrecision::HighPrecision) ||
-         tryAppendPrecisionType<pto::TRowExpandDivOp>(
-             op, attrs, pto::DivPrecision::HighPrecision) ||
-         tryAppendPrecisionType<pto::TColExpandDivOp>(
-             op, attrs, pto::DivPrecision::HighPrecision));
+  (void)(tryAppendPrecisionType<pto::TExpOp>(op, attrs) ||
+         tryAppendPrecisionType<pto::TLogOp>(op, attrs) ||
+         tryAppendPrecisionType<pto::TSqrtOp>(op, attrs) ||
+         tryAppendPrecisionType<pto::TRecipOp>(op, attrs) ||
+         tryAppendPrecisionType<pto::TRsqrtOp>(op, attrs) ||
+         tryAppendPrecisionType<pto::TDivOp>(op, attrs) ||
+         tryAppendPrecisionType<pto::TDivSOp>(op, attrs) ||
+         tryAppendPrecisionType<pto::TRowExpandDivOp>(op, attrs) ||
+         tryAppendPrecisionType<pto::TColExpandDivOp>(op, attrs));
 }
 
 static bool getStaticIntFromValue(Value value, int64_t &out) {
@@ -621,7 +591,20 @@ static void populateViewShapeAndStrides(Value value,
   }
 }
 
-static std::optional<OperandTypeInfo> buildOperandTypeInfo(Value value) {
+static std::optional<ArrayRef<int64_t>> getLogicalSubviewShape(Value value) {
+  Operation *definingOp = value.getDefiningOp();
+  if (!definingOp)
+    return std::nullopt;
+  auto logicalShape =
+      definingOp->getAttrOfType<DenseI64ArrayAttr>("pto.logical_shape");
+  if (!logicalShape || logicalShape.size() != 2)
+    return std::nullopt;
+  return logicalShape.asArrayRef();
+}
+
+static std::optional<OperandTypeInfo>
+buildOperandTypeInfo(Value value, bool useLogicalSubviewShape,
+                     Operation *consumer) {
   Type ty = value.getType();
   // Tile operand — from TileBufType.
   if (auto tbTy = dyn_cast<pto::TileBufType>(ty)) {
@@ -630,12 +613,13 @@ static std::optional<OperandTypeInfo> buildOperandTypeInfo(Value value) {
     info.dtype = getDtypeString(tbTy.getElementType());
     if (info.dtype.empty())
       return std::nullopt;
-    info.tileShape.assign(tbTy.getShape().begin(), tbTy.getShape().end());
-    auto validShape = tbTy.getValidShape();
-    if (validShape.empty())
-      info.tileValidShape.assign(tbTy.getShape().begin(), tbTy.getShape().end());
-    else
-      info.tileValidShape.assign(validShape.begin(), validShape.end());
+    ArrayRef<int64_t> specializationShape = tbTy.getShape();
+    if (useLogicalSubviewShape)
+      if (auto logicalShape = getLogicalSubviewShape(value))
+        specializationShape = *logicalShape;
+    info.tileShape.assign(specializationShape.begin(),
+                          specializationShape.end());
+    info.tileValidShape = pto::resolveStaticTileValidShape(value, consumer);
     info.tileMemorySpace = getMemorySpaceString(tbTy);
     if (auto config = tbTy.getConfigAttr()) {
       info.blayout = static_cast<int32_t>(config.getBLayout().getValue());
@@ -693,13 +677,15 @@ static std::optional<OperandTypeInfo> buildOperandTypeInfo(Value value) {
   return info;
 }
 
-static std::optional<SpecKey> buildSpecKey(Operation *op) {
+static std::optional<SpecKey> buildSpecKey(Operation *op,
+                                           bool useLogicalSubviewShape) {
   SpecKey key;
   key.opName = getTileOpName(op).str();
   key.targetArch = getTargetArchString(op);
 
   for (unsigned i = 0; i < op->getNumOperands(); ++i) {
-    auto info = buildOperandTypeInfo(op->getOperand(i));
+    auto info =
+        buildOperandTypeInfo(op->getOperand(i), useLogicalSubviewShape, op);
     if (!info)
       return std::nullopt;
     key.operands.push_back(*info);
@@ -709,6 +695,24 @@ static std::optional<SpecKey> buildSpecKey(Operation *op) {
 
   appendOpContextAttrs(op, key.contextAttrs);
   return key;
+}
+
+static LogicalResult validateCanonicalVMISubviews(Operation *op) {
+  for (Value operand : op->getOperands()) {
+    auto tileType = dyn_cast<pto::TileBufType>(operand.getType());
+    auto logicalShape = getLogicalSubviewShape(operand);
+    if (!tileType || !logicalShape || *logicalShape == tileType.getShape())
+      continue;
+
+    // A one-row view never advances by the inherited parent row stride. Wider
+    // non-compact multi-row views need an explicit stride-aware VMI access
+    // contract, which the initial LogicalRowMap intentionally does not expose.
+    if ((*logicalShape)[0] != 1)
+      return op->emitError(
+          "canonical VMI TileLib does not support a non-compact multi-row "
+          "subview; keep this operation at a fusion boundary");
+  }
+  return success();
 }
 
 // ============================================================================
@@ -748,6 +752,46 @@ struct ExpandTileOpPass
 
   void runOnOperation() override;
 };
+
+static LogicalResult markCanonicalVMITileLibLoop(func::FuncOp function,
+                                                 const SpecKey &key) {
+  if (function.empty())
+    return function.emitError(
+        "canonical VMI TileLib implementation must have a body");
+
+  SmallVector<scf::ForOp, 2> principalLoops;
+  for (Operation &op : function.getBody().front().without_terminator())
+    if (auto loop = dyn_cast<scf::ForOp>(op))
+      principalLoops.push_back(loop);
+
+  if (principalLoops.size() != 1)
+    return function.emitError()
+           << "canonical VMI TileLib implementation for pto." << key.opName
+           << " must contain exactly one top-level logical-row scf.for, got "
+           << principalLoops.size();
+
+  scf::ForOp principal = principalLoops.front();
+  principal->setAttr(kVMITileLibPrincipalAttr,
+                     UnitAttr::get(function.getContext()));
+  principal->setAttr(kVMITileLibOpAttr,
+                     StringAttr::get(function.getContext(), key.opName));
+  return success();
+}
+
+static bool hasLockedCanonicalVMIProvider(Operation *tileOp) {
+  auto candidates = tileOp->getAttrOfType<ArrayAttr>(kCandidatesAttr);
+  if (!candidates || candidates.empty())
+    return false;
+  for (Attribute candidateAttr : candidates) {
+    auto candidate = dyn_cast<DictionaryAttr>(candidateAttr);
+    if (!candidate)
+      continue;
+    auto provider = candidate.getAs<StringAttr>("provider");
+    if (provider && provider.getValue() == "ptodsl-vmi")
+      return true;
+  }
+  return false;
+}
 
 /// Serialize a JSON array of integers.
 static void appendJsonIntArray(std::string &json, ArrayRef<int64_t> arr) {
@@ -1168,7 +1212,8 @@ func::FuncOp ExpandState::invokePTODSLVMI(const SpecKey &key, ModuleOp mod,
   int rc = llvm::sys::ExecuteAndWait(
       *pythonPath, args,
       hasPythonPath ? std::optional<ArrayRef<StringRef>>(envp) : std::nullopt,
-      redirects, /*secondsToWait=*/30, /*memoryLimit=*/0, &errMsg);
+      redirects, /*secondsToWait=*/kPTODSLVMIHelperTimeoutSeconds,
+      /*memoryLimit=*/0, &errMsg);
   if (rc != 0) {
     llvm::errs() << "ExpandTileOp: canonical PTODSL VMI provider failed (rc="
                  << rc << "): " << errMsg << "\n";
@@ -1233,6 +1278,12 @@ func::FuncOp ExpandState::invokePTODSLVMI(const SpecKey &key, ModuleOp mod,
       if (renameIt != renamedSymbols.end())
         call.setCallee(renameIt->second);
     });
+  }
+
+  if (failed(markCanonicalVMITileLibLoop(clonedFuncs.front(), key))) {
+    for (func::FuncOp fn : clonedFuncs)
+      fn.erase();
+    return nullptr;
   }
 
   parsedModules.push_back(std::move(parsedMod));
@@ -1497,17 +1548,19 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
   });
 
   for (auto *op : tileOps) {
-    auto specKeyOpt = buildSpecKey(op);
+    auto pipeOp = dyn_cast<pto::OpPipeInterface>(op);
+    bool useCanonicalVMI = tileLibBackend == "ptodsl-vmi" && pipeOp &&
+                           pipeOp.getPipe() == pto::PIPE::PIPE_V &&
+                           hasLockedCanonicalVMIProvider(op);
+    if (useCanonicalVMI && failed(validateCanonicalVMISubviews(op)))
+      return failure();
+
+    auto specKeyOpt = buildSpecKey(op, useCanonicalVMI);
     if (!specKeyOpt) {
       op->emitError(
           "ExpandTileOp: cannot build specialization key for this operand schema");
       return failure();
     }
-
-    auto pipeOp = dyn_cast<pto::OpPipeInterface>(op);
-    bool useCanonicalVMI =
-        tileLibBackend == "ptodsl-vmi" && pipeOp &&
-        pipeOp.getPipe() == pto::PIPE::PIPE_V;
 
     func::FuncOp dslFn = useCanonicalVMI
                              ? invokePTODSLVMI(*specKeyOpt, mod, ctx)

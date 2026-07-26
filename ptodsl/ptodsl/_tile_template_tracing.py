@@ -164,12 +164,12 @@ class _TileSlice:
 
 
 @dataclass(frozen=True)
-class CanonicalBlockMap:
-    """Static mapping contract for one logical block per tile row.
+class LogicalRowMap:
+    """Static mapping contract for one logical VMI vector per tile row.
 
-    The canonical VMI Fusion contract requires the physical inner tile extent
-    to equal the candidate's logical lane count. Dynamic valid lanes may later
-    mask a tail inside that block, but a row never contains multiple blocks.
+    ``logical_lanes`` is the tile's static inner extent. It is deliberately
+    independent of the dtype-native physical VL: layout assignment may split
+    one logical row into several physical registers after VMI fusion.
     """
 
     shape: tuple[int, int]
@@ -177,23 +177,23 @@ class CanonicalBlockMap:
 
     def __post_init__(self):
         if len(self.shape) != 2:
-            raise ValueError("CanonicalBlockMap requires a rank-2 shape")
+            raise ValueError("LogicalRowMap requires a rank-2 shape")
         rows, cols = self.shape
         if any(not isinstance(dim, int) or dim <= 0 for dim in self.shape):
-            raise ValueError("CanonicalBlockMap shape must contain positive integers")
+            raise ValueError("LogicalRowMap shape must contain positive integers")
         if not isinstance(self.logical_lanes, int) or self.logical_lanes <= 0:
-            raise ValueError("CanonicalBlockMap logical_lanes must be a positive integer")
+            raise ValueError("LogicalRowMap logical_lanes must be a positive integer")
         if cols != self.logical_lanes:
             raise ValueError(
-                "CanonicalBlockMap requires exactly one logical VL block per row; "
+                "LogicalRowMap requires logical_lanes to equal the tile inner extent; "
                 f"got cols={cols}, logical_lanes={self.logical_lanes}"
             )
 
     @classmethod
     def from_tile(cls, tile: "_TileProxy", *, logical_lanes: int | None = None):
         if not isinstance(tile, _TileProxy):
-            raise TypeError("CanonicalBlockMap.from_tile(...) expects a traced Tile argument")
-        lanes = tile.element_type.lanes if logical_lanes is None else logical_lanes
+            raise TypeError("LogicalRowMap.from_tile(...) expects a traced Tile argument")
+        lanes = tile._spec.shape[1] if logical_lanes is None else logical_lanes
         return cls(tile._spec.shape, lanes)
 
     @property
@@ -206,21 +206,21 @@ class CanonicalBlockMap:
 
     @property
     def blocks_per_row(self) -> int:
-        return self.cols // self.logical_lanes
+        return 1
 
     @property
     def logical_block_count(self) -> int:
         return self.rows * self.blocks_per_row
 
-    def coordinate(self, logical_block) -> "CanonicalBlockCoordinate":
+    def coordinate(self, logical_block) -> "LogicalRowCoordinate":
         if isinstance(logical_block, int):
             if logical_block < 0 or logical_block >= self.logical_block_count:
                 raise IndexError(
                     f"logical block {logical_block} is outside [0, {self.logical_block_count})"
                 )
-            return CanonicalBlockCoordinate(self, logical_block)
+            return LogicalRowCoordinate(self, logical_block)
 
-        trace = require_active_runtime("CanonicalBlockMap.coordinate", expected_type=_TraceBuilder)
+        trace = require_active_runtime("LogicalRowMap.coordinate", expected_type=_TraceBuilder)
         block = trace._coerce_index(logical_block)
         if block.is_const and (
             block.const_value < 0 or block.const_value >= self.logical_block_count
@@ -228,13 +228,13 @@ class CanonicalBlockMap:
             raise IndexError(
                 f"logical block {block.const_value} is outside [0, {self.logical_block_count})"
             )
-        return CanonicalBlockCoordinate(self, block)
+        return LogicalRowCoordinate(self, block)
 
 
-class CanonicalBlockCoordinate:
-    """One lazily materialized logical-block coordinate."""
+class LogicalRowCoordinate:
+    """One lazily materialized logical-row coordinate."""
 
-    def __init__(self, block_map: CanonicalBlockMap, logical_block: int | _Value):
+    def __init__(self, block_map: LogicalRowMap, logical_block: int | _Value):
         self.block_map = block_map
         self.logical_block = logical_block
         self._cache: dict[str, int | _Value] = {}
@@ -254,7 +254,7 @@ class CanonicalBlockCoordinate:
                 return lhs % rhs
             raise ValueError(f"unsupported coordinate operation {op_name!r}")
         trace = require_active_runtime(
-            f"CanonicalBlockCoordinate.{op_name}", expected_type=_TraceBuilder
+            f"LogicalRowCoordinate.{op_name}", expected_type=_TraceBuilder
         )
         return trace.index_binary(op_name, lhs, rhs)
 
@@ -289,6 +289,12 @@ class CanonicalBlockCoordinate:
     @property
     def active_lanes(self) -> int:
         return self.block_map.logical_lanes
+
+
+# Compatibility aliases for existing out-of-tree templates. New canonical VMI
+# TileLib code should use the logical-row names.
+CanonicalBlockMap = LogicalRowMap
+CanonicalBlockCoordinate = LogicalRowCoordinate
 
 
 class _TileProxy:
@@ -434,6 +440,7 @@ class _TraceBuilder(TracingRuntime):
         self,
         descriptor: "TileTemplate",
         parameter_specs: dict[str, TileSpec | ScalarType],
+        context_attrs: dict[str, object] | None = None,
     ):
         is_vmi = descriptor.ir_level == "vmi"
         super().__init__(
@@ -455,6 +462,7 @@ class _TraceBuilder(TracingRuntime):
             )
         )
         self.descriptor = descriptor
+        self.context_attrs = dict(context_attrs or {})
         self.parameter_specs = parameter_specs
         self.tile_specs = {
             name: spec
@@ -804,7 +812,7 @@ class TileTemplate:
         self, context_attrs=None, **parameter_specs: TileSpec | ScalarType
     ) -> "SpecializedTileTemplate":
         self.validate_context_attrs(context_attrs)
-        return SpecializedTileTemplate(self, parameter_specs)
+        return SpecializedTileTemplate(self, parameter_specs, context_attrs)
 
 
 class SpecializedTileTemplate(ModuleArtifact):
@@ -812,13 +820,17 @@ class SpecializedTileTemplate(ModuleArtifact):
         self,
         descriptor: TileTemplate,
         parameter_specs: dict[str, TileSpec | ScalarType],
+        context_attrs: dict[str, object] | None = None,
     ):
         super().__init__(
             descriptor.name,
-            module_factory=lambda: _TraceBuilder(descriptor, parameter_specs).build_module(),
+            module_factory=lambda: _TraceBuilder(
+                descriptor, parameter_specs, context_attrs
+            ).build_module(),
         )
         self.descriptor = descriptor
         self.parameter_specs = parameter_specs
+        self.context_attrs = dict(context_attrs or {})
         self.tile_specs = {
             name: spec for name, spec in parameter_specs.items() if isinstance(spec, TileSpec)
         }
@@ -958,24 +970,24 @@ def _require_vmi_trace(operation: str) -> _TraceBuilder:
 
 def _validate_vmi_block_access(
     tile: _TileProxy,
-    coordinate: CanonicalBlockCoordinate,
+    coordinate: LogicalRowCoordinate,
     *,
     operation: str,
 ) -> None:
     if not isinstance(tile, _TileProxy):
         raise TypeError(f"{operation} expects a traced Tile argument")
-    if not isinstance(coordinate, CanonicalBlockCoordinate):
-        raise TypeError(f"{operation} expects a CanonicalBlockCoordinate")
+    if not isinstance(coordinate, LogicalRowCoordinate):
+        raise TypeError(f"{operation} expects a LogicalRowCoordinate")
     if tile._spec.shape != coordinate.block_map.shape:
         raise ValueError(
             f"{operation} tile shape {tile._spec.shape} does not match "
-            f"CanonicalBlockMap shape {coordinate.block_map.shape}"
+            f"LogicalRowMap shape {coordinate.block_map.shape}"
         )
 
 
-def vmi_create_mask(block_map: CanonicalBlockMap, dtype: ScalarType) -> _MaskValue:
-    if not isinstance(block_map, CanonicalBlockMap):
-        raise TypeError("vmi_create_mask expects a CanonicalBlockMap")
+def vmi_create_mask(block_map: LogicalRowMap, dtype: ScalarType) -> _MaskValue:
+    if not isinstance(block_map, LogicalRowMap):
+        raise TypeError("vmi_create_mask expects a LogicalRowMap")
     return vmi_create_mask_lanes(
         block_map.logical_lanes, block_map.logical_lanes, dtype
     )
@@ -1004,7 +1016,7 @@ def vmi_prepare_tile_access(*tiles: _TileProxy) -> None:
         trace.ensure_tile_ptr(tile)
 
 
-def vmi_vload(tile: _TileProxy, coordinate: CanonicalBlockCoordinate) -> _VectorValue:
+def vmi_vload(tile: _TileProxy, coordinate: LogicalRowCoordinate) -> _VectorValue:
     trace = _require_vmi_trace("vmi_vload")
     _validate_vmi_block_access(tile, coordinate, operation="vmi_vload")
     ptr_value = trace.ensure_tile_ptr(tile)
@@ -1137,6 +1149,37 @@ def vmi_vneg(source: _VectorValue, mask: _MaskValue) -> _VectorValue:
     return _vmi_unary("vmi_vneg", source, mask)
 
 
+def vmi_vsqrt(source: _VectorValue, mask: _MaskValue) -> _VectorValue:
+    return _vmi_unary("vmi_vsqrt", source, mask)
+
+
+def vmi_vgather(
+    source: _TileProxy,
+    indices: _VectorValue,
+    mask: _MaskValue,
+) -> _VectorValue:
+    trace = _require_vmi_trace("vmi_vgather")
+    if not isinstance(source, _TileProxy):
+        raise TypeError("vmi_vgather source must be a traced Tile")
+    if indices.dtype != i32:
+        raise TypeError("vmi_vgather indices must use i32")
+    if mask.dtype != source.element_type:
+        raise TypeError("vmi_vgather mask must match the source element type")
+    index_type = _pto.VMIVRegType(indices.value.type)
+    result_type = _pto.VMIVRegType.get(
+        index_type.element_count,
+        _resolve(_scalar_descriptor(source.element_type)),
+    )
+    source_ptr = trace.ensure_tile_ptr(source)
+    result = _vmi.vgather(
+        source_ptr.value,
+        indices.value,
+        mask.value,
+        result_type=result_type,
+    )
+    return _VectorValue(unwrap_surface_value(result), source.element_type)
+
+
 def vmi_vbroadcast(source: _VectorValue, *, lanes: int) -> _VectorValue:
     _require_vmi_trace("vmi_vbroadcast")
     if not isinstance(lanes, int) or lanes <= 0:
@@ -1162,7 +1205,11 @@ def vmi_scalar_constant(value: float, dtype: ScalarType) -> _Value:
 
 
 def vmi_vbroadcast_scalar(
-    scalar: _Value, *, like: _VectorValue | None = None, dtype: ScalarType | None = None
+    scalar: _Value,
+    *,
+    like: _VectorValue | None = None,
+    dtype: ScalarType | None = None,
+    lanes: int | None = None,
 ) -> _VectorValue:
     """Broadcast a scalar into a VL vreg.
 
@@ -1175,6 +1222,10 @@ def vmi_vbroadcast_scalar(
     _require_vmi_trace("vmi_vbroadcast_scalar")
     if like is None and dtype is None:
         raise TypeError("vmi_vbroadcast_scalar requires like= or dtype=")
+    if like is not None and lanes is not None:
+        raise TypeError("vmi_vbroadcast_scalar lanes cannot be combined with like=")
+    if lanes is not None and (not isinstance(lanes, int) or lanes <= 0):
+        raise ValueError("vmi_vbroadcast_scalar lanes must be a positive integer")
     ref_dtype = like.dtype if like is not None else dtype
     expected_scalar = str(_resolve(_scalar_descriptor(ref_dtype)))
     if scalar.type_text != expected_scalar:
@@ -1185,9 +1236,10 @@ def vmi_vbroadcast_scalar(
     if like is not None:
         result_type = like.value.type
     else:
-        # Build a vreg type from the dtype's lanes + element type.
+        # Build a logical vreg. The caller may request a wide or compact row;
+        # dtype.lanes remains the default for legacy callers.
         elem = _resolve(_scalar_descriptor(dtype))
-        result_type = _pto.VMIVRegType.get(dtype.lanes, elem)
+        result_type = _pto.VMIVRegType.get(dtype.lanes if lanes is None else lanes, elem)
     result = _vmi.vbrc(scalar.value, result_type=result_type)
     return _VectorValue(unwrap_surface_value(result), ref_dtype)
 
@@ -1235,7 +1287,7 @@ def vmi_vcvt(source: _VectorValue, dst_dtype: ScalarType) -> _VectorValue:
 def vmi_vstore(
     vec: _VectorValue,
     tile: _TileProxy,
-    coordinate: CanonicalBlockCoordinate,
+    coordinate: LogicalRowCoordinate,
     mask: _MaskValue,
 ) -> None:
     trace = _require_vmi_trace("vmi_vstore")
@@ -1341,6 +1393,8 @@ __all__ = [
     "TileSpec",
     "TileTemplate",
     "SpecializedTileTemplate",
+    "LogicalRowMap",
+    "LogicalRowCoordinate",
     "CanonicalBlockMap",
     "CanonicalBlockCoordinate",
     "Scalar",
@@ -1381,6 +1435,8 @@ __all__ = [
     "vmi_vexp",
     "vmi_vabs",
     "vmi_vneg",
+    "vmi_vsqrt",
+    "vmi_vgather",
     "vmi_vbroadcast",
     "vmi_vbroadcast_scalar",
     "vmi_vreduce_max",
