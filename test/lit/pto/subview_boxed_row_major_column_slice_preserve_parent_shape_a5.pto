@@ -34,7 +34,7 @@ module {
 // IR: %[[ELEM_BYTES:.*]] = arith.constant 4 : i64
 // IR: %[[BYTE_OFFSET:.*]] = arith.muli %[[ELEM_OFFSET]], %[[ELEM_BYTES]] : i64
 // IR: %[[ADDR:.*]] = arith.addi %{{.*}}, %[[BYTE_OFFSET]] : i64
-// IR: pto.alloc_tile addr = %[[ADDR]] : !pto.tile_buf<right, 64x256xf32, valid=64x128, slayout=col_major>
+// IR: pto.alloc_tile addr = %[[ADDR]] {pto.logical_shape = array<i64: 64, 128>} : !pto.tile_buf<right, 64x256xf32, valid=64x128, slayout=col_major>
 // IR-NOT: pto.view_semantics
 // IR-NOT: pto.materialize_tile
 

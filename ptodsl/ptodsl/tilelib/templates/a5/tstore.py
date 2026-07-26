@@ -39,6 +39,16 @@ from ._load_store import (
 )
 def template_tstore_nd(src: pto.Tile, dst: pto.PartitionTensorView):
     elem_bytes = pto.bytewidth(src.dtype)
+    if len(dst.shape) == 1:
+        valid_rows, valid_cols = src.valid_shape
+        _, ub_cols = src.shape
+        pto.mte_store(
+            src.as_ptr(),
+            dst.as_ptr(),
+            valid_cols * elem_bytes,
+            nburst=(valid_rows, ub_cols * elem_bytes, 0),
+        )
+        return
     if len(dst.shape) == 2:
         valid_rows, valid_cols = src.valid_shape
         _, ub_cols = src.shape

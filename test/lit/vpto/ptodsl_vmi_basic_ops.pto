@@ -1,0 +1,69 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl-vmi --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-expand-tile-op 2>&1 | FileCheck %s --check-prefix=EXPAND
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl-vmi --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-inline-libcall 2>&1 | FileCheck %s --check-prefix=INLINE --implicit-check-not=__pto_ptodsl_vmi --implicit-check-not=pto.vecscope
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl-vmi --emit-vpto %s -o - | FileCheck %s --check-prefix=FINAL --implicit-check-not=pto.vmi. --implicit-check-not=__pto_ptodsl_vmi
+
+module {
+  func.func @ptodsl_vmi_basic_ops() {
+    %scalar = arith.constant 2.000000e+00 : f32
+    %lhs = pto.alloc_tile : !pto.tile_buf<vec, 2x64xf32>
+    %rhs = pto.alloc_tile : !pto.tile_buf<vec, 2x64xf32>
+    %dst = pto.alloc_tile : !pto.tile_buf<vec, 2x64xf32>
+
+    pto.tdiv
+      ins(%lhs, %rhs : !pto.tile_buf<vec, 2x64xf32>, !pto.tile_buf<vec, 2x64xf32>)
+      outs(%dst : !pto.tile_buf<vec, 2x64xf32>)
+    pto.tmin
+      ins(%lhs, %rhs : !pto.tile_buf<vec, 2x64xf32>, !pto.tile_buf<vec, 2x64xf32>)
+      outs(%dst : !pto.tile_buf<vec, 2x64xf32>)
+    pto.tsubs
+      ins(%lhs, %scalar : !pto.tile_buf<vec, 2x64xf32>, f32)
+      outs(%dst : !pto.tile_buf<vec, 2x64xf32>)
+    pto.tabs
+      ins(%lhs : !pto.tile_buf<vec, 2x64xf32>)
+      outs(%dst : !pto.tile_buf<vec, 2x64xf32>)
+    pto.tneg
+      ins(%lhs : !pto.tile_buf<vec, 2x64xf32>)
+      outs(%dst : !pto.tile_buf<vec, 2x64xf32>)
+    pto.texpands
+      ins(%scalar : f32)
+      outs(%dst : !pto.tile_buf<vec, 2x64xf32>)
+    pto.tdivs
+      ins(%scalar, %lhs : f32, !pto.tile_buf<vec, 2x64xf32>)
+      outs(%dst : !pto.tile_buf<vec, 2x64xf32>)
+    return
+  }
+}
+
+// EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_tdiv
+// EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_tmin
+// EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_tsubs
+// EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_tabs
+// EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_tneg
+// EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_texpands
+// EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_tdivs
+
+// INLINE-LABEL: func.func @ptodsl_vmi_basic_ops
+// INLINE: pto.vmi.vdiv
+// INLINE: pto.vmi.vmin
+// INLINE: pto.vmi.vsub
+// INLINE: pto.vmi.vabs
+// INLINE: pto.vmi.vneg
+// INLINE: pto.vmi.vbrc
+// INLINE: pto.vmi.vdiv
+
+// FINAL-LABEL: func.func @ptodsl_vmi_basic_ops
+// FINAL-DAG: pto.vecscope
+// FINAL-DAG: pto.vdiv
+// FINAL-DAG: pto.vmin
+// FINAL-DAG: pto.vsub
+// FINAL-DAG: pto.vabs
+// FINAL-DAG: pto.vneg
+// FINAL-DAG: pto.vdup

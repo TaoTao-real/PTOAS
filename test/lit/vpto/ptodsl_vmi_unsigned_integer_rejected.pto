@@ -1,0 +1,23 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// SPDX-License-Identifier: CANN-Open-Software-Agreement-Version-2.0
+
+// RUN: not ptoas --pto-arch=a5 --pto-level=level3 --pto-backend=vpto --tile-lib-backend=ptodsl-vmi --emit-vpto %s -o /dev/null 2>&1 | FileCheck %s
+
+module {
+  func.func @unsigned_integer_requires_an_explicit_vmi_contract() {
+    %c0_i64 = arith.constant 0 : i64
+    %c512_i64 = arith.constant 512 : i64
+    %c1024_i64 = arith.constant 1024 : i64
+    %lhs = pto.alloc_tile addr = %c0_i64 : !pto.tile_buf<vec, 2x64xui32>
+    %rhs = pto.alloc_tile addr = %c512_i64 : !pto.tile_buf<vec, 2x64xui32>
+    %dst = pto.alloc_tile addr = %c1024_i64 : !pto.tile_buf<vec, 2x64xui32>
+    pto.tadd
+      ins(%lhs, %rhs
+          : !pto.tile_buf<vec, 2x64xui32>,
+            !pto.tile_buf<vec, 2x64xui32>)
+      outs(%dst : !pto.tile_buf<vec, 2x64xui32>)
+    return
+  }
+}
+
+// CHECK: operand-specs[0] has unsupported dtype 'ui32'

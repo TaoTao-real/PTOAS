@@ -50,6 +50,11 @@ unsigned getPTOStorageElemBitWidth(Type t);
 unsigned getPTOStorageElemByteSize(Type t);
 unsigned getPTOPackedLdgStgTotalBits(Type t);
 
+/// Resolve the valid shape carried by a tile value at a specific consuming
+/// operation. Unknown dimensions are returned as ShapedType::kDynamic.
+SmallVector<int64_t, 2> resolveStaticTileValidShape(Value tile,
+                                                    Operation *at);
+
 } // namespace mlir::pto
 
 #endif // PTO_IR_PTOTYPEUTILS_H

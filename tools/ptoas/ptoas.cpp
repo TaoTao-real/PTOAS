@@ -532,6 +532,8 @@ buildInsertTemplateAttributesOptions(
   options.daemonSocketPath = expandOptions.daemonSocketPath;
   options.tileLibPkgPath = expandOptions.tileLibPkgPath;
   options.daemonHelperModule = expandOptions.daemonHelperModule;
+  if (expandOptions.tileLibBackend == "ptodsl-vmi")
+    options.ptodslVMIProviderModule = expandOptions.ptodslVMIProviderModule;
   return options;
 }
 

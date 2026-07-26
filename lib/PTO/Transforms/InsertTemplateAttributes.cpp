@@ -56,6 +56,8 @@ constexpr llvm::StringLiteral kCandidatesAttr = "candidates";
 struct CandidateMetadata {
   int64_t id;
   std::string name;
+  std::string semanticForm;
+  std::string provider;
   int64_t loopDepth;
   bool postUpdate;
   bool tail;
@@ -486,6 +488,8 @@ static void appendOpContextAttrs(
   }
   if (auto trandom = dyn_cast<pto::TRandomOp>(op))
     attrs.emplace_back("rounds", std::to_string(trandom.getRounds()));
+  if (auto tci = dyn_cast<pto::TCIOp>(op))
+    attrs.emplace_back("descending", tci.getDescending() ? "1" : "0");
   if (auto tcmp = dyn_cast<pto::TCmpOp>(op)) {
     if (auto cmpModeAttr = tcmp.getCmpModeAttr())
       attrs.emplace_back("cmp_mode",
@@ -535,15 +539,15 @@ static std::string buildContextAttrsJson(Operation *operation) {
   return json;
 }
 
-static void appendTileOperandSpecJson(std::string &json,
-                                      pto::TileBufType tileType) {
+static void appendTileOperandSpecJson(std::string &json, Value operand,
+                                      pto::TileBufType tileType,
+                                      Operation *consumer) {
   std::string dtype = getDtypeString(tileType.getElementType());
   json += "{\"kind\":\"tile\",\"dtype\":\"" + dtype + "\",\"shape\":";
   appendJsonIntArray(json, tileType.getShape());
   json += ",\"valid_shape\":";
-  auto validShape = tileType.getValidShape();
-  appendJsonIntArray(json, validShape.empty() ? tileType.getShape()
-                                              : validShape);
+  appendJsonDimArray(json,
+                     pto::resolveStaticTileValidShape(operand, consumer));
   json += ",\"memory_space\":\"";
   json += getMemorySpaceString(tileType);
 
@@ -653,7 +657,7 @@ buildOperandSpecsJson(Operation *operation) {
             "InsertTemplateAttributes encountered an unsupported tile dtype");
         return std::nullopt;
       }
-      appendTileOperandSpecJson(json, tileType);
+      appendTileOperandSpecJson(json, operand, tileType, operation);
       continue;
     }
 
@@ -836,8 +840,125 @@ invokeMetadataHelper(Operation *operation, StringRef pythonExe,
   return (*output)->getBuffer().str();
 }
 
-static FailureOr<ArrayAttr>
-parseCandidateAttributes(Operation *operation, StringRef metadataJson) {
+static std::optional<std::string>
+invokeVMIMetadataHelper(Operation *operation, StringRef pythonExe,
+                        StringRef tileLibPkgPath, StringRef providerModule) {
+  auto pythonPath = llvm::sys::findProgramByName(pythonExe);
+  if (!pythonPath) {
+    operation->emitError("InsertTemplateAttributes cannot find Python '")
+        << pythonExe << "'";
+    return std::nullopt;
+  }
+
+  auto target = getTargetArch(operation);
+  auto operandSpecs = buildOperandSpecsJson(operation);
+  if (!target || !operandSpecs)
+    return std::nullopt;
+  std::string contextAttrs = buildContextAttrsJson(operation);
+
+  llvm::SmallString<128> outputPath;
+  int outputFd;
+  if (auto error = llvm::sys::fs::createTemporaryFile(
+          "vmi_tilelib_metadata", "json", outputFd, outputPath)) {
+    operation->emitError("InsertTemplateAttributes cannot create VMI metadata "
+                         "output: ")
+        << error.message();
+    return std::nullopt;
+  }
+  ::close(outputFd);
+
+  llvm::SmallString<128> errorPath;
+  int errorFd;
+  if (auto error = llvm::sys::fs::createTemporaryFile(
+          "vmi_tilelib_metadata", "err", errorFd, errorPath)) {
+    llvm::sys::fs::remove(outputPath);
+    operation->emitError("InsertTemplateAttributes cannot create VMI metadata "
+                         "error output: ")
+        << error.message();
+    return std::nullopt;
+  }
+  ::close(errorFd);
+
+  std::string opName = operation->getName().getStringRef().str();
+  SmallVector<StringRef> args = {
+      *pythonPath,
+      "-m",
+      "ptodsl.vmi_tilelib_helper",
+      "--metadata-only",
+      "--target",
+      *target,
+      "--op",
+      opName,
+      "--operand-specs",
+      *operandSpecs,
+      "--provider-module",
+      providerModule,
+  };
+  if (contextAttrs != "{}") {
+    args.push_back("--context-attrs");
+    args.push_back(contextAttrs);
+  }
+
+  std::optional<StringRef> redirects[] = {
+      std::nullopt,
+      StringRef(outputPath),
+      StringRef(errorPath),
+  };
+  SmallVector<StringRef> environment;
+  std::string pythonPathEnvironment;
+  std::vector<std::string> environmentStorage;
+  bool hasPythonPath = !tileLibPkgPath.empty();
+  if (hasPythonPath) {
+    const char *existingPath = ::getenv("PYTHONPATH");
+    pythonPathEnvironment = "PYTHONPATH=" + tileLibPkgPath.str();
+    if (existingPath && existingPath[0] != '\0')
+      pythonPathEnvironment += ":" + std::string(existingPath);
+    for (char **entry = environ; *entry; ++entry) {
+      StringRef value(*entry);
+      if (!value.starts_with("PYTHONPATH="))
+        environmentStorage.push_back(value.str());
+    }
+    environmentStorage.push_back(pythonPathEnvironment);
+    for (std::string &value : environmentStorage)
+      environment.push_back(value);
+  }
+
+  std::string errorMessage;
+  int result = llvm::sys::ExecuteAndWait(
+      *pythonPath, args,
+      hasPythonPath ? std::optional<llvm::ArrayRef<StringRef>>(environment)
+                    : std::nullopt,
+      redirects, /*secondsToWait=*/30, /*memoryLimit=*/0, &errorMessage);
+  if (result != 0) {
+    auto errorOutput = llvm::MemoryBuffer::getFile(errorPath);
+    llvm::sys::fs::remove(outputPath);
+    llvm::sys::fs::remove(errorPath);
+    std::string detail;
+    if (errorOutput)
+      detail = errorOutput.get()->getBuffer().trim().str();
+    if (detail.empty())
+      detail = errorMessage;
+    if (detail.empty())
+      detail = "helper exited with status " + std::to_string(result);
+    operation->emitError(
+        "InsertTemplateAttributes VMI metadata helper failed: ")
+        << detail;
+    return std::nullopt;
+  }
+
+  auto output = llvm::MemoryBuffer::getFile(outputPath);
+  llvm::sys::fs::remove(outputPath);
+  llvm::sys::fs::remove(errorPath);
+  if (!output) {
+    operation->emitError(
+        "InsertTemplateAttributes cannot read VMI metadata output");
+    return std::nullopt;
+  }
+  return (*output)->getBuffer().str();
+}
+
+static FailureOr<ArrayAttr> parseCandidateAttributes(Operation *operation,
+                                                     StringRef metadataJson) {
   auto parsed = llvm::json::parse(metadataJson);
   if (!parsed) {
     llvm::consumeError(parsed.takeError());
@@ -866,6 +987,8 @@ parseCandidateAttributes(Operation *operation, StringRef metadataJson) {
     }
 
     auto name = metadata->getString("name");
+    auto semanticForm = metadata->getString("semantic_form");
+    auto provider = metadata->getString("provider");
     auto id = metadata->getInteger("id");
     auto loopDepth = metadata->getInteger("loop_depth");
     auto postUpdate = metadata->getBoolean("is_post_update");
@@ -886,6 +1009,8 @@ parseCandidateAttributes(Operation *operation, StringRef metadataJson) {
     parsedCandidates.push_back(CandidateMetadata{
         id.value_or(0),
         name->str(),
+        semanticForm ? semanticForm->str() : std::string(),
+        provider ? provider->str() : std::string(),
         *loopDepth,
         *postUpdate,
         *tail,
@@ -911,21 +1036,23 @@ parseCandidateAttributes(Operation *operation, StringRef metadataJson) {
   SmallVector<Attribute> attributes;
   attributes.reserve(parsedCandidates.size());
   for (const CandidateMetadata &candidate : parsedCandidates) {
-    attributes.push_back(DictionaryAttr::get(
-        operation->getContext(),
-        {
-            builder.getNamedAttr("id", builder.getI64IntegerAttr(candidate.id)),
-            builder.getNamedAttr("name",
-                                 builder.getStringAttr(candidate.name)),
-            builder.getNamedAttr(
-                "loop_depth",
-                builder.getI64IntegerAttr(candidate.loopDepth)),
-            builder.getNamedAttr(
-                "postupdate",
-                builder.getI64IntegerAttr(candidate.postUpdate ? 1 : 0)),
-            builder.getNamedAttr(
-                "tail", builder.getI64IntegerAttr(candidate.tail ? 1 : 0)),
-        }));
+    SmallVector<NamedAttribute> fields = {
+        builder.getNamedAttr("id", builder.getI64IntegerAttr(candidate.id)),
+        builder.getNamedAttr("name", builder.getStringAttr(candidate.name)),
+        builder.getNamedAttr("loop_depth",
+                             builder.getI64IntegerAttr(candidate.loopDepth)),
+        builder.getNamedAttr("postupdate", builder.getI64IntegerAttr(
+                                               candidate.postUpdate ? 1 : 0)),
+        builder.getNamedAttr("tail",
+                             builder.getI64IntegerAttr(candidate.tail ? 1 : 0)),
+    };
+    if (!candidate.semanticForm.empty())
+      fields.push_back(builder.getNamedAttr(
+          "semantic_form", builder.getStringAttr(candidate.semanticForm)));
+    if (!candidate.provider.empty())
+      fields.push_back(builder.getNamedAttr(
+          "provider", builder.getStringAttr(candidate.provider)));
+    attributes.push_back(DictionaryAttr::get(operation->getContext(), fields));
   }
   return builder.getArrayAttr(attributes);
 }
@@ -952,11 +1079,32 @@ struct InsertTemplateAttributesPass
     });
 
     for (Operation *operation : tileOperations) {
-      auto metadata = invokeMetadataHelper(
-          operation, pythonExe, daemonSocketPath, tileLibPkgPath,
-          daemonHelperModule);
+      auto pipeOp = dyn_cast<pto::OpPipeInterface>(operation);
+      bool useCanonicalVMI = !ptodslVMIProviderModule.empty() && pipeOp &&
+                             pipeOp.getPipe() == pto::PIPE::PIPE_V;
+      auto metadata =
+          useCanonicalVMI
+              ? invokeVMIMetadataHelper(operation, pythonExe, tileLibPkgPath,
+                                        ptodslVMIProviderModule)
+              : invokeMetadataHelper(operation, pythonExe, daemonSocketPath,
+                                     tileLibPkgPath, daemonHelperModule);
       if (!metadata)
         return signalPassFailure();
+
+      if (useCanonicalVMI) {
+        auto parsed = llvm::json::parse(*metadata);
+        auto *object = parsed ? parsed->getAsObject() : nullptr;
+        std::optional<bool> supported;
+        if (object)
+          supported = object->getBoolean("provider_supported");
+        if (supported && !*supported) {
+          operation->emitError(
+              "canonical PTODSL VMI provider has no candidate for this "
+              "PIPE_V operation; use the legacy backend explicitly if this "
+              "operation is not covered yet");
+          return signalPassFailure();
+        }
+      }
 
       auto candidates = parseCandidateAttributes(operation, *metadata);
       if (failed(candidates))

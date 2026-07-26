@@ -19,6 +19,7 @@ _TEMPLATE_MODULES = {
     ("a5", "pto.tands"): ".a5.tands",
     ("a5", "pto.tcmp"): ".a5.tcmp",
     ("a5", "pto.tcmps"): ".a5.tcmps",
+    ("a5", "pto.tci"): ".a5.tci",
     ("a5", "pto.tcolargmax"): ".a5.tcolargmax",
     ("a5", "pto.tcolargmin"): ".a5.tcolargmin",
     ("a5", "pto.tcolmax"): ".a5.tcolmax",
