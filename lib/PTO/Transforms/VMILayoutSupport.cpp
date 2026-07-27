@@ -683,6 +683,32 @@ static constexpr GroupSlotMemoryLayoutPattern kGroupSlotMemoryLayoutPatterns[] =
         {gs(8, 4)},
 };
 
+enum class GroupStoreLayoutPriority {
+  LegalOnly,
+  Fallback,
+  High,
+};
+
+struct GroupStoreLayoutPattern {
+  ElementBitsPattern elementBits;
+  GroupBlockPattern block;
+  GroupMemoryPattern memory = memAny();
+  LayoutPattern valueLayout;
+  GroupStoreLayoutPriority priority = GroupStoreLayoutPriority::LegalOnly;
+};
+
+static constexpr GroupStoreLayoutPattern kGroupStoreLayoutPatterns[] = {
+    // One 32B block per group requires packed contiguous values for the
+    // block-strided store path when row_stride preserves 32B alignment.
+    {bits<8, 16, 32>(), gb(1), memBlockAligned(), c(),
+     GroupStoreLayoutPriority::High},
+    // Full physical group chunks use ordinary contiguous stores.
+    {bits<8, 16, 32>(), gbFull(), memAny(), c(),
+     GroupStoreLayoutPriority::Fallback},
+    // Two-part deinterleaved values can be stored directly with vstsx2.
+    {bits<8, 16, 32>(), gbFull(2), memAny(), d(2)},
+};
+
 struct GroupBroadcastLoadLayoutPattern {
   GroupBlockPattern block;
   ElementBitsPattern elementBits;
@@ -951,6 +977,19 @@ static bool matchesGroupBlockPattern(GroupBlockPattern pattern,
   if (pattern.denominator <= 0 || numerator % pattern.denominator != 0)
     return false;
   return key.groupSize == numerator / pattern.denominator;
+}
+
+static bool matchesGroupStoreLayoutPattern(
+    const GroupStoreLayoutPattern &pattern, VMIVRegType valueType,
+    GroupLayoutKey key, std::optional<int64_t> rowStride) {
+  unsigned elementBits =
+      pto::getPTOStorageElemBitWidth(valueType.getElementType());
+  return elementBits != 0 &&
+         matchesElementBitsPattern(pattern.elementBits,
+                                   valueType.getElementType()) &&
+         matchesGroupBlockPattern(pattern.block, key) &&
+         matchesGroupLoadMemoryPattern(pattern.memory, rowStride,
+                                       key.groupSize, elementBits);
 }
 
 static FailureOr<GroupLayoutKey>
@@ -2338,6 +2377,193 @@ FailureOr<VMIGroupSlotLayoutFact> VMILayoutSupport::getGroupStoreLayoutFact(
     return fail("value layout does not match a supported group_store table "
                 "row");
   return VMIGroupSlotLayoutFact{layout, numGroups, layout.getSlots()};
+}
+
+FailureOr<VMIGroupStoreLayoutFact> VMILayoutSupport::getGroupStoreLayoutFact(
+    VMIGroupStoreOp op, VMIVRegType valueType, std::string *reason) const {
+  auto fail = [&](const Twine &message) -> FailureOr<VMIGroupStoreLayoutFact> {
+    if (reason)
+      *reason = message.str();
+    return failure();
+  };
+
+  VMILayoutAttr layout = valueType.getLayoutAttr();
+  if (!layout)
+    return fail("requires assigned value layout");
+
+  int64_t numGroups = op.getNumGroupsAttr().getInt();
+  if (layout.isGroupSlots()) {
+    if (failed(getGroupStoreLayoutFact(valueType, numGroups, reason)))
+      return failure();
+    return VMIGroupStoreLayoutFact{layout};
+  }
+
+  if (pto::getPTOStorageElemBitWidth(valueType.getElementType()) == 0)
+    return fail("group_store requires known element bit width");
+
+  FailureOr<GroupLayoutKey> key = buildGroupLayoutKey(
+      valueType, numGroups,
+      "group_store layout table has no row for this group size", reason);
+  if (failed(key))
+    return failure();
+
+  std::optional<int64_t> rowStride =
+      getConstantIndexValue(op.getRowStride());
+  for (const GroupStoreLayoutPattern &pattern : kGroupStoreLayoutPatterns) {
+    if (!matchesGroupStoreLayoutPattern(pattern, valueType, *key, rowStride))
+      continue;
+    if (!matchesLayoutPattern(valueType.getContext(), pattern.valueLayout,
+                              layout))
+      continue;
+    return VMIGroupStoreLayoutFact{layout};
+  }
+
+  return fail("value layout, group size, and row_stride do not match a "
+              "supported group_store table row");
+}
+
+FailureOr<SmallVector<VMIGroupStoreLayoutFact, 4>>
+VMILayoutSupport::getGroupStoreLayoutFactsForLayout(
+    VMIGroupStoreOp op, VMIVRegType valueType, VMILayoutAttr layout,
+    std::string *reason) const {
+  auto fail = [&](const Twine &message)
+      -> FailureOr<SmallVector<VMIGroupStoreLayoutFact, 4>> {
+    if (reason)
+      *reason = message.str();
+    return failure();
+  };
+
+  if (!layout)
+    return fail("requires assigned group_store value layout");
+
+  MLIRContext *ctx = valueType.getContext();
+  auto sourceType = VMIVRegType::get(ctx, valueType.getElementCount(),
+                                    valueType.getElementType(), layout);
+  if (succeeded(getGroupStoreLayoutFact(op, sourceType, nullptr)))
+    return SmallVector<VMIGroupStoreLayoutFact, 4>{{layout}};
+
+  FailureOr<GroupLayoutKey> key = buildGroupLayoutKey(
+      valueType, op.getNumGroupsAttr().getInt(),
+      "group_store layout table has no row for this group size", reason);
+  if (failed(key))
+    return failure();
+
+  std::optional<int64_t> rowStride =
+      getConstantIndexValue(op.getRowStride());
+  SmallVector<VMIGroupStoreLayoutFact, 4> facts;
+  for (const GroupStoreLayoutPattern &pattern : kGroupStoreLayoutPatterns) {
+    if (!matchesGroupStoreLayoutPattern(pattern, valueType, *key, rowStride))
+      continue;
+
+    VMILayoutAttr useLayout =
+        materializeLayoutPattern(ctx, pattern.valueLayout);
+    bool duplicate = llvm::any_of(
+        facts, [&](const VMIGroupStoreLayoutFact &fact) {
+          return fact.valueLayout == useLayout;
+        });
+    if (!useLayout || duplicate)
+      continue;
+
+    auto useType = VMIVRegType::get(ctx, valueType.getElementCount(),
+                                   valueType.getElementType(), useLayout);
+    if (failed(getEnsureLayoutFact(sourceType, useType, nullptr)))
+      continue;
+    facts.push_back(VMIGroupStoreLayoutFact{useLayout});
+  }
+
+  if (facts.empty())
+    return fail("value layout cannot be used directly or materialized to a "
+                "supported group_store layout table row");
+  return facts;
+}
+
+FailureOr<VMIGroupStoreLayoutFact>
+VMILayoutSupport::getPreferredGroupStoreLayoutFact(
+    VMIGroupStoreOp op, VMIVRegType valueType, std::string *reason) const {
+  auto fail = [&](const Twine &message) -> FailureOr<VMIGroupStoreLayoutFact> {
+    if (reason)
+      *reason = message.str();
+    return failure();
+  };
+
+  MLIRContext *ctx = valueType.getContext();
+  int64_t numGroups = op.getNumGroupsAttr().getInt();
+  if (valueType.getElementCount() == numGroups) {
+    std::optional<int64_t> rowStride =
+        getConstantIndexValue(op.getRowStride());
+    bool packedSlots =
+        rowStride && *rowStride == 1 && static_cast<int64_t>(numGroups) >= 8;
+    VMILayoutAttr layout =
+        VMILayoutAttr::getGroupSlots(ctx, numGroups, packedSlots ? 8 : 1);
+    auto assignedType = VMIVRegType::get(
+        ctx, valueType.getElementCount(), valueType.getElementType(), layout);
+    if (succeeded(getGroupStoreLayoutFact(op, assignedType, nullptr)))
+      return VMIGroupStoreLayoutFact{layout};
+  }
+
+  if (pto::getPTOStorageElemBitWidth(valueType.getElementType()) == 0)
+    return fail("group_store requires known element bit width");
+  FailureOr<GroupLayoutKey> key = buildGroupLayoutKey(
+      valueType, numGroups,
+      "group_store preferred layout table has no row for this group size",
+      reason);
+  if (failed(key))
+    return failure();
+
+  std::optional<int64_t> rowStride =
+      getConstantIndexValue(op.getRowStride());
+  const GroupStoreLayoutPattern *selected = nullptr;
+  for (const GroupStoreLayoutPattern &pattern : kGroupStoreLayoutPatterns) {
+    if (pattern.priority == GroupStoreLayoutPriority::LegalOnly)
+      continue;
+    if (!matchesGroupStoreLayoutPattern(pattern, valueType, *key, rowStride))
+      continue;
+    if (!selected || static_cast<unsigned>(pattern.priority) >
+                         static_cast<unsigned>(selected->priority))
+      selected = &pattern;
+  }
+  if (selected)
+    return VMIGroupStoreLayoutFact{
+        materializeLayoutPattern(ctx, selected->valueLayout)};
+
+  return fail("value type, group size, and row_stride do not match a "
+              "preferred group_store table row");
+}
+
+FailureOr<VMIGroupStoreLayoutFact>
+VMILayoutSupport::getHighPriorityGroupStoreLayoutFact(
+    VMIGroupStoreOp op, VMIVRegType valueType, std::string *reason) const {
+  auto fail = [&](const Twine &message) -> FailureOr<VMIGroupStoreLayoutFact> {
+    if (reason)
+      *reason = message.str();
+    return failure();
+  };
+
+  if (pto::getPTOStorageElemBitWidth(valueType.getElementType()) == 0)
+    return fail("group_store requires known element bit width");
+  FailureOr<GroupLayoutKey> key = buildGroupLayoutKey(
+      valueType, op.getNumGroupsAttr().getInt(),
+      "high-priority group_store layout table has no row for this group size",
+      reason);
+  if (failed(key))
+    return failure();
+
+  std::optional<int64_t> rowStride =
+      getConstantIndexValue(op.getRowStride());
+  for (const GroupStoreLayoutPattern &pattern : kGroupStoreLayoutPatterns) {
+    if (pattern.priority != GroupStoreLayoutPriority::High)
+      continue;
+    if (!matchesGroupStoreLayoutPattern(pattern, valueType, *key, rowStride))
+      continue;
+    VMILayoutAttr layout = materializeLayoutPattern(valueType.getContext(),
+                                                    pattern.valueLayout);
+    if (!layout)
+      continue;
+    return VMIGroupStoreLayoutFact{layout};
+  }
+
+  return fail("value type, group size, and row_stride do not match a "
+              "high-priority group_store table row");
 }
 
 LogicalResult getGroupReduceAddSupportImpl(VMIVRegType sourceType,

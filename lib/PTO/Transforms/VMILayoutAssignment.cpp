@@ -25,7 +25,6 @@
 #include "mlir/IR/Value.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
 namespace mlir {
@@ -63,10 +62,12 @@ enum class DataLayoutSeedPhase {
   GroupSlotLoad,
   GroupBroadcast,
   GroupBroadcastLoad,
+  GroupStore,
   Cast,
   WeakReduce,
   Store,
   Other,
+  GroupStoreFallback,
   SeedEnd,
 };
 
@@ -87,10 +88,6 @@ struct MaskUseRequest {
   OpOperand *operand;
   VMILayoutAttr layout;
   DataLayoutSeedPhase phase = DataLayoutSeedPhase::Other;
-};
-
-struct GroupStoreUseRequest {
-  VMIGroupStoreOp store;
 };
 
 static std::optional<int64_t> getConstantIndexValue(Value value) {
@@ -446,76 +443,6 @@ struct LayoutSolver {
            << " requires constant positive row_stride divisible by 8 f32 "
               "elements for the block8 stride plan; stable gather fallback is "
               "not implemented";
-  }
-
-  VMILayoutAttr getPreferredGroupStoreUseLayout(
-      Value value, int64_t numGroups, Value rowStride,
-      llvm::function_ref<VMILayoutAttr(Value)> getKnownLayout) {
-    auto type = dyn_cast<VMIVRegType>(value.getType());
-    if (!type)
-      return getContiguousLayout();
-    if (VMILayoutAttr existing = type.getLayoutAttr())
-      if (existing.isGroupSlots() && existing.getSlots() > 0)
-        return existing;
-    VMILayoutAttr known = getKnownLayout(value);
-    if (known && known.isGroupSlots() && known.getNumGroups() == numGroups &&
-        known.getSlots() > 0)
-      return known;
-    if (known && known.isDeinterleaved()) {
-      if (known.getFactor() == 2)
-        return known;
-      if (known.getFactor() == 4)
-        return VMILayoutAttr::getDeinterleaved(ctx, /*factor=*/2);
-    }
-    if (auto castOp = value.getDefiningOp()) {
-      if (isa<VMIExtFOp, VMIExtSIOp, VMIExtUIOp, VMITruncFOp, VMITruncIOp>(
-              castOp) &&
-          castOp->getNumOperands() == 1 && castOp->getNumResults() == 1) {
-        auto sourceType =
-            dyn_cast<VMIVRegType>(castOp->getOperand(0).getType());
-        auto resultType = dyn_cast<VMIVRegType>(castOp->getResult(0).getType());
-        if (sourceType && resultType) {
-          VMILayoutAttr sourceLayout = getKnownLayout(castOp->getOperand(0));
-          if (!sourceLayout)
-            sourceLayout = getDataLayout(castOp->getOperand(0));
-          VMILayoutSupport supports;
-          FailureOr<VMICastLayoutFact> fact =
-              supports.getCastLayoutFactForSourceLayout(sourceType, resultType,
-                                                        sourceLayout);
-          if (succeeded(fact) && fact->resultLayout.isGroupSlots() &&
-              fact->resultLayout.getNumGroups() == numGroups &&
-              fact->resultLayout.getSlots() > 0)
-            return fact->resultLayout;
-        }
-      }
-    }
-    VMILayoutAttr solved = getDataLayout(value);
-    if (solved && solved.isGroupSlots() && solved.getNumGroups() == numGroups &&
-        solved.getSlots() > 0)
-      return solved;
-    if (value.getDefiningOp<VMIGroupReduceAddFOp>() ||
-        value.getDefiningOp<VMIGroupReduceMaxFOp>() ||
-        value.getDefiningOp<VMIGroupReduceMinFOp>() ||
-        value.getDefiningOp<VMIGroupReduceAddIOp>() ||
-        value.getDefiningOp<VMIGroupReduceMaxIOp>() ||
-        value.getDefiningOp<VMIGroupReduceMinIOp>())
-      return getPreferredGroupSlotsLayout(type, numGroups);
-    if (type.getElementCount() == numGroups) {
-      std::optional<int64_t> stride = getConstantIndexValue(rowStride);
-      bool packedSlots =
-          stride && *stride == 1 && static_cast<int64_t>(numGroups) >= 8;
-      return VMILayoutAttr::getGroupSlots(ctx, numGroups, packedSlots ? 8 : 1);
-    }
-    if (auto load = value.getDefiningOp<VMIGroupSlotLoadOp>())
-      return getPreferredGroupSlotLoadLayout(load);
-    return getContiguousLayout();
-  }
-
-  VMILayoutAttr getPreferredGroupStoreUseLayout(Value value, int64_t numGroups,
-                                                Value rowStride) {
-    return getPreferredGroupStoreUseLayout(
-        value, numGroups, rowStride,
-        [&](Value knownValue) { return getDataLayout(knownValue); });
   }
 
   VMILayoutAttr getDataLayout(Value value) {
@@ -1287,8 +1214,24 @@ struct LayoutSolver {
         return WalkResult::advance();
       }
       if (auto store = dyn_cast<VMIGroupStoreOp>(op)) {
-        addDataValue(store.getValue());
-        groupStoreUseRequests.push_back(GroupStoreUseRequest{store});
+        auto valueType = cast<VMIVRegType>(store.getValue().getType());
+        VMILayoutSupport supports;
+        VMILayoutAttr highPriorityLayout;
+        FailureOr<VMIGroupStoreLayoutFact> highPriorityFact =
+            supports.getHighPriorityGroupStoreLayoutFact(store, valueType);
+        if (succeeded(highPriorityFact)) {
+          highPriorityLayout = highPriorityFact->valueLayout;
+          requestDataUse(store.getValueMutable(), highPriorityLayout,
+                         /*late=*/false, DataLayoutSeedPhase::GroupStore);
+        }
+
+        FailureOr<VMIGroupStoreLayoutFact> preferredFact =
+            supports.getPreferredGroupStoreLayoutFact(store, valueType);
+        if (succeeded(preferredFact) &&
+            preferredFact->valueLayout != highPriorityLayout)
+          requestDataUse(store.getValueMutable(), preferredFact->valueLayout,
+                         /*late=*/false,
+                         DataLayoutSeedPhase::GroupStoreFallback);
         return WalkResult::advance();
       }
       if (auto store = dyn_cast<VMIMaskedStoreOp>(op)) {
@@ -1864,19 +1807,6 @@ struct LayoutSolver {
                               static_cast<DataLayoutSeedPhase>(phase))))
         return failure();
 
-    for (GroupStoreUseRequest request : groupStoreUseRequests) {
-      VMIGroupStoreOp store = request.store;
-      VMILayoutAttr layout = getPreferredGroupStoreUseLayout(
-          store.getValue(), store.getNumGroupsAttr().getInt(),
-          store.getRowStride(), [&](Value value) {
-            return propagator.getRequestedOrCurrentLayout(value);
-          });
-      if (failed(propagator.request(store.getValueMutable(), layout)))
-        return failure();
-    }
-    if (failed(propagator.run()))
-      return failure();
-
     for (DataUseRequest request : dataUseRequests)
       if (request.late &&
           failed(propagator.request(*request.operand, request.layout)))
@@ -1961,7 +1891,6 @@ struct LayoutSolver {
   SmallVector<MaskNode> maskNodes;
   SmallVector<DataLayoutSeed> dataLayoutSeeds;
   SmallVector<DataUseRequest> dataUseRequests;
-  SmallVector<GroupStoreUseRequest> groupStoreUseRequests;
   SmallVector<MaskUseRequest> maskUseRequests;
 };
 

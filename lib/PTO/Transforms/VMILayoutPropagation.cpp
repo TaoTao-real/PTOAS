@@ -660,6 +660,34 @@ public:
   }
 };
 
+class VMIGroupStoreTransfer final : public VMILayoutTransfer {
+public:
+  FailureOr<SmallVector<VMILayoutRelation, 4>>
+  query(Operation *op, Value changedValue, VMILayoutAttr changedLayout,
+        const VMILayoutPropagator &propagator,
+        OpOperand *changedOperand) const override {
+    auto store = dyn_cast<VMIGroupStoreOp>(op);
+    if (!store || changedValue != store.getValue())
+      return failure();
+
+    auto valueType = dyn_cast<VMIVRegType>(store.getValue().getType());
+    if (!valueType)
+      return failure();
+
+    VMILayoutSupport supports;
+    FailureOr<SmallVector<VMIGroupStoreLayoutFact, 4>> facts =
+        supports.getGroupStoreLayoutFactsForLayout(store, valueType,
+                                                   changedLayout);
+    if (failed(facts) || facts->empty())
+      return failure();
+    SmallVector<VMILayoutRelation, 4> relations;
+    for (const VMIGroupStoreLayoutFact &fact : *facts)
+      relations.push_back(makeRelation(SmallVector<VMILayoutFact, 4>{
+          operandFact(store.getValueMutable(), fact.valueLayout)}));
+    return relations;
+  }
+};
+
 class VMIMaskedLoadTransfer final : public VMILayoutTransfer {
 public:
   FailureOr<SmallVector<VMILayoutRelation, 4>>
@@ -750,6 +778,7 @@ const VMILayoutTransfer *getTransfer(Operation *op) {
   static VMIInterleaveTransfer interleaveTransfer;
   static VMIGatherTransfer gatherTransfer;
   static VMIStoreTransfer storeTransfer;
+  static VMIGroupStoreTransfer groupStoreTransfer;
   static VMIMaskedLoadTransfer maskedLoadTransfer;
   static VMIMaskedStoreTransfer maskedStoreTransfer;
 
@@ -784,6 +813,8 @@ const VMILayoutTransfer *getTransfer(Operation *op) {
     return &castTransfer;
   if (isa<VMIStoreOp>(op))
     return &storeTransfer;
+  if (isa<VMIGroupStoreOp>(op))
+    return &groupStoreTransfer;
   if (isa<VMIMaskedLoadOp>(op))
     return &maskedLoadTransfer;
   if (isa<VMIMaskedStoreOp>(op))
