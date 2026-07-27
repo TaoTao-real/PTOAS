@@ -1052,6 +1052,18 @@ static VMIGroupBroadcastLayoutFact materializeGroupBroadcastLayoutFact(
   return fact;
 }
 
+static VMIGroupStoreLayoutFact materializeGroupStoreLayoutFact(
+    MLIRContext *ctx, const GroupStoreLayoutPattern &pattern,
+    GroupLayoutKey key) {
+  VMIGroupStoreLayoutFact fact;
+  fact.valueLayout = materializeLayoutPattern(ctx, pattern.valueLayout);
+  fact.blockClass = getGroupBlockClassFromPattern(pattern.block);
+  fact.groupSize = key.groupSize;
+  fact.lanesPerPart = key.lanesPerPart;
+  fact.vcgBlockElems = key.vcgBlockElems;
+  return fact;
+}
+
 static VMIInterleaveLayoutFact materializeInterleaveLayoutFact(
     MLIRContext *ctx, const InterleaveLayoutPattern &pattern,
     InterleaveLayoutKey key) {
@@ -2415,7 +2427,10 @@ FailureOr<VMIGroupStoreLayoutFact> VMILayoutSupport::getGroupStoreLayoutFact(
     if (!matchesLayoutPattern(valueType.getContext(), pattern.valueLayout,
                               layout))
       continue;
-    return VMIGroupStoreLayoutFact{layout};
+    VMIGroupStoreLayoutFact fact =
+        materializeGroupStoreLayoutFact(valueType.getContext(), pattern, *key);
+    fact.valueLayout = layout;
+    return fact;
   }
 
   return fail("value layout, group size, and row_stride do not match a "
@@ -2439,8 +2454,10 @@ VMILayoutSupport::getGroupStoreLayoutFactsForLayout(
   MLIRContext *ctx = valueType.getContext();
   auto sourceType = VMIVRegType::get(ctx, valueType.getElementCount(),
                                     valueType.getElementType(), layout);
-  if (succeeded(getGroupStoreLayoutFact(op, sourceType, nullptr)))
-    return SmallVector<VMIGroupStoreLayoutFact, 4>{{layout}};
+  FailureOr<VMIGroupStoreLayoutFact> directFact =
+      getGroupStoreLayoutFact(op, sourceType, nullptr);
+  if (succeeded(directFact))
+    return SmallVector<VMIGroupStoreLayoutFact, 4>{*directFact};
 
   FailureOr<GroupLayoutKey> key = buildGroupLayoutKey(
       valueType, op.getNumGroupsAttr().getInt(),
@@ -2468,7 +2485,10 @@ VMILayoutSupport::getGroupStoreLayoutFactsForLayout(
                                    valueType.getElementType(), useLayout);
     if (failed(getEnsureLayoutFact(sourceType, useType, nullptr)))
       continue;
-    facts.push_back(VMIGroupStoreLayoutFact{useLayout});
+    VMIGroupStoreLayoutFact fact =
+        materializeGroupStoreLayoutFact(ctx, pattern, *key);
+    fact.valueLayout = useLayout;
+    facts.push_back(fact);
   }
 
   if (facts.empty())
@@ -2523,8 +2543,7 @@ VMILayoutSupport::getPreferredGroupStoreLayoutFact(
       selected = &pattern;
   }
   if (selected)
-    return VMIGroupStoreLayoutFact{
-        materializeLayoutPattern(ctx, selected->valueLayout)};
+    return materializeGroupStoreLayoutFact(ctx, *selected, *key);
 
   return fail("value type, group size, and row_stride do not match a "
               "preferred group_store table row");
@@ -2555,11 +2574,11 @@ VMILayoutSupport::getHighPriorityGroupStoreLayoutFact(
       continue;
     if (!matchesGroupStoreLayoutPattern(pattern, valueType, *key, rowStride))
       continue;
-    VMILayoutAttr layout = materializeLayoutPattern(valueType.getContext(),
-                                                    pattern.valueLayout);
-    if (!layout)
+    VMIGroupStoreLayoutFact fact = materializeGroupStoreLayoutFact(
+        valueType.getContext(), pattern, *key);
+    if (!fact.valueLayout)
       continue;
-    return VMIGroupStoreLayoutFact{layout};
+    return fact;
   }
 
   return fail("value type, group size, and row_stride do not match a "

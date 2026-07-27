@@ -3701,8 +3701,35 @@ static FailureOr<StringRef> buildVldsx2Callee(MLIRContext *context,
   return buildMemoryLaneTypedCallee(context, resultType, "vldsx2", "");
 }
 
-static StringRef buildVsldbCallee(MLIRContext *context) {
-  return StringAttr::get(context, "llvm.hivm.vsldb").getValue();
+static FailureOr<StringRef>
+buildBlockStridedMemoryCallee(MLIRContext *context, Type vectorType,
+                              StringRef stem, bool post) {
+  Type elementType = getElementTypeFromVectorLike(vectorType);
+  auto lanes = getElementCountFromVectorLike(vectorType);
+  if (!elementType || !lanes)
+    return failure();
+
+  std::string element;
+  if (auto intType = dyn_cast<IntegerType>(elementType))
+    element = "i" + std::to_string(intType.getWidth());
+  else if (isLowpPayloadElementType(elementType))
+    element = "i8";
+  else
+    element = getMemoryElementTypeFragment(elementType);
+  if (element.empty())
+    return failure();
+
+  return StringAttr::get(context,
+                         "llvm.hivm." + stem.str() +
+                             std::string(post ? ".post" : "") + ".v" +
+                             std::to_string(*lanes) + element)
+      .getValue();
+}
+
+static FailureOr<StringRef> buildVsldbCallee(MLIRContext *context,
+                                              Type resultType) {
+  return buildBlockStridedMemoryCallee(context, resultType, "vsldb",
+                                       /*post=*/false);
 }
 
 static FailureOr<StringRef> buildVstsCallee(MLIRContext *context, Type valueType) {
@@ -3720,12 +3747,9 @@ static FailureOr<StringRef> buildVstsx2Callee(MLIRContext *context, Type valueTy
   return buildMemoryLaneTypedCallee(context, valueType, "vstsx2", "");
 }
 
-static StringRef buildVsstbCallee(MLIRContext *context) {
-  return StringAttr::get(context, "llvm.hivm.vsstb").getValue();
-}
-
-static StringRef buildVsstbPostCallee(MLIRContext *context) {
-  return StringAttr::get(context, "llvm.hivm.vsstb.post").getValue();
+static FailureOr<StringRef> buildVsstbCallee(MLIRContext *context,
+                                             Type valueType, bool post) {
+  return buildBlockStridedMemoryCallee(context, valueType, "vsstb", post);
 }
 
 static Type getVgather2SourceElementType(Type sourceType) {
@@ -7382,7 +7406,10 @@ public:
     Type callResultType = getPayloadABIType(
         op.getResult().getType(), resultType, rewriter.getContext());
 
-    StringRef calleeName = buildVsldbCallee(op.getContext());
+    FailureOr<StringRef> calleeName =
+        buildVsldbCallee(op.getContext(), op.getResult().getType());
+    if (failed(calleeName))
+      return rewriter.notifyMatchFailure(op, "unsupported vsldb signature");
     Value zeroValue = getI32Constant(rewriter, op.getLoc(), 0);
     SmallVector<Value> args{adaptor.getSource(), packedStride, zeroValue,
                             adaptor.getMask()};
@@ -7390,9 +7417,9 @@ public:
         TypeRange{adaptor.getSource().getType(), packedStride.getType(),
                   zeroValue.getType(), adaptor.getMask().getType()},
         TypeRange{callResultType});
-    auto call = rewriter.create<func::CallOp>(op.getLoc(), calleeName,
+    auto call = rewriter.create<func::CallOp>(op.getLoc(), *calleeName,
                                               TypeRange{callResultType}, args);
-    state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
+    state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
     Value result = castFromPayloadABI(
         op.getLoc(), call.getResult(0), op.getResult().getType(), resultType,
         rewriter);
@@ -7679,9 +7706,10 @@ public:
       return rewriter.notifyMatchFailure(op, "unsupported vsstb result count");
     }
 
-    StringRef calleeName = usePostIntrinsic
-                               ? buildVsstbPostCallee(op.getContext())
-                               : buildVsstbCallee(op.getContext());
+    FailureOr<StringRef> calleeName = buildVsstbCallee(
+        op.getContext(), op.getValue().getType(), usePostIntrinsic);
+    if (failed(calleeName))
+      return rewriter.notifyMatchFailure(op, "unsupported vsstb signature");
     Value zeroValue = getI32Constant(rewriter, op.getLoc(), usePostIntrinsic ? 1 : 0);
     Value value = castToPayloadABI(
         op.getLoc(), adaptor.getValue(), op.getValue().getType(), rewriter);
@@ -7692,9 +7720,9 @@ public:
                   packedStride.getType(), zeroValue.getType(),
                   adaptor.getMask().getType()},
         resultTypes);
-    auto call = rewriter.create<func::CallOp>(op.getLoc(), calleeName,
+    auto call = rewriter.create<func::CallOp>(op.getLoc(), *calleeName,
                                               resultTypes, args);
-    state.plannedDecls.push_back(PlannedDecl{calleeName.str(), funcType});
+    state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
     if (usePostIntrinsic)
       rewriter.replaceOp(op, call.getResults());
     else

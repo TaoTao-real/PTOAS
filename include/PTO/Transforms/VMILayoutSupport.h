@@ -39,10 +39,6 @@ struct VMIStoreLayoutFact {
   VMILayoutAttr valueLayout;
 };
 
-struct VMIGroupStoreLayoutFact {
-  VMILayoutAttr valueLayout;
-};
-
 struct VMIMaskedStoreLayoutFact {
   VMILayoutAttr valueLayout;
   VMILayoutAttr maskLayout;
@@ -113,6 +109,14 @@ enum class VMIGroupBlockClass {
   TwoBlock,
   FourBlock,
   FullPartMultiple,
+};
+
+struct VMIGroupStoreLayoutFact {
+  VMILayoutAttr valueLayout;
+  VMIGroupBlockClass blockClass = VMIGroupBlockClass::OneBlock;
+  int64_t groupSize = 0;
+  int64_t lanesPerPart = 0;
+  int64_t vcgBlockElems = 0;
 };
 
 struct VMIGroupReduceLayoutFact {

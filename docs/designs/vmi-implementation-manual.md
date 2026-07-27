@@ -3110,23 +3110,30 @@ pto.vmi.group_load / pto.vmi.group_store:
       destination[offset + g * row_stride + i] = value[g * S + i]
     row_stride is an index operand, measured in elements, and may be dynamic.
     Tail/valid-lane information is not an attr; it must be represented by a
-    mask in the producing/consuming computation. The current direct
-    group_load/group_store path is for full physical chunks.
+    mask in the producing/consuming computation. Direct group_store also
+    supports a contiguous tail when each logical group is exactly one 32B
+    block; lowering creates a prefix predicate for the final physical vreg.
   layout assignment:
     group_load result natural layout is contiguous
     group_store value use is requested as contiguous
   current direct lowering:
     source/value element width must be maskable by b8/b16/b32
-    layout must be contiguous with full physical chunks
-    num_groups must evenly divide N, and the derived group size S must be a
-    multiple of the physical lanes
-    per part, so every physical chunk belongs to exactly one group
-    lower each physical chunk with pto.vlds/pto.vsts at:
+    for contiguous group_store with S equal to one 32B VCG block and a static
+    positive 32B-aligned row_stride:
+      block_stride = row_stride / S, measured in 32B blocks
+      lower each physical vreg with pto.vsstb and repeat_stride = 0
+      the physical-part base is offset + first_group_in_part * row_stride
+      block_stride must fit the 16-bit pto.vsstb control field
+    for contiguous full physical chunks, num_groups must evenly divide N and S
+    must be a multiple of the physical lanes per part; lower each chunk with
+    pto.vlds/pto.vsts at:
       offset + group * row_stride + chunk_in_group * lanes_per_part
+    deinterleaved=2 full chunks lower through pto.vstsx2
   unsupported cases:
-    derived group size splitting a physical chunk, because this needs partial-vreg
-    lane insertion/extraction or a gather/scatter plan
-    partial/tail physical chunks
+    derived group sizes smaller than one 32B block or between one block and a
+    full physical vreg, because these need partial-vreg extraction or a more
+    general gather/scatter plan
+    dynamic or non-32B-aligned row_stride for the one-block pto.vsstb path
     GM-backed direct vector load/store paths not already accepted by the normal
     VMI memory access plan
 

@@ -19,7 +19,7 @@ import numpy as np
 
 SEED = 37
 VECTOR_BYTES = 256
-TOTAL_BYTES = 10 * VECTOR_BYTES
+TOTAL_BYTES = 11 * VECTOR_BYTES
 
 
 def generate(output_dir: Path, seed: int) -> None:
@@ -39,10 +39,12 @@ def generate(output_dir: Path, seed: int) -> None:
     # The b8 block load/store pair observes the next 32-byte block after a
     # same-stride roundtrip, matching the existing block-layout instruction contract.
     golden[7 * VECTOR_BYTES:8 * VECTOR_BYTES] = data[7 * VECTOR_BYTES + 32:8 * VECTOR_BYTES + 32]
+    # Exercise the typed bf16 vsstb intrinsic with contiguous 32-byte blocks.
+    golden[8 * VECTOR_BYTES:9 * VECTOR_BYTES] = data[8 * VECTOR_BYTES:9 * VECTOR_BYTES]
     # vldus starts from an explicitly unaligned base.
-    golden[8 * VECTOR_BYTES:9 * VECTOR_BYTES] = data[8 * VECTOR_BYTES + 1:9 * VECTOR_BYTES + 1]
+    golden[9 * VECTOR_BYTES:10 * VECTOR_BYTES] = data[9 * VECTOR_BYTES + 1:10 * VECTOR_BYTES + 1]
     # vstus/vstas makes only the explicit state-store offset bytes visible here.
-    golden[9 * VECTOR_BYTES:9 * VECTOR_BYTES + 3] = data[9 * VECTOR_BYTES:9 * VECTOR_BYTES + 3]
+    golden[10 * VECTOR_BYTES:10 * VECTOR_BYTES + 3] = data[10 * VECTOR_BYTES:10 * VECTOR_BYTES + 3]
     output_dir.mkdir(parents=True, exist_ok=True)
     data.tofile(output_dir / "v1.bin")
     np.zeros((TOTAL_BYTES,), dtype=np.uint8).tofile(output_dir / "v2.bin")

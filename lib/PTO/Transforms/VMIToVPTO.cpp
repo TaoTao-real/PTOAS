@@ -1791,6 +1791,48 @@ static bool isCompactSmallGroupStore(VMILayoutAttr layout,
          rowStride && *rowStride == 1;
 }
 
+struct OneBlockGroupStorePlan {
+  int64_t groupSize = 0;
+  int64_t groupsPerPart = 0;
+  int64_t blockStride = 0;
+};
+
+FailureOr<OneBlockGroupStorePlan> getOneBlockGroupStorePlan(
+    VMIGroupStoreOp op, VMIVRegType valueType,
+    const VMIGroupStoreLayoutFact &fact, std::string *reason) {
+  auto fail = [&](const Twine &message)
+      -> FailureOr<OneBlockGroupStorePlan> {
+    if (reason)
+      *reason = message.str();
+    return failure();
+  };
+
+  VMILayoutAttr layout = valueType.getLayoutAttr();
+  if (fact.blockClass != VMIGroupBlockClass::OneBlock || !layout ||
+      !layout.isContiguous())
+    return fail("one-block group_store requires contiguous layout");
+  if (fact.groupSize <= 0 || fact.groupSize != fact.vcgBlockElems ||
+      fact.lanesPerPart <= 0 ||
+      fact.lanesPerPart % fact.groupSize != 0)
+    return fail("one-block group_store requires one 32B group per VCG block");
+  if (!isa<PtrType>(op.getDestination().getType()))
+    return fail("one-block group_store requires !pto.ptr destination");
+
+  std::optional<int64_t> rowStride =
+      getConstantIndexValue(op.getRowStride());
+  if (!rowStride || *rowStride <= 0 || *rowStride % fact.groupSize != 0)
+    return fail("one-block group_store requires a constant positive row_stride "
+                "aligned to 32B blocks");
+
+  int64_t blockStride = *rowStride / fact.groupSize;
+  if (blockStride > 0xffff)
+    return fail("one-block group_store block_stride exceeds the 16-bit vsstb "
+                "control field");
+
+  return OneBlockGroupStorePlan{
+      fact.groupSize, fact.lanesPerPart / fact.groupSize, blockStride};
+}
+
 LogicalResult
 checkSupportedGroupStoreShape(VMIGroupStoreOp op, std::string *reason) {
   auto fail = [&](const Twine &message) -> LogicalResult {
@@ -1847,22 +1889,29 @@ checkSupportedGroupStoreShape(VMIGroupStoreOp op, std::string *reason) {
     return success();
   }
 
-  FailureOr<int64_t> groupSize = getGroupSizeFromNumGroups(
-      valueType, op.getNumGroupsAttr().getInt(), reason);
-  if (failed(groupSize))
+  VMILayoutSupport supports;
+  FailureOr<VMIGroupStoreLayoutFact> fact =
+      supports.getGroupStoreLayoutFact(op, valueType, reason);
+  if (failed(fact))
     return failure();
   if (failed(checkSupportedStoreShape(valueType,
                                       op.getDestination(),
                                       op.getDestination().getType(), reason)))
     return failure();
-  if (succeeded(checkSupportedGroupChunkShape(valueType, *groupSize, reason)))
+  if (fact->blockClass == VMIGroupBlockClass::OneBlock) {
+    if (failed(getOneBlockGroupStorePlan(op, valueType, *fact, reason)))
+      return failure();
+    return success();
+  }
+  if (succeeded(
+          checkSupportedGroupChunkShape(valueType, fact->groupSize, reason)))
     return success();
 
   int64_t lanesPerPart = 0;
   int64_t groupCount = 0;
   int64_t chunksPerGroupPerPart = 0;
   return checkDeinterleaved2GroupStoreChunkShape(
-      valueType, *groupSize, &lanesPerPart, &groupCount,
+      valueType, fact->groupSize, &lanesPerPart, &groupCount,
       &chunksPerGroupPerPart, reason);
 }
 
@@ -7675,21 +7724,67 @@ struct OneToNVMIGroupStoreOpPattern
       return success();
     }
 
+    VMILayoutSupport supports;
+    FailureOr<VMIGroupStoreLayoutFact> fact =
+        supports.getGroupStoreLayoutFact(op, valueVMIType);
+    if (failed(fact))
+      return rewriter.notifyMatchFailure(
+          op, "group_store layout does not match the support table");
+
+    if (fact->blockClass == VMIGroupBlockClass::OneBlock) {
+      FailureOr<OneBlockGroupStorePlan> plan =
+          getOneBlockGroupStorePlan(op, valueVMIType, *fact, nullptr);
+      if (failed(plan))
+        return rewriter.notifyMatchFailure(
+            op, "failed to build one-block group_store vsstb plan");
+
+      ValueRange valueParts = adaptor.getValue();
+      int64_t numGroups = op.getNumGroupsAttr().getInt();
+      if (static_cast<int64_t>(valueParts.size()) !=
+          ceilDivNonNegative(numGroups, plan->groupsPerPart))
+        return rewriter.notifyMatchFailure(
+            op, "one-block group_store physical arity mismatch");
+
+      Value blockStride = rewriter.create<arith::ConstantIntOp>(
+          op.getLoc(), plan->blockStride, 16);
+      Value repeatStride =
+          rewriter.create<arith::ConstantIntOp>(op.getLoc(), 0, 16);
+      for (auto [part, value] : llvm::enumerate(valueParts)) {
+        auto vregType = dyn_cast<VRegType>(value.getType());
+        if (!vregType)
+          return rewriter.notifyMatchFailure(
+              op, "one-block group_store value must be vreg");
+        FailureOr<Value> mask = createContiguousStoreMask(
+            op.getLoc(), valueVMIType, part, vregType, rewriter);
+        if (failed(mask))
+          return rewriter.notifyMatchFailure(
+              op, "failed to create one-block group_store mask");
+
+        Value partOffset = createGroupChunkOffset(
+            op.getLoc(), *offset, *rowStride, part * plan->groupsPerPart,
+            /*inGroupLaneOffset=*/0, rewriter);
+        Value base = rewriter
+                         .create<AddPtrOp>(op.getLoc(), (*destination).getType(),
+                                           *destination, partOffset)
+                         .getResult();
+        rewriter.create<VsstbOp>(op.getLoc(), /*updated_base=*/Type{}, value,
+                                 base, blockStride, repeatStride, *mask);
+      }
+
+      rewriter.eraseOp(op);
+      return success();
+    }
+
     int64_t lanesPerPart = 0;
     int64_t groupCount = 0;
     int64_t chunksPerGroup = 0;
-    FailureOr<int64_t> groupSize =
-        getGroupSizeFromNumGroups(valueVMIType, op.getNumGroupsAttr().getInt());
-    if (failed(groupSize))
-      return rewriter.notifyMatchFailure(
-          op, "group_store requires num_groups to evenly divide lane count");
 
     int64_t d2LanesPerPart = 0;
     int64_t d2GroupCount = 0;
     int64_t d2ChunksPerGroupPerPart = 0;
     std::string d2Reason;
     if (succeeded(checkDeinterleaved2GroupStoreChunkShape(
-            valueVMIType, *groupSize, &d2LanesPerPart, &d2GroupCount,
+            valueVMIType, fact->groupSize, &d2LanesPerPart, &d2GroupCount,
             &d2ChunksPerGroupPerPart, &d2Reason))) {
       std::optional<std::string> dist =
           getX2MemoryDistToken(valueVMIType.getElementType(), "INTLV");
@@ -7734,7 +7829,7 @@ struct OneToNVMIGroupStoreOpPattern
       return success();
     }
 
-    if (failed(checkContiguousFullGroupChunks(op, valueVMIType, *groupSize,
+    if (failed(checkContiguousFullGroupChunks(op, valueVMIType, fact->groupSize,
                                               &lanesPerPart, &groupCount,
                                               &chunksPerGroup, rewriter)))
       return failure();
@@ -12632,9 +12727,9 @@ verifySupportedVMIToVPTOOps(ModuleOp module,
         return WalkResult::advance();
       store.emitError()
           << kVMIDiagUnsupportedPrefix
-          << "pto.vmi.group_store requires contiguous full value chunks, a "
-             "supported UB destination, and num_groups deriving a group size "
-             "aligned to physical chunks ("
+          << "pto.vmi.group_store requires a supported UB destination and a "
+             "table-supported value layout lowering through one-block vsstb, "
+             "full-chunk vsts, or deinterleaved vstsx2 ("
           << reason << ")";
       return WalkResult::interrupt();
     }

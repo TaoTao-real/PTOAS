@@ -35,7 +35,7 @@ void LaunchVreg_low_precision_ldst_kernel_2d(uint8_t *v1, uint8_t *v2,
                                              void *stream);
 
 int main() {
-  constexpr size_t fileSize = 10 * 256 * sizeof(uint8_t);
+  constexpr size_t fileSize = 11 * 256 * sizeof(uint8_t);
 
   uint8_t *v1Host = nullptr;
   uint8_t *v2Host = nullptr;

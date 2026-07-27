@@ -82,9 +82,9 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 // CHECK-LABEL: define void @lowp_x2_and_block_mix_aiv
 // CHECK: call { <256 x i8>, <256 x i8> } @llvm.hivm.vldsx2.v256f4e1m2x2
 // CHECK: call void @llvm.hivm.vstsx2.v256f4e1m2x2
-// CHECK: call <256 x i8> @llvm.hivm.vsldb
-// CHECK: call void @llvm.hivm.vsstb
-// CHECK: call void @llvm.hivm.vsstb
+// CHECK: call <256 x i8> @llvm.hivm.vsldb.v256i8
+// CHECK: call void @llvm.hivm.vsstb.v256i8
+// CHECK: call void @llvm.hivm.vsstb.v256i8
 
 // CHECK-LABEL: define void @lowp_unaligned_state_mix_aiv
 // CHECK: call <32 x i8> @llvm.hivm.vldas

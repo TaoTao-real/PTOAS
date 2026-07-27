@@ -23,6 +23,7 @@ SEGMENT_NAMES = (
     "vldsx2/vstsx2 low",
     "vldsx2/vstsx2 high",
     "vsldb/vsstb hif8",
+    "vlds/vsstb/vsldb bf16",
     "vldas/vldus f8e5m2",
     "vstus/vstas f4e2m1x2",
 )
