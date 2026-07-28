@@ -553,9 +553,10 @@ def ExpandTileOp : Pass<"pto-expand-tile-op", "ModuleOp"> {
   let summary = "Expand tile ops using the selected TileLib implementation";
   let description = [{
     Expands tile-level operations (pto.tadd, pto.tsub, etc.) by invoking the
-    selected Python TileLib backend. The composite ptodsl-vmi backend emits a
-    canonical logical VMI implementation for vector-pipe TileOps and delegates
-    non-vector TileOps to the existing PTODSL TileLib daemon.
+    selected Python TileLib backend. The PTODSL backend selects a canonical
+    logical VMI candidate when one is legal for the TileOp, otherwise it
+    delegates to the ordinary PTODSL TileLib implementation and marks that
+    fallback as a VMI fusion boundary.
 
     Each tile op is replaced by a func.call to the generated template function,
     with tile_buf operands passed directly (no type bridging).
@@ -588,16 +589,13 @@ def ExpandTileOp : Pass<"pto-expand-tile-op", "ModuleOp"> {
            "Path to Unix domain socket for daemon RPC">,
     Option<"tileLibBackend", "tile-lib-backend", "std::string",
            /*default=*/"\"ptodsl\"",
-           "TileLib backend: ptodsl, ptodsl-vmi, or tilelang">,
+           "TileLib backend: ptodsl or tilelang">,
     Option<"tileLibPkgPath", "tile-lib-pkg-path", "std::string",
            /*default=*/"\"\"",
            "PYTHONPATH root for the selected TileLib backend">,
     Option<"daemonHelperModule", "daemon-helper-module", "std::string",
            /*default=*/"\"ptodsl.tilelib.serving.helper\"",
-           "Python module used for daemon helper RPC calls">,
-    Option<"ptodslVMIProviderModule", "ptodsl-vmi-provider-module", "std::string",
-           /*default=*/"\"ptodsl.vmi_tilelib\"",
-           "Python module containing canonical PTODSL VMI TileTemplates">
+           "Python module used for daemon helper RPC calls">
   ];
 }
 
