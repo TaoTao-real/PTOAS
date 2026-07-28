@@ -1034,3 +1034,19 @@ def template_tcvt_bf16_to_fp4(src: pto.Tile, dst: pto.Tile):
             pto.mem_bar(pto.BarrierType.VST_VST)
             pto.vsts(result, dst[row, col:], dst_mask, dist=pto.VStoreDist.NORM_B8)
             col_loop.update(remained=remained, src_remained=src_remained)
+
+
+from ._vmi_common import (  # noqa: E402
+    canonical_vmi_template,
+    emit_convert_vmi,
+)
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="tcvt",
+    name="vmi_tcvt",
+    context_constraints={"round_mode": ("RINT",)},
+)
+def vmi_tcvt(src: pto.Tile, dst: pto.Tile):
+    emit_convert_vmi(src, dst)

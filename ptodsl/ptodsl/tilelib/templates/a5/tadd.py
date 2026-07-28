@@ -23,3 +23,19 @@ template_tadd = register_binary(
     vector_op=_vadd,
     dtypes=same_dtype_signatures(3),
 )
+
+
+from ._vmi_common import (  # noqa: E402
+    _add as _vmi_add,
+    canonical_vmi_template,
+    emit_elementwise_vmi,
+)
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="tadd",
+    name="vmi_tadd_block64",
+)
+def vmi_tadd_block64(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
+    emit_elementwise_vmi(dst, (src0, src1), _vmi_add)

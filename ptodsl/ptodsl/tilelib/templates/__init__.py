@@ -129,35 +129,6 @@ _TEMPLATE_MODULES = {
     ("a5", "pto.thistogram"): ".a5.thistogram",
 }
 
-_VMI_TEMPLATE_OPS = {
-    "pto.tadd",
-    "pto.tadds",
-    "pto.tcvt",
-    "pto.tcolmax",
-    "pto.tcolsum",
-    "pto.tcolexpandadd",
-    "pto.tcolexpanddiv",
-    "pto.tcolexpandmul",
-    "pto.tcolexpandsub",
-    "pto.tdivs",
-    "pto.tdiv",
-    "pto.texp",
-    "pto.trecip",
-    "pto.trsqrt",
-    "pto.tsqrt",
-    "pto.tmax",
-    "pto.tmaxs",
-    "pto.tmins",
-    "pto.tmov",
-    "pto.tmul",
-    "pto.tmuls",
-    "pto.trowexpandsub",
-    "pto.trowmax",
-    "pto.trowsum",
-    "pto.tsub",
-}
-
-
 @lru_cache(maxsize=None)
 def load_template(op: str, target: str) -> bool:
     """Import and register only the template module for ``(target, op)``.
@@ -173,9 +144,6 @@ def load_template(op: str, target: str) -> bool:
         module_names = (module_names,)
     for module_name in module_names:
         import_module(module_name, package=__name__)
-        loaded = True
-    if target == "a5" and op in _VMI_TEMPLATE_OPS:
-        import_module(".a5.vmi", package=__name__)
         loaded = True
     return loaded
 
