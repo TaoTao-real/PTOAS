@@ -59,6 +59,7 @@ from ._vmi_common import (  # noqa: E402
     target="a5",
     op="trecip",
     name="vmi_trecip",
+    dtypes=(("f16", "f16"), ("f32", "f32")),
     context_constraints={"precisionType": ("default", "high_precision")},
 )
 def vmi_trecip(src: pto.Tile, dst: pto.Tile):

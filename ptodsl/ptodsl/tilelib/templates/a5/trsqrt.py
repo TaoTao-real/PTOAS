@@ -129,6 +129,7 @@ from ._vmi_common import (  # noqa: E402
     target="a5",
     op="trsqrt",
     name="vmi_trsqrt",
+    dtypes=(("f16", "f16"), ("f32", "f32")),
     context_constraints={"precisionType": ("default",)},
 )
 def vmi_trsqrt(src: pto.Tile, dst: pto.Tile):
@@ -139,6 +140,7 @@ def vmi_trsqrt(src: pto.Tile, dst: pto.Tile):
     target="a5",
     op="trsqrt",
     name="vmi_trsqrt_with_tmp",
+    dtypes=(("f16", "f16", "f16"), ("f32", "f32", "f32")),
     context_constraints={"precisionType": ("default", "high_precision")},
 )
 def vmi_trsqrt_with_tmp(src: pto.Tile, dst: pto.Tile, tmp: pto.Tile):
