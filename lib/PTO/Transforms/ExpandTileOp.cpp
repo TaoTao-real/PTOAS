@@ -744,9 +744,10 @@ struct ExpandState {
   func::FuncOp invokeTileLib(const SpecKey &key, Operation *tileOp,
                              ModuleOp mod, MLIRContext *ctx);
   func::FuncOp invokeTileLibDaemon(const SpecKey &key, StringRef candidateId,
-                                   ModuleOp mod, MLIRContext *ctx);
+                                   bool selectedVMI, ModuleOp mod,
+                                   MLIRContext *ctx);
   func::FuncOp invokePTODSLVMI(const SpecKey &key, ModuleOp mod,
-                              MLIRContext *ctx);
+                               MLIRContext *ctx);
 
   LogicalResult expandTileOpsInFunction(func::FuncOp func, ModuleOp mod,
                                         MLIRContext *ctx);
@@ -908,6 +909,41 @@ buildUniqueFunctionBaseName(const SpecKey &key,
   return uniqueName;
 }
 
+static bool candidateHasTag(DictionaryAttr candidate, StringRef tag) {
+  auto tags = candidate.getAs<ArrayAttr>("tags");
+  if (!tags)
+    return false;
+  for (Attribute attr : tags) {
+    auto tagAttr = dyn_cast<StringAttr>(attr);
+    if (tagAttr && tagAttr.getValue() == tag)
+      return true;
+  }
+  return false;
+}
+
+static DictionaryAttr selectTemplateCandidate(Operation *tileOp,
+                                              ArrayAttr candidates,
+                                              bool requireVMI) {
+  for (Attribute attr : candidates) {
+    auto candidate = dyn_cast<DictionaryAttr>(attr);
+    if (!candidate) {
+      tileOp->emitError("ExpandTileOp candidate must be a dictionary");
+      return {};
+    }
+    if (requireVMI == candidateHasTag(candidate, "vmi"))
+      return candidate;
+  }
+  if (requireVMI) {
+    tileOp->emitError(
+        "ExpandTileOp: --tile-lib-backend=ptodsl-vmi requires a legal VMI "
+        "TileLib candidate for PIPE_V TileOp");
+  } else {
+    tileOp->emitError(
+        "ExpandTileOp: no legal non-VMI TileLib candidate selected");
+  }
+  return {};
+}
+
 static std::string buildContextAttrsJson(const SpecKey &key) {
   std::string json = "{";
   for (size_t i = 0; i < key.contextAttrs.size(); ++i) {
@@ -1028,7 +1064,7 @@ ExpandState::invokeTileLibHelper(const SpecKey &key,
 // ============================================================================
 func::FuncOp ExpandState::invokeTileLibDaemon(const SpecKey &key,
                                               StringRef candidateId,
-                                              ModuleOp mod,
+                                              bool selectedVMI, ModuleOp mod,
                                               MLIRContext *ctx) {
   auto mlirText = invokeTileLibHelper(key, candidateId);
   if (!mlirText)
@@ -1041,8 +1077,11 @@ func::FuncOp ExpandState::invokeTileLibDaemon(const SpecKey &key,
     return nullptr;
   }
 
-  // 9. Clone the generated function set into the target module.
-  auto parsedFuncs = parsedMod->getOps<func::FuncOp>();
+  // 9. Clone the generated function set into the target module.  VMI
+  // templates carry the function under a nested kernel module, while ordinary
+  // PTODSL templates may be top-level.
+  SmallVector<func::FuncOp, 4> parsedFuncs;
+  parsedMod->walk([&](func::FuncOp fn) { parsedFuncs.push_back(fn); });
   if (parsedFuncs.empty()) {
     llvm::errs() << "ExpandTileOp: no func.func in daemon output\n";
     return nullptr;
@@ -1055,7 +1094,9 @@ func::FuncOp ExpandState::invokeTileLibDaemon(const SpecKey &key,
   llvm::StringMap<std::string> renamedSymbols;
   SmallVector<func::FuncOp, 4> clonedFuncs;
 
-  std::string uniqueName = buildUniqueFunctionBaseName(key);
+  std::string uniqueName =
+      selectedVMI ? buildUniqueFunctionBaseName(key, "__pto_ptodsl_vmi_")
+                  : buildUniqueFunctionBaseName(key);
   if (!candidateId.empty())
     uniqueName += "__" + candidateId.str();
   SymbolTable targetSymTable(mod);
@@ -1077,6 +1118,9 @@ func::FuncOp ExpandState::invokeTileLibDaemon(const SpecKey &key,
     
     // Set visibility to Private for template functions (required for inline pass)
     cloned.setVisibility(SymbolTable::Visibility::Private);
+    if (selectedVMI && !cloned->hasAttr("pto.tilelang.instance"))
+      cloned->setAttr("pto.tileop.instance",
+                      StringAttr::get(ctx, "ptodsl-vmi"));
     
     clonedFuncs.push_back(cloned);
   }
@@ -1094,10 +1138,11 @@ func::FuncOp ExpandState::invokeTileLibDaemon(const SpecKey &key,
   }
 
   auto cloned = clonedFuncs.front();
-  if (!cloned->hasAttr("pto.tilelang.instance")) {
+  if (!cloned->hasAttr("pto.tilelang.instance") &&
+      !cloned->hasAttr("pto.tileop.instance")) {
     llvm::errs() << "ExpandTileOp: warning: daemon output function @"
                  << cloned.getSymName()
-                 << " missing pto.tilelang.instance attribute\n";
+                 << " missing template instance attribute\n";
   }
 
   // Keep the parsed module alive.
@@ -1263,6 +1308,7 @@ func::FuncOp ExpandState::invokeTileLib(const SpecKey &key,
   // Try daemon first if daemon socket path is provided.
   if (!daemonSocketPath.empty()) {
     std::string candidateId;
+    bool selectedVMI = false;
     if (usesPTODSL) {
       auto candidates =
           tileOp->getAttrOfType<ArrayAttr>(kCandidatesAttr);
@@ -1272,10 +1318,14 @@ func::FuncOp ExpandState::invokeTileLib(const SpecKey &key,
         return nullptr;
       }
 
-      auto selected = dyn_cast<DictionaryAttr>(candidates[0]);
+      auto pipeOp = dyn_cast<pto::OpPipeInterface>(tileOp);
+      const bool requireVMI =
+          tileLibBackend == "ptodsl-vmi" && pipeOp &&
+          pipeOp.getPipe() == pto::PIPE::PIPE_V;
+      auto selected = selectTemplateCandidate(tileOp, candidates, requireVMI);
       if (!selected) {
         tileOp->emitError(
-            "ExpandTileOp candidate 0 must be a dictionary");
+            "ExpandTileOp failed to select a template candidate");
         return nullptr;
       }
       auto selectedName = selected.getAs<StringAttr>("name");
@@ -1285,10 +1335,11 @@ func::FuncOp ExpandState::invokeTileLib(const SpecKey &key,
         return nullptr;
       }
       candidateId = selectedName.getValue().str();
+      selectedVMI = candidateHasTag(selected, "vmi");
     }
 
     func::FuncOp daemonResult =
-        invokeTileLibDaemon(key, candidateId, mod, ctx);
+        invokeTileLibDaemon(key, candidateId, selectedVMI, mod, ctx);
     if (daemonResult)
       return daemonResult;
     if (usesPTODSL) {
@@ -1517,19 +1568,12 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
       return failure();
     }
 
-    auto pipeOp = dyn_cast<pto::OpPipeInterface>(op);
-    bool useCanonicalVMI =
-        tileLibBackend == "ptodsl-vmi" && pipeOp &&
-        pipeOp.getPipe() == pto::PIPE::PIPE_V;
-
-    func::FuncOp dslFn = useCanonicalVMI
-                             ? invokePTODSLVMI(*specKeyOpt, mod, ctx)
-                             : invokeTileLib(*specKeyOpt, op, mod, ctx);
+    func::FuncOp dslFn = invokeTileLib(*specKeyOpt, op, mod, ctx);
     if (!dslFn) {
       StringRef opName = getTileOpName(op);
-      op->emitError() << "ExpandTileOp: failed to instantiate "
-                      << (useCanonicalVMI ? "canonical VMI" : "TileLib")
-                      << " implementation for " << opName;
+      op->emitError()
+          << "ExpandTileOp: failed to instantiate TileLib implementation for "
+          << opName;
       return failure();
     }
 

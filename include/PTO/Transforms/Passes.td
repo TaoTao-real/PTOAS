@@ -525,8 +525,8 @@ def InsertTemplateAttributes
   let description = [{
     Queries the PTODSL TileLib daemon for legal template candidates and stores
     the compact candidate list on each tile operation as the `candidates`
-    attribute. Each candidate contains only id, name, loop_depth, postupdate,
-    and tail metadata.
+    attribute. Each candidate contains id, name, loop_depth, postupdate, tail,
+    and tags metadata.
   }];
   let constructor = "mlir::pto::createInsertTemplateAttributesPass()";
   let dependentDialects = [

@@ -129,6 +129,30 @@ _TEMPLATE_MODULES = {
     ("a5", "pto.thistogram"): ".a5.thistogram",
 }
 
+_VMI_TEMPLATE_OPS = {
+    "pto.tadd",
+    "pto.tadds",
+    "pto.tcvt",
+    "pto.tcolmax",
+    "pto.tcolsum",
+    "pto.tcolexpandadd",
+    "pto.tcolexpanddiv",
+    "pto.tcolexpandmul",
+    "pto.tcolexpandsub",
+    "pto.tdivs",
+    "pto.texp",
+    "pto.tmax",
+    "pto.tmaxs",
+    "pto.tmins",
+    "pto.tmov",
+    "pto.tmul",
+    "pto.tmuls",
+    "pto.trowexpandsub",
+    "pto.trowmax",
+    "pto.trowsum",
+    "pto.tsub",
+}
+
 
 @lru_cache(maxsize=None)
 def load_template(op: str, target: str) -> bool:
@@ -137,14 +161,19 @@ def load_template(op: str, target: str) -> bool:
     Both this cache and Python's module cache make repeated requests no-ops.
     Returns ``False`` when this TileLib has no module for the requested pair.
     """
+    loaded = False
     module_names = _TEMPLATE_MODULES.get((target, op))
     if module_names is None:
-        return False
-    if isinstance(module_names, str):
+        module_names = ()
+    elif isinstance(module_names, str):
         module_names = (module_names,)
     for module_name in module_names:
         import_module(module_name, package=__name__)
-    return True
+        loaded = True
+    if target == "a5" and op in _VMI_TEMPLATE_OPS:
+        import_module("ptodsl.vmi_tilelib")
+        loaded = True
+    return loaded
 
 
 __all__ = ["load_template"]

@@ -452,6 +452,11 @@ static llvm::cl::opt<std::string> ptodslVMIProviderModule(
     llvm::cl::desc("Python module containing canonical PTODSL VMI templates"),
     llvm::cl::init("ptodsl.vmi_tilelib"));
 
+static llvm::cl::opt<bool> enableVMI(
+    "enable-vmi",
+    llvm::cl::desc("Enable VMI semantic lowering in the VPTO backend"),
+    llvm::cl::init(true));
+
 static llvm::cl::opt<std::string> daemonSocketPath(
     "daemon-socket-path",
     llvm::cl::desc("Path to Unix domain socket for daemon RPC "
