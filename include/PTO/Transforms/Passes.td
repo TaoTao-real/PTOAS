@@ -596,7 +596,7 @@ def ExpandTileOp : Pass<"pto-expand-tile-op", "ModuleOp"> {
            /*default=*/"\"ptodsl.tilelib.serving.helper\"",
            "Python module used for daemon helper RPC calls">,
     Option<"ptodslVMIProviderModule", "ptodsl-vmi-provider-module", "std::string",
-           /*default=*/"\"ptodsl.vmi_tilelib\"",
+           /*default=*/"\"ptodsl.tilelib.templates.a5.vmi\"",
            "Python module containing canonical PTODSL VMI TileTemplates">
   ];
 }

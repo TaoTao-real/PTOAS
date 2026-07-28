@@ -446,6 +446,7 @@ static const llvm::StringSet<> &highPrecisionImplementedOps() {
     "pto.tcolexpanddiv",
     "pto.texp",
     "pto.tsqrt",
+    "pto.trsqrt",
   };
   return kImplementedOps;
 }

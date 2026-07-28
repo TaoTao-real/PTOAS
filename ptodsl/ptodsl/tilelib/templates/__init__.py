@@ -140,7 +140,11 @@ _VMI_TEMPLATE_OPS = {
     "pto.tcolexpandmul",
     "pto.tcolexpandsub",
     "pto.tdivs",
+    "pto.tdiv",
     "pto.texp",
+    "pto.trecip",
+    "pto.trsqrt",
+    "pto.tsqrt",
     "pto.tmax",
     "pto.tmaxs",
     "pto.tmins",
@@ -171,7 +175,7 @@ def load_template(op: str, target: str) -> bool:
         import_module(module_name, package=__name__)
         loaded = True
     if target == "a5" and op in _VMI_TEMPLATE_OPS:
-        import_module("ptodsl.vmi_tilelib")
+        import_module(".a5.vmi", package=__name__)
         loaded = True
     return loaded
 
