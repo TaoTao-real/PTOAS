@@ -557,9 +557,7 @@ def ExpandTileOp : Pass<"pto-expand-tile-op", "ModuleOp"> {
     both ordinary PTODSL templates and VMI candidates; as a candidate-selection
     policy, it prefers a canonical logical VMI candidate when one is legal for
     the TileOp, otherwise it delegates to the ordinary PTODSL TileLib
-    implementation and marks that fallback as a VMI fusion boundary. Legacy
-    TileLang shape-specific lowering remains available by selecting
-    `--tile-lib-backend=tilelang`.
+    implementation and marks that fallback as a VMI fusion boundary.
 
     Each tile op is replaced by a func.call to the generated template function,
     with tile_buf operands passed directly (no type bridging).
