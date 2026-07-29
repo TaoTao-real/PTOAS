@@ -828,6 +828,7 @@ invokeMetadataHelper(Operation *operation, StringRef pythonExe,
       daemonSocketPath,  "--target",      *target,
       "--op",            opName,          "--operand-specs",
       *operandSpecs,
+      "--include-vmi-candidates",
   };
   if (contextAttrs != "{}") {
     args.push_back("--context-attrs");

@@ -52,6 +52,7 @@ def _view_spec(dtype="f32", shape=(1, 1, 1, 8, 64), strides=(512, 512, 512, 64, 
 # template parameter order (src0, src1, dst).
 TADD_OPERANDS = [_tile_spec(), _tile_spec(), _tile_spec()]
 TADD = "template_tadd"
+VMI_TADD = "vmi_tadd_block64"
 
 
 class TileLibDaemonTest(unittest.TestCase):
@@ -123,6 +124,28 @@ class TileLibDaemonTest(unittest.TestCase):
         self.assertEqual(selected["op_engine"], "vector")
         self.assertEqual(selected["op_class"], "elementwise")
         self.assertEqual(selected["tags"], ["elementwise", "binary"])
+
+    def test_get_metadata_can_include_internal_vmi_candidates(self):
+        metadata = self.client.get_metadata(
+            "a5",
+            "pto.tadd",
+            TADD_OPERANDS,
+            include_vmi_candidates=True,
+        )
+        candidates = metadata["candidates"]
+        self.assertIn(TADD, candidates)
+        self.assertIn(VMI_TADD, candidates)
+        self.assertIn("vmi", candidates[VMI_TADD]["tags"])
+
+    def test_explicit_vmi_candidate_can_instantiate(self):
+        mlir = self.client.instantiate(
+            "a5",
+            "pto.tadd",
+            TADD_OPERANDS,
+            candidate_id=VMI_TADD,
+        )
+        self.assertIn(f"func.func @{VMI_TADD}", mlir)
+        self.assertIn("pto.vmi.vload", mlir)
 
     def test_cache_stats_and_clear_are_available_over_rpc(self):
         arguments = (
