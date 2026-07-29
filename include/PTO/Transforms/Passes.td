@@ -553,10 +553,13 @@ def ExpandTileOp : Pass<"pto-expand-tile-op", "ModuleOp"> {
   let summary = "Expand tile ops using the selected TileLib implementation";
   let description = [{
     Expands tile-level operations (pto.tadd, pto.tsub, etc.) by invoking the
-    selected Python TileLib backend. The PTODSL backend selects a canonical
-    logical VMI candidate when one is legal for the TileOp, otherwise it
-    delegates to the ordinary PTODSL TileLib implementation and marks that
-    fallback as a VMI fusion boundary.
+    selected Python TileLib backend. The unified PTODSL backend may contain
+    both ordinary PTODSL templates and VMI candidates; as a candidate-selection
+    policy, it prefers a canonical logical VMI candidate when one is legal for
+    the TileOp, otherwise it delegates to the ordinary PTODSL TileLib
+    implementation and marks that fallback as a VMI fusion boundary. Legacy
+    TileLang shape-specific lowering remains available by selecting
+    `--tile-lib-backend=tilelang`.
 
     Each tile op is replaced by a func.call to the generated template function,
     with tile_buf operands passed directly (no type bridging).

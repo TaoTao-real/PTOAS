@@ -9,10 +9,10 @@
 // Guards the level3 backend fusion lifecycle through loop fusion, predicate
 // elision, load/store elision, and final region flattening.
 //
-// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level3 --enable-op-fusion --emit-vpto %s --mlir-print-ir-after=pto-low-level-loop-fusion -o /dev/null 2>&1 | FileCheck %s --check-prefix=LLF
-// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level3 --enable-op-fusion --emit-vpto %s --mlir-print-ir-after=pto-fusion-predicate-elision -o /dev/null 2>&1 | FileCheck %s --check-prefix=PRED
-// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level3 --enable-op-fusion --emit-vpto %s --mlir-print-ir-after=pto-fusion-load-store-elision -o /dev/null 2>&1 | FileCheck %s --check-prefix=LS
-// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level3 --enable-op-fusion --emit-vpto %s --mlir-print-ir-after=pto-flatten-fusion-region -o /dev/null 2>&1 | FileCheck %s --check-prefix=FLAT
+// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --tile-lib-backend=tilelang --pto-level=level3 --enable-op-fusion --emit-vpto %s --mlir-print-ir-after=pto-low-level-loop-fusion -o /dev/null 2>&1 | FileCheck %s --check-prefix=LLF
+// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --tile-lib-backend=tilelang --pto-level=level3 --enable-op-fusion --emit-vpto %s --mlir-print-ir-after=pto-fusion-predicate-elision -o /dev/null 2>&1 | FileCheck %s --check-prefix=PRED
+// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --tile-lib-backend=tilelang --pto-level=level3 --enable-op-fusion --emit-vpto %s --mlir-print-ir-after=pto-fusion-load-store-elision -o /dev/null 2>&1 | FileCheck %s --check-prefix=LS
+// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --tile-lib-backend=tilelang --pto-level=level3 --enable-op-fusion --emit-vpto %s --mlir-print-ir-after=pto-flatten-fusion-region -o /dev/null 2>&1 | FileCheck %s --check-prefix=FLAT
 
 module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
   func.func @fusion_backend_lifecycle_level3(%dst_ptr: !pto.ptr<f32>) {
@@ -59,7 +59,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 // LLF-LABEL: func.func @fusion_backend_lifecycle_level3(
 // LLF: %[[REGION:.*]] = pto.fusion_region {
 // LLF: scf.for
-// LLF: scf.for {{.*}} -> (index, index, index) {
+// LLF: scf.for {{.*}} -> (i32, i32, i32) {
 // LLF: pto.plt_b32
 // LLF: pto.vadd
 // LLF: pto.vsts
@@ -71,7 +71,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 // LLF: pto.vsts
 // LLF: }
 // LLF: pto.yield(%{{.*}}) : (!pto.tile_buf<vec, 32x32xf32>) -> ()
-// LLF: pto.mte_ub_gm
+// LLF: pto.copy_ubuf_to_gm
 
 // PRED: // -----// IR Dump After PTOFusionPredicateElision (pto-fusion-predicate-elision) //----- //
 // PRED-LABEL: func.func @fusion_backend_lifecycle_level3(
@@ -88,7 +88,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 // PRED: pto.vlds
 // PRED: pto.vadd
 // PRED: pto.yield(%{{.*}}) : (!pto.tile_buf<vec, 32x32xf32>) -> ()
-// PRED: pto.mte_ub_gm
+// PRED: pto.copy_ubuf_to_gm
 
 // LS: // -----// IR Dump After PTOFusionLoadStoreElision (pto-fusion-load-store-elision) //----- //
 // LS-LABEL: func.func @fusion_backend_lifecycle_level3(
@@ -102,7 +102,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 // LS: pto.vadd
 // LS: pto.vsts
 // LS: pto.yield(%{{.*}}) : (!pto.tile_buf<vec, 32x32xf32>) -> ()
-// LS: pto.mte_ub_gm
+// LS: pto.copy_ubuf_to_gm
 
 // FLAT: // -----// IR Dump After PTOFlattenFusionRegion (pto-flatten-fusion-region) //----- //
 // FLAT-LABEL: func.func @fusion_backend_lifecycle_level3(
@@ -119,5 +119,5 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 // FLAT: pto.vadd
 // FLAT: pto.vsts
 // FLAT: }
-// FLAT: pto.mte_ub_gm
+// FLAT: pto.copy_ubuf_to_gm
 // FLAT: return
