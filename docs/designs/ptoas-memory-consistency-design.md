@@ -9,14 +9,17 @@ PTOAS 目前保留显式内存一致性 IR 和 EmitC lowering：
 
 | PTO IR | 语义 | EmitC lowering |
 | --- | --- | --- |
-| `pto.cmo.cacheinvalid all #pto.address_space<gm>` | whole-cache GM cache maintenance | `dcci((__gm__ void*)0, cache_line_t::ENTIRE_DATA_CACHE)` |
-| `pto.cmo.cacheinvalid %addr single_cache_line : !pto.ptr<T, gm>` | 指定地址所在 cache line 的 GM cache maintenance | `dcci((__gm__ void*)addr, cache_line_t::SINGLE_CACHE_LINE)` |
-| `pto.fence.barrier_all #pto.fence_scope<gm>` | GM visibility fence with conservative local producer drain | `pipe_barrier(PIPE_MTE2); pipe_barrier(PIPE_MTE3); pipe_barrier(PIPE_FIX); dsb(DSB_DDR)` |
+| `pto.cmo.cacheinvalid all #pto.address_space<gm>` | whole-cache GM cache maintenance，保守 drain 当前 core 的 pipe | `pipe_barrier(PIPE_ALL); dcci((__gm__ void*)0, cache_line_t::ENTIRE_DATA_CACHE)` |
+| `pto.cmo.cacheinvalid %addr single_cache_line : !pto.ptr<T, gm>` | 指定地址所在 cache line 的 GM cache maintenance，并作为 `PIPE_S` 边界参与 InsertSync 地址依赖分析 | 必要时先由 InsertSync 生成 `MTE2/MTE3 <-> PIPE_S` set/wait，再生成 `dcci((__gm__ void*)addr, cache_line_t::SINGLE_CACHE_LINE)` |
+| `pto.fence.barrier_all #pto.fence_scope<gm>` | GM visibility fence | `dsb(DSB_DDR)` |
 
 `pto.cmo.cacheinvalid` 和 `pto.fence.barrier_all` 由 PyPTO 或用户显式插入。
 PTOAS 不再通过独立 `pto-memory-consistency` pass 自动扫描 signal/payload
 关系、消除 marker-only CMO，或诊断缺失的 CMO/fence。为了避免复杂分析带来的
-编译时退化，EmitC lowering 会在显式 GM fence 处保守 drain MTE2、MTE3 和 FIX。
+编译时退化，地址型 CMO 只作为已有自动同步 solver 的局部依赖节点参与分析。
+因此若使用 `single_cache_line` 精确模式并希望 PTOAS 自动插入
+`MTE2/MTE3 <-> PIPE_S` set/wait，需要在编译时启用 `--enable-insert-sync`
+或覆盖该场景的同步 solver；只跑默认 EmitC lowering 时，CMO 只生成 DCCI。
 
 ## 为什么移除自动分析 pass
 
@@ -51,12 +54,15 @@ pto.cmo.cacheinvalid %payload single_cache_line : !pto.ptr<i32, gm>
 %value = pto.load_scalar %payload[%idx] : !pto.ptr<i32, gm> -> i32
 ```
 
-如果涉及 non-cacheable MTE/FIX/comm macro payload，当前 PTOAS 不再自动根据
-payload 类型做精确判断。上游只需要在 publish 点显式生成
-`pto.fence.barrier_all #pto.fence_scope<gm>`；EmitC lowering 会在 `dsb(DSB_DDR)`
-前保守生成 `PIPE_MTE2`、`PIPE_MTE3` 和 `PIPE_FIX` 的 `pipe_barrier`。如果上游
-已经手写了同类 `pto.barrier`，可能会产生重复 barrier，因此一般不建议在
-`fence.barrier_all` 前再手写这些 pipe drain。
+如果涉及 non-cacheable MTE/comm macro payload，上游需要在 publish 点显式生成
+`pto.cmo.cacheinvalid` 和 `pto.fence.barrier_all #pto.fence_scope<gm>`。推荐优先使用
+`single_cache_line` 精确地址形式，PTOAS 会根据该地址和 MTE2/MTE3 payload 访问的
+alias 关系插入 `PIPE_S` set/wait。该精确 pipe ordering 依赖自动同步 solver，
+issue #872 这类 `TPUT` macro phase 目前由 legacy InsertSync 的
+`SyncMacroModel` 覆盖。如果上游无法或不想精确指定地址，可以使用
+`pto.cmo.cacheinvalid all #pto.address_space<gm>`，EmitC lowering 会在 whole-cache
+`dcci` 前生成 `pipe_barrier(PIPE_ALL)`。`fence.barrier_all` 本身只生成
+`dsb(DSB_DDR)`，不会再生成 `PIPE_FIX` drain。
 
 ## 后续重新引入自动分析的要求
 

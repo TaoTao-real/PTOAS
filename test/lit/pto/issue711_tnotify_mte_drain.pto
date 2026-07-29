@@ -7,10 +7,9 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 // Regression for issue #711 under the explicit memory-consistency contract:
-// TNotify release requires the producer side to drain local producer pipes
-// before the GM fence and before pto.comm.tnotify. PTOAS no longer runs the
-// historical MemoryConsistency analysis pass, so the explicit GM fence lowering
-// drains all vector-kernel pipes before dsb(DSB_DDR).
+// pto.fence.barrier_all is now a pure GM visibility fence in EmitC. Pipe
+// ordering is provided either by regular InsertSync dependencies or by an
+// explicit pto.cmo.cacheinvalid boundary.
 
 // RUN: ptoas --pto-arch=a3 %s -o - 2>&1 | FileCheck %s
 
@@ -57,8 +56,8 @@ module {
     return
   }
 
-  // acc tstore -> tnotify: the vector-kernel release fence uses PIPE_ALL, so
-  // it does not name the cube-side FIX pipe explicitly.
+  // acc tstore -> tnotify: this file only checks the explicit GM fence
+  // lowering; FIX release ordering is covered by CMO/sync tests.
   func.func @tnotify_drain_after_acc_tstore(
       %dst_ptr: !pto.ptr<f32>,
       %signal_ptr: !pto.ptr<i32>)
@@ -159,8 +158,7 @@ module {
     return
   }
 
-  // The explicit barrier_all drains all vector-kernel pipes, then completes
-  // the publish sequence with a DDR fence.
+  // The explicit GM fence completes the publish sequence with a DDR fence.
   func.func @tnotify_after_existing_mte3_barrier_and_release(
       %src_ptr: !pto.ptr<f32>,
       %dst_ptr: !pto.ptr<f32>,
@@ -203,8 +201,8 @@ module {
     return
   }
 
-  // The GM fence lowering is conservative and self-contained; no analysis pass
-  // needs to add a second DDR fence before TNotify.
+  // The GM fence lowering is self-contained; no analysis pass needs to add a
+  // second DDR fence before TNotify.
   func.func @tnotify_after_existing_mte3_barrier_and_fence(
       %dst_ptr: !pto.ptr<f32>,
       %signal_ptr: !pto.ptr<i32>)
@@ -280,15 +278,15 @@ module {
 // CHECK:      pto::comm::NotifyOp{{.*}}= pto::comm::NotifyOp::Set;
 // CHECK:      TLOAD(
 // CHECK:      TSTORE(
-// CHECK:      pipe_barrier(PIPE_ALL);
-// CHECK-NEXT: dsb(DSB_DDR);
+// CHECK:      dsb(DSB_DDR);
 // CHECK:      pto::comm::TNOTIFY(
+// CHECK-NOT:  pipe_barrier(PIPE_FIX);
 
 // CHECK-LABEL: AICORE void tnotify_drain_after_acc_tstore(
 // CHECK:      TSTORE
-// CHECK:      pipe_barrier(PIPE_ALL);
-// CHECK-NEXT: dsb(DSB_DDR);
+// CHECK:      dsb(DSB_DDR);
 // CHECK:      pto::comm::TNOTIFY(
+// CHECK-NOT:  pipe_barrier(PIPE_FIX);
 
 // CHECK-LABEL: AICORE void tnotify_drain_after_tload(
 // CHECK:      pto::comm::NotifyOp{{.*}}= pto::comm::NotifyOp::AtomicAdd;
@@ -305,15 +303,15 @@ module {
 
 // CHECK-LABEL: AICORE void tnotify_after_existing_mte3_barrier_and_release(
 // CHECK:      TSTORE(
-// CHECK:      pipe_barrier(PIPE_ALL);
-// CHECK-NEXT: dsb(DSB_DDR);
+// CHECK:      dsb(DSB_DDR);
 // CHECK:      pto::comm::TNOTIFY(
+// CHECK-NOT:  pipe_barrier(PIPE_FIX);
 
 // CHECK-LABEL: AICORE void tnotify_after_existing_mte3_barrier_and_fence(
 // CHECK:      TSTORE(
-// CHECK:      pipe_barrier(PIPE_ALL);
-// CHECK-NEXT: dsb(DSB_DDR);
+// CHECK:      dsb(DSB_DDR);
 // CHECK:      pto::comm::TNOTIFY(
+// CHECK-NOT:  pipe_barrier(PIPE_FIX);
 
 // CHECK-LABEL: AICORE void tnotify_no_mte_drain(
 // CHECK-NOT:  pipe_barrier(

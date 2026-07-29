@@ -5736,24 +5736,6 @@ static void emitPipeBarrier(ConversionPatternRewriter &rewriter, Location loc,
                                        ArrayAttr{}, ValueRange{});
 }
 
-static void emitConservativeGmFencePipeDrains(
-    ConversionPatternRewriter &rewriter, Location loc) {
-  emitPipeBarrier(rewriter, loc, "PIPE_MTE2");
-  emitPipeBarrier(rewriter, loc, "PIPE_MTE3");
-  emitPipeBarrier(rewriter, loc, "PIPE_FIX");
-}
-
-static bool isInVectorKernel(Operation *op) {
-  for (Operation *parent = op->getParentOp(); parent;
-       parent = parent->getParentOp()) {
-    auto kernelKindAttr = parent->getAttrOfType<FunctionKernelKindAttr>(
-        FunctionKernelKindAttr::name);
-    if (kernelKindAttr)
-      return kernelKindAttr.getKernelKind() == FunctionKernelKind::Vector;
-  }
-  return false;
-}
-
 struct PTOBarrierToEmitC : public OpConversionPattern<pto::BarrierOp> {
   using OpConversionPattern<pto::BarrierOp>::OpConversionPattern;
 
@@ -5806,10 +5788,6 @@ struct PTOFenceToEmitC : public OpConversionPattern<FenceOp> {
         op.getScope().getScope() != pto::FenceScope::All)
       return rewriter.notifyMatchFailure(op, "unsupported fence scope");
 
-    if (isInVectorKernel(op))
-      emitPipeBarrier(rewriter, op.getLoc(), "PIPE_ALL");
-    else
-      emitConservativeGmFencePipeDrains(rewriter, op.getLoc());
     emitDsbDdr(rewriter, op.getLoc());
     rewriter.eraseOp(op);
     return success();
@@ -7035,6 +7013,30 @@ static void emitInvalidateGmCacheSingleLine(ConversionPatternRewriter &rewriter,
       ArrayAttr{}, ArrayAttr{}, ValueRange{addr});
 }
 
+static Value materializeCmoGmAddress(ConversionPatternRewriter &rewriter,
+                                     Location loc, Value addr,
+                                     Type originalType) {
+  addr = peelUnrealized(addr);
+  Type elemType;
+  if (auto tvTy = dyn_cast<pto::TensorViewType>(originalType)) {
+    elemType = tvTy.getElementType();
+  } else if (auto partTy =
+                 dyn_cast<pto::PartitionTensorViewType>(originalType)) {
+    elemType = partTy.getElementType();
+  } else {
+    return addr;
+  }
+
+  auto *ctx = rewriter.getContext();
+  std::string elemTypeStr = getElemTypeStringForGT(elemType);
+  auto ptrTy = emitc::PointerType::get(
+      emitc::OpaqueType::get(ctx, "__gm__ " + elemTypeStr));
+  return rewriter
+      .create<emitc::CallOpaqueOp>(loc, ptrTy, "PTOAS__GLOBAL_TENSOR_DATA",
+                                   ArrayAttr{}, ArrayAttr{}, ValueRange{addr})
+      .getResult(0);
+}
+
 static bool isGmCmoSpace(pto::AddressSpace space) {
   return space == pto::AddressSpace::GM || space == pto::AddressSpace::Zero;
 }
@@ -7052,11 +7054,12 @@ struct PTOCmoCacheInvalidToEmitC
     if (!isGmCmoSpace(op.getSpace().getAddressSpace()))
       return rewriter.notifyMatchFailure(op, "unsupported CMO invalidate space");
     if (op.getAddr()) {
-      Value addr = peelUnrealized(adaptor.getAddr());
-      addr = materializeGlobalTensorDataPointer(
-          rewriter, op.getLoc(), addr, op.getAddr().getType());
+      Value addr = materializeCmoGmAddress(rewriter, op.getLoc(),
+                                           adaptor.getAddr(),
+                                           op.getAddr().getType());
       emitInvalidateGmCacheSingleLine(rewriter, op.getLoc(), addr);
     } else {
+      emitPipeBarrier(rewriter, op.getLoc(), "PIPE_ALL");
       emitInvalidateGmCacheAll(rewriter, op.getLoc());
     }
     rewriter.eraseOp(op);
@@ -14641,13 +14644,18 @@ struct EmitPTOManualPass
             needsEventIdArrayHelper = true;
           if (isa<mlir::pto::TRandomOp>(op))
             needsTRandomHelper = true;
-          if (auto cmo = dyn_cast<mlir::pto::CmoCacheInvalidOp>(op)) {
-            if (cmo.getAddr())
-              needsGlobalTensorDataHelper = true;
-          }
           if (auto init = dyn_cast<mlir::pto::InitializeL2G2LPipeOp>(op)) {
             if (isa<mlir::pto::TensorViewType>(init.getGmAddr().getType()))
               needsGlobalTensorDataHelper = true;
+          }
+          if (isa<mlir::pto::PartitionViewOp>(op))
+            needsGlobalTensorDataHelper = true;
+          if (auto cmo = dyn_cast<mlir::pto::CmoCacheInvalidOp>(op)) {
+            if (Value addr = cmo.getAddr()) {
+              if (isa<mlir::pto::TensorViewType,
+                      mlir::pto::PartitionTensorViewType>(addr.getType()))
+                needsGlobalTensorDataHelper = true;
+            }
           }
           if (isa<mlir::pto::BuildAsyncSessionOp, mlir::pto::TPutAsyncOp,
                   mlir::pto::TGetAsyncOp, mlir::pto::TPrefetchAsyncOp,
@@ -14762,6 +14770,12 @@ static AICORE inline void ptoas_auto_sync_tail(
 template <typename Ptr>
 static AICORE inline void PTOAS__DCCI_SINGLE_CACHE_LINE(Ptr ptr) {
   dcci((__gm__ void*)ptr, cache_line_t::SINGLE_CACHE_LINE);
+}
+
+template <typename Element, typename Shape, typename Stride, pto::Layout Layout_>
+static AICORE inline void PTOAS__DCCI_SINGLE_CACHE_LINE(
+    GlobalTensor<Element, Shape, Stride, Layout_> &tensor) {
+  dcci((__gm__ void*)tensor.data(), cache_line_t::SINGLE_CACHE_LINE);
 }
 )cpp"));
 	    // Only inject the bitcast helper when we actually lower ops that need it

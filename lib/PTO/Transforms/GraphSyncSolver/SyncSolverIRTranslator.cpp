@@ -231,6 +231,22 @@ IRTranslator::getScalarMemoryOp(Operation *op, OperationBase *parentOp) {
 }
 
 std::unique_ptr<OperationBase>
+IRTranslator::getCmoCacheInvalidOp(pto::CmoCacheInvalidOp op,
+                                   OperationBase *parentOp) {
+  Value addr = op.getAddr();
+  if (!addr)
+    return nullptr;
+
+  llvm::SmallVector<Value> memOps = getMemoryOps({addr});
+  if (memOps.empty())
+    return nullptr;
+
+  return std::make_unique<RWOperation>(
+      op.getOperation(), parentOp, TCoreType::CUBE_OR_VECTOR,
+      pto::PIPE::PIPE_S, pto::PIPE::PIPE_S, memOps, memOps);
+}
+
+std::unique_ptr<OperationBase>
 IRTranslator::getTensorExtractOp(tensor::ExtractOp extractOp,
                                  OperationBase *parentOp) {
   auto reads = getMemoryOps({extractOp.getTensor()});
@@ -374,6 +390,9 @@ void IRTranslator::translateBlockIntoScope(Block &block, Scope *parScope,
 
     if (auto pipeOp = dyn_cast<pto::OpPipeInterface>(op)) {
       if (auto rw = getPipeInterfaceOp(pipeOp, parScope))
+        parScope->body.push_back(std::move(rw));
+    } else if (auto cmoOp = dyn_cast<pto::CmoCacheInvalidOp>(op)) {
+      if (auto rw = getCmoCacheInvalidOp(cmoOp, parScope))
         parScope->body.push_back(std::move(rw));
     } else if (isa<pto::LoadScalarOp, pto::StoreScalarOp>(op)) {
       if (auto rw = getScalarMemoryOp(&op, parScope))

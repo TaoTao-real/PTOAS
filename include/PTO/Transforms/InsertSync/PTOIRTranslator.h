@@ -93,6 +93,7 @@ private:
   void UpdatePTOOpInfo(Operation *op);
   void UpdatePTOOpInfoWithPipeline(Operation *op, PipelineType pipe,
                                    bool skipIfNoMemInfo = false);
+  void UpdateCmoCacheInvalidOpInfo(pto::CmoCacheInvalidOp op);
   void UpdateMacroOpInfo(Operation *op);
   void MakeMacroCompound(Operation *op, PipelineType pipe, ValueRange defValues,
                          ValueRange useValues, int macroPhaseId);

@@ -3097,17 +3097,19 @@ def CmoCacheInvalidOp : PTO_Op<"cmo.cacheinvalid"> {
   let description = [{
     Cache maintenance operation for the specified memory space.
 
-    The whole-cache form lowers to PTO-ISA's two-argument
+    The whole-cache form is a conservative CMO boundary. In EmitC it lowers to
+    `pipe_barrier(PIPE_ALL)` followed by PTO-ISA's two-argument
     `dcci((__gm__ void*)0, cache_line_t::ENTIRE_DATA_CACHE)`.
 
     The single-cache-line form carries the GM payload address selected by the
     producer DSL/user and lowers to
     `dcci(addr, cache_line_t::SINGLE_CACHE_LINE)`.
 
-    This op is an explicit CMO boundary. PTOAS no longer runs the historical
-    MemoryConsistency analysis pass that consumed marker-only CMO ops or inferred
-    signal/payload pipe drains, so precise placement and coverage are the
-    producer DSL/user's responsibility.
+    The single-cache-line form also participates in automatic sync analysis as
+    a PIPE_S GM operation, allowing PTOAS to insert MTE2/MTE3 <-> PIPE_S
+    set/wait pairs around the CMO when the address aliases a payload operation.
+    That pipe ordering requires an enabled sync solver; CMO lowering itself
+    only emits the DCCI operation.
   }];
 
   let arguments = (ins
@@ -3125,10 +3127,8 @@ def FenceBarrierAllOp : PTO_Op<"fence.barrier_all"> {
     Memory fence for a visibility scope. Around signal/payload communication it
     can be used as the producer-side publish barrier or the consumer-side
     acquire barrier depending on placement. In EmitC, `scope = gm` and
-    `scope = all` drain all vector-kernel pipes with `PIPE_ALL` before lowering
-    to `dsb(DSB_DDR)`. Other kernel kinds conservatively drain MTE2, MTE3, and
-    FIX before the DDR barrier. Users therefore do not need to separately model
-    producer pipe classes before a GM visibility fence.
+    `scope = all` lower to `dsb(DSB_DDR)`. Pipe ordering must be expressed by
+    regular sync analysis or by a preceding `pto.cmo.cacheinvalid all`.
   }];
 
   let arguments = (ins PTO_FenceScopeAttr:$scope);

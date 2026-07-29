@@ -8797,6 +8797,75 @@ pto.barrier #pto.pipe<PIPE_V>
 
 ---
 
+##### `pto.cmo.cacheinvalid`
+
+**Summary:** Performs explicit GM cache maintenance.
+
+**Semantics:**
+
+```
+cmo.cacheinvalid all #pto.address_space<gm>
+cmo.cacheinvalid %addr single_cache_line : <GM pointer or GM view type>
+```
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `addr` | optional `!pto.ptr<T, gm>`, GM memref, `pto.tensor_view`, or `pto.partition_tensor_view` | Payload address for single-cache-line maintenance |
+| `space` | `AddressSpaceAttr` | Must be GM for the current lowering |
+
+**Hardware Mapping:**
+
+- `all` lowers to `pipe_barrier(PIPE_ALL)` followed by `dcci((__gm__ void*)0, cache_line_t::ENTIRE_DATA_CACHE)`.
+- `single_cache_line` lowers to `dcci((__gm__ void*)addr, cache_line_t::SINGLE_CACHE_LINE)`.
+- The `single_cache_line` form participates in automatic sync analysis as a `PIPE_S` GM operation, so PTOAS can insert `MTE2/MTE3 <-> PIPE_S` set/wait pairs when `%addr` aliases a tile or communication payload access.
+- The set/wait insertion is not part of CMO lowering itself. Enable a synchronization solver such as `--enable-insert-sync` for precise CMO ordering. The legacy InsertSync path also uses `SyncMacroModel` to cover communication macro phases such as `pto.comm.tput`.
+
+**Basic Example:**
+
+```mlir
+pto.comm.tput(%dst, %src, buf(%stage) : ...)
+pto.cmo.cacheinvalid %dst single_cache_line : !pto.partition_tensor_view<1x64xf32>
+pto.fence.barrier_all #pto.fence_scope<gm>
+pto.comm.tnotify ...
+```
+
+Use `cmo.cacheinvalid all #pto.address_space<gm>` when the frontend cannot provide a precise payload address and accepts the conservative `PIPE_ALL` drain cost.
+
+---
+
+##### `pto.fence.barrier_all`
+
+**Summary:** Emits a visibility fence for a memory scope.
+
+**Semantics:**
+
+```
+fence.barrier_all(scope)
+```
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `scope` | `FenceScopeAttr` | `gm` or `all` lowers to the GM visibility fence |
+
+**Hardware Mapping:**
+
+- `#pto.fence_scope<gm>` and `#pto.fence_scope<all>` lower to `dsb(DSB_DDR)`.
+- This op does not emit `pipe_barrier(PIPE_MTE2)`, `pipe_barrier(PIPE_MTE3)`, or `pipe_barrier(PIPE_FIX)`.
+- Put `pto.cmo.cacheinvalid` before the fence when payload pipe ordering or cache maintenance is required.
+
+**Basic Example:**
+
+```mlir
+pto.cmo.cacheinvalid all #pto.address_space<gm>
+pto.fence.barrier_all #pto.fence_scope<gm>
+```
+
+---
+
 ##### `pto.barrier_sync`
 
 **Summary:** High-level barrier that specifies a `SyncOpType` instead of a concrete PIPE. The lowering pass maps the op type to the corresponding hardware pipe and emits `pto.barrier`.

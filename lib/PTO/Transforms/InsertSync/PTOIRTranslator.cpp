@@ -485,6 +485,8 @@ void PTOIRTranslator::RecursionIR(Region *region) {
       return WalkResult::skip();
     } else if (auto yieldOp = dyn_cast<scf::YieldOp>(op)) {
       UpdateYieldOpInfo(yieldOp);
+    } else if (auto cmoOp = dyn_cast<pto::CmoCacheInvalidOp>(op)) {
+      UpdateCmoCacheInvalidOpInfo(cmoOp);
     } else if (getSyncMacroModel(op)) {
       UpdateMacroOpInfo(op);
     } else if (auto callOp = dyn_cast<func::CallOp>(op)) {
@@ -780,6 +782,24 @@ void PTOIRTranslator::UpdatePTOOpInfoWithPipeline(Operation *op,
     compoundElement->compoundCoreType = pto::TCoreType::VECTOR;
   }
 
+  syncIR_.emplace_back(std::move(compoundElement));
+  index++;
+}
+
+void PTOIRTranslator::UpdateCmoCacheInvalidOpInfo(pto::CmoCacheInvalidOp op) {
+  Value addr = op.getAddr();
+  if (!addr)
+    return;
+
+  SmallVector<const BaseMemInfo *> accessVec;
+  UpdateDefUseVec({addr}, accessVec);
+  if (accessVec.empty())
+    return;
+
+  auto compoundElement = std::make_unique<CompoundInstanceElement>(
+      index, accessVec, accessVec, PipelineType::PIPE_S, op->getName());
+  compoundElement->elementOp = op.getOperation();
+  compoundElement->compoundCoreType = TCoreType::VECTOR;
   syncIR_.emplace_back(std::move(compoundElement));
   index++;
 }
