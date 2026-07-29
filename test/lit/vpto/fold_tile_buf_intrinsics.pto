@@ -18,27 +18,27 @@
 // SHAPE: pto.tile_buf_addr
 // SHAPE-NOT: pto.tile_valid_rows
 // SHAPE-NOT: pto.tile_valid_cols
-// SHAPE: arith.constant 16 : index
-// SHAPE: arith.constant 64 : index
-// SHAPE: pto.vlds
-// SHAPE: pto.vadd
-// SHAPE: pto.vsts
+// SHAPE: arith.constant {{.*}} 64 : index
+// SHAPE: arith.constant {{.*}} 16 : index
+// SHAPE: pto.vmi.vload
+// SHAPE: pto.vmi.vadd
+// SHAPE: pto.vmi.vstore
 
 // After the later addr-only FoldTileBufIntrinsics:
 // - tile_buf_addr should also be gone
 // - the expanded body should use concrete memrefs/constants
 // ADDR-LABEL: func.func @TADD
 // ADDR: pto.pointer_cast(
-// ADDR: pto.vlds
 // ADDR: pto.pointer_cast(
-// ADDR: pto.vlds
-// ADDR: pto.vadd
 // ADDR: pto.pointer_cast(
 // ADDR-NOT: pto.tile_buf_addr
 // ADDR-NOT: pto.tile_valid_rows
 // ADDR-NOT: pto.tile_valid_cols
 // ADDR-NOT: pto.bind_tile
-// ADDR: pto.vsts
+// ADDR: pto.vmi.vload
+// ADDR: pto.vmi.vload
+// ADDR: pto.vmi.vadd
+// ADDR: pto.vmi.vstore
 
 module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
   func.func @TADD() {

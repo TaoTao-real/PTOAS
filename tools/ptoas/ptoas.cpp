@@ -447,10 +447,10 @@ static llvm::cl::opt<std::string> ptodslPythonExe(
     llvm::cl::desc("Python executable matching the PTODSL PTO bindings"),
     llvm::cl::init(PTOAS_DEFAULT_PTODSL_PYTHON_EXE));
 
-static llvm::cl::opt<std::string> ptodslVMIProviderModule(
-    "ptodsl-vmi-provider-module",
-    llvm::cl::desc("Python module containing canonical PTODSL VMI templates"),
-    llvm::cl::init("ptodsl.vmi_tilelib"));
+static llvm::cl::opt<bool> enableVMI(
+    "enable-vmi",
+    llvm::cl::desc("Enable VMI semantic lowering in the VPTO backend"),
+    llvm::cl::init(true));
 
 static llvm::cl::opt<std::string> daemonSocketPath(
     "daemon-socket-path",
@@ -461,7 +461,6 @@ static llvm::cl::opt<std::string> daemonSocketPath(
 enum class TileLibBackend {
   TileLang,
   PTODSL,
-  PTODSLVMI,
 };
 
 static llvm::cl::opt<TileLibBackend> tileLibBackend(
@@ -471,9 +470,7 @@ static llvm::cl::opt<TileLibBackend> tileLibBackend(
         clEnumValN(TileLibBackend::TileLang, "tilelang",
                    "Use the legacy TileLang DSL TileLib"),
         clEnumValN(TileLibBackend::PTODSL, "ptodsl",
-                   "Use the PTODSL TileLib daemon"),
-        clEnumValN(TileLibBackend::PTODSLVMI, "ptodsl-vmi",
-                   "Use canonical VMI for vector TileOps and PTODSL for other pipes")),
+                   "Use the PTODSL TileLib daemon")),
     llvm::cl::init(TileLibBackend::PTODSL));
 
 static std::string resolveTileLibPythonExe() {
@@ -490,7 +487,6 @@ static pto::ExpandTileOpOptions resolveExpandTileOpOptions(int argc,
   expandOpts.tilelangPkgPath = tilelangPkgPath;
   expandOpts.pythonExe = resolveTileLibPythonExe();
   const bool usePTODSLTileLib = tileLibBackend != TileLibBackend::TileLang;
-  const bool useCanonicalVMI = tileLibBackend == TileLibBackend::PTODSLVMI;
   std::string resolvedPtodslPkgPath = ptodslPkgPath;
 
   if (!hasCLIOption(argc, argv, "--ptodsl-pkg-path")) {
@@ -506,16 +502,13 @@ static pto::ExpandTileOpOptions resolveExpandTileOpOptions(int argc,
     expandOpts.tilelangPkgPath.clear();
   }
 
-  expandOpts.tileLibBackend =
-      useCanonicalVMI ? "ptodsl-vmi"
-                      : (usePTODSLTileLib ? "ptodsl" : "tilelang");
+  expandOpts.tileLibBackend = usePTODSLTileLib ? "ptodsl" : "tilelang";
   expandOpts.daemonHelperModule =
       usePTODSLTileLib ? "ptodsl.tilelib.serving.helper"
                        : "tilelang_dsl.daemon_helper";
   expandOpts.tileLibPkgPath =
       usePTODSLTileLib ? resolvedPtodslPkgPath
                        : std::string(expandOpts.tilelangPkgPath);
-  expandOpts.ptodslVMIProviderModule = ptodslVMIProviderModule;
   if (usePTODSLTileLib)
     expandOpts.pythonExe = ptodslPythonExe;
 
@@ -2961,21 +2954,8 @@ int mlir::pto::compilePTOASModule(
   }
 
   const bool requestedEnableOpFusion = enableOpFusion == llvm::cl::BOU_TRUE;
-  const bool useCanonicalVMI = tileLibBackend == TileLibBackend::PTODSLVMI;
-  if (useCanonicalVMI && requestedEnableOpFusion) {
-    llvm::errs() << "Error: --tile-lib-backend=ptodsl-vmi cannot use the "
-                    "legacy --enable-op-fusion pipeline; enable fusion after "
-                    "the VMI Fusion passes are wired.\n";
-    return 1;
-  }
-  if (useCanonicalVMI && !enableVMI) {
-    llvm::errs() << "Error: --tile-lib-backend=ptodsl-vmi requires "
-                    "--enable-vmi=true.\n";
-    return 1;
-  }
   const bool defaultEnableOpFusion =
-      enableOpFusion == llvm::cl::BOU_UNSET && arch == "a5" &&
-      !useCanonicalVMI;
+      enableOpFusion == llvm::cl::BOU_UNSET && arch == "a5";
   const bool opFusionEnabled =
       (requestedEnableOpFusion || defaultEnableOpFusion);
 
@@ -3163,8 +3143,7 @@ int mlir::pto::compilePTOASModule(
   // Fusion may later filter the ordered `candidates` array; ExpandTileOp
   // consumes the first candidate that remains.
   if (!isA2A3 && expandOptions &&
-      (expandOptions->tileLibBackend == "ptodsl" ||
-       expandOptions->tileLibBackend == "ptodsl-vmi")) {
+      expandOptions->tileLibBackend == "ptodsl") {
     auto insertOptions =
         buildInsertTemplateAttributesOptions(*expandOptions);
     pm.addPass(

@@ -183,6 +183,10 @@ def _registered_candidates(target: str, op: str) -> list:
     return candidates
 
 
+def _is_vmi_descriptor(descriptor) -> bool:
+    return "vmi" in getattr(descriptor.metadata, "tags", ())
+
+
 def _legal_candidate_specs(
     target: str,
     op: str,
@@ -254,6 +258,16 @@ def _select_descriptor_and_specs(
             f"target={target!r}; legal candidates: {legal_names}"
         )
 
+    legal = [
+        (descriptor, specs)
+        for descriptor, specs in legal
+        if not _is_vmi_descriptor(descriptor)
+    ]
+    if not legal:
+        raise _registry.NoMatchingTemplate(
+            f"no public TileLib template for op={op!r} target={target!r}"
+        )
+
     if len(legal) == 1:
         return legal[0]
 
@@ -277,9 +291,16 @@ def metadata_request(
     op: str,
     operand_specs: list,
     context_attrs: dict | None = None,
+    include_vmi_candidates: bool = False,
 ) -> dict:
     """Return every legal candidate and its selection metadata."""
     legal = _legal_candidate_specs(target, op, operand_specs, context_attrs)
+    if not include_vmi_candidates:
+        legal = [
+            (descriptor, specs)
+            for descriptor, specs in legal
+            if not _is_vmi_descriptor(descriptor)
+        ]
     return {
         "target": target,
         "op": op,
@@ -363,8 +384,21 @@ class TileLibDaemonServer(socketserver.UnixStreamServer):
                 "error": f"{type(exc).__name__}: {exc}",
             }
 
-    def _get_metadata(self, target, op, operand_specs, context_attrs=None):
-        return metadata_request(target, op, operand_specs, context_attrs)
+    def _get_metadata(
+        self,
+        target,
+        op,
+        operand_specs,
+        context_attrs=None,
+        include_vmi_candidates=False,
+    ):
+        return metadata_request(
+            target,
+            op,
+            operand_specs,
+            context_attrs,
+            include_vmi_candidates=include_vmi_candidates,
+        )
 
     def _get_stats(self):
         requests = self._stats["hits"] + self._stats["misses"]
