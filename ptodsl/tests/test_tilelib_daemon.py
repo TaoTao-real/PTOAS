@@ -147,6 +147,23 @@ class TileLibDaemonTest(unittest.TestCase):
         self.assertIn(VMI_TADD, candidates)
         self.assertIn("vmi", candidates[VMI_TADD]["tags"])
 
+    def test_get_metadata_filters_unsupported_vmi_trace_specs(self):
+        row_major = _tile_spec(shape=(8, 64))
+        row_scalar = _tile_spec(shape=(8, 1))
+        row_scalar["config"]["b_layout"] = "col_major"
+        row_scalar["config"]["s_layout"] = "row_major"
+        operands = [row_major, row_scalar, row_major]
+
+        metadata = self.client.get_metadata(
+            "a5",
+            "pto.trowexpandmul",
+            operands,
+            include_vmi_candidates=True,
+        )
+
+        candidates = metadata["candidates"]
+        self.assertEqual(set(candidates), {"template_trowexpandmul"})
+
     def test_explicit_vmi_candidate_can_instantiate(self):
         mlir = self.client.instantiate(
             "a5",
