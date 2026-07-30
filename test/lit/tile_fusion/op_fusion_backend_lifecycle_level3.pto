@@ -6,9 +6,7 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// Guards the level3 backend fusion lifecycle under the default unified PTODSL
-// backend. Full-shape PIPE_V TileOps choose VMI candidates, while the final
-// tstore remains a hard boundary handled by the ordinary PTODSL path.
+// Guards the legacy level3 VPTO fusion lifecycle.
 //
 // RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level3 --enable-op-fusion --emit-vpto %s --mlir-print-ir-after=pto-low-level-loop-fusion -o /dev/null 2>&1 | FileCheck %s --check-prefix=LLF
 // RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level3 --enable-op-fusion --emit-vpto %s --mlir-print-ir-after=pto-fusion-predicate-elision -o /dev/null 2>&1 | FileCheck %s --check-prefix=PRED
@@ -60,18 +58,16 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 // LLF-LABEL: func.func @fusion_backend_lifecycle_level3(
 // LLF: %[[REGION:.*]] = pto.fusion_region {
 // LLF: scf.for
-// LLF: pto.vmi.vload
-// LLF: pto.vmi.vload
-// LLF: pto.vmi.vadd
-// LLF: pto.vmi.vstore
-// LLF: pto.vmi.vload
-// LLF: pto.vmi.vload
-// LLF: pto.vmi.vadd
-// LLF: pto.vmi.vstore
-// LLF: pto.vmi.vload
-// LLF: pto.vmi.vload
-// LLF: pto.vmi.vadd
-// LLF: pto.vmi.vstore
+// LLF: scf.for {{.*}} -> (index, index, index) {
+// LLF: pto.plt_b32
+// LLF: pto.vadd
+// LLF: pto.vsts
+// LLF: pto.plt_b32
+// LLF: pto.vadd
+// LLF: pto.vsts
+// LLF: pto.plt_b32
+// LLF: pto.vadd
+// LLF: pto.vsts
 // LLF: }
 // LLF: pto.yield(%{{.*}}) : (!pto.tile_buf<vec, 32x32xf32>) -> ()
 // LLF: pto.mte_ub_gm
@@ -80,30 +76,36 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 // PRED-LABEL: func.func @fusion_backend_lifecycle_level3(
 // PRED: %[[REGION:.*]] = pto.fusion_region {
 // PRED: scf.for
-// PRED: pto.vmi.vload
-// PRED: pto.vmi.vload
-// PRED: pto.vmi.vadd
-// PRED: pto.vmi.vstore
-// PRED: pto.vmi.vload
-// PRED: pto.vmi.vload
-// PRED: pto.vmi.vadd
-// PRED: pto.vmi.vstore
-// PRED: pto.vmi.vload
-// PRED: pto.vmi.vload
-// PRED: pto.vmi.vadd
-// PRED: pto.vmi.vstore
+// PRED: pto.plt_b32
+// PRED: pto.vlds
+// PRED: pto.vlds
+// PRED: pto.vadd
+// PRED: pto.vsts
+// PRED: pto.vlds
+// PRED: pto.vlds
+// PRED: pto.vadd
+// PRED: pto.vsts
+// PRED: pto.vlds
+// PRED: pto.vlds
+// PRED: pto.vadd
+// PRED: pto.vsts
 // PRED: pto.yield(%{{.*}}) : (!pto.tile_buf<vec, 32x32xf32>) -> ()
 // PRED: pto.mte_ub_gm
 
 // LS: // -----// IR Dump After PTOFusionLoadStoreElision (pto-fusion-load-store-elision) //----- //
 // LS-LABEL: func.func @fusion_backend_lifecycle_level3(
 // LS: %[[REGION:.*]] = pto.fusion_region {
-// LS: pto.vmi.vadd
-// LS: pto.vmi.vstore
-// LS: pto.vmi.vadd
-// LS: pto.vmi.vstore
-// LS: pto.vmi.vadd
-// LS: pto.vmi.vstore
+// LS: pto.vlds
+// LS: pto.vlds
+// LS: pto.vadd
+// LS-NOT: pto.vsts
+// LS: pto.vlds
+// LS: pto.vlds
+// LS: pto.vadd
+// LS-NOT: pto.vsts
+// LS-NOT: pto.vlds
+// LS: pto.vadd
+// LS: pto.vsts
 // LS: pto.yield(%{{.*}}) : (!pto.tile_buf<vec, 32x32xf32>) -> ()
 // LS: pto.mte_ub_gm
 
@@ -111,18 +113,17 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 // FLAT-LABEL: func.func @fusion_backend_lifecycle_level3(
 // FLAT-NOT: pto.fusion_region
 // FLAT: scf.for %arg1 = %c0 to %c32 step %c1 {
-// FLAT: pto.vmi.vload
-// FLAT: pto.vmi.vload
-// FLAT: pto.vmi.vadd
-// FLAT: pto.vmi.vstore
-// FLAT: pto.vmi.vload
-// FLAT: pto.vmi.vload
-// FLAT: pto.vmi.vadd
-// FLAT: pto.vmi.vstore
-// FLAT: pto.vmi.vload
-// FLAT: pto.vmi.vload
-// FLAT: pto.vmi.vadd
-// FLAT: pto.vmi.vstore
+// FLAT: pto.vlds
+// FLAT: pto.vlds
+// FLAT: pto.vadd
+// FLAT-NOT: pto.vsts
+// FLAT: pto.vlds
+// FLAT: pto.vlds
+// FLAT: pto.vadd
+// FLAT-NOT: pto.vsts
+// FLAT-NOT: pto.vlds
+// FLAT: pto.vadd
+// FLAT: pto.vsts
 // FLAT: }
 // FLAT: pto.mte_ub_gm
 // FLAT: return

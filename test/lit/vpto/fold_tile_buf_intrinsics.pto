@@ -8,8 +8,8 @@
 
 // Unit test for FoldTileBufIntrinsics on the VPTO tile-op expansion path.
 //
-// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto --mlir-print-ir-after=pto-fold-tile-buf-intrinsics %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=SHAPE
-// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto --mlir-print-ir-after=pto-fold-tile-buf-intrinsics %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=ADDR
+// RUN: ptoas --enable-vmi --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --emit-vpto --mlir-print-ir-after=pto-fold-tile-buf-intrinsics %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=SHAPE
+// RUN: ptoas --enable-vmi --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --emit-vpto --mlir-print-ir-after=pto-fold-tile-buf-intrinsics %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=ADDR
 //
 // After the first shape-only FoldTileBufIntrinsics:
 // - tile_valid_rows / tile_valid_cols should be gone

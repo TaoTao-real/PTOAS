@@ -9,7 +9,7 @@
 // Test that the unified PTODSL backend expands a legal full-shape PIPE_V tsub
 // through the preferred VMI candidate, then lowers it to VPTO.
 //
-// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto --tile-lib-backend=ptodsl %s -o - 2>/dev/null | FileCheck %s
+// RUN: ptoas --enable-vmi --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --emit-vpto --tile-lib-backend=ptodsl %s -o - 2>/dev/null | FileCheck %s
 
 // CHECK: func.func @TSUB
 // CHECK-NOT: pto.tsub ins
