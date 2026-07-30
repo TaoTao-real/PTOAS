@@ -2698,7 +2698,8 @@ static bool shouldDeclareVariablesAtTop(ModuleOp module) {
          llvm::any_of(module.getOps<emitc::FuncOp>(), hasMultiBlockFunc);
 }
 
-static void appendVMISemanticPipeline(OpPassManager &pm);
+static void appendVMISemanticPipeline(OpPassManager &pm,
+                                      bool enableFusionOptimizations);
 
 static void prepareVPTOForEmission(PassManager &pm) {
   auto &kernelModulePM = pm.nest<ModuleOp>();
@@ -2864,8 +2865,19 @@ static LogicalResult runVPTOBackendPipeline(OwningOpRef<ModuleOp> &module,
   // the pipeline can use MLIR's standard Func inliner implementation.
   kernelModulePM.addPass(std::make_unique<ApplySIMTEntryNoInlinePass>());
   kernelModulePM.addPass(createInlinerPass());
-  if (useVMIFusionPipeline)
-    appendVMISemanticPipeline(kernelModulePM);
+  // VMI semantic/layout/lowering is mandatory for direct VMI input whenever
+  // VMI is enabled or already present. Loop fusion and load/store forwarding
+  // remain opt-in.
+  bool containsVMI = false;
+  module->walk([&](Operation *op) {
+    if (op->getName().getStringRef().starts_with("pto.vmi.")) {
+      containsVMI = true;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  if (enableVMI || containsVMI)
+    appendVMISemanticPipeline(kernelModulePM, useVMIFusionPipeline);
   prepareVPTOForEmission(pm);
   if (failed(applyConfiguredPassManagerCLOptions(
           pm, "VPTO unified emission pipeline")))
@@ -2877,21 +2889,24 @@ static LogicalResult runVPTOBackendPipeline(OwningOpRef<ModuleOp> &module,
   return success();
 }
 
-static void appendVMISemanticPipeline(OpPassManager &pm) {
+static void appendVMISemanticPipeline(OpPassManager &pm,
+                                      bool enableFusionOptimizations) {
   // Normalize signless integer element types on whitelisted ops to unsigned
   // before any verifier, layout, or lowering pass sees them.
   pm.addNestedPass<func::FuncOp>(
       pto::createVMINormalizeSignlessIntToUnsignedPass());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
-  // Optimize fusion regions while loads and stores are still unified VMI ops.
-  pm.addPass(pto::createPTOVmiLoopFusionPass());
-  pm.addPass(createCanonicalizerPass());
-  pm.addPass(createCSEPass());
-  pm.addNestedPass<func::FuncOp>(
-      pto::createPTOVmiLoadStoreElisionPass());
-  pm.addPass(createCanonicalizerPass());
-  pm.addPass(createCSEPass());
+  if (enableFusionOptimizations) {
+    // Optimize fusion regions while loads and stores are still unified VMI ops.
+    pm.addPass(pto::createPTOVmiLoopFusionPass());
+    pm.addPass(createCanonicalizerPass());
+    pm.addPass(createCSEPass());
+    pm.addNestedPass<func::FuncOp>(
+        pto::createPTOVmiLoadStoreElisionPass());
+    pm.addPass(createCanonicalizerPass());
+    pm.addPass(createCSEPass());
+  }
   // Expand unified VMI ops to legacy ops before layout assignment,
   // so downstream passes only see legacy ops.
   pm.addPass(pto::createVMILowerUnifiedToLegacyPass());
