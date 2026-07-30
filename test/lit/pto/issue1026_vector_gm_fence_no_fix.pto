@@ -46,6 +46,7 @@ module {
         !pto.partition_tensor_view<1x64xf32>,
         !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=64, v_row=1, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
       {atomicType = #pto<atomic_type atomic_none>}
+    pto.cmo.cacheinvalid all #pto.address_space<gm>
     pto.fence.barrier_all #pto.fence_scope<gm>
     return
   }
@@ -55,6 +56,7 @@ module {
 // CHECK:      pto::comm::TPUT(
 // CHECK-NOT:  pipe_barrier(PIPE_FIX);
 // CHECK:      pipe_barrier(PIPE_ALL);
+// CHECK-NEXT: dcci((__gm__ void*)0, cache_line_t::ENTIRE_DATA_CACHE);
 // CHECK-NEXT: dsb(DSB_DDR);
 // CHECK-NOT:  pipe_barrier(PIPE_FIX);
 // CHECK:      #endif // __DAV_VEC__

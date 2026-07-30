@@ -14,6 +14,7 @@
 
 #include <cassert>
 #include <climits>
+#include <optional>
 
 #include "PTO/IR/PTO.h"
 #include "PTO/IR/PTOTypeUtils.h"
@@ -7013,24 +7014,52 @@ static void emitInvalidateGmCacheSingleLine(ConversionPatternRewriter &rewriter,
       ArrayAttr{}, ArrayAttr{}, ValueRange{addr});
 }
 
+static std::optional<std::string>
+getEmitCGlobalTensorElementTypeString(Type type) {
+  if (auto lvalueTy = dyn_cast<emitc::LValueType>(type))
+    type = lvalueTy.getValueType();
+  auto opaqueTy = dyn_cast<emitc::OpaqueType>(type);
+  if (!opaqueTy)
+    return std::nullopt;
+
+  StringRef token = opaqueTy.getValue();
+  size_t pos = token.find("GlobalTensor<");
+  if (pos == StringRef::npos)
+    return std::nullopt;
+  StringRef rest = token.drop_front(pos + StringRef("GlobalTensor<").size());
+  size_t comma = rest.find(',');
+  if (comma == StringRef::npos)
+    return std::nullopt;
+  return rest.take_front(comma).trim().str();
+}
+
 static Value materializeCmoGmAddress(ConversionPatternRewriter &rewriter,
                                      Location loc, Value addr,
                                      Type originalType) {
   addr = peelUnrealized(addr);
-  Type elemType;
+  Type loweredType = addr.getType();
+  if (auto lvalueTy = dyn_cast<emitc::LValueType>(loweredType))
+    loweredType = lvalueTy.getValueType();
+  if (!isEmitCGlobalTensorLikeType(loweredType))
+    return addr;
+
+  std::optional<std::string> elemTypeStr;
   if (auto tvTy = dyn_cast<pto::TensorViewType>(originalType)) {
-    elemType = tvTy.getElementType();
+    elemTypeStr = getElemTypeStringForGT(tvTy.getElementType());
   } else if (auto partTy =
                  dyn_cast<pto::PartitionTensorViewType>(originalType)) {
-    elemType = partTy.getElementType();
-  } else {
-    return addr;
+    elemTypeStr = getElemTypeStringForGT(partTy.getElementType());
+  } else if (auto memrefTy = dyn_cast<MemRefType>(originalType)) {
+    elemTypeStr = getElemTypeStringForGT(memrefTy.getElementType());
   }
+  if (!elemTypeStr)
+    elemTypeStr = getEmitCGlobalTensorElementTypeString(loweredType);
+  if (!elemTypeStr)
+    return addr;
 
   auto *ctx = rewriter.getContext();
-  std::string elemTypeStr = getElemTypeStringForGT(elemType);
   auto ptrTy = emitc::PointerType::get(
-      emitc::OpaqueType::get(ctx, "__gm__ " + elemTypeStr));
+      emitc::OpaqueType::get(ctx, "__gm__ " + *elemTypeStr));
   return rewriter
       .create<emitc::CallOpaqueOp>(loc, ptrTy, "PTOAS__GLOBAL_TENSOR_DATA",
                                    ArrayAttr{}, ArrayAttr{}, ValueRange{addr})
@@ -14638,6 +14667,7 @@ struct EmitPTOManualPass
         bool needsEventIdArrayHelper = false;
         bool needsTRandomHelper = false;
         bool needsGlobalTensorDataHelper = false;
+        bool needsCmoSingleLineHelper = false;
         bool needsCommInclude = false;
         mop.walk([&](Operation *op) {
           if (isa<mlir::pto::DeclareEventIdArrayOp>(op))
@@ -14652,6 +14682,8 @@ struct EmitPTOManualPass
             needsGlobalTensorDataHelper = true;
           if (auto cmo = dyn_cast<mlir::pto::CmoCacheInvalidOp>(op)) {
             if (Value addr = cmo.getAddr()) {
+              needsCmoSingleLineHelper = true;
+              needsGlobalTensorDataHelper = true;
               if (isa<mlir::pto::TensorViewType,
                       mlir::pto::PartitionTensorViewType>(addr.getType()))
                 needsGlobalTensorDataHelper = true;
@@ -14710,13 +14742,22 @@ struct EmitPTOManualPass
                 loc, builder.getStringAttr(renderStructDef(st)));
         }
 
-        if (needsGlobalTensorDataHelper) {
+        if (needsGlobalTensorDataHelper || needsCmoSingleLineHelper) {
 	      builder.create<emitc::VerbatimOp>(
 	          loc, builder.getStringAttr(R"cpp(
 template <typename Tensor>
 static AICORE inline auto PTOAS__GLOBAL_TENSOR_DATA(Tensor &tensor)
     -> decltype(tensor.data()) {
   return tensor.data();
+}
+)cpp"));
+        }
+        if (needsCmoSingleLineHelper) {
+          builder.create<emitc::VerbatimOp>(
+              loc, builder.getStringAttr(R"cpp(
+template <typename Ptr>
+static AICORE inline void PTOAS__DCCI_SINGLE_CACHE_LINE(Ptr ptr) {
+  dcci((__gm__ void*)ptr, cache_line_t::SINGLE_CACHE_LINE);
 }
 )cpp"));
         }
@@ -14765,17 +14806,6 @@ static AICORE inline void ptoas_auto_sync_tail(
     pipe_barrier(PIPE_ALL);
     break;
   }
-}
-
-template <typename Ptr>
-static AICORE inline void PTOAS__DCCI_SINGLE_CACHE_LINE(Ptr ptr) {
-  dcci((__gm__ void*)ptr, cache_line_t::SINGLE_CACHE_LINE);
-}
-
-template <typename Element, typename Shape, typename Stride, pto::Layout Layout_>
-static AICORE inline void PTOAS__DCCI_SINGLE_CACHE_LINE(
-    GlobalTensor<Element, Shape, Stride, Layout_> &tensor) {
-  dcci((__gm__ void*)tensor.data(), cache_line_t::SINGLE_CACHE_LINE);
 }
 )cpp"));
 	    // Only inject the bitcast helper when we actually lower ops that need it
