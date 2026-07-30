@@ -48,6 +48,16 @@ def _view_spec(dtype="f32", shape=(1, 1, 1, 8, 64), strides=(512, 512, 512, 64, 
     }
 
 
+def _rank1_view_spec(dtype="f32", shape=(128,), strides=(1,)):
+    return {
+        "kind": "view",
+        "dtype": dtype,
+        "shape": list(shape),
+        "strides": list(strides),
+        "memory_space": "gm",
+    }
+
+
 # ExpandTileOp sends tadd as ins(src0, src1), outs(dst), matching the
 # template parameter order (src0, src1, dst).
 TADD_OPERANDS = [_tile_spec(), _tile_spec(), _tile_spec()]
@@ -256,6 +266,23 @@ class TileLibDaemonTest(unittest.TestCase):
 
     def test_view_operand_template_instantiates(self):
         operands = [_view_spec(), _tile_spec()]
+
+        mlir = self.client.instantiate(
+            "a5",
+            "pto.tload",
+            operands,
+            candidate_id="template_tload_nd2nd",
+        )
+
+        self.assertIn("func.func @template_tload_nd2nd", mlir)
+        self.assertIn("pto.tensor_view_addr", mlir)
+        self.assertIn("pto.mte_gm_ub", mlir)
+
+    def test_rank1_view_operand_template_instantiates(self):
+        operands = [
+            _rank1_view_spec(),
+            _tile_spec(shape=(1, 128)),
+        ]
 
         mlir = self.client.instantiate(
             "a5",

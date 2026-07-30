@@ -615,7 +615,6 @@ class _VMINamespace:
             )
             return _wrap_result(op)
         return _generated("vstore")(
-            None,
             _raw_sequence(values),
             dest,
             _coerce_index_value(offset),
