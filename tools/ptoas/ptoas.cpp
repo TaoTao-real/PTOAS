@@ -3183,6 +3183,8 @@ int mlir::pto::compilePTOASModule(
   // so it takes no option here.
   pto::FusionPlanOptions fusionPlanOpts;
   fusionPlanOpts.enableShapeInference = enableShapeInference;
+  if (useVMIFusionPipeline)
+    fusionPlanOpts.strategy = "vmi-ub-disjoint";
   if (!isA2A3 && enableA5EmitCFusionPath) {
     pm.addNestedPass<mlir::func::FuncOp>(
         pto::createFusionPlanPass(fusionPlanOpts));
@@ -3193,6 +3195,13 @@ int mlir::pto::compilePTOASModule(
         pto::createFusionPlanPass(fusionPlanOpts));
     pm.addNestedPass<mlir::func::FuncOp>(pto::createOpSchedulingPass());
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOFusionRegionGenPass());
+  }
+  if (!isA2A3 && expandOptions &&
+      expandOptions->tileLibBackend == "ptodsl") {
+    pto::SelectTemplateCandidateOptions selectOptions;
+    selectOptions.selectionPolicy =
+        useVMIFusionPipeline ? "prefer-vmi" : "ordinary-only";
+    pm.addPass(pto::createSelectTemplateCandidatePass(selectOptions));
   }
 
   pm.addPass(pto::createPTOViewToMemrefPass());

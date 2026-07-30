@@ -131,6 +131,9 @@ std::unique_ptr<Pass> createVMIToVPTOPass();
 std::unique_ptr<Pass> createInsertTemplateAttributesPass();
 std::unique_ptr<Pass> createInsertTemplateAttributesPass(
     const InsertTemplateAttributesOptions &options);
+std::unique_ptr<Pass> createSelectTemplateCandidatePass();
+std::unique_ptr<Pass> createSelectTemplateCandidatePass(
+    const SelectTemplateCandidateOptions &options);
 std::unique_ptr<Pass> createExpandTileOpPass();
 std::unique_ptr<Pass> createExpandTileOpPass(const ExpandTileOpOptions &options);
 std::unique_ptr<Pass> createFoldTileBufIntrinsicsPass();

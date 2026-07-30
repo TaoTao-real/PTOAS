@@ -4799,10 +4799,6 @@ def mte_store(
         loop_counts,
         loop_src_strides,
         loop_dst_strides,
-        l2_cache_ctl=_coerce_i64(
-            _normalize_mte_store_l2_cache(l2_cache, context="mte_store(...) l2_cache"),
-            context="mte_store l2 cache control",
-        ),
     )
 
 
@@ -4921,10 +4917,6 @@ def mte_ub_gm(
         loop_counts,
         loop_src_strides,
         loop_dst_strides,
-        l2_cache_ctl=_coerce_i64(
-            _normalize_mte_store_l2_cache(l2_cache, context="mte_ub_gm(...) l2_cache"),
-            context="mte_ub_gm l2 cache control",
-        ),
     )
 
 

@@ -505,7 +505,8 @@ def tile_buf_type(shape, dtype, valid_shape=None, *,
                   address_space: str = "ub",
                   slayout: str = "NoneBox",
                   fractal_size: int = 512,
-                  pad: str = "Null") -> Type:
+                  pad: str = "Null",
+                  compact: str = "normal") -> Type:
     """
     Construct a ``!pto.tile_buf<…>`` type via the Python bindings.
 
@@ -513,6 +514,8 @@ def tile_buf_type(shape, dtype, valid_shape=None, *,
     When ``valid_shape`` is omitted, construct a tile type without a ``valid=``
     suffix and let the type's logical shape stand on its own.
     ``blayout="ColMajor"`` prints as ``blayout=col_major``.
+    ``compact`` selects the CompactMode: ``"normal"`` (default) or
+    ``"row_plus_one"`` (RowPlusOne — UB +1 padding band to avoid bank conflicts).
 
     Requires an active MLIR context.
     """
@@ -523,11 +526,20 @@ def tile_buf_type(shape, dtype, valid_shape=None, *,
             f"Unknown address_space '{address_space}'; known: {list(_ADDR_SPACE)}"
         )
     space_attr = _pto.AddressSpaceAttr.get(space_enum)
+    compact_enum = {
+        "normal": _pto.CompactMode.Normal,
+        "row_plus_one": _pto.CompactMode.RowPlusOne,
+    }.get(compact)
+    if compact_enum is None:
+        raise ValueError(
+            f"Unknown compact '{compact}'; expected 'normal' or 'row_plus_one'"
+        )
     cfg = _pto.TileBufConfigAttr.get(
         _pto.BLayoutAttr.get(getattr(_pto.BLayout, blayout)),
         _pto.SLayoutAttr.get(getattr(_pto.SLayout, slayout)),
         fractal_size,
         _pto.PadValueAttr.get(getattr(_pto.PadValue, pad)),
+        compact_mode=_pto.CompactModeAttr.get(compact_enum),
     )
     if valid_shape is None and cfg is None:
         return _pto.TileBufType.get(shape, elem, space_attr)
