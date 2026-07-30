@@ -2233,6 +2233,11 @@ struct PTOViewToMemrefPass
         return;
       }
 
+      if (failed(reconcileFusionRegionResultTypes(func))) {
+        signalPassFailure();
+        return;
+      }
+
       // ------------------------------------------------------------------
       // Stage 1.4: Lower tile_buf view-like ops (treshape/bitcast)
       // ------------------------------------------------------------------

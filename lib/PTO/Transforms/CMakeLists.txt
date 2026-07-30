@@ -61,11 +61,14 @@ add_mlir_dialect_library(PTOTransforms
   PTORematerializeFixpipeVectorQuant.cpp
   PTOValidateIntToPtrUses.cpp
   InsertTemplateAttributes.cpp
+  SelectTemplateCandidate.cpp
   ExpandTileOp.cpp
   FoldTileBufIntrinsics.cpp
   LowerPTOToUBufOps.cpp
   PTOLowerToOpLibCalls.cpp
   PTOInstantiateAndInlineOpLib.cpp
+  PTOVmiLoopFusion.cpp
+  PTOVmiLoadStoreElision.cpp
   PTOToEmitC.cpp
   CppPostprocess.cpp
   Utils.cpp

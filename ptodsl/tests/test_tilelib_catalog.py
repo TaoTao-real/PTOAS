@@ -890,6 +890,29 @@ class TileLibCatalogTest(unittest.TestCase):
         self.assertEqual(selected.name, "template_tmov_basic")
         self.assertIn("pto.vsts", selected.specialize(**specs).mlir_text())
 
+    def test_tmov_nd2nz_half_vl_renders(self):
+        # bf16 [128,64] ND -> NZ (cols=64 < bf16 lanes=128, 1/2-VL): InsertTemplateAttributes
+        # metadata path + non-VMI fallback must see a legal candidate that renders
+        # one row scf.for + vlds + vsstb with constant strides.
+        specs = {
+            "src": TileSpec(
+                shape=(128, 64), dtype=ScalarType("bf16"), memory_space="vec",
+                valid_shape=(128, 64),
+            ),
+            "dst": TileSpec(
+                shape=(128, 64), dtype=ScalarType("bf16"), memory_space="vec",
+                valid_shape=(128, 64),
+                b_layout="col_major", s_layout="row_major",
+            ),
+        }
+        selected = select("pto.tmov", "a5", specs)
+        self.assertEqual(selected.name, "template_tmov_nd2nz")
+        mlir = selected.specialize(**specs).mlir_text()
+        self.assertIn("pto.vlds", mlir)
+        self.assertIn("pto.vsstb", mlir)
+        self.assertEqual(mlir.count("scf.for"), 1)
+        self.assertIn("arith.constant 1 : i16", mlir)
+
     def test_tcvt_additional_rowwise_versions_render(self):
         signatures = {
             ("i32", "f32"): "template_tcvt_i32_to_f32",
