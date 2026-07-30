@@ -8310,10 +8310,27 @@ struct OneToNVMIStrideStoreOpPattern
                      .create<AddPtrOp>(op.getLoc(), (*destination).getType(),
                                        *destination, *offset)
                      .getResult();
-    rewriter.create<VsstbOp>(op.getLoc(), base.getType(), valueParts.front(),
-                             base, *blockStride, *repeatStride,
-                             maskParts.front());
-    rewriter.eraseOp(op);
+    Value updatedBase = op.getUpdatedBase();
+    if (updatedBase) {
+      // Build vsstb with the updated_base result so the emitter selects the
+      // post-update intrinsic; forward it as the stride_store's result.
+      auto vsstb = rewriter.create<VsstbOp>(
+          op.getLoc(), base.getType(), valueParts.front(), base, *blockStride,
+          *repeatStride, maskParts.front());
+      rewriter.replaceOp(op, {vsstb.getUpdatedBase()});
+    } else {
+      // No updated_base: pass an empty Type so VsstbOp is built WITHOUT the
+      // optional result. This selects the non-post intrinsic in the emitter
+      // (usePostIntrinsic = bool(op.getUpdatedBase())) so the hardware does
+      // not auto-advance the destination pointer via POST_UPDATE. Callers
+      // that do not need the advanced dst pointer take this path; the ND2NZ
+      // template instead requests updated_base (the if-branch above) and
+      // threads the advanced dst_ptr through scf.yield.
+      rewriter.create<VsstbOp>(op.getLoc(), Type{},
+                               valueParts.front(), base, *blockStride,
+                               *repeatStride, maskParts.front());
+      rewriter.eraseOp(op);
+    }
     return success();
   }
 };

@@ -519,6 +519,19 @@ static Value computeExplicitAddress(Value value, OpBuilder &builder,
     return ensureI64(cast.getAddrs().front(), builder, loc);
   }
 
+  // pto.alloc_tile carries its compile-time GM address as an explicit optional
+  // $addr operand. When a value resolves to an alloc_tile (e.g. the operand a
+  // pto.fusion_region yields — which is, by construction, a region-local
+  // alloc_tile / bind_tile / pointer_cast of a constant address), surface that
+  // addr. An addrless alloc_tile (a pure UB scratch buffer) returns Value() so
+  // the caller falls back to an addrless alloc_tile — same behavior as before
+  // this case was handled.
+  if (auto alloc = value.getDefiningOp<pto::AllocTileOp>()) {
+    if (Value addr = alloc.getAddr())
+      return ensureI64(addr, builder, loc);
+    return Value();
+  }
+
   if (auto subview = value.getDefiningOp<memref::SubViewOp>())
     return computeSubviewAddress(subview, builder, loc);
 
@@ -534,6 +547,21 @@ static Value computeExplicitAddress(Value value, OpBuilder &builder,
 
   if (auto cast = value.getDefiningOp<memref::CastOp>())
     return computeExplicitAddress(cast.getSource(), builder, loc);
+
+  if (auto regionResult = dyn_cast<OpResult>(value)) {
+    if (auto fusionRegion =
+            dyn_cast<pto::FusionRegionOp>(regionResult.getOwner())) {
+      auto yieldOp = dyn_cast<pto::YieldOp>(
+          fusionRegion.getBody().front().getTerminator());
+      if (!yieldOp)
+        return Value();
+      unsigned resultIndex = regionResult.getResultNumber();
+      if (resultIndex >= yieldOp.getNumOperands())
+        return Value();
+      return computeExplicitAddress(yieldOp.getOperand(resultIndex), builder,
+                                    loc);
+    }
+  }
 
   return Value();
 }
