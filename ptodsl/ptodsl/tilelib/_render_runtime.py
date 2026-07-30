@@ -28,7 +28,7 @@ from dataclasses import dataclass
 
 from .metadata import ScalarSpec, TileSpec, VectorSpec, ViewSpec, scalar_descriptor
 from .._ast_rewrite import rewrite_jit_function
-from .._bootstrap import make_context
+from .._context import make_context
 from .._surface_types import Tile
 from .._surface_values import PartitionTensorViewValue, TensorViewValue, TileValue
 from .._tracing import KernelModuleSpec, ModuleStyle, TracingRuntime
@@ -36,8 +36,8 @@ from .._tracing.active import activate_runtime, activate_session
 from .._surface_values import wrap_surface_value
 from .._types import _DType, _resolve
 
-from mlir.dialects import func
-from mlir.ir import Attribute, InsertionPoint, Location, Module, StringAttr, UnitAttr
+from ptoas.mlir.dialects import func
+from ptoas.mlir.ir import Attribute, InsertionPoint, Location, Module, StringAttr, UnitAttr
 
 
 # ── tile handle handed to the template body ────────────────────────────────────────

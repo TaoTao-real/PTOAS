@@ -75,7 +75,6 @@ RUN pip install --no-cache-dir torch==2.9.0 --index-url https://download.pytorch
 # =========================================================================
 ENV PATH="${LLVM_INSTALL_DIR}/bin:${ASCEND_HOME_PATH}/compiler/bin:${PATH}"
 ENV LD_LIBRARY_PATH="${LLVM_INSTALL_DIR}/lib:${ASCEND_HOME_PATH}/lib64:${ASCEND_HOME_PATH}/lib64/plugin/opskernel:${ASCEND_HOME_PATH}/lib64/plugin/nnengine:${ASCEND_HOME_PATH}/opp/built-in/op_impl/ai_core/tbe/op_tiling/lib/linux/aarch64:${LD_LIBRARY_PATH}"
-ENV MLIR_PYTHON_ROOT="${LLVM_INSTALL_DIR}/python_packages/mlir_core"
 
 ENV BISHENG_OPTS="-I${PTO_LIB_PATH}/include/pto -fPIC -shared -O2 -std=c++17 --npu-arch=dav-2201 -DMEMORY_BASE"
 

@@ -7,8 +7,8 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-from mlir.ir import Context
-from mlir.dialects import pto
+from ptoas.mlir.ir import Context
+from ptoas.mlir.dialects import pto
 
 
 def assert_contains(text: str, needle: str) -> None:
@@ -21,10 +21,14 @@ def main() -> None:
         pto.register_dialect(ctx)
 
         hif8 = pto.HiF8Type.get(ctx)
+        hif8x2 = pto.HiF8x2Type.get(ctx)
+        f8e8m0 = pto.F8E8M0Type.get(ctx)
         f4e1 = pto.F4E1M2x2Type.get(ctx)
         f4e2 = pto.F4E2M1x2Type.get(ctx)
 
         assert_contains(str(hif8), "hif8")
+        assert_contains(str(hif8x2), "hif8x2")
+        assert_contains(str(f8e8m0), "f8E8M0")
         assert_contains(str(f4e1), "f4E1M2x2")
         assert_contains(str(f4e2), "f4E2M1x2")
 

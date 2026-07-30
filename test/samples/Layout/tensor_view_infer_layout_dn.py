@@ -16,9 +16,9 @@ This checks that PTOAS can infer `layout=DN` for a 2D column-vector GM view:
 The expected emitted C++ should use `pto::Layout::DN` in GlobalTensor<>.
 """
 
-from mlir.ir import Context, Location, Module, InsertionPoint, UnitAttr
-from mlir.dialects import func, arith, pto
-from mlir.ir import F32Type, IndexType
+from ptoas.mlir.ir import Context, Location, Module, InsertionPoint, UnitAttr
+from ptoas.mlir.dialects import func, arith, pto
+from ptoas.mlir.ir import F32Type, IndexType
 
 
 def build():

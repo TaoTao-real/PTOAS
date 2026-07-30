@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # This program is free software, you can redistribute it and/or modify it under the terms and conditions of
 # CANN Open Software License Agreement Version 2.0 (the "License").
@@ -6,15 +7,30 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-"""Compatibility shim for legacy `ptoas._launcher` imports."""
+import argparse
+from pathlib import Path
 
-from __future__ import annotations
+import numpy as np
 
-from ptoas_wheel_bootstrap import main as _wheel_bootstrap_main
+ELEMENTS = 64
+
+
+def generate(output_dir: Path) -> None:
+    src = np.full(ELEMENTS, 3, dtype=np.int32)
+    dst = np.full(ELEMENTS, 10, dtype=np.int32)
+    golden = np.full(ELEMENTS, 13, dtype=np.int32)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    src.tofile(output_dir / "v1.bin")
+    dst.tofile(output_dir / "v2.bin")
+    golden.tofile(output_dir / "golden_v2.bin")
 
 
 def main() -> None:
-    _wheel_bootstrap_main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output-dir", type=Path, default=Path("."))
+    args = parser.parse_args()
+    generate(args.output_dir)
 
 
 if __name__ == "__main__":

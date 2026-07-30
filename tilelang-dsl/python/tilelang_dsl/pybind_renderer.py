@@ -14,16 +14,15 @@ direct MLIR IR construction using Python bindings instead of text emission.
 Phase 2 implementation: core framework with basic stmt/expr rendering.
 
 Dependencies:
-    - mlir.ir: MLIR Python bindings from LLVM build
-    - mlir.dialects.func, arith, scf: Standard MLIR dialects
-    - mlir.dialects.pto: PTO dialect bindings from PTOAS build
+    - ptoas.mlir.ir: MLIR Python bindings assembled by the PTOAS build
+    - ptoas.mlir.dialects.func, arith, scf: Standard MLIR dialects
+    - ptoas.mlir.dialects.pto: PTO dialect bindings from PTOAS build
 
-To use this module, ensure PYTHONPATH includes:
-    1. LLVM MLIR Python package: $LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core
-    2. PTOAS Python bindings: $PTOAS_BUILD_DIR/python
+To use this module from a build tree, ensure PYTHONPATH includes:
+    $PTOAS_BUILD_DIR/python
 
 Example:
-    export PYTHONPATH="$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core:$PTOAS_BUILD_DIR/python"
+    export PYTHONPATH="$PTOAS_BUILD_DIR/python"
 """
 
 from __future__ import annotations
@@ -32,7 +31,7 @@ from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from mlir import ir as _ods_ir
+    from ptoas.mlir import ir as _ods_ir
 
 # Lazy imports - only load when actually needed
 _mlir_ir: Any = None
@@ -55,10 +54,10 @@ def _ensure_mlir_bindings() -> None:
         return  # Already loaded
 
     try:
-        from mlir import ir as mlir_ir
-        from mlir.dialects import func as func_dialect
-        from mlir.dialects import arith as arith_dialect
-        from mlir.dialects import scf as scf_dialect
+        from ptoas.mlir import ir as mlir_ir
+        from ptoas.mlir.dialects import func as func_dialect
+        from ptoas.mlir.dialects import arith as arith_dialect
+        from ptoas.mlir.dialects import scf as scf_dialect
 
         _mlir_ir = mlir_ir
         _func_dialect = func_dialect
@@ -67,13 +66,13 @@ def _ensure_mlir_bindings() -> None:
     except ImportError as exc:
         raise ImportError(
             "MLIR Python bindings not found. Please ensure PYTHONPATH includes "
-            "the MLIR Python package from your LLVM build. "
-            "Example: export PYTHONPATH=$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core "
+            "the Python package assembled by your PTOAS build. "
+            "Example: export PYTHONPATH=$PTOAS_BUILD_DIR/python "
             "See README.md for build instructions."
         ) from exc
 
     try:
-        from mlir.dialects import pto as pto_dialect
+        from ptoas.mlir.dialects import pto as pto_dialect
         _pto_dialect = pto_dialect
     except ImportError:
         # PTO dialect is optional for some operations

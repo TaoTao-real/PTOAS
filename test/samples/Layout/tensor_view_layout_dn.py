@@ -15,8 +15,8 @@ This checks that:
   - The generated C++ GlobalTensor uses pto::Layout::DN.
 """
 
-from mlir.ir import Context, Location, InsertionPoint, Module, IndexType
-from mlir.dialects import arith, func, pto, builtin
+from ptoas.mlir.ir import Context, Location, InsertionPoint, Module, IndexType
+from ptoas.mlir.dialects import arith, func, pto, builtin
 
 
 def idx(val: int):

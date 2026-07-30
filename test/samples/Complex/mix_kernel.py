@@ -6,9 +6,9 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-from mlir.ir import Context, Location, Module, InsertionPoint, Attribute, IntegerType, UnitAttr
-from mlir.dialects import func, arith, pto
-from mlir.ir import F32Type, IndexType
+from ptoas.mlir.ir import Context, Location, Module, InsertionPoint, Attribute, IntegerType, UnitAttr
+from ptoas.mlir.dialects import func, arith, pto
+from ptoas.mlir.ir import F32Type, IndexType
 
 
 def build(M=32, N=32, K=32, TM=32, TN=32, TK=32):

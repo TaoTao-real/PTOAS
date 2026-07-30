@@ -14,8 +14,8 @@ import re
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 from ptodsl import pto
-from ptodsl._bootstrap import make_context
-from mlir.ir import Module
+from ptodsl._context import make_context
+from ptoas.mlir.ir import Module
 
 
 def expect(condition: bool, message: str) -> None:

@@ -102,11 +102,8 @@ jobs:
       LLVM_BUILD_DIR: ${{ github.workspace }}/llvm-project/llvm/build-assert
       LLVM_DIR: ${{ github.workspace }}/llvm-project/llvm/build-assert
       PTO_BUILD_DIR: ${{ github.workspace }}/build-assert
-      PTO_INSTALL_DIR: ${{ github.workspace }}/install-assert
-      PTO_WHEELHOUSE: ${{ github.workspace }}/wheelhouse-assert
       PTOAS_VENV: ${{ github.workspace }}/.venv-ptoas-assert
-      MLIR_PYTHONPATH: ${{ github.workspace }}/llvm-project/llvm/build-assert/tools/mlir/python_packages/mlir_core
-      LLVM_CACHE_FLAVOR: llvm21-assert-shared-mlirpy-hardening-v1
+      LLVM_CACHE_FLAVOR: llvm21-assert-shared-mlirpy-hardening-v2
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -114,7 +111,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Install dependencies
+      - name: Install dependencies and create developer environment
         run: |
           # GitHub-hosted runners may include Microsoft apt sources unrelated to
           # PTOAS; these can intermittently return 403 and break apt-get update.
@@ -131,9 +128,13 @@ jobs:
             python3 python3-pip python3-venv \
             clang-${PTOAS_CLANG_MAJOR} lld-${PTOAS_CLANG_MAJOR} \
             libedit-dev zlib1g-dev libxml2-dev libzstd-dev
-          python3 -m pip install --upgrade pip
+          rm -rf "${PTOAS_VENV}"
+          python3 -m venv "${PTOAS_VENV}"
+          "${PTOAS_VENV}/bin/python" -m pip install --upgrade pip
           # LLVM/MLIR Python bindings are not yet compatible with pybind11 3.x.
-          python3 -m pip install setuptools wheel 'pybind11<3' nanobind numpy
+          "${PTOAS_VENV}/bin/pip" install \
+            'scikit-build-core>=0.12.2,<2' 'pybind11<3' \
+            nanobind numpy ml-dtypes
 
       - name: Define payload paths
         shell: bash
@@ -198,8 +199,8 @@ jobs:
           fi
 
           git remote set-url origin "${LLVM_REPO}"
-          git fetch --depth 1 origin "${LLVM_REF}"
-          git checkout --force FETCH_HEAD
+          git fetch --depth 1 origin "${LLVM_SOURCE_SHA}"
+          git checkout --force "${LLVM_SOURCE_SHA}"
 
       - name: Build LLVM/MLIR (only if cache miss)
         if: steps.cache-llvm.outputs.cache-hit != 'true'
@@ -210,10 +211,10 @@ jobs:
             -DBUILD_SHARED_LIBS=ON \
             -DLLVM_ENABLE_ASSERTIONS=ON \
             -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
-            -DPython3_EXECUTABLE=python3 \
-            -DPython_EXECUTABLE=python3 \
-            -Dpybind11_DIR="$(python3 -m pybind11 --cmakedir)" \
-            -Dnanobind_DIR="$(python3 -m nanobind --cmake_dir)" \
+            -DPython3_EXECUTABLE="${PTOAS_VENV}/bin/python" \
+            -DPython_EXECUTABLE="${PTOAS_VENV}/bin/python" \
+            -Dpybind11_DIR="$("${PTOAS_VENV}/bin/python" -m pybind11 --cmakedir)" \
+            -Dnanobind_DIR="$("${PTOAS_VENV}/bin/python" -m nanobind --cmake_dir)" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER="${PTOAS_CMAKE_C_COMPILER}" \
             -DCMAKE_CXX_COMPILER="${PTOAS_CMAKE_CXX_COMPILER}" \
@@ -252,72 +253,49 @@ jobs:
             -DPython3_EXECUTABLE="${cmake4_venv}/bin/python" \
             -DPython3_FIND_STRATEGY=LOCATION \
             -Dpybind11_DIR="$("${cmake4_venv}/bin/python" -m pybind11 --cmakedir)" \
+            -Dnanobind_DIR="$("${cmake4_venv}/bin/python" -m nanobind --cmake_dir)" \
             -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
-            -DMLIR_PYTHON_PACKAGE_DIR="${MLIR_PYTHONPATH}" \
             -DPTO_ENABLE_PYTHON_BINDING=ON \
-            -DPTOAS_VALIDATE_CMAKE4_FETCHCONTENT_COMPAT=ON \
-            -DPTOAS_ENABLE_WERROR=OFF \
             -DBUILD_TESTING=ON \
             -DCMAKE_C_COMPILER="${PTOAS_CMAKE_C_COMPILER}" \
             -DCMAKE_CXX_COMPILER="${PTOAS_CMAKE_CXX_COMPILER}" \
             -Werror=dev
 
-      - name: Create PTOAS test venv
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf "${PTOAS_VENV}"
-          python3 -m venv "${PTOAS_VENV}"
-          "${PTOAS_VENV}/bin/python" -m pip install --upgrade pip
-          "${PTOAS_VENV}/bin/pip" install setuptools wheel 'pybind11<3' nanobind numpy ml-dtypes
-
-      - name: Build PTOAS wheel
+      - name: Install PTOAS editable
         run: |
           set -euo pipefail
           rm -rf "${PTO_BUILD_DIR}"
-          rm -rf "${PTO_INSTALL_DIR}"
-          rm -rf "${PTO_WHEELHOUSE}"
-          mkdir -p "${PTO_WHEELHOUSE}"
-          # LLVM_BUILD_DIR is the env var read by the build backend (_ptoas_build_backend.py).
+          # Keep a persistent CMake build tree for CTest and lit while exposing
+          # the current sources and Python extension through the developer venv.
           LLVM_BUILD_DIR="${LLVM_DIR}" \
-          PTO_BUILD_DIR="${PTO_BUILD_DIR}" \
-          CMAKE_C_COMPILER="${PTOAS_CMAKE_C_COMPILER}" \
-          CMAKE_CXX_COMPILER="${PTOAS_CMAKE_CXX_COMPILER}" \
-            PTO_INSTALL_DIR="${PTO_INSTALL_DIR}" \
-            "${PTOAS_VENV}/bin/python" -m pip wheel . --no-build-isolation --no-deps --wheel-dir "${PTO_WHEELHOUSE}"
+          CC="${PTOAS_CMAKE_C_COMPILER}" \
+          CXX="${PTOAS_CMAKE_CXX_COMPILER}" \
+            "${PTOAS_VENV}/bin/python" -m pip install --editable . \
+              --no-build-isolation --no-deps \
+              --config-settings="build-dir=${PTO_BUILD_DIR}"
 
-      - name: Install PTOAS wheel into test venv
+      - name: Test PTOAS editable install
         shell: bash
         run: |
           set -euo pipefail
-          readarray -t ptoas_wheels < <(find "${PTO_WHEELHOUSE}" -maxdepth 1 -type f -name 'ptoas*.whl' | sort)
-          if [[ "${#ptoas_wheels[@]}" -ne 1 ]]; then
-            echo "ERROR: expected exactly one PTOAS wheel in ${PTO_WHEELHOUSE}, found ${#ptoas_wheels[@]}" >&2
-            printf '  %s\n' "${ptoas_wheels[@]}" >&2
-            exit 1
-          fi
-
-          "${PTOAS_VENV}/bin/pip" install --force-reinstall "${ptoas_wheels[0]}"
-          PATH="${PTOAS_VENV}/bin:${PATH}" bash docker/test_wheel_imports.sh
+          PATH="${PTOAS_VENV}/bin:${PATH}" \
+          PYTHON="${PTOAS_VENV}/bin/python" \
+            bash docker/test_wheel_imports.sh
 
       - name: Run PTODSL Python tests
         shell: bash
         env:
           LLVM_DIR: ${{ env.LLVM_DIR }}
-          PTO_INSTALL_DIR: ${{ env.PTO_INSTALL_DIR }}
         run: |
-          export PATH="${PTOAS_VENV}/bin:${LLVM_DIR}/bin:${PTO_INSTALL_DIR}/bin:${PATH}"
-          export LD_LIBRARY_PATH="${LLVM_DIR}/lib:${PTO_INSTALL_DIR}/lib:${LD_LIBRARY_PATH:-}"
+          export PATH="${PTOAS_VENV}/bin:${LLVM_DIR}/bin:${PATH}"
           ctest --test-dir "${PTO_BUILD_DIR}" --output-on-failure -L PTODSL
 
       - name: Run lit tests
         shell: bash
         env:
           LLVM_DIR: ${{ env.LLVM_DIR }}
-          PTO_INSTALL_DIR: ${{ env.PTO_INSTALL_DIR }}
         run: |
-          export PATH="${PTOAS_VENV}/bin:${LLVM_DIR}/bin:${PTO_INSTALL_DIR}/bin:${PATH}"
-          export LD_LIBRARY_PATH="${LLVM_DIR}/lib:${PTO_INSTALL_DIR}/lib:${LD_LIBRARY_PATH:-}"
+          export PATH="${PTOAS_VENV}/bin:${LLVM_DIR}/bin:${PATH}"
           ninja -C "${PTO_BUILD_DIR}" check-pto
 
       - name: Run sample tests (py -> pto -> cpp)
@@ -325,15 +303,13 @@ jobs:
         env:
           CI_EVENT_NAME: ${{ github.event_name }}
           WORKFLOW_SOC_VERSION: ${{ github.event.inputs.soc_version || 'Ascend910' }}
-          PTOAS_BIN: ${{ env.PTO_INSTALL_DIR }}/bin/ptoas
+          PTOAS_BIN: ${{ env.PTOAS_VENV }}/bin/ptoas
           PTOBC_BIN: ${{ env.PTO_BUILD_DIR }}/tools/ptobc/ptobc
           PTO_BUILD_DIR: ${{ env.PTO_BUILD_DIR }}
           PYTHON_BIN: ${{ env.PTOAS_VENV }}/bin/python
-          PTO_INSTALL_DIR: ${{ env.PTO_INSTALL_DIR }}
         run: |
           set -euo pipefail
-          export PATH="${PTOAS_VENV}/bin:${PTO_INSTALL_DIR}/bin:${PATH}"
-          export LD_LIBRARY_PATH="${LLVM_DIR}/lib:${PTO_INSTALL_DIR}/lib:${LD_LIBRARY_PATH:-}"
+          export PATH="${PTOAS_VENV}/bin:${PATH}"
           export PTOAS_OUT_DIR="${PAYLOAD_DIR}/test/samples"
           if [[ "${CI_EVENT_NAME}" == "workflow_dispatch" || "${CI_EVENT_NAME}" == "schedule" ]]; then
             # Board-validation payloads must only contain the arch-matching

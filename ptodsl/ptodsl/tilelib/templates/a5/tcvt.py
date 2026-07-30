@@ -10,7 +10,7 @@
 from ptodsl import pto
 from ptodsl._surface_values import unwrap_surface_value, wrap_surface_value
 import ptodsl.tilelib as tilelib
-from mlir.dialects import pto as _pto
+from ptoas.mlir.dialects import pto as _pto
 
 
 def _rowwise(src_shape, src_valid_shape, dst_shape, dst_valid_shape, src_config, dst_config, **_):

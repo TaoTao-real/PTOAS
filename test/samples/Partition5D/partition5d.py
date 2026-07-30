@@ -16,14 +16,14 @@ Scenario from design doc:
 4) tstore writes back to the destination tensor_view
 """
 
-from mlir.ir import (
+from ptoas.mlir.ir import (
     Context,
     Location,
     InsertionPoint,
     Module,
     IndexType,
 )
-from mlir.dialects import arith, func, pto, builtin
+from ptoas.mlir.dialects import arith, func, pto, builtin
 
 
 def idx(val: int):

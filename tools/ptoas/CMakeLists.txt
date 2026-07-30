@@ -6,10 +6,10 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-# Please refer to the License for details. You may not use this file except in compliance with the License.
-# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
-# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
-# See LICENSE in the root of the software repository for the full text of the License.
+# Do not carry toolchain-injected paths, such as a Conda compiler RPATH, into
+# installed Python modules. Distribution builds keep only package-relative
+# RPATHs; editable builds add the external LLVM directory explicitly below.
+set(CMAKE_INSTALL_REMOVE_ENVIRONMENT_RPATH ON)
 
 set(PTOAS_RUNTIME_SOURCES
   ptoas.cpp
@@ -21,18 +21,37 @@ set(PTOAS_RUNTIME_SOURCES
 
 set(PTOAS_WRAPPER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/ptoas_wrapper.py")
 set(PTOAS_WRAPPER_BINARY "${CMAKE_CURRENT_BINARY_DIR}/ptoas")
+set(PTOAS_INSTALL_WRAPPER_BINARY "${CMAKE_CURRENT_BINARY_DIR}/ptoas-install")
 
+set(PTOAS_WRAPPER_PYTHON_ROOT_MODE "absolute")
+set(PTOAS_WRAPPER_PYTHON_ROOT "${CMAKE_BINARY_DIR}/python")
 configure_file(
   "${PTOAS_WRAPPER_SOURCE}"
   "${PTOAS_WRAPPER_BINARY}"
   @ONLY
 )
-file(CHMOD "${PTOAS_WRAPPER_BINARY}"
-  PERMISSIONS
-    OWNER_READ OWNER_WRITE OWNER_EXECUTE
-    GROUP_READ GROUP_EXECUTE
-    WORLD_READ WORLD_EXECUTE
+
+# CMake install prefixes may be overridden at install time. Resolve the
+# installed package relative to bin/ptoas instead of baking in the configure
+# prefix.
+set(PTOAS_WRAPPER_PYTHON_ROOT_MODE "wrapper-relative")
+set(PTOAS_WRAPPER_PYTHON_ROOT "..")
+configure_file(
+  "${PTOAS_WRAPPER_SOURCE}"
+  "${PTOAS_INSTALL_WRAPPER_BINARY}"
+  @ONLY
 )
+
+foreach(_ptoas_wrapper IN ITEMS
+    "${PTOAS_WRAPPER_BINARY}"
+    "${PTOAS_INSTALL_WRAPPER_BINARY}")
+  file(CHMOD "${_ptoas_wrapper}"
+    PERMISSIONS
+      OWNER_READ OWNER_WRITE OWNER_EXECUTE
+      GROUP_READ GROUP_EXECUTE
+      WORLD_READ WORLD_EXECUTE
+  )
+endforeach()
 
 function(ptoas_configure_runtime_target target_name)
   target_compile_definitions(${target_name} PRIVATE
@@ -45,18 +64,12 @@ function(ptoas_configure_runtime_target target_name)
     PTOAS_DEFAULT_TILELANG_PATH="${CMAKE_SOURCE_DIR}/lib/TileOps"
     PTOAS_DEFAULT_TILELANG_PKG_PATH="${CMAKE_SOURCE_DIR}/tilelang-dsl/python"
     PTOAS_DEFAULT_PTODSL_PKG_PATH="${CMAKE_SOURCE_DIR}/ptodsl"
-    ${ARGN}
   )
-  target_link_libraries(${target_name} PRIVATE
-    # === 你的本地库 (请确认 lib/PTO/*/CMakeLists.txt 里的定义名) ===
-    PTOIR            # 替代 MLIRPTODialect
-    PTOTransforms    # 替代 MLIRPTOTransforms
+  target_link_libraries(${target_name} PUBLIC
+    PTOIR
+    PTOTransforms
     ptobc_lib
-
-    # === MLIR 基础设施 ===
-    MLIRMlirOptMain  # [重要] 包含了 main 函数入口逻辑，通常必须链接
-
-    # === MLIR 标准库 ===
+    MLIRMlirOptMain
     MLIRBufferizationTransforms
     MLIRArithTransforms
     MLIRTensorTransforms
@@ -86,53 +99,121 @@ function(ptoas_configure_runtime_target target_name)
   )
 endfunction()
 
-add_library(ptoas_runtime SHARED ${PTOAS_RUNTIME_SOURCES})
-# Keep the shared runtime's compile mode aligned with LLVM/MLIR so RTTI,
-# exceptions, and visibility expectations match the libraries it links to.
-llvm_update_compile_flags(ptoas_runtime)
-set_target_properties(ptoas_runtime PROPERTIES
-  OUTPUT_NAME "ptoas"
-  PREFIX ""
+# Keep the LLVM-based driver sources under LLVM's RTTI/exception compile mode.
+# The pybind11 translation unit must retain the Python extension's normal RTTI
+# and exception mode, so it is compiled by the module target separately.
+add_library(ptoas_runtime_objects OBJECT ${PTOAS_RUNTIME_SOURCES})
+llvm_update_compile_flags(ptoas_runtime_objects)
+ptoas_configure_runtime_target(ptoas_runtime_objects)
+
+# Build the single PTOAS-owned Python extension. It contains both the compiler
+# driver and PTO dialect bindings, while linking MLIR's shared common CAPI so
+# Python-created MLIR objects and the compiler use the same MLIR runtime.
+set(PTOAS_BUILD_PYTHON_PACKAGE_DIR "${CMAKE_BINARY_DIR}/python/ptoas")
+add_mlir_python_extension(PTOASPythonCore _core
+  INSTALL_COMPONENT PTOAS_Python
+  INSTALL_DIR ptoas
+  OUTPUT_DIRECTORY "${PTOAS_BUILD_PYTHON_PACKAGE_DIR}"
+  PYTHON_BINDINGS_LIBRARY pybind11
+  SOURCES
+    NativeModule.cpp
+    "${CMAKE_SOURCE_DIR}/lib/Bindings/Python/PTOModule.cpp"
+  LINK_LIBS
+    ptoas_runtime_objects
+    PTOCAPI
+    PTOASPythonCAPI
 )
-ptoas_configure_runtime_target(ptoas_runtime
-  PTOAS_BUILD_SHARED_LIBRARY=1
+target_compile_definitions(PTOASPythonCore PRIVATE
+  "MLIR_PYTHON_PACKAGE_PREFIX=ptoas.mlir."
+)
+target_include_directories(PTOASPythonCore PRIVATE
+  "${CMAKE_SOURCE_DIR}/lib/Bindings/Python"
+)
+mlir_python_setup_extension_rpath(PTOASPythonCore)
+
+if(APPLE)
+  set_property(TARGET PTOASPythonCore PROPERTY INSTALL_RPATH
+    "@loader_path;@loader_path/mlir/_mlir_libs")
+elseif(UNIX)
+  set_property(TARGET PTOASPythonCore PROPERTY INSTALL_RPATH
+    "$ORIGIN;$ORIGIN/mlir/_mlir_libs")
+endif()
+ptoas_append_editable_llvm_rpath(PTOASPythonCore)
+
+declare_mlir_python_sources(PTOASRuntimePythonSources
+  ROOT_DIR "${CMAKE_SOURCE_DIR}/ptodsl/ptoas"
+  SOURCES_GLOB "*.py"
+)
+add_mlir_python_sources_target(PTOASRuntimePythonSourcesStage
+  OUTPUT_DIRECTORY "${PTOAS_BUILD_PYTHON_PACKAGE_DIR}"
+  SOURCES_TARGETS PTOASRuntimePythonSources
 )
 
-set(PTOAS_BUILD_RUNTIME_STAGING_DIR "${CMAKE_BINARY_DIR}/runtime-staging")
-add_custom_target(ptoas_runtime_staging ALL
-  COMMAND ${CMAKE_COMMAND} -E make_directory
-          "${PTOAS_BUILD_RUNTIME_STAGING_DIR}/lib"
-          "${PTOAS_BUILD_RUNTIME_STAGING_DIR}/share/ptoas"
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-          "$<TARGET_FILE:ptoas_runtime>"
-          "${PTOAS_BUILD_RUNTIME_STAGING_DIR}/lib/ptoas.so"
-  COMMAND ${CMAKE_COMMAND} -E remove_directory
-          "${PTOAS_BUILD_RUNTIME_STAGING_DIR}/share/ptoas/TileOps"
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-          "${CMAKE_SOURCE_DIR}/lib/TileOps"
-          "${PTOAS_BUILD_RUNTIME_STAGING_DIR}/share/ptoas/TileOps"
-  DEPENDS ptoas_runtime
-  COMMENT "Staging ptoas runtime into build/runtime-staging"
-  VERBATIM
+declare_mlir_python_sources(PTOASTileOpsPythonSources
+  ROOT_DIR "${CMAKE_SOURCE_DIR}/lib/TileOps"
+  SOURCES_GLOB "*.py"
+)
+add_mlir_python_sources_target(PTOASTileOpsPythonSourcesStage
+  OUTPUT_DIRECTORY
+  "${PTOAS_BUILD_PYTHON_PACKAGE_DIR}/_runtime/share/ptoas/TileOps"
+  SOURCES_TARGETS PTOASTileOpsPythonSources
 )
 
+add_custom_target(PTOASPythonPackage ALL)
+add_dependencies(PTOASPythonPackage
+  PTOASPythonCore
+  PTOAS_Python
+  PTOASRuntimePythonSourcesStage
+  PTOASTileOpsPythonSourcesStage
+)
 if(TARGET PTODSLPackage)
-  # The build-tree launcher imports ptoas._runtime_entry from build/python.
-  # Keep that package staging coupled to every runtime staging entrypoint,
-  # including partial builds such as tools/ptoas/all.
-  add_dependencies(ptoas_runtime_staging PTODSLPackage)
+  add_dependencies(PTOASPythonPackage PTODSLPackage)
+endif()
+if(TARGET TileLangDSLPackage)
+  add_dependencies(PTOASPythonPackage TileLangDSLPackage)
 endif()
 
 if(TARGET ptoas_runtime_deps)
-  add_dependencies(ptoas_runtime_deps ptoas_runtime_staging)
+  add_dependencies(ptoas_runtime_deps PTOASPythonPackage)
 endif()
 
-install(PROGRAMS "${PTOAS_WRAPPER_BINARY}"
+install(PROGRAMS "${PTOAS_INSTALL_WRAPPER_BINARY}"
   DESTINATION bin
-  COMPONENT PTOAS_Runtime
+  RENAME ptoas
+  COMPONENT PTOAS_CompilerArchive
 )
 
-install(TARGETS ptoas_runtime
-  LIBRARY DESTINATION lib
-  COMPONENT PTOAS_Runtime
+set(PTOAS_ARCHIVE_PYTHON_VERSION_FILE
+    "${CMAKE_CURRENT_BINARY_DIR}/.ptoas-python-version")
+file(WRITE "${PTOAS_ARCHIVE_PYTHON_VERSION_FILE}"
+  "${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}\n")
+install(FILES "${PTOAS_ARCHIVE_PYTHON_VERSION_FILE}"
+  DESTINATION "."
+  COMPONENT PTOAS_CompilerArchive
+)
+
+# The standalone compiler archive is staged by installing PTOAS_Python first
+# and PTOAS_CompilerArchive second into the same prefix. Generate the deploy
+# script so known native entry points come from CMake targets; the script scans
+# only AddMLIRPython's generated extension directory for the remaining modules.
+configure_file(
+  "${CMAKE_SOURCE_DIR}/cmake/RelocatePTOASCompilerArchive.cmake.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/RelocatePTOASCompilerArchive.cmake.in"
+  @ONLY
+)
+file(GENERATE
+  OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/RelocatePTOASCompilerArchive.cmake"
+  INPUT "${CMAKE_CURRENT_BINARY_DIR}/RelocatePTOASCompilerArchive.cmake.in"
+)
+install(SCRIPT
+  "${CMAKE_CURRENT_BINARY_DIR}/RelocatePTOASCompilerArchive.cmake"
+  COMPONENT PTOAS_CompilerArchive
+)
+
+install(
+  DIRECTORY "${CMAKE_SOURCE_DIR}/lib/TileOps"
+  DESTINATION "ptoas/_runtime/share/ptoas"
+  COMPONENT PTOAS_Python
+  PATTERN "__pycache__" EXCLUDE
+  PATTERN "*.pyc" EXCLUDE
 )

@@ -21,7 +21,6 @@ Public API
 ``const_expr(value)``     – trace-time ``if`` escape hatch for AST rewrite
 """
 
-from ._bootstrap import make_context  # noqa: F401
 from ._diagnostics import explicit_mode_required_with_context_error
 from ._runtime_index_ops import coerce_runtime_index
 from ._scalar_coercion import coerce_scalar_to_type
@@ -29,8 +28,8 @@ from ._surface_types import const_expr
 from ._tracing.active import current_session
 from ._surface_values import unwrap_surface_value, wrap_like_surface_value, wrap_surface_value
 
-from mlir.dialects import pto as _pto, scf
-from mlir.ir import InsertionPoint
+from ptoas.mlir.dialects import pto as _pto, scf
+from ptoas.mlir.ir import InsertionPoint
 
 
 # ── vecscope ──────────────────────────────────────────────────────────────────

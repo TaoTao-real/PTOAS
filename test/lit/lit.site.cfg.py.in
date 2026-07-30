@@ -19,7 +19,8 @@ config.lit_tools_dir = "@LLVM_LIT_TOOLS_DIR@"
 config.mlir_obj_dir = "@MLIR_BINARY_DIR@"
 config.mlir_lib_dir = "@MLIR_LIB_DIR@"
 config.python_executable = "@Python3_EXECUTABLE@"
-# config.enable_bindings_python = @MLIR_ENABLE_BINDINGS_PYTHON@
+config.enable_bindings_python = "@PTO_ENABLE_PYTHON_BINDING@" == "ON"
+config.ptoas_python_dir = path(r"@CMAKE_BINARY_DIR@/python")
 config.ptoir_src_root = "@CMAKE_SOURCE_DIR@"
 config.ptoir_obj_root = "@CMAKE_BINARY_DIR@"
 config.pto_enable_vfsim_costmodel = "@PTO_ENABLE_VFSIM_COSTMODEL@" == "ON"

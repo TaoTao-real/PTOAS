@@ -1,0 +1,205 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+# CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
+# Relocate a staged PTOAS compiler archive.  This script intentionally runs at
+# install time: CMake inspects the binaries that are present in the explicit
+# staging prefix, computes their runtime dependency closure, and copies only
+# external dependencies into <prefix>/lib.
+
+# A full developer `cmake --install` keeps the normal install-tree contract.
+# Relocation is an explicit archive-staging operation selected with
+# `--component PTOAS_CompilerArchive`.
+if(NOT CMAKE_INSTALL_COMPONENT STREQUAL "PTOAS_CompilerArchive")
+  return()
+endif()
+
+set(_ptoas_archive_root "${CMAKE_INSTALL_PREFIX}")
+set(_ptoas_package_root "${_ptoas_archive_root}/ptoas")
+set(_ptoas_mlir_lib_root "${_ptoas_package_root}/mlir/_mlir_libs")
+set(_ptoas_external_lib_root "${_ptoas_archive_root}/lib")
+
+if(NOT EXISTS "${_ptoas_package_root}/_cli.py")
+  message(FATAL_ERROR
+    "PTOAS compiler archive is missing ptoas/_cli.py under ${_ptoas_archive_root}; "
+    "install component PTOAS_Python before PTOAS_CompilerArchive")
+endif()
+
+set(_ptoas_known_native_files
+  "${_ptoas_package_root}/$<TARGET_FILE_NAME:PTOASPythonCore>"
+  "${_ptoas_mlir_lib_root}/$<TARGET_FILE_NAME:PTOASPythonCAPI>"
+)
+foreach(_ptoas_native IN LISTS _ptoas_known_native_files)
+  if(NOT EXISTS "${_ptoas_native}")
+    message(FATAL_ERROR
+      "PTOAS compiler archive is missing native entry point ${_ptoas_native}; "
+      "install component PTOAS_Python before PTOAS_CompilerArchive")
+  endif()
+endforeach()
+
+# AddMLIRPython owns the concrete module target list. Treat its installed
+# extension directory as the plugin boundary, as opposed to scanning the
+# complete archive tree for arbitrary shared libraries.
+file(GLOB _ptoas_generated_native_files LIST_DIRECTORIES FALSE
+  "${_ptoas_mlir_lib_root}/*.so"
+  "${_ptoas_mlir_lib_root}/*.so.*"
+  "${_ptoas_mlir_lib_root}/*.dylib")
+set(_ptoas_archive_native_files
+  ${_ptoas_known_native_files}
+  ${_ptoas_generated_native_files})
+list(REMOVE_DUPLICATES _ptoas_archive_native_files)
+if(NOT _ptoas_generated_native_files)
+  message(FATAL_ERROR
+    "PTOAS compiler archive contains no MLIR native modules under "
+    "${_ptoas_mlir_lib_root}; "
+    "install component PTOAS_Python before PTOAS_CompilerArchive")
+endif()
+
+file(MAKE_DIRECTORY "${_ptoas_external_lib_root}")
+
+# CMake's DIRECTORIES argument to GET_RUNTIME_DEPENDENCIES has no effect on
+# Apple platforms, so it cannot resolve LLVM's @rpath dependencies from an
+# external build tree.  Let delocate perform both dependency discovery and
+# Mach-O install-name relocation, just as it does for the macOS wheel.
+if(APPLE)
+  find_program(_ptoas_delocate_path NAMES delocate-path REQUIRED)
+  set(_ptoas_dyld_library_path "@LLVM_BUILD_LIBRARY_DIR@")
+  if(DEFINED ENV{DYLD_LIBRARY_PATH}
+      AND NOT "$ENV{DYLD_LIBRARY_PATH}" STREQUAL "")
+    string(APPEND _ptoas_dyld_library_path ":$ENV{DYLD_LIBRARY_PATH}")
+  endif()
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E env
+            "DYLD_LIBRARY_PATH=${_ptoas_dyld_library_path}"
+            "${_ptoas_delocate_path}"
+            --dylibs-only
+            --lib-path "${_ptoas_external_lib_root}"
+            "${_ptoas_package_root}"
+    RESULT_VARIABLE _ptoas_delocate_result
+    COMMAND_ECHO STDOUT)
+  if(NOT _ptoas_delocate_result EQUAL 0)
+    message(FATAL_ERROR "delocate-path failed for PTOAS compiler archive")
+  endif()
+  return()
+endif()
+
+set(_ptoas_dependency_search_dirs
+  "${_ptoas_mlir_lib_root}"
+  "${_ptoas_archive_root}/lib"
+  "@LLVM_BUILD_LIBRARY_DIR@")
+
+file(GET_RUNTIME_DEPENDENCIES
+  LIBRARIES ${_ptoas_archive_native_files}
+  DIRECTORIES ${_ptoas_dependency_search_dirs}
+  RESOLVED_DEPENDENCIES_VAR _ptoas_resolved_dependencies
+  UNRESOLVED_DEPENDENCIES_VAR _ptoas_unresolved_dependencies
+  CONFLICTING_DEPENDENCIES_PREFIX _ptoas_conflicting_dependencies
+  POST_EXCLUDE_REGEXES
+    "^/lib/.*"
+    "^/lib64/.*"
+    "^/usr/lib/.*"
+    "^/usr/lib64/.*"
+    "^/System/Library/.*")
+
+if(_ptoas_unresolved_dependencies)
+  list(JOIN _ptoas_unresolved_dependencies "\n  " _ptoas_unresolved_text)
+  message(FATAL_ERROR
+    "Unresolved PTOAS compiler archive dependencies:\n  ${_ptoas_unresolved_text}")
+endif()
+
+# A basename collision is harmless only when every candidate has identical
+# contents. Otherwise flattening the dependency closure into lib/ would make
+# the selected ABI depend on search order.
+foreach(_ptoas_conflicting_name IN LISTS
+    _ptoas_conflicting_dependencies_FILENAMES)
+  set(_ptoas_conflicting_paths_var
+      "_ptoas_conflicting_dependencies_${_ptoas_conflicting_name}")
+  set(_ptoas_conflicting_paths ${${_ptoas_conflicting_paths_var}})
+  list(GET _ptoas_conflicting_paths 0 _ptoas_selected_dependency)
+  file(SHA256 "${_ptoas_selected_dependency}" _ptoas_selected_sha256)
+  set(_ptoas_conflict_is_identical TRUE)
+  foreach(_ptoas_conflicting_path IN LISTS _ptoas_conflicting_paths)
+    file(SHA256 "${_ptoas_conflicting_path}" _ptoas_conflicting_sha256)
+    if(NOT _ptoas_conflicting_sha256 STREQUAL _ptoas_selected_sha256)
+      set(_ptoas_conflict_is_identical FALSE)
+      break()
+    endif()
+  endforeach()
+
+  if(NOT _ptoas_conflict_is_identical)
+    list(JOIN _ptoas_conflicting_paths "\n  " _ptoas_conflicting_text)
+    message(FATAL_ERROR
+      "Conflicting PTOAS compiler archive dependency "
+      "${_ptoas_conflicting_name}:\n  ${_ptoas_conflicting_text}")
+  endif()
+  list(APPEND _ptoas_resolved_dependencies "${_ptoas_selected_dependency}")
+endforeach()
+list(REMOVE_DUPLICATES _ptoas_resolved_dependencies)
+
+foreach(_ptoas_dependency IN LISTS _ptoas_resolved_dependencies)
+  file(REAL_PATH "${_ptoas_dependency}" _ptoas_dependency_real)
+  string(FIND "${_ptoas_dependency_real}" "${_ptoas_archive_root}/" _ptoas_is_staged)
+  if(_ptoas_is_staged EQUAL 0)
+    continue()
+  endif()
+
+  get_filename_component(_ptoas_dependency_name "${_ptoas_dependency_real}" NAME)
+  if(_ptoas_dependency_name MATCHES "^libPTOASPythonCAPI")
+    continue()
+  endif()
+  file(INSTALL "${_ptoas_dependency}"
+    DESTINATION "${_ptoas_external_lib_root}"
+    TYPE SHARED_LIBRARY
+    FOLLOW_SYMLINK_CHAIN)
+endforeach()
+
+if(UNIX)
+  find_program(_ptoas_patchelf NAMES patchelf REQUIRED)
+
+  function(_ptoas_origin_relative_rpath _ptoas_output _ptoas_from _ptoas_to)
+    file(RELATIVE_PATH _ptoas_relative_path "${_ptoas_from}" "${_ptoas_to}")
+    if(_ptoas_relative_path STREQUAL "")
+      set(_ptoas_rpath "$ORIGIN")
+    else()
+      set(_ptoas_rpath "$ORIGIN/${_ptoas_relative_path}")
+    endif()
+    set(${_ptoas_output} "${_ptoas_rpath}" PARENT_SCOPE)
+  endfunction()
+
+  foreach(_ptoas_native IN LISTS _ptoas_archive_native_files)
+    if(IS_SYMLINK "${_ptoas_native}")
+      continue()
+    endif()
+    get_filename_component(_ptoas_native_dir "${_ptoas_native}" DIRECTORY)
+    _ptoas_origin_relative_rpath(
+      _ptoas_mlir_lib_rpath "${_ptoas_native_dir}" "${_ptoas_mlir_lib_root}")
+    _ptoas_origin_relative_rpath(
+      _ptoas_external_lib_rpath "${_ptoas_native_dir}" "${_ptoas_external_lib_root}")
+    set(_ptoas_native_rpaths
+      "$ORIGIN"
+      "${_ptoas_mlir_lib_rpath}"
+      "${_ptoas_external_lib_rpath}")
+    list(REMOVE_DUPLICATES _ptoas_native_rpaths)
+    list(JOIN _ptoas_native_rpaths ":" _ptoas_native_rpath)
+    execute_process(
+      COMMAND "${_ptoas_patchelf}" --set-rpath "${_ptoas_native_rpath}"
+              "${_ptoas_native}"
+      COMMAND_ERROR_IS_FATAL ANY)
+  endforeach()
+
+  file(GLOB _ptoas_external_libraries LIST_DIRECTORIES FALSE
+    "${_ptoas_external_lib_root}/*.so"
+    "${_ptoas_external_lib_root}/*.so.*")
+  foreach(_ptoas_library IN LISTS _ptoas_external_libraries)
+    if(IS_SYMLINK "${_ptoas_library}")
+      continue()
+    endif()
+    execute_process(
+      COMMAND "${_ptoas_patchelf}" --set-rpath "$ORIGIN" "${_ptoas_library}"
+      COMMAND_ERROR_IS_FATAL ANY)
+  endforeach()
+endif()

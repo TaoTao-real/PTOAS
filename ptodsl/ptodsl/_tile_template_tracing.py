@@ -58,8 +58,8 @@ from ._types import (
     vreg_type as _vreg_type,
 )
 
-from mlir.dialects import arith, pto as _pto, scf
-from mlir.ir import InsertionPoint, IntegerType, Type
+from ptoas.mlir.dialects import arith, pto as _pto, scf
+from ptoas.mlir.ir import InsertionPoint, IntegerType, Type
 
 
 @dataclass(frozen=True)

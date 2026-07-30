@@ -12,22 +12,40 @@
 from __future__ import annotations
 
 import argparse
+import importlib.machinery
 import zipfile
 from pathlib import Path
 
 
 REQUIRED_FILES = {
-    "ptoas_wheel_bootstrap.py",
     "ptoas/__init__.py",
-    "ptoas/_launcher.py",
-    "ptoas/_runtime_entry.py",
-    "ptoas/_runtime/lib/ptoas.so",
+    "ptoas/_cli.py",
+    "ptoas/_runtime/share/ptoas/TileOps/__init__.py",
+    "ptoas/mlir/ir.py",
+    "ptoas/mlir/dialects/pto.py",
 }
 FORBIDDEN_FILES = {
     "ptoas/_runtime/bin/ptoas",
 }
-PTOAS_ENTRYPOINT_TARGET = "ptoas_wheel_bootstrap:main"
+PTOAS_ENTRYPOINT_TARGET = "ptoas._cli:main"
 WHEEL_GLOB = "ptoas*.whl"
+NATIVE_MODULE_PATHS = {
+    f"ptoas/_core{suffix}"
+    for suffix in importlib.machinery.EXTENSION_SUFFIXES
+}
+MLIR_NATIVE_MODULE_PREFIX = "ptoas/mlir/_mlir_libs/"
+COMMON_CAPI_LIBRARY_PATHS = {
+    f"{MLIR_NATIVE_MODULE_PREFIX}libPTOASPythonCAPI{suffix}"
+    for suffix in (".so", ".dylib")
+}
+MLIR_NATIVE_MODULE_PATHS = {
+    f"{MLIR_NATIVE_MODULE_PREFIX}_mlir{suffix}"
+    for suffix in importlib.machinery.EXTENSION_SUFFIXES
+}
+SITE_INITIALIZER_PATHS = {
+    f"{MLIR_NATIVE_MODULE_PREFIX}_site_initialize_0{suffix}"
+    for suffix in importlib.machinery.EXTENSION_SUFFIXES
+}
 
 
 def _resolve_wheel(candidate: str) -> Path:
@@ -83,6 +101,41 @@ def validate_wheel_payload(wheel: Path) -> None:
         if missing:
             raise SystemExit(f"wheel is missing required payload files: {missing}")
 
+        native_modules = sorted(NATIVE_MODULE_PATHS & names)
+        if len(native_modules) != 1:
+            raise SystemExit(
+                "wheel must contain exactly one importable ptoas._core extension, "
+                f"found {native_modules}"
+            )
+
+        mlir_native_modules = sorted(MLIR_NATIVE_MODULE_PATHS & names)
+        if len(mlir_native_modules) != 1:
+            raise SystemExit(
+                "wheel must contain exactly one ptoas-owned MLIR native module, "
+                f"found {mlir_native_modules}"
+            )
+
+        common_capi_libraries = sorted(COMMON_CAPI_LIBRARY_PATHS & names)
+        if len(common_capi_libraries) != 1:
+            raise SystemExit(
+                "wheel must contain exactly one PTOAS MLIR common CAPI library, "
+                f"found {common_capi_libraries}"
+            )
+
+        site_initializers = sorted(SITE_INITIALIZER_PATHS & names)
+        if len(site_initializers) != 1:
+            raise SystemExit(
+                "wheel must contain exactly one PTOAS MLIR site initializer, "
+                f"found {site_initializers}"
+            )
+
+        top_level_mlir = sorted(name for name in names if name.startswith("mlir/"))
+        if top_level_mlir:
+            raise SystemExit(
+                "wheel must not install a top-level mlir package; "
+                f"found {top_level_mlir[:10]}"
+            )
+
         present_forbidden = sorted(FORBIDDEN_FILES & names)
         if present_forbidden:
             raise SystemExit(
@@ -107,7 +160,7 @@ def validate_wheel_payload(wheel: Path) -> None:
         if console_scripts.get("ptoas") != PTOAS_ENTRYPOINT_TARGET:
             raise SystemExit(
                 "wheel entry points do not route ptoas through "
-                "ptoas_wheel_bootstrap:main"
+                f"{PTOAS_ENTRYPOINT_TARGET}"
             )
 
 

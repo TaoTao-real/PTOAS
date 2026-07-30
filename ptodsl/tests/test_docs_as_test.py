@@ -14,7 +14,6 @@ from typing import Iterable, Optional
 import json
 import linecache
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -24,9 +23,10 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parents[2]
 USER_GUIDE_ROOT = REPO_ROOT / "ptodsl" / "docs" / "user_guide"
 from ptodsl import pto, scalar
-from ptodsl._bootstrap import make_context
+from ptodsl._context import make_context
 from ptodsl._runtime.launch import LaunchHandle, _marshal_launch_args
-from mlir.ir import Module
+from ptodsl._runtime.toolchain import resolve_ptoas_binary
+from ptoas.mlir.ir import Module
 from support.docs_fragment_fixtures import FRAGMENT_FIXTURES, render_fragment_fixture
 
 FENCE_RE = re.compile(r"^```(?P<lang>[A-Za-z0-9_+-]*)\s*$")
@@ -129,22 +129,6 @@ def find_block_metadata(path: Path, lines: list[str], fence_line: int) -> Option
 
 def block_label(block: MarkdownCodeBlock, symbol: Optional[str] = None) -> str:
     return format_doc_context(block.path, block.start_line, symbol)
-
-
-def resolve_ptoas_binary() -> Path:
-    candidates = [
-        REPO_ROOT / "build" / "tools" / "ptoas" / "ptoas",
-        REPO_ROOT / "install" / "bin" / "ptoas",
-    ]
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-
-    from_path = shutil.which("ptoas")
-    if from_path:
-        return Path(from_path)
-
-    raise FileNotFoundError("unable to locate a ptoas binary under build/, install/, or PATH")
 
 
 def expect_parse_roundtrip_and_verify(text: str, label: str) -> None:

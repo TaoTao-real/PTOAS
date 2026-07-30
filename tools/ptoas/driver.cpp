@@ -1284,12 +1284,6 @@ static int runPTOASDriver(int argc, char **argv) {
   return 1;
 }
 
-extern "C" int ptoas_entrypoint(int argc, char **argv) {
+int mlir::pto::runPTOAS(int argc, char **argv) {
   return runPTOASDriver(argc, argv);
 }
-
-#ifndef PTOAS_BUILD_SHARED_LIBRARY
-int main(int argc, char **argv) {
-  return runPTOASDriver(argc, argv);
-}
-#endif

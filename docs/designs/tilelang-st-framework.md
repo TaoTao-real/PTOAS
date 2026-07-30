@@ -140,15 +140,17 @@ test/tilelang_st/
 
 运行 TileLang ST 之前，建议先确认下面几件事：
 
-- 仓库里的 `ptoas` 已经编出来，默认路径是 `build/tools/ptoas/ptoas`
+- `ptoas` 已经通过 `./quick_install.sh` 或 `pip install -e . --no-build-isolation`
+  安装到当前 Python 环境
 - `ASCEND_HOME_PATH` 已经设置正确
-- 如果需要手工跑 `ptoas`、`bisheng` 或 lit，优先先执行：
+- 如果需要 simulator、NPU 或 `bisheng`，再加载 CANN 环境：
 
 ```bash
-source scripts/ptoas_env.sh
+source "${ASCEND_HOME_PATH}/bin/setenv.bash"
 ```
 
-`run_st.py` 会在运行时补充 simulator / NPU 相关环境，但它不会替你构建 `ptoas`。
+`run_st.py` 会优先使用 `PTOAS_BIN`，否则使用当前 `PATH` 中由 pip
+安装的 `ptoas`。它不会替你构建或安装 PTOAS。
 
 ### 5.1 运行已有 testcase
 

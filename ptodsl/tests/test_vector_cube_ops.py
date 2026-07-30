@@ -13,9 +13,9 @@ from unittest.mock import MagicMock, call, patch
 
 import ptodsl._ops as _ops
 import ptodsl._pipe_namespace as _pipe_namespace
-from ptodsl._bootstrap import make_context
+from ptodsl._context import make_context
 from ptodsl import pto
-from mlir.ir import F32Type
+from ptoas.mlir.ir import F32Type
 def _identity(value):
     return value
 

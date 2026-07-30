@@ -10,8 +10,8 @@ name: Build Wheel
 
 on:
   push:
-    tags-ignore:
-      - '**'
+    branches:
+      - main
   pull_request:
   # Nightly build & publish (UTC time).
   schedule:
@@ -29,7 +29,11 @@ on:
     types: [prereleased, released]
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: build-wheel-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
 
 env:
   LLVM_REPO: https://github.com/vpto-dev/llvm-project.git
@@ -41,7 +45,7 @@ jobs:
     if: github.event_name != 'release' || startsWith(github.ref_name, 'v') || startsWith(github.ref_name, 'ptoas-v')
     # Non-release runs keep a single-Python matrix for faster gates;
     # release/nightly runs fan out to publish the full wheel set plus binary artifacts.
-    name: Build ptoas-bin (${{ matrix.arch }}, py${{ matrix.python }})
+    name: Build ptoas wheel (${{ matrix.arch }}, py${{ matrix.python }})
     runs-on: ${{ matrix.arch == 'x86_64' && 'ubuntu-latest' || 'ubuntu-24.04-arm' }}
     strategy:
       fail-fast: false
@@ -59,34 +63,47 @@ jobs:
       - name: Set Python version
         run: |
           case "${{ matrix.python }}" in
-            "3.9")  PY_VER="cp39-cp39" ;;
             "3.10") PY_VER="cp310-cp310" ;;
             "3.11") PY_VER="cp311-cp311" ;;
             "3.12") PY_VER="cp312-cp312" ;;
-            *)      PY_VER="cp311-cp311" ;;
+            *)
+              echo "Unsupported Python version: ${{ matrix.python }}" >&2
+              exit 1
+              ;;
           esac
           echo "PY_VER=$PY_VER" >> $GITHUB_ENV
           echo "PY_PATH=/opt/python/$PY_VER" >> $GITHUB_ENV
+          echo "/opt/python/$PY_VER/bin" >> $GITHUB_PATH
 
-      - name: Compute PTOAS CLI version
+      - name: Install system dependencies
+        run: |
+          dnf install -y ninja-build cmake git ccache gcc-c++ lld zip binutils patchelf chrpath
+          dnf clean all
+
+      - name: Install Python dependencies
+        run: |
+          # LLVM/MLIR Python bindings are not yet compatible with pybind11 3.x
+          # (see pybind11 static_assert on def_property + keep_alive).
+          pip install --no-cache-dir numpy 'pybind11<3' nanobind 'scikit-build-core>=0.12.2,<2' auditwheel
+
+      - name: Resolve PTOAS distribution version
         run: |
           if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
             case "${GITHUB_REF_NAME}" in
               vmi-v*)
-                EXPECTED_RELEASE_VERSION="$(${PY_PATH}/bin/python .github/scripts/compute_vmi_version.py \
-                  --check-tag "${GITHUB_REF_NAME}")"
+                EXPECTED_RELEASE_VERSION="$(python packaging/ptoas-vmi/prepare_source.py --print-version)"
                 PTOAS_VERSION="${GITHUB_REF_NAME#vmi-v}"
                 PTOAS_CLI_VERSION="vmi ${PTOAS_VERSION}"
                 PTOAS_PYTHON_PACKAGE_NAME="ptoas-vmi"
                 ;;
               ptoas-v*)
-                EXPECTED_RELEASE_VERSION="$(${PY_PATH}/bin/python .github/scripts/compute_ptoas_version.py --mode release)"
+                EXPECTED_RELEASE_VERSION="$(python .github/scripts/compute_ptoas_version.py --mode release)"
                 PTOAS_VERSION="${GITHUB_REF_NAME#ptoas-v}"
                 PTOAS_CLI_VERSION="${PTOAS_VERSION}"
                 PTOAS_PYTHON_PACKAGE_NAME="ptoas"
                 ;;
               v*)
-                EXPECTED_RELEASE_VERSION="$(${PY_PATH}/bin/python .github/scripts/compute_ptoas_version.py --mode release)"
+                EXPECTED_RELEASE_VERSION="$(python .github/scripts/compute_ptoas_version.py --mode release)"
                 PTOAS_VERSION="${GITHUB_REF_NAME#v}"
                 PTOAS_CLI_VERSION="${PTOAS_VERSION}"
                 PTOAS_PYTHON_PACKAGE_NAME="ptoas"
@@ -97,19 +114,19 @@ jobs:
                 ;;
             esac
             if [ "${PTOAS_VERSION}" != "${EXPECTED_RELEASE_VERSION}" ]; then
-              echo "release tag '${GITHUB_REF_NAME}' does not match computed version '${EXPECTED_RELEASE_VERSION}'" >&2
+              echo "release tag '${GITHUB_REF_NAME}' does not match project version '${EXPECTED_RELEASE_VERSION}'" >&2
               exit 1
             fi
           elif [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ "${{ inputs.release_kind }}" = "vmi" ]; then
-            PTOAS_VERSION="$(${PY_PATH}/bin/python .github/scripts/compute_vmi_version.py)"
+            PTOAS_VERSION="$(python packaging/ptoas-vmi/prepare_source.py --print-version)"
             PTOAS_CLI_VERSION="vmi ${PTOAS_VERSION}"
             PTOAS_PYTHON_PACKAGE_NAME="ptoas-vmi"
           elif [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            PTOAS_VERSION="$(${PY_PATH}/bin/python .github/scripts/compute_ptoas_version.py --mode release)"
+            PTOAS_VERSION="$(python .github/scripts/compute_ptoas_version.py --mode release)"
             PTOAS_CLI_VERSION="${PTOAS_VERSION}"
             PTOAS_PYTHON_PACKAGE_NAME="ptoas"
           else
-            PTOAS_VERSION="$(${PY_PATH}/bin/python .github/scripts/compute_ptoas_version.py --mode dev)"
+            PTOAS_VERSION="$(python .github/scripts/compute_ptoas_version.py --mode dev)"
             PTOAS_CLI_VERSION="${PTOAS_VERSION}"
             PTOAS_PYTHON_PACKAGE_NAME="ptoas"
           fi
@@ -120,22 +137,9 @@ jobs:
           echo "Using PTOAS wheel version: ${PTOAS_VERSION}"
           echo "Using PTOAS Python package name: ${PTOAS_PYTHON_PACKAGE_NAME}"
 
-      - name: Install system dependencies
+      - name: Validate PEP 517 project metadata
         run: |
-          dnf install -y ninja-build cmake git ccache gcc-c++ lld zip binutils patchelf chrpath
-          dnf clean all
-
-      - name: Install Python dependencies
-        run: |
-          export PATH="${PY_PATH}/bin:$PATH"
-          # LLVM/MLIR Python bindings are not yet compatible with pybind11 3.x
-          # (see pybind11 static_assert on def_property + keep_alive).
-          pip install --no-cache-dir numpy 'pybind11<3' nanobind setuptools wheel auditwheel
-
-      - name: Test PEP 517 build backend
-        run: |
-          export PATH="${PY_PATH}/bin:$PATH"
-          PYTHONPATH="$GITHUB_WORKSPACE" python test/python/test_ptoas_build_backend.py
+          python -m scikit_build_core.build project-table
 
       - name: Set build directories
         run: |
@@ -144,7 +148,6 @@ jobs:
           echo "LLVM_BUILD_DIR=/llvm-workspace/llvm-project/build-release" >> $GITHUB_ENV
           echo "PTO_SOURCE_DIR=$GITHUB_WORKSPACE" >> $GITHUB_ENV
           echo "PTO_BUILD_DIR=$GITHUB_WORKSPACE/build-release" >> $GITHUB_ENV
-          echo "PTO_INSTALL_DIR=$GITHUB_WORKSPACE/install-release" >> $GITHUB_ENV
 
       - name: Resolve LLVM source SHA
         id: llvm-source
@@ -172,21 +175,12 @@ jobs:
             git remote add origin "${LLVM_REPO}"
           fi
           git remote set-url origin "${LLVM_REPO}"
-          git fetch --depth 1 origin "${LLVM_REF}"
-          git checkout --force FETCH_HEAD
-
-      - name: Warn when default-branch cache is missing for PR/release runs
-        if: steps.cache-llvm.outputs.cache-hit != 'true' && (github.event_name == 'pull_request' || github.event_name == 'release')
-        run: |
-          echo "LLVM cache miss while running on PR/release."
-          echo "PR/release runs are cache-consumers only and should reuse cache generated on the default branch."
-          echo "Please run this workflow on the default branch first to populate cache key:"
-          echo "llvm-${{ steps.llvm-source.outputs.sha }}-manylinux_2_34-${{ matrix.arch }}-${{ matrix.python }}-${{ env.LLVM_CACHE_FLAVOR }}"
+          git fetch --depth 1 origin "${{ steps.llvm-source.outputs.sha }}"
+          git checkout --force "${{ steps.llvm-source.outputs.sha }}"
 
       - name: Build LLVM/MLIR
         if: steps.cache-llvm.outputs.cache-hit != 'true'
         run: |
-          export PATH="${PY_PATH}/bin:$PATH"
           cd $LLVM_SOURCE_DIR
           cmake -C "$PTO_SOURCE_DIR/cmake/LinuxHardeningCache.cmake" -G Ninja -S llvm -B $LLVM_BUILD_DIR \
             -DLLVM_ENABLE_PROJECTS="mlir;clang" \
@@ -203,8 +197,7 @@ jobs:
 
       # Upload cache immediately after the build step to avoid later steps polluting the release build tree.
       - name: Save LLVM cache
-        # Allow cache writes except for PR/release runs to avoid duplicated tag/merge caches.
-        if: steps.cache-llvm.outputs.cache-hit != 'true' && github.event_name != 'pull_request' && github.event_name != 'release'
+        if: steps.cache-llvm.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: /llvm-workspace/llvm-project/build-release
@@ -214,45 +207,39 @@ jobs:
         env:
           CMAKE_BUILD_PARALLEL_LEVEL: "2"
         run: |
-          export PATH="${PY_PATH}/bin:$PATH"
-          PTOAS_RELEASE_VERSION_OVERRIDE="${PTOAS_CLI_VERSION}" \
-          pip install . --no-build-isolation
-
-      - name: Create Python wheel
-        if: github.event_name == 'release' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-        run: |
-          export PATH="${PY_PATH}/bin:$PATH"
-          export PTOAS_PYTHON_PACKAGE_NAME="${PTOAS_PYTHON_PACKAGE_NAME}"
-          export PTOAS_PYTHON_PACKAGE_VERSION="${PTOAS_VERSION}"
-          bash $PTO_SOURCE_DIR/docker/create_wheel.sh
+          if [ "${PTOAS_PYTHON_PACKAGE_NAME}" = "ptoas-vmi" ]; then
+            PTOAS_WHEEL_SOURCE_DIR="${PTO_SOURCE_DIR}/.work/ptoas-vmi-source"
+            python packaging/ptoas-vmi/prepare_source.py \
+              --output-dir "${PTOAS_WHEEL_SOURCE_DIR}"
+          else
+            PTOAS_WHEEL_SOURCE_DIR="${PTO_SOURCE_DIR}"
+          fi
+          rm -rf "${PTO_SOURCE_DIR}/build/wheel-dist"
+          mkdir -p "${PTO_SOURCE_DIR}/build/wheel-dist"
+          SKBUILD_BUILD_DIR="${PTO_BUILD_DIR}" \
+            python -m pip wheel "${PTOAS_WHEEL_SOURCE_DIR}" \
+              --no-build-isolation --no-deps \
+              --wheel-dir "${PTO_SOURCE_DIR}/build/wheel-dist"
 
       - name: Validate wheel payload and launcher contract
-        if: github.event_name == 'release' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
-          export PATH="${PY_PATH}/bin:$PATH"
           python "$PTO_SOURCE_DIR/docker/validate_wheel_payload.py" "$PTO_SOURCE_DIR/build/wheel-dist"
 
       - name: Repair wheel with auditwheel
-        if: github.event_name == 'release' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
-          export PATH="${PY_PATH}/bin:$PATH"
           export PTO_WHEEL_DIST_DIR=$PTO_SOURCE_DIR/build/wheel-dist
           export PTO_WHEELHOUSE=$GITHUB_WORKSPACE/wheelhouse
-          export LD_LIBRARY_PATH=$LLVM_BUILD_DIR/lib:$PTO_INSTALL_DIR/lib:$LD_LIBRARY_PATH
           mkdir -p "$PTO_WHEELHOUSE"
+          # The raw wheel intentionally keeps package-relative RPATHs. Give
+          # auditwheel the external LLVM build only while resolving and
+          # bundling its shared dependencies.
+          export LD_LIBRARY_PATH="${LLVM_BUILD_DIR}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
           auditwheel repair --plat manylinux_2_34_${{ matrix.arch }} "$PTO_WHEEL_DIST_DIR"/ptoas*.whl -w "$PTO_WHEELHOUSE"
 
       - name: Test wheel installation
-        if: github.event_name == 'release' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: |
-          export PATH="${PY_PATH}/bin:$PATH"
-          pip install $GITHUB_WORKSPACE/wheelhouse/ptoas*.whl
-          bash $PTO_SOURCE_DIR/docker/test_wheel_imports.sh
-
-      - name: Test ptoas CLI
-        run: |
-          export PATH="${PY_PATH}/bin:$PATH"
-          bash $PTO_SOURCE_DIR/docker/test_ptoas_cli.sh
+          PTO_TEST_WHEEL_PATH="$GITHUB_WORKSPACE/wheelhouse/ptoas*.whl" \
+            bash $PTO_SOURCE_DIR/docker/test_wheel_imports.sh
 
       - name: Upload wheel artifact
         if: github.event_name == 'release' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -264,7 +251,13 @@ jobs:
       - name: Collect ptoas binary and dependencies
         if: matrix.python == '3.11'
         run: |
-          bash $PTO_SOURCE_DIR/docker/collect_ptoas_dist.sh $GITHUB_WORKSPACE/ptoas-dist
+          rm -rf "$GITHUB_WORKSPACE/ptoas-dist"
+          cmake --install "${PTO_BUILD_DIR}" \
+            --prefix "$GITHUB_WORKSPACE/ptoas-dist" \
+            --component PTOAS_Python
+          cmake --install "${PTO_BUILD_DIR}" \
+            --prefix "$GITHUB_WORKSPACE/ptoas-dist" \
+            --component PTOAS_CompilerArchive
 
       - name: Archive ptoas binary artifact
         if: matrix.python == '3.11'
@@ -272,6 +265,31 @@ jobs:
           chmod +x "$GITHUB_WORKSPACE/ptoas-dist/bin/ptoas"
           tar -czf "$GITHUB_WORKSPACE/ptoas-bin-${{ matrix.arch }}.tar.gz" \
             -C "$GITHUB_WORKSPACE/ptoas-dist" .
+
+      - name: Smoke test archived ptoas binary artifact
+        if: matrix.python == '3.11'
+        run: |
+          TEST_DIR="$RUNNER_TEMP/ptoas-dist-smoke-${{ matrix.arch }}"
+          rm -rf "$TEST_DIR"
+          mkdir -p "$TEST_DIR/extracted"
+          tar -xzf "$GITHUB_WORKSPACE/ptoas-bin-${{ matrix.arch }}.tar.gz" \
+            -C "$TEST_DIR/extracted"
+
+          test -x "$TEST_DIR/extracted/bin/ptoas"
+          test -f "$TEST_DIR/extracted/ptoas/_cli.py"
+          test -f "$TEST_DIR/extracted/ptoas/mlir/ir.py"
+          test -f "$TEST_DIR/extracted/ptodsl/__init__.py"
+          test -f "$TEST_DIR/extracted/tilelang_dsl/__init__.py"
+          test -d "$TEST_DIR/extracted/share/ptoas/TileOps"
+          test "$(cat "$TEST_DIR/extracted/.ptoas-python-version")" = "3.11"
+          compgen -G "$TEST_DIR/extracted/ptoas/_core*.so" >/dev/null
+
+          env -u PYTHONPATH -u DYLD_LIBRARY_PATH -u LD_LIBRARY_PATH \
+            "$TEST_DIR/extracted/bin/ptoas" --version
+          env -u PYTHONPATH -u DYLD_LIBRARY_PATH -u LD_LIBRARY_PATH \
+            "$TEST_DIR/extracted/bin/ptoas" \
+            "$PTO_SOURCE_DIR/test/lit/pto/kernel_kind_vector_scf_while_emitc.pto" \
+            >/dev/null
 
       - name: Upload ptoas binary artifact
         if: matrix.python == '3.11'
@@ -285,6 +303,8 @@ jobs:
     if: (github.event_name == 'release' && (startsWith(github.ref_name, 'v') || startsWith(github.ref_name, 'ptoas-v'))) || github.event_name == 'schedule'
     needs: build_wheel
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Compute release metadata
@@ -375,6 +395,8 @@ jobs:
     if: github.event_name == 'release' && github.event.action == 'released' && (startsWith(github.ref_name, 'ptoas-v') || (startsWith(github.ref_name, 'v') && !startsWith(github.ref_name, 'vmi-v')))
     needs: upload_release_assets
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout default branch
@@ -401,37 +423,4 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add CMakeLists.txt
           git commit -m "chore(release): bump base version to v${{ steps.bump.outputs.next_base_version }}"
-          git push origin HEAD:${{ github.event.repository.default_branch }}
-
-  bump_vmi_version:
-    name: Bump VMI version after release
-    if: github.event_name == 'release' && github.event.action == 'released' && startsWith(github.ref_name, 'vmi-v')
-    needs: upload_release_assets
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout default branch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-
-      - name: Update VMI version
-        id: bump
-        run: |
-          next_vmi_version="$(python3 .github/scripts/update_vmi_version.py \
-            --version "${GITHUB_REF_NAME}" \
-            --next)"
-          echo "next_vmi_version=${next_vmi_version}" >> "$GITHUB_OUTPUT"
-
-      - name: Commit version bump
-        run: |
-          if git diff --quiet -- CMakeLists.txt; then
-            echo "CMakeLists.txt already matches the next VMI version."
-            exit 0
-          fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add CMakeLists.txt
-          git commit -m "chore(release): bump VMI version to v${{ steps.bump.outputs.next_vmi_version }}"
           git push origin HEAD:${{ github.event.repository.default_branch }}

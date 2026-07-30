@@ -17,7 +17,7 @@ Note: int8 tiles require Cols*sizeof(T) to be a multiple of 32 bytes
 (the NPU aligned-size). At 1 byte/element that means Cols >= 32.
 """
 
-from mlir.ir import (
+from ptoas.mlir.ir import (
     Attribute,
     Context,
     Location,
@@ -28,7 +28,7 @@ from mlir.ir import (
     IntegerType,
     UnitAttr,
 )
-from mlir.dialects import func, arith, pto
+from ptoas.mlir.dialects import func, arith, pto
 
 
 # Tile shape used throughout the sample.

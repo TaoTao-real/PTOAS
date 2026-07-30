@@ -24,7 +24,7 @@ def check_mlir_bindings_available() -> bool:
         True if mlir.ir module can be imported, False otherwise.
     """
     try:
-        from mlir import ir
+        from ptoas.mlir import ir
         return True
     except ImportError:
         return False
@@ -34,10 +34,10 @@ def check_pto_dialect_available() -> bool:
     """Check if PTO dialect bindings are available.
 
     Returns:
-        True if pto.dialects.pto module can be imported, False otherwise.
+        True if mlir.dialects.pto can be imported, False otherwise.
     """
     try:
-        from pto.dialects import pto
+        from ptoas.mlir.dialects import pto
         return True
     except ImportError:
         return False
@@ -64,32 +64,30 @@ def print_environment_help() -> None:
     print("PybindBackend Environment Configuration Guide")
     print("=" * 60)
     print()
-    print("PybindBackend requires MLIR Python bindings from LLVM build.")
+    print("PybindBackend requires the MLIR Python package built by PTOAS.")
     print()
     print("To set up the environment, add the following to PYTHONPATH:")
     print()
-    print("1. LLVM MLIR Python package:")
-    print("   $LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core")
-    print()
-    print("2. PTO dialect bindings (optional, for PTO ops):")
-    print("   $PTOAS_BUILD_DIR/python/mlir")
+    print("1. PTOAS build-tree Python package:")
+    print("   $PTOAS_BUILD_DIR/python")
     print("   OR")
-    print("   $PTO_INSTALL_DIR/mlir")
+    print("2. PTOAS install tree:")
+    print("   $PTO_INSTALL_DIR")
     print()
     print("Example setup:")
-    print()
-    print("  # Assuming LLVM is built at ~/llvm-workspace/llvm-project/build-shared")
-    print("  export LLVM_BUILD_DIR=~/llvm-workspace/llvm-project/build-shared")
     print()
     print("  # Assuming PTOAS is at ~/llvm-workspace/pto-as")
     print("  export PTOAS_BUILD_DIR=~/llvm-workspace/pto-as/build")
     print()
     print("  # Set PYTHONPATH")
-    print("  export PYTHONPATH=$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core:$PTOAS_BUILD_DIR/python")
+    print("  export PYTHONPATH=$PTOAS_BUILD_DIR/python")
     print()
     print("After setup, verify with:")
-    print("  python3 -c 'from mlir import ir; print(\"MLIR bindings OK\")'")
-    print("  python3 -c 'from pto.dialects import pto; print(\"PTO dialect OK\")'")
+    print("  python3 -c 'from ptoas.mlir import ir; print(\"MLIR bindings OK\")'")
+    print(
+        "  python3 -c 'from ptoas.mlir.dialects import pto; "
+        "print(\"PTO dialect OK\")'"
+    )
     print()
     print("=" * 60)
 

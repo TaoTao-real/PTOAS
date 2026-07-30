@@ -12,8 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from mlir.dialects import func
-from mlir.ir import Attribute, InsertionPoint, Module, Operation, StringAttr, UnitAttr
+from ptoas.mlir.dialects import func
+from ptoas.mlir.ir import Attribute, InsertionPoint, Module, Operation, StringAttr, UnitAttr
 
 
 class ModuleStyle(str, Enum):

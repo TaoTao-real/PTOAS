@@ -14,7 +14,7 @@ Reconstructs the IR in
 using raw MLIR Python binding calls, with no additional abstraction layer.
 """
 
-from mlir.ir import (
+from ptoas.mlir.ir import (
     Attribute,
     Context,
     F32Type,
@@ -28,7 +28,7 @@ from mlir.ir import (
     Type,
     UnitAttr,
 )
-from mlir.dialects import arith, func, pto, scf
+from ptoas.mlir.dialects import arith, func, pto, scf
 
 
 def build():

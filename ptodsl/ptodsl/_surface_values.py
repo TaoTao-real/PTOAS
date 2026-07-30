@@ -22,10 +22,10 @@ from ._scalar_adaptation import coerce_runtime_index_value, normalize_runtime_bi
 from ._surface_types import PartitionTensorView, TensorView, Tile
 from ._types import _normalize_address_space, _resolve, ptr
 
-from mlir.dialects import arith
-from mlir.dialects import memref
-from mlir.dialects import pto as _pto
-from mlir.ir import IndexType, IntegerAttr, IntegerType, MemRefType, ShapedType, StridedLayoutAttr, Type, VectorType
+from ptoas.mlir.dialects import arith
+from ptoas.mlir.dialects import memref
+from ptoas.mlir.dialects import pto as _pto
+from ptoas.mlir.ir import IndexType, IntegerAttr, IntegerType, MemRefType, ShapedType, StridedLayoutAttr, Type, VectorType
 
 
 def _validate_surface_value_access(value):

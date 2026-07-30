@@ -13,35 +13,22 @@
 #
 # Required environment variables:
 #   PTO_SOURCE_DIR  - Path to PTO source directory
-#   PTO_BUILD_DIR   - Path to PTO build directory
-#   LLVM_BUILD_DIR  - Path to LLVM build directory
-#   PTO_INSTALL_DIR - Path to PTO install directory
-#   PTOAS_BIN       - Path to the Python ptoas wrapper (optional)
+#   PTOAS_BIN       - Exact ptoas entrypoint under test
 
-set -e
+set -euo pipefail
 
 # Validate required environment variables
-for var in PTO_SOURCE_DIR PTO_BUILD_DIR LLVM_BUILD_DIR PTO_INSTALL_DIR; do
-  if [ -z "${!var}" ]; then
+for var in PTO_SOURCE_DIR PTOAS_BIN; do
+  if [ -z "${!var:-}" ]; then
     echo "Error: $var environment variable is not set" >&2
     exit 1
   fi
 done
 
-# Setup environment
-export PATH="${PTO_BUILD_DIR}/tools/ptoas:${PATH}"
-export LD_LIBRARY_PATH="${LLVM_BUILD_DIR}/lib:${PTO_INSTALL_DIR}/lib:${LD_LIBRARY_PATH}"
-export DYLD_LIBRARY_PATH="${LLVM_BUILD_DIR}/lib:${PTO_INSTALL_DIR}/lib:${DYLD_LIBRARY_PATH}"
-
-if [ -n "${PTOAS_BIN:-}" ]; then
-  if [ ! -x "${PTOAS_BIN}" ]; then
-    echo "Error: PTOAS_BIN is not executable: ${PTOAS_BIN}" >&2
-    exit 1
-  fi
-else
-  PTOAS_BIN="$(command -v ptoas)"
+if [ ! -x "${PTOAS_BIN}" ]; then
+  echo "Error: PTOAS_BIN is not executable: ${PTOAS_BIN}" >&2
+  exit 1
 fi
-
 echo "Testing ptoas CLI..."
 echo "${PTOAS_BIN}"
 

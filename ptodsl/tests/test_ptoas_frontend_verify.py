@@ -8,7 +8,6 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -18,29 +17,14 @@ from importlib.util import module_from_spec, spec_from_file_location
 REPO_ROOT = Path(__file__).resolve().parents[2]
 from ptodsl import pto
 from ptodsl import scalar
-from ptodsl._bootstrap import make_context
-from mlir.ir import Module
+from ptodsl._context import make_context
+from ptodsl._runtime.toolchain import resolve_ptoas_binary
+from ptoas.mlir.ir import Module
 
 
 def expect(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
-
-
-def resolve_ptoas_binary() -> Path:
-    candidates = [
-        REPO_ROOT / "build" / "tools" / "ptoas" / "ptoas",
-        REPO_ROOT / "install" / "bin" / "ptoas",
-    ]
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-
-    from_path = shutil.which("ptoas")
-    if from_path:
-        return Path(from_path)
-
-    raise FileNotFoundError("unable to locate a ptoas binary under build/, install/, or PATH")
 
 
 def emit_example_mlir(example_path: Path) -> str:

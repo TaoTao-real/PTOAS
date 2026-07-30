@@ -22,7 +22,7 @@ from ptodsl import pto, scalar
 from ptodsl import _types as pto_types
 import ptodsl._vmi_namespace as vmi_namespace
 from ptodsl._ast_rewrite import PTODSLAstRewriteError
-from ptodsl._bootstrap import make_context
+from ptodsl._context import make_context
 from ptodsl._kernel_signature import DeviceParameterSpec, HelperMarkerParameterSpec, RuntimeScalarParameterSpec
 from ptodsl._tracing.runtime import SignatureTracingRuntime
 from ptodsl._runtime import native_build as native_build_runtime
@@ -30,7 +30,7 @@ from ptodsl._runtime.cache import NativeBuildArtifacts, artifact_paths
 from ptodsl._runtime.codegen import generate_launch_cpp
 from ptodsl._runtime.launch import _marshal_launch_args
 from ptodsl._tracing import current_session
-from mlir.ir import InsertionPoint, Location, Module
+from ptoas.mlir.ir import InsertionPoint, Location, Module
 
 
 def expect(condition: bool, message: str) -> None:
@@ -3086,7 +3086,19 @@ def public_data_movement_surface_probe():
     pto.mte_gm_ub(gm_src, ub_dst, 0, 256, nburst=(8, 256, 256), loops=[(4, 2048, 2048)])
     pto.mte_gm_ub(gm_src, ub_dst, 0, 200, nburst=(64, 200, 256), pad=(0.0, 0, 0))
     pto.mte_ub_gm(ub_src, gm_dst, 256, nburst=(64, 256, 1024))
+    pto.set_store_atomic_cfg(4)
     pto.mte_ub_gm(ub_src, gm_dst, 128, nburst=(1, 128, 128), l2_cache="nared")
+    pto.set_store_atomic_cfg(0)
+    pto.set_atomic_s32()
+    pto.set_atomic_add()
+    pto.set_atomic_max()
+    pto.set_atomic_min()
+    pto.set_atomic_f32()
+    pto.set_atomic_f16()
+    pto.set_atomic_bf16()
+    pto.set_atomic_s16()
+    pto.set_atomic_s8()
+    pto.set_atomic_none()
     pto.mte_ub_gm(ub_src, gm_dst, 64, nburst=(1, 64, 64), l2_cache="wtsred")
     pto.mte_ub_ub(ub_src, ub_dst, 8, nburst=(16, 0, 4))
     pto.mte_ub_l1(ub_src, l1_dst, 8, nburst=(16, 0, 4))
@@ -6504,6 +6516,26 @@ def main() -> None:
     expect("pto.sync.wait <PIPE_MTE3>, 31" in sync_surface_text, "wait_intra_flag(Pipe.MTE3, 31) should lower the static physical event id through pto.sync.wait")
     expect(data_movement_surface_text.count("pto.mte_gm_ub") == 2, "public grouped GM->UB wrappers should lower to pto.mte_gm_ub")
     expect("pto.mte_ub_gm" in data_movement_surface_text, "public grouped UB->GM wrapper should lower to pto.mte_ub_gm")
+    expect(
+        data_movement_surface_text.count("pto.set_store_atomic_cfg") == 2,
+        "set_store_atomic_cfg should lower the requested config and reset",
+    )
+    for atomic_api in (
+        "set_atomic_s32",
+        "set_atomic_add",
+        "set_atomic_max",
+        "set_atomic_min",
+        "set_atomic_f32",
+        "set_atomic_f16",
+        "set_atomic_bf16",
+        "set_atomic_s16",
+        "set_atomic_s8",
+        "set_atomic_none",
+    ):
+        expect(
+            f"pto.{atomic_api}" in data_movement_surface_text,
+            f"{atomic_api} should lower through the explicit PTODSL surface",
+        )
     expect(
         re.search(r"pto\.mte_ub_gm [^\n]+ nburst\([^)]+\) l2_cache_ctl\(%c7[^)\n]*\)", data_movement_surface_text) is not None,
         "mte_ub_gm(..., l2_cache='nared') should map to the l2_cache_ctl group",

@@ -18,93 +18,53 @@ if(POLICY CMP0169)
   set(CMAKE_POLICY_DEFAULT_CMP0169 OLD)
 endif()
 
-function(ptoas_get_cmake_cache_value cache_file variable out_var)
-  if(NOT EXISTS "${cache_file}")
-    set(${out_var} "" PARENT_SCOPE)
-    return()
-  endif()
-
-  file(STRINGS "${cache_file}" cache_lines
-       REGEX "^${variable}:[^=]*=")
-  if(cache_lines)
-    list(GET cache_lines 0 cache_line)
-    string(REGEX REPLACE "^[^=]*=" "" cache_value "${cache_line}")
-    set(${out_var} "${cache_value}" PARENT_SCOPE)
-  else()
-    set(${out_var} "" PARENT_SCOPE)
-  endif()
-endfunction()
-
-function(ptoas_get_llvm_build_dir_from_llvm_dir out_var)
-  if(NOT DEFINED LLVM_DIR OR LLVM_DIR STREQUAL "")
-    set(${out_var} "" PARENT_SCOPE)
-    return()
-  endif()
-
-  get_filename_component(llvm_cmake_dir "${LLVM_DIR}" REALPATH)
-  get_filename_component(llvm_build_dir "${llvm_cmake_dir}/../../.." REALPATH)
-  if(EXISTS "${llvm_build_dir}/CMakeCache.txt")
-    set(${out_var} "${llvm_build_dir}" PARENT_SCOPE)
-  else()
-    set(${out_var} "" PARENT_SCOPE)
-  endif()
-endfunction()
-
-function(ptoas_preseed_compilers_from_llvm_cache)
-  ptoas_get_llvm_build_dir_from_llvm_dir(llvm_build_dir)
-  if(llvm_build_dir STREQUAL "")
-    return()
-  endif()
-
-  set(llvm_cache "${llvm_build_dir}/CMakeCache.txt")
-  if(NOT DEFINED CMAKE_C_COMPILER AND "$ENV{CC}" STREQUAL "")
-    ptoas_get_cmake_cache_value("${llvm_cache}" "CMAKE_C_COMPILER"
-                                llvm_c_compiler)
-    if(llvm_c_compiler AND EXISTS "${llvm_c_compiler}")
-      set(CMAKE_C_COMPILER "${llvm_c_compiler}" CACHE FILEPATH
-          "C compiler inherited from the configured LLVM build" FORCE)
-    endif()
-  endif()
-
-  if(NOT DEFINED CMAKE_CXX_COMPILER AND "$ENV{CXX}" STREQUAL "")
-    ptoas_get_cmake_cache_value("${llvm_cache}" "CMAKE_CXX_COMPILER"
-                                llvm_cxx_compiler)
-    if(llvm_cxx_compiler AND EXISTS "${llvm_cxx_compiler}")
-      set(CMAKE_CXX_COMPILER "${llvm_cxx_compiler}" CACHE FILEPATH
-          "C++ compiler inherited from the configured LLVM build" FORCE)
-    endif()
-  endif()
-endfunction()
-
-ptoas_preseed_compilers_from_llvm_cache()
+# Standard Python build backends pass environment variables through to CMake
+# but do not synthesize project-specific cache arguments. Accept the existing
+# LLVM_BUILD_DIR convention directly so `pip wheel .` and `pip install .` can
+# use the same configured LLVM tree as developer CMake builds.
+if((NOT DEFINED LLVM_DIR OR LLVM_DIR STREQUAL "")
+   AND DEFINED ENV{LLVM_BUILD_DIR}
+   AND NOT "$ENV{LLVM_BUILD_DIR}" STREQUAL "")
+  set(LLVM_DIR "$ENV{LLVM_BUILD_DIR}/lib/cmake/llvm" CACHE PATH
+      "LLVM package directory derived from LLVM_BUILD_DIR")
+endif()
+if((NOT DEFINED MLIR_DIR OR MLIR_DIR STREQUAL "")
+   AND DEFINED ENV{LLVM_BUILD_DIR}
+   AND NOT "$ENV{LLVM_BUILD_DIR}" STREQUAL "")
+  set(MLIR_DIR "$ENV{LLVM_BUILD_DIR}/lib/cmake/mlir" CACHE PATH
+      "MLIR package directory derived from LLVM_BUILD_DIR")
+endif()
 
 project(ptoas VERSION 0.55)
-set(PTOAS_VMI_VERSION "0.1.4")
 
-option(PTOAS_VALIDATE_CMAKE4_FETCHCONTENT_COMPAT
-       "Validate CMake 4 compatibility for legacy FetchContent users" OFF)
-if(PTOAS_VALIDATE_CMAKE4_FETCHCONTENT_COMPAT)
-  set(_ptoas_cmp0169_check_dir "${CMAKE_BINARY_DIR}/cmake-cmp0169-compat")
-  file(MAKE_DIRECTORY "${_ptoas_cmp0169_check_dir}/nested/cann-cmake")
-  file(WRITE "${_ptoas_cmp0169_check_dir}/nested/cann-cmake/CMakeLists.txt"
-       "cmake_minimum_required(VERSION 3.20)\n"
-       "project(ptoas_cmp0169_cann_cmake_fixture NONE)\n")
-  file(WRITE "${_ptoas_cmp0169_check_dir}/nested/CMakeLists.txt" [=[
-cmake_minimum_required(VERSION 3.20)
-project(ptoas_cmp0169_nested_fixture NONE)
-include(FetchContent)
-FetchContent_Declare(cann-cmake SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/cann-cmake")
-FetchContent_GetProperties(cann-cmake)
-if(NOT cann-cmake_POPULATED)
-  FetchContent_Populate(cann-cmake)
-endif()
-]=])
-  add_subdirectory("${_ptoas_cmp0169_check_dir}/nested"
-                   "${_ptoas_cmp0169_check_dir}/nested-build")
+# Wheel builds carry the same Linux hardening policy as release CMake builds.
+# Including the cache settings here keeps the policy backend-independent.
+if(SKBUILD AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/LinuxHardeningCache.cmake")
 endif()
 
 set(PTOAS_RELEASE_VERSION_OVERRIDE ""
     CACHE STRING "Override the version printed by ptoas --version")
+# scikit-build-core owns wheel metadata and supplies its resolved PEP 621
+# version here. The optional label distinguishes distributions that install the
+# same CLI without making CMake a second source of package-version truth.
+set(PTOAS_CLI_VERSION_LABEL ""
+    CACHE STRING "Optional label prepended to the packaged ptoas version")
+
+# Editable installs intentionally link against the developer's external LLVM
+# build instead of bundling it. Apply that contract explicitly to every native
+# Python target; generated and project-owned extensions live in different
+# CMake directories and must use the same install RPATH policy.
+function(ptoas_append_editable_llvm_rpath target_name)
+  if(NOT SKBUILD_STATE STREQUAL "editable")
+    return()
+  endif()
+  get_filename_component(_ptoas_editable_llvm_library_dir
+    "${LLVM_BUILD_LIBRARY_DIR}" REALPATH)
+  set_property(TARGET "${target_name}" APPEND PROPERTY
+    INSTALL_RPATH "${_ptoas_editable_llvm_library_dir}")
+endfunction()
+
 set(PTOAS_EXACT_GIT_TAG_VERSION "")
 if(EXISTS "${PROJECT_SOURCE_DIR}/.git")
   find_package(Git QUIET)
@@ -126,6 +86,13 @@ endif()
 set(PTOAS_CLI_VERSION "${PROJECT_VERSION}")
 if(PTOAS_EXACT_GIT_TAG_VERSION)
   set(PTOAS_CLI_VERSION "${PTOAS_EXACT_GIT_TAG_VERSION}")
+endif()
+if(SKBUILD AND SKBUILD_PROJECT_VERSION_FULL)
+  set(PTOAS_CLI_VERSION "${SKBUILD_PROJECT_VERSION_FULL}")
+endif()
+if(PTOAS_CLI_VERSION_LABEL)
+  set(PTOAS_CLI_VERSION
+      "${PTOAS_CLI_VERSION_LABEL} ${PTOAS_CLI_VERSION}")
 endif()
 if(PTOAS_RELEASE_VERSION_OVERRIDE)
   set(PTOAS_CLI_VERSION "${PTOAS_RELEASE_VERSION_OVERRIDE}")
@@ -155,33 +122,6 @@ if(NOT LLVM_VERSION_MAJOR STREQUAL "21")
     "LLVM ${LLVM_PACKAGE_VERSION}. Please point LLVM_DIR/MLIR_DIR to an "
     "LLVM 21 build, for example vpto-dev/llvm-project:feature-vpto-llvm21.")
 endif()
-get_filename_component(PTO_LLVM_BUILD_LIBRARY_DIR
-  "${LLVM_BUILD_LIBRARY_DIR}" REALPATH)
-ptoas_get_llvm_build_dir_from_llvm_dir(PTO_LLVM_BUILD_DIR)
-if(PTO_LLVM_BUILD_DIR)
-  ptoas_get_cmake_cache_value("${PTO_LLVM_BUILD_DIR}/CMakeCache.txt"
-                              "CMAKE_CXX_COMPILER"
-                              PTO_LLVM_CXX_COMPILER)
-endif()
-if(PTO_LLVM_CXX_COMPILER AND EXISTS "${PTO_LLVM_CXX_COMPILER}")
-  execute_process(
-    COMMAND "${PTO_LLVM_CXX_COMPILER}" --version
-    OUTPUT_VARIABLE PTO_LLVM_CXX_VERSION_TEXT
-    ERROR_VARIABLE PTO_LLVM_CXX_VERSION_TEXT
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_STRIP_TRAILING_WHITESPACE)
-  if(PTO_LLVM_CXX_VERSION_TEXT MATCHES "[Cc]lang"
-     AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    message(FATAL_ERROR
-      "PTOAS is being configured with GNU C++ (${CMAKE_CXX_COMPILER}), "
-      "but the selected LLVM build was compiled with a Clang-compatible "
-      "compiler (${PTO_LLVM_CXX_COMPILER}). MLIR TypeID fallback strings are "
-      "compiler-family sensitive across shared libraries; use "
-      "-DCMAKE_CXX_COMPILER=${PTO_LLVM_CXX_COMPILER} or leave the compiler "
-      "unset so PTOAS can inherit it from LLVM_DIR.")
-  endif()
-endif()
-
 # 将 LLVM 模块路径加入 CMake 搜索路径
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
 
@@ -204,13 +144,14 @@ include(AddMLIR)
 # 3. 配置构建环境
 # =========================================================
 # Keep warning policy in CMake so CI, wheel, and external build entrypoints
-# all enforce the same diagnostics contract.
+# all enforce the same diagnostics contract. Warnings are errors by default;
+# directories that compile only third-party sources may opt out narrowly.
 option(PTOAS_ENABLE_WERROR "Treat PTOAS warnings as errors" ON)
 if(PTOAS_ENABLE_WERROR)
   if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
-    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Werror>)
+    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-Werror>")
   elseif(MSVC)
-    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/WX>)
+    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:/WX>")
   endif()
 endif()
 
@@ -222,12 +163,12 @@ if(APPLE)
   endforeach()
 endif()
 
-include_directories(${LLVM_INCLUDE_DIRS})
-include_directories(${MLIR_INCLUDE_DIRS})
+include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
+include_directories(SYSTEM ${MLIR_INCLUDE_DIRS})
 include_directories(${PROJECT_SOURCE_DIR}/include)
 include_directories(${PROJECT_BINARY_DIR}/include)
 
-link_directories(${PTO_LLVM_BUILD_LIBRARY_DIR})
+link_directories(${LLVM_BUILD_LIBRARY_DIR})
 add_definitions(${LLVM_DEFINITIONS})
 
 # =========================================================
@@ -241,13 +182,10 @@ option(PTO_ENABLE_PYTHON_BINDING "Enable Python bindings" ON)
 include(cmake/VfSimulator.cmake)
 
 if(PTO_ENABLE_PYTHON_BINDING)
-  find_package(Python3 COMPONENTS Interpreter Development.Module REQUIRED)
-  find_package(pybind11 CONFIG REQUIRED)
+  include(MLIRDetectPythonEnv)
+  include(AddMLIRPython)
+  mlir_configure_python_dev_packages()
 
-  # 设置 Python 扩展的输出目录，方便调试
-  set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/python/pto)
-
-  add_subdirectory(python)
   add_subdirectory(ptodsl)
   add_subdirectory(tilelang-dsl)
 endif()
@@ -256,8 +194,8 @@ endif()
 # 4. 添加子目录
 # =========================================================
 if(BUILD_TESTING AND NOT TARGET ptoas_runtime_deps)
-  # Define this aggregate target before tools/ptoas runs so it can attach
-  # ptoas_runtime as a dependency during configure.
+  # Define this aggregate target before tools/ptoas runs so it can attach the
+  # staged ptoas._core package as a dependency during configure.
   add_custom_target(ptoas_runtime_deps)
 endif()
 add_subdirectory(include)
@@ -270,18 +208,15 @@ add_subdirectory(tools)
 if(BUILD_TESTING)
   enable_testing()
   if(PTO_ENABLE_PYTHON_BINDING)
-    get_filename_component(_llvm_root "${LLVM_DIR}/../../.." ABSOLUTE)
     get_filename_component(_pto_python_bin_dir "${Python3_EXECUTABLE}" DIRECTORY)
     set(_pto_python_test_pythonpath
-      "${CMAKE_BINARY_DIR}/python:${MLIR_PYTHON_PACKAGE_DIR}:${CMAKE_INSTALL_PREFIX}:$ENV{PYTHONPATH}"
+      "${CMAKE_BINARY_DIR}/python:$ENV{PYTHONPATH}"
     )
-    if(DEFINED ENV{PTO_INSTALL_DIR} AND NOT "$ENV{PTO_INSTALL_DIR}" STREQUAL "")
-      set(_pto_python_test_pythonpath "$ENV{PTO_INSTALL_DIR}:${_pto_python_test_pythonpath}")
-    endif()
     set(_pto_python_test_env
       "PYTHONPATH=${_pto_python_test_pythonpath}"
-      "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/lib:${_llvm_root}/lib:${CMAKE_INSTALL_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
+      "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/lib:${LLVM_BUILD_LIBRARY_DIR}:${CMAKE_INSTALL_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
       "PATH=${CMAKE_BINARY_DIR}/tools/ptoas:${CMAKE_INSTALL_PREFIX}/bin:${_pto_python_bin_dir}:$ENV{PATH}"
+      "PTOAS_BIN=${CMAKE_BINARY_DIR}/tools/ptoas/ptoas"
     )
 
     add_subdirectory(ptodsl/tests)
@@ -313,6 +248,15 @@ if(BUILD_TESTING)
       LABELS "PTO"
       ENVIRONMENT "${_pto_python_test_env}"
     )
+    add_test(
+      NAME pto_low_precision_types
+      COMMAND "${Python3_EXECUTABLE}" -S
+              "${CMAKE_CURRENT_SOURCE_DIR}/test/python/low_precision_types.py"
+    )
+    set_tests_properties(pto_low_precision_types PROPERTIES
+      LABELS "PTO"
+      ENVIRONMENT "${_pto_python_test_env}"
+    )
   endif()
   add_subdirectory(tools/ptobc/tests)
 endif()
@@ -324,7 +268,12 @@ if(BUILD_TESTING)
   add_subdirectory(test/lit)
 
   set(_pto_check_ctest_depends)
-  foreach(_target IN ITEMS PTOPythonModules ptoas_runtime_deps ptobc)
+  foreach(_target IN ITEMS
+      PTOAS_Python
+      PTODSLPackage
+      TileLangDSLPackage
+      ptoas_runtime_deps
+      ptobc)
     if(TARGET ${_target})
       list(APPEND _pto_check_ctest_depends ${_target})
     endif()

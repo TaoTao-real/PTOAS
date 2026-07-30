@@ -16,8 +16,8 @@ Pipeline:
     make_tensor_view -> partition_view -> alloc_tile -> tload -> tcvt -> tstore
 """
 
-from mlir.ir import Attribute, Context, F16Type, F32Type, IndexType, InsertionPoint, Location, Module, UnitAttr
-from mlir.dialects import arith, func, pto
+from ptoas.mlir.ir import Attribute, Context, F16Type, F32Type, IndexType, InsertionPoint, Location, Module, UnitAttr
+from ptoas.mlir.dialects import arith, func, pto
 
 
 def build():

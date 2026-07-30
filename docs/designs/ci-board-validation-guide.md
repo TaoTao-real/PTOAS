@@ -103,16 +103,14 @@ ninja -C llvm/build-shared
 ```bash
 export LLVM_DIR=$PWD/llvm-project/llvm/build-shared
 export PTO_INSTALL_DIR=$PWD/install
-export PYBIND11_CMAKE_DIR="$(python3 -m pybind11 --cmakedir)"
+python3 -m pip install 'pybind11<3' 'nanobind>=2.4'
 
 cmake -G Ninja -S . -B build \
   -DLLVM_DIR="$LLVM_DIR/lib/cmake/llvm" \
   -DMLIR_DIR="$LLVM_DIR/lib/cmake/mlir" \
   -DPython3_EXECUTABLE=python3 \
   -DPython3_FIND_STRATEGY=LOCATION \
-  -Dpybind11_DIR="$PYBIND11_CMAKE_DIR" \
   -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
-  -DMLIR_PYTHON_PACKAGE_DIR="$LLVM_DIR/tools/mlir/python_packages/mlir_core" \
   -DCMAKE_INSTALL_PREFIX="$PTO_INSTALL_DIR" \
   -DCMAKE_BUILD_TYPE=Release
 
@@ -124,11 +122,8 @@ ninja -C build install
 ### 3.3 跑样例生成链路
 
 ```bash
-export MLIR_PYTHON_ROOT=$PWD/llvm-project/llvm/build-shared/tools/mlir/python_packages/mlir_core
-export PTO_PYTHON_ROOT=$PWD/install
-export PYTHONPATH="$MLIR_PYTHON_ROOT:$PTO_PYTHON_ROOT:${PYTHONPATH:-}"
-export LD_LIBRARY_PATH="$LLVM_DIR/lib:$PTO_INSTALL_DIR/lib:${LD_LIBRARY_PATH:-}"
-export PTOAS_BIN=$PWD/build/tools/ptoas/ptoas
+LLVM_BUILD_DIR="$LLVM_DIR" ./quick_install.sh
+export PTOAS_BIN="$(command -v ptoas)"
 
 bash test/samples/runop.sh --enablebc all
 ```

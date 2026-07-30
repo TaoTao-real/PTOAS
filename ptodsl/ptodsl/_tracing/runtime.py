@@ -13,11 +13,11 @@ from .active import activate_runtime, activate_session, require_active_session
 from .module_builder import create_kernel_module
 from .session import TraceSession
 from .._diagnostics import kernel_module_return_value_error
-from .._bootstrap import make_context
+from .._context import make_context
 from .._types import _resolve
 
-from mlir.dialects import func
-from mlir.ir import InsertionPoint, Location
+from ptoas.mlir.dialects import func
+from ptoas.mlir.ir import InsertionPoint, Location
 
 
 class TracingRuntime:

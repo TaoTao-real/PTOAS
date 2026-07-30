@@ -6,7 +6,7 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-import mlir.dialects.pto as pto
+import ptoas.mlir.dialects.pto as pto
 
 
 @pto.vkernel(target="a5", name="template_abs_kernel")

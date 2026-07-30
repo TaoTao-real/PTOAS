@@ -1248,9 +1248,10 @@ Python 侧的 case 名、dtype、shape、valid_shape、eps（以及必要时的 
 ##### 运行方式
 
 统一入口为 `test/tilelang_st/script/run_st.py`。前置条件：
-- `ptoas` 已编译（默认路径 `build/tools/ptoas/ptoas`，也可通过 `-p` 指定或 `PTOAS_BIN` 环境变量）
+- `ptoas` 已通过 `./quick_install.sh` 或 editable install 安装到当前
+  Python 环境（也可通过 `-p` 指定或 `PTOAS_BIN` 环境变量覆盖）
 - `ASCEND_HOME_PATH` 已设置
-- 建议先执行 `source scripts/ptoas_env.sh`
+- simulator / NPU 运行前已加载 CANN `setenv.bash`
 
 ```bash
 # simulator 上跑 tsub 全部 case

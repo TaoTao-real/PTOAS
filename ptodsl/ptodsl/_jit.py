@@ -28,7 +28,7 @@ from ._tracing import (
     current_runtime,
 )
 
-from mlir.ir import InsertionPoint
+from ptoas.mlir.ir import InsertionPoint
 
 
 _MODULE_ATTRS = ("pto.target_arch",)

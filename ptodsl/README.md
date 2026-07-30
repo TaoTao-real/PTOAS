@@ -18,7 +18,7 @@ ptodsl/
 │   ├── __init__.py      # exports: pto, scalar
 │   ├── pto.py           # main PTO DSL namespace
 │   ├── scalar.py        # top-level scalar.* helper namespace
-│   ├── _bootstrap.py    # MLIR path setup + context factory
+│   ├── _context.py      # MLIR context factory
 │   ├── _types.py        # lazy dtype descriptors and type constructors
 │   ├── _ops.py          # PTO operation wrappers
 │   ├── _control_flow.py # for_, if_, yield_ context managers
@@ -62,20 +62,24 @@ python3 -c "import ptodsl; from ptodsl import pto, scalar; print(ptodsl.__file__
 Not supported:
 
 - `cd ptodsl && pip install -e .`
-- repo-walk / `PYTHONPATH` / `sys.path` repair just to locate the `ptodsl` package
+- runtime repository walks or `sys.path` repair to locate MLIR/PTO bindings
+
+Direct CTest/developer-tree execution must provide the matching MLIR and PTO
+Python roots explicitly through the test environment or `PYTHONPATH`; PTODSL
+does not search nearby build and install directories at import time.
 
 Artifact boundary:
 
 - `ptoas` wheel: PTODSL-capable Python distribution
 - `ptoas-bin-*.tar.gz`: compiler-only artifact, does **not** imply `import ptodsl`
 
-If you are working from a source checkout and want the repository helper
-scripts (`scripts/sim_dsl.sh`, sample runners, direct CLI debugging) to pick up
-the local build/install tree, you may still source:
+For source development, install the checkout into the active Python environment.
+The editable install retains an incremental CMake build tree without requiring
+manual `PYTHONPATH` or build-tree wrapper setup:
 
 ```bash
 cd $PTOAS_REPO_ROOT
-source scripts/ptoas_env.sh
+LLVM_BUILD_DIR=/path/to/llvm/build ./quick_install.sh
 ```
 
 ---
@@ -89,11 +93,11 @@ ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto \
   input.pto -o -
 ```
 
-The source-tree build bakes in `$PTOAS_REPO_ROOT/ptodsl` as the package root.
-The `PTODSL_PYTHON_ROOT` environment variable from `scripts/ptoas_env.sh`
-overrides that default. Use `--ptodsl-pkg-path=/path/to/package/root` for an
-explicit command-line override. PTODSL daemon failures are reported as errors
-and never fall back to the TileLang implementation. Use
+Wheel and CMake-tree launchers pass the Python root containing their own
+installed or staged `ptodsl` package to the native driver. Use
+`--ptodsl-pkg-path=/path/to/package/root` for an explicit command-line
+override. PTODSL daemon failures are reported as errors and never fall back to
+the TileLang implementation. Use
 `--tile-lib-backend=tilelang` only when explicitly comparing against the legacy
 TileLangDSL template library.
 
@@ -131,7 +135,6 @@ Set up the environment in each new shell:
 ```bash
 cd $PTOAS_REPO_ROOT
 pip install -e . --no-build-isolation
-source scripts/ptoas_env.sh
 source "${ASCEND_HOME_PATH}/bin/setenv.bash"
 ```
 

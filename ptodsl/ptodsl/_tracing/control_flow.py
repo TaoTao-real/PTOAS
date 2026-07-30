@@ -14,9 +14,9 @@ from dataclasses import dataclass
 from .._runtime_index_ops import coerce_runtime_index
 from .._surface_values import unwrap_surface_value
 
-from mlir.dialects import arith
-from mlir.dialects import scf
-from mlir.ir import InsertionPoint, IntegerType
+from ptoas.mlir.dialects import arith
+from ptoas.mlir.dialects import scf
+from ptoas.mlir.ir import InsertionPoint, IntegerType
 
 
 @dataclass

@@ -10,12 +10,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../../.." && pwd)"
-
-if [[ -f "${REPO_ROOT}/scripts/ptoas_env.sh" ]]; then
-    # shellcheck source=/dev/null
-    source "${REPO_ROOT}/scripts/ptoas_env.sh"
-fi
 
 export PYTHONUNBUFFERED=1
 

@@ -40,7 +40,7 @@ from .._types import (
     _resolve,
 )
 
-from mlir.ir import Type
+from ptoas.mlir.ir import Type
 
 
 @dataclass(frozen=True)

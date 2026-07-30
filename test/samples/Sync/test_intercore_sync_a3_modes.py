@@ -7,8 +7,8 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-from mlir.ir import Context, IndexType, InsertionPoint, IntegerType, Location, MemRefType, Module, UnitAttr
-from mlir.dialects import func, pto
+from ptoas.mlir.ir import Context, IndexType, InsertionPoint, IntegerType, Location, MemRefType, Module, UnitAttr
+from ptoas.mlir.dialects import func, pto
 
 
 def build():

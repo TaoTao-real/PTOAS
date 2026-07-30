@@ -12,24 +12,24 @@
 
 set(TILELANG_DSL_PACKAGE_SRC_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/python/tilelang_dsl")
-set(TILELANG_DSL_BUILD_ROOT "${CMAKE_BINARY_DIR}/python")
 set(TILELANG_DSL_BUILD_PACKAGE_DIR
-    "${TILELANG_DSL_BUILD_ROOT}/tilelang_dsl")
+    "${CMAKE_BINARY_DIR}/python/tilelang_dsl")
 
-add_custom_target(TileLangDSLPackage ALL
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${TILELANG_DSL_BUILD_ROOT}"
-  COMMAND ${CMAKE_COMMAND} -E remove_directory "${TILELANG_DSL_BUILD_PACKAGE_DIR}"
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-          "${TILELANG_DSL_PACKAGE_SRC_DIR}"
-          "${TILELANG_DSL_BUILD_PACKAGE_DIR}"
-  COMMENT "Staging tilelang_dsl package into build/python"
-  VERBATIM
+declare_mlir_python_sources(TileLangDSLPythonSources
+  ROOT_DIR "${TILELANG_DSL_PACKAGE_SRC_DIR}"
+  SOURCES_GLOB "*.py"
 )
+add_mlir_python_sources_target(TileLangDSLPackageStage
+  OUTPUT_DIRECTORY "${TILELANG_DSL_BUILD_PACKAGE_DIR}"
+  SOURCES_TARGETS TileLangDSLPythonSources
+)
+add_custom_target(TileLangDSLPackage ALL)
+add_dependencies(TileLangDSLPackage TileLangDSLPackageStage)
 
 install(
   DIRECTORY "${TILELANG_DSL_PACKAGE_SRC_DIR}"
   DESTINATION "."
-  COMPONENT PTOAS_Runtime
+  COMPONENT PTOAS_CompilerArchive
   PATTERN "__pycache__" EXCLUDE
   PATTERN "*.pyc" EXCLUDE
 )
@@ -37,7 +37,7 @@ install(
 install(
   DIRECTORY "${CMAKE_SOURCE_DIR}/lib/TileOps"
   DESTINATION "share/ptoas"
-  COMPONENT PTOAS_Runtime
+  COMPONENT PTOAS_CompilerArchive
   PATTERN "__pycache__" EXCLUDE
   PATTERN "*.pyc" EXCLUDE
 )

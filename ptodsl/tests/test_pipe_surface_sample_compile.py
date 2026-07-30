@@ -11,10 +11,11 @@ from __future__ import annotations
 
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
+
+from ptodsl._runtime.toolchain import resolve_ptoas_binary as resolve_runtime_ptoas_binary
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -36,18 +37,10 @@ def load_sample_module():
 
 
 def resolve_ptoas_binary() -> Path | None:
-    candidates = [
-        REPO_ROOT / "build" / "tools" / "ptoas" / "ptoas",
-        REPO_ROOT / "install" / "bin" / "ptoas",
-    ]
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-
-    from_path = shutil.which("ptoas")
-    if from_path:
-        return Path(from_path)
-    return None
+    try:
+        return resolve_runtime_ptoas_binary()
+    except FileNotFoundError:
+        return None
 
 
 def run_ptoas_frontend(ptoas_bin: Path, mlir_text: str) -> str:

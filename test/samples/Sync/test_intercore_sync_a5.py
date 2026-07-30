@@ -7,7 +7,7 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-from mlir.ir import (
+from ptoas.mlir.ir import (
     UnitAttr,
     Context,
     F32Type,
@@ -16,7 +16,7 @@ from mlir.ir import (
     Location,
     Module,
 )
-from mlir.dialects import arith, func, pto
+from ptoas.mlir.dialects import arith, func, pto
 
 
 def build():

@@ -18,7 +18,7 @@ Can run without pytest:
     python3 tests/backend/test_e2e_pybind_backend.py
 
 Environment setup (optional for PybindBackend):
-    export PYTHONPATH=$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core:$PTOAS_BUILD_DIR/python
+    export PYTHONPATH=$PTOAS_BUILD_DIR/python
 """
 
 import sys
@@ -46,7 +46,7 @@ except ImportError:
 def _check_pto_dialect_available():
     """Check if PTO dialect bindings are available."""
     try:
-        from mlir.dialects import pto
+        from ptoas.mlir.dialects import pto
         return True
     except ImportError:
         return False

@@ -54,6 +54,13 @@ llvm_config.with_system_environment(
      'ASCEND_HOME_PATH', 'ASCEND_OPP_PATH', 'ASCEND_AICPU_PATH',
      'ASCEND_TOOLKIT_HOME', 'LD_LIBRARY_PATH', 'PYTHONPATH'])
 
+# Keep build-tree lit tests self-contained. The PTOAS build stages the complete
+# MLIR Python runtime together with generated PTO dialect modules and the PTO
+# extension under one build-tree Python root.
+if getattr(config, 'enable_bindings_python', False):
+    llvm_config.with_environment(
+        'PYTHONPATH', [config.ptoas_python_dir], append_path=True)
+
 llvm_config.use_default_substitutions()
 
 # excludes: A list of directories to exclude from the testsuite. The 'Inputs'

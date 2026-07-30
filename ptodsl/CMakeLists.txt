@@ -12,51 +12,32 @@
 
 set(PTODSL_PACKAGE_SRC_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/ptodsl")
-set(PTOAS_PY_PACKAGE_SRC_DIR
-    "${CMAKE_CURRENT_SOURCE_DIR}/ptoas")
-set(PTOAS_WHEEL_BOOTSTRAP_SOURCE
-    "${CMAKE_CURRENT_SOURCE_DIR}/ptoas_wheel_bootstrap.py")
-set(PTODSL_BUILD_ROOT "${CMAKE_BINARY_DIR}/python")
 set(PTODSL_BUILD_PACKAGE_DIR
-    "${PTODSL_BUILD_ROOT}/ptodsl")
-set(PTOAS_PY_BUILD_PACKAGE_DIR
-    "${PTODSL_BUILD_ROOT}/ptoas")
+    "${CMAKE_BINARY_DIR}/python/ptodsl")
 
-add_custom_target(PTODSLPackage ALL
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${PTODSL_BUILD_ROOT}"
-  COMMAND ${CMAKE_COMMAND} -E remove_directory "${PTODSL_BUILD_PACKAGE_DIR}"
-  COMMAND ${CMAKE_COMMAND} -E remove_directory "${PTOAS_PY_BUILD_PACKAGE_DIR}"
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-          "${PTODSL_PACKAGE_SRC_DIR}"
-          "${PTODSL_BUILD_PACKAGE_DIR}"
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-          "${PTOAS_PY_PACKAGE_SRC_DIR}"
-          "${PTOAS_PY_BUILD_PACKAGE_DIR}"
-  COMMAND ${CMAKE_COMMAND} -E copy
-          "${PTOAS_WHEEL_BOOTSTRAP_SOURCE}"
-          "${PTODSL_BUILD_ROOT}/ptoas_wheel_bootstrap.py"
-  COMMENT "Staging ptodsl package into build/python"
-  VERBATIM
+declare_mlir_python_sources(PTODSLPythonSources
+  ROOT_DIR "${PTODSL_PACKAGE_SRC_DIR}"
+  SOURCES_GLOB "*.py"
 )
+add_mlir_python_sources_target(PTODSLPackageStage
+  OUTPUT_DIRECTORY "${PTODSL_BUILD_PACKAGE_DIR}"
+  SOURCES_TARGETS PTODSLPythonSources
+)
+add_custom_target(PTODSLPackage ALL)
+add_dependencies(PTODSLPackage PTODSLPackageStage)
 
 install(
   DIRECTORY "${PTODSL_PACKAGE_SRC_DIR}"
   DESTINATION "."
-  COMPONENT PTOAS_Runtime
+  COMPONENT PTOAS_CompilerArchive
   PATTERN "__pycache__" EXCLUDE
   PATTERN "*.pyc" EXCLUDE
 )
 
 install(
-  DIRECTORY "${PTOAS_PY_PACKAGE_SRC_DIR}"
+  DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/ptoas"
   DESTINATION "."
-  COMPONENT PTOAS_Runtime
+  COMPONENT PTOAS_CompilerArchive
   PATTERN "__pycache__" EXCLUDE
   PATTERN "*.pyc" EXCLUDE
-)
-
-install(
-  FILES "${PTOAS_WHEEL_BOOTSTRAP_SOURCE}"
-  DESTINATION "."
-  COMPONENT PTOAS_Runtime
 )

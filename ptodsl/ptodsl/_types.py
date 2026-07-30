@@ -9,7 +9,7 @@
 Lazy MLIR type descriptors and eager type constructors.
 
 Type descriptors (``_DType`` subclasses) can be created *before* any MLIR
-Context exists – they only resolve to concrete ``mlir.ir.Type`` objects when
+Context exists – they only resolve to concrete ``ptoas.mlir.ir.Type`` objects when
 ``_resolve()`` is called inside an active context.  This lets users write::
 
     def softmax(arg0: pto.ptr(pto.float32, "GM"), ...):
@@ -19,12 +19,10 @@ where the annotation is evaluated at *import* time (no active context), and
 the actual type is materialised later by the ``@pto.jit`` decorator.
 """
 
-from ._bootstrap import make_context  # ensure MLIR is on sys.path
-
-from mlir.dialects import pto as _pto
-from mlir.dialects import arith
-from mlir.dialects.builtin import UnrealizedConversionCastOp
-from mlir.ir import (
+from ptoas.mlir.dialects import pto as _pto
+from ptoas.mlir.dialects import arith
+from ptoas.mlir.dialects.builtin import UnrealizedConversionCastOp
+from ptoas.mlir.ir import (
     BF16Type,
     F16Type,
     F32Type,
@@ -218,10 +216,10 @@ def _validate_vec_size(size: int, *, context: str) -> int:
 
 
 def _resolve(dtype) -> Type:
-    """Coerce a ``_DType`` descriptor or a concrete ``mlir.ir.Type`` to a Type."""
+    """Coerce a ``_DType`` descriptor or a concrete ``ptoas.mlir.ir.Type`` to a Type."""
     if isinstance(dtype, _DType):
         return dtype.resolve()
-    return dtype  # already an mlir.ir.Type
+    return dtype  # already a ptoas.mlir.ir.Type
 
 
 def _classify_scalar_type(type_obj):

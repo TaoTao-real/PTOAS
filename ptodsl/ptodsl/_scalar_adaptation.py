@@ -17,8 +17,8 @@ from ._types import (
     _strip_integer_signedness,
 )
 
-from mlir.dialects import arith
-from mlir.ir import BF16Type, F16Type, F32Type, FloatAttr, IndexType, IntegerType, VectorType
+from ptoas.mlir.dialects import arith
+from ptoas.mlir.ir import BF16Type, F16Type, F32Type, FloatAttr, IndexType, IntegerType, VectorType
 
 
 def classify_runtime_scalar_type(type_obj):

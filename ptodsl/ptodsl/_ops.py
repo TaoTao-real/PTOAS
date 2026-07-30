@@ -24,7 +24,6 @@ Design rules:
 
 from functools import wraps
 
-from ._bootstrap import make_context  # noqa: F401 – ensure MLIR on sys.path
 from ._diagnostics import (
     explicit_mode_required_with_context_error,
     make_tensor_view_invalid_layout_error,
@@ -73,8 +72,8 @@ from ._types import (
     vreg_type,
 )
 
-from mlir.dialects import arith, pto as _pto
-from mlir.ir import (
+from ptoas.mlir.dialects import arith, pto as _pto
+from ptoas.mlir.ir import (
     Attribute,
     BF16Type,
     F16Type,
@@ -236,7 +235,7 @@ def const(value: int, *, dtype=None):
     """
     Emit an ``arith.constant``.
 
-    ``dtype`` is a ``_DType`` descriptor or a concrete ``mlir.ir.Type``.
+    ``dtype`` is a ``_DType`` descriptor or a concrete ``ptoas.mlir.ir.Type``.
     Defaults to ``index`` when omitted.
     """
     from ._types import index as _idx_dtype
@@ -4892,6 +4891,38 @@ def mte_gm_ub(source, destination, l2_cache_ctl, len_burst, *, nburst, loops=Non
     )
 
 
+@_explicit_mode_only("pto.set_store_atomic_cfg(...)")
+def set_store_atomic_cfg(config):
+    """Configure scalar ST atomic mode via ST_ATOMIC_CFG (SU path)."""
+    _pto.SetStoreAtomicCfgOp(
+        _coerce_i64(config, context="set_store_atomic_cfg config")
+    )
+
+
+def _nullary_atomic_config(op_cls, api_name):
+    @_explicit_mode_only(f"pto.{api_name}(...)")
+    def _impl():
+        op_cls()
+
+    _impl.__name__ = api_name
+    _impl.__doc__ = (
+        f"``pto.{api_name}`` – configure MTE/FIXP store-atomic CTRL state."
+    )
+    return _impl
+
+
+set_atomic_add = _nullary_atomic_config(_pto.SetAtomicAddOp, "set_atomic_add")
+set_atomic_max = _nullary_atomic_config(_pto.SetAtomicMaxOp, "set_atomic_max")
+set_atomic_min = _nullary_atomic_config(_pto.SetAtomicMinOp, "set_atomic_min")
+set_atomic_none = _nullary_atomic_config(_pto.SetAtomicNoneOp, "set_atomic_none")
+set_atomic_f32 = _nullary_atomic_config(_pto.SetAtomicF32Op, "set_atomic_f32")
+set_atomic_f16 = _nullary_atomic_config(_pto.SetAtomicF16Op, "set_atomic_f16")
+set_atomic_bf16 = _nullary_atomic_config(_pto.SetAtomicBF16Op, "set_atomic_bf16")
+set_atomic_s32 = _nullary_atomic_config(_pto.SetAtomicS32Op, "set_atomic_s32")
+set_atomic_s16 = _nullary_atomic_config(_pto.SetAtomicS16Op, "set_atomic_s16")
+set_atomic_s8 = _nullary_atomic_config(_pto.SetAtomicS8Op, "set_atomic_s8")
+
+
 @_explicit_mode_only("pto.mte_ub_gm(...)")
 def mte_ub_gm(
     source,
@@ -6285,6 +6316,10 @@ __all__ = [
     "as_ptr",
     "mte_load", "mte_store", "mte_gm_ub", "mte_ub_gm", "mte_ub_ub", "mte_ub_l1",
     "mte_gm_l1", "mte_l1_ub", "mte_gm_l1_frac", "mte_l1_bt", "mte_l1_fb", "mem_bar",
+    "set_store_atomic_cfg",
+    "set_atomic_add", "set_atomic_max", "set_atomic_min", "set_atomic_none",
+    "set_atomic_f32", "set_atomic_f16", "set_atomic_bf16",
+    "set_atomic_s32", "set_atomic_s16", "set_atomic_s8",
     "mte_l1_l0a", "mte_l1_l0b", "mte_l1_l0a_mx", "mte_l1_l0b_mx",
     "mte_l0c_l1", "mte_l0c_gm", "mte_l0c_ub",
     "mad", "mad_acc", "mad_bias", "mad_mx", "mad_mx_acc", "mad_mx_bias",

@@ -20,7 +20,7 @@ ENV PATH="${PY_PATH}/bin:${PATH}"
 
 # dependency
 RUN dnf install -y ninja-build cmake git ccache gcc-c++ lld zip binutils patchelf chrpath && dnf clean all
-RUN pip install --no-cache-dir numpy 'pybind11<3' nanobind setuptools wheel auditwheel
+RUN pip install --no-cache-dir numpy 'pybind11<3' nanobind 'scikit-build-core>=0.12.2,<2' auditwheel
 
 COPY cmake/LinuxHardeningCache.cmake /tmp/LinuxHardeningCache.cmake
 
@@ -31,7 +31,6 @@ ENV LLVM_BUILD_DIR=$LLVM_SOURCE_DIR/build-release
 
 ENV PTO_SOURCE_DIR=$WORKSPACE_DIR/PTOAS
 ENV PTO_BUILD_DIR=$PTO_SOURCE_DIR/build-release
-ENV PTO_INSTALL_DIR=$PTO_SOURCE_DIR/install-release
 
 # build LLVM
 WORKDIR $WORKSPACE_DIR
@@ -52,43 +51,29 @@ RUN cmake -C /tmp/LinuxHardeningCache.cmake -G Ninja -S llvm -B $LLVM_BUILD_DIR 
 
 RUN ninja -C $LLVM_BUILD_DIR
 
-# build ptoas
+# build the ptoas wheel through the standard PEP 517 backend
 WORKDIR $WORKSPACE_DIR
 RUN git clone https://github.com/zhangstevenunity/PTOAS.git
 # TODO: tag git commit of PTOAS repo
 
 WORKDIR $PTO_SOURCE_DIR
-RUN cmake -C /tmp/LinuxHardeningCache.cmake -G Ninja \
-    -S . \
-    -B $PTO_BUILD_DIR \
-    -DLLVM_DIR=$LLVM_BUILD_DIR/lib/cmake/llvm \
-    -DMLIR_DIR=$LLVM_BUILD_DIR/lib/cmake/mlir \
-    -DPython3_ROOT_DIR=${PY_PATH} \
-    -DPython3_EXECUTABLE=${PY_PATH}/bin/python \
-    -DPython3_FIND_STRATEGY=LOCATION \
-    -Dpybind11_DIR=$(python -m pybind11 --cmakedir) \
-    -DMLIR_PYTHON_PACKAGE_DIR=${LLVM_BUILD_DIR}/tools/mlir/python_packages/mlir_core \
-    -DCMAKE_INSTALL_PREFIX=${PTO_INSTALL_DIR} \
-    -DCMAKE_BUILD_TYPE=Release
-
-RUN ninja -C $PTO_BUILD_DIR && ninja -C $PTO_BUILD_DIR install
-
-# create python wheel
 ENV PTO_WHEEL_DIST_DIR=$PTO_SOURCE_DIR/build/wheel-dist
-RUN bash "$PTO_SOURCE_DIR/docker/create_wheel.sh"
+RUN SKBUILD_BUILD_DIR=$PTO_BUILD_DIR \
+    python -m pip wheel . --no-build-isolation --no-deps \
+    --wheel-dir "$PTO_WHEEL_DIST_DIR"
 
 # fix missing so
-RUN export LD_LIBRARY_PATH=$LLVM_BUILD_DIR/lib:$PTO_INSTALL_DIR/lib:$LD_LIBRARY_PATH \
+RUN export LD_LIBRARY_PATH=$LLVM_BUILD_DIR/lib:$LD_LIBRARY_PATH \
     && auditwheel repair --plat manylinux_2_34_${ARCH} "$PTO_WHEEL_DIST_DIR"/ptoas*.whl -w /wheelhouse
 
 RUN pip install /wheelhouse/ptoas*.whl
 
 # test the installed wheel contract without adjusting $PYTHONPATH
 WORKDIR /test
-RUN bash "$PTO_SOURCE_DIR/docker/test_wheel_imports.sh"
+RUN PTO_TEST_WHEEL_PATH="/wheelhouse/ptoas*.whl" \
+    bash "$PTO_SOURCE_DIR/docker/test_wheel_imports.sh"
 
-# test ptoas cli
-ENV PATH=$PTO_BUILD_DIR/tools/ptoas:$PATH
+# test the wheel-provided ptoas cli
 RUN which ptoas
 
 WORKDIR $PTO_SOURCE_DIR/test/samples/MatMul/

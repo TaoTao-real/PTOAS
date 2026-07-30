@@ -164,7 +164,7 @@ PYTHONPATH=$PWD/tilelang-dsl/python \
 PYTHONPATH=$PWD/tilelang-dsl/python \
   python3 tilelang-dsl/examples/v1_verify_smoke.py /tmp/tilelang_v1_verify.mlir
 
-build/tools/ptoas/ptoas --pto-arch a5 --pto-backend=vpto --emit-vpto \
+ptoas --pto-arch a5 --pto-backend=vpto --emit-vpto \
   /tmp/tilelang_v1_verify.mlir -o /tmp/tilelang_v1_verify.checked.mlir
 ```
 

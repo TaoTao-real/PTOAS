@@ -20,7 +20,6 @@ Python 环境，而不是在运行时自己修 `PYTHONPATH` 或 `sys.path`。
 ```bash
 cd $PTOAS_REPO_ROOT
 pip install -e . --no-build-isolation
-source scripts/ptoas_env.sh
 ```
 
 如果你在验证 release/CI wheel，也可以直接：

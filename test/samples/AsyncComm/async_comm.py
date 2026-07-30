@@ -6,8 +6,8 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-from mlir.ir import Context, Location, Module, InsertionPoint, F32Type, IntegerType, IntegerAttr, IndexType, Operation, UnitAttr
-from mlir.dialects import arith, func, pto, scf
+from ptoas.mlir.ir import Context, Location, Module, InsertionPoint, F32Type, IntegerType, IntegerAttr, IndexType, Operation, UnitAttr
+from ptoas.mlir.dialects import arith, func, pto, scf
 
 
 def _build_async_session(scratch, workspace, i32, ctx, sync_id=0):

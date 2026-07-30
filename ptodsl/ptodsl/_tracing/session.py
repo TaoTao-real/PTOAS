@@ -36,9 +36,9 @@ from .control_flow import (
 from .._types import _strip_integer_signedness
 from .module_builder import create_container_child_module
 
-from mlir.dialects import arith, func
-from mlir.dialects import pto as _pto
-from mlir.ir import (
+from ptoas.mlir.dialects import arith, func
+from ptoas.mlir.dialects import pto as _pto
+from ptoas.mlir.ir import (
     Attribute,
     FlatSymbolRefAttr,
     IndexType,

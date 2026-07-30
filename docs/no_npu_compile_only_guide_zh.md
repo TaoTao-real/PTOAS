@@ -187,7 +187,7 @@ export PTOAS_BIN=$PWD/build/tools/ptoas/ptoas
 export PTOBC_BIN=$PWD/build/tools/ptobc/ptobc
 export PYTHON_BIN=/usr/bin/python3
 export PTOAS_OUT_DIR="$PAYLOAD_ROOT/test/samples"
-export PYTHONPATH="$LLVM_BUILD_DIR/tools/mlir/python_packages/mlir_core:$PTO_INSTALL_DIR:${PYTHONPATH:-}"
+export PYTHONPATH="$PTO_INSTALL_DIR:${PYTHONPATH:-}"
 export LD_LIBRARY_PATH="$LLVM_BUILD_DIR/lib:$PTO_INSTALL_DIR/lib:${LD_LIBRARY_PATH:-}"
 export SOC_VERSION="$TARGET_SOC_VERSION"
 

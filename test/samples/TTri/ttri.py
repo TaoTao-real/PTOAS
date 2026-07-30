@@ -12,8 +12,8 @@ Generates one lower-triangular and one upper-triangular 32x32 i32 tile and
 stores them into a single output buffer as two consecutive 32x32 slices.
 """
 
-from mlir.ir import Context, Location, Module, InsertionPoint, IndexType, IntegerType, UnitAttr
-from mlir.dialects import func, arith, pto
+from ptoas.mlir.ir import Context, Location, Module, InsertionPoint, IndexType, IntegerType, UnitAttr
+from ptoas.mlir.dialects import func, arith, pto
 
 
 def build():

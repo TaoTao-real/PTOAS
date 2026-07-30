@@ -83,6 +83,7 @@ def _run_build(args, default_soc_version, target_dir, log_dir, ptoas_bin):
                     default_soc_version,
                     "all",
                     str(ptoas_bin),
+                    args.jobs,
                 )
         finally:
             os.chdir(original_dir)

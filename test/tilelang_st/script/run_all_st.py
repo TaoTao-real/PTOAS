@@ -102,6 +102,10 @@ def parse_args():
         help="Number of testcases to run in parallel after the shared build (default: 1).",
     )
     parser.add_argument(
+        "--build-jobs", type=int, default=None,
+        help="Maximum parallel jobs for the shared CMake build (default: host CPU count).",
+    )
+    parser.add_argument(
         "--smoke", action="store_true",
         help="Run only a representative smoke subset of cases for each testcase.",
     )
@@ -168,6 +172,9 @@ def main():
     if args.jobs < 1:
         print("[ERROR] --jobs must be >= 1", file=sys.stderr)
         sys.exit(1)
+    if args.build_jobs is not None and args.build_jobs < 1:
+        print("[ERROR] --build-jobs must be >= 1", file=sys.stderr)
+        sys.exit(1)
 
     batch_script_path = os.path.abspath(__file__)
     run_st_script_path = os.path.abspath(run_st.__file__)
@@ -219,6 +226,7 @@ def main():
     print(f"[INFO] selected_testcases={', '.join(selected_testcases)}")
     print(f"[INFO] smoke={args.smoke}")
     print(f"[INFO] jobs={args.jobs}")
+    print(f"[INFO] build_jobs={args.build_jobs or os.cpu_count() or 4}")
 
     original_dir = os.getcwd()
     failures = []
@@ -232,7 +240,13 @@ def main():
             else:
                 build_target = "all"
             print(f"[INFO] build requested for {build_target}")
-            run_st.build_project(args.run_mode, default_soc_version, build_target, ptoas_bin)
+            run_st.build_project(
+                args.run_mode,
+                default_soc_version,
+                build_target,
+                ptoas_bin,
+                args.build_jobs,
+            )
 
         total = len(selected_testcases)
         if args.jobs == 1:

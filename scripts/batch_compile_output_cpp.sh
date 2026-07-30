@@ -64,8 +64,7 @@ print_usage() {
   --log-dir              编译日志目录，默认: <build-root>/logs
   --help, -h             显示帮助
 
-推荐先执行:
-  source scripts/ptoas_env.sh
+运行前请通过 CANN setenv 或显式参数准备 bisheng 和 PTO-ISA 路径。
 
 默认编译参数来源:
   由 test/npu_validation/scripts/generate_testcase.py 中
@@ -155,7 +154,7 @@ elif [[ "${COMPILER}" != */* ]] && command -v "${COMPILER}" >/dev/null 2>&1; the
 	COMPILER="$(command -v "${COMPILER}")"
 fi
 
-[[ -n "${COMPILER}" ]] || die "未找到编译器，请先 source scripts/ptoas_env.sh，或通过 --compiler/COMPILER 指定 bisheng 路径"
+[[ -n "${COMPILER}" ]] || die "未找到编译器，请通过 CANN setenv、--compiler 或 COMPILER 指定 bisheng 路径"
 [[ -n "${PTO_ISA_PATH}" ]] || die "未找到 PTO-ISA 路径，请通过 --pto-isa-path、PTO_ISA_PATH 或 PTO_ISA_ROOT 指定"
 [[ -x "${COMPILER}" ]] || die "编译器不可执行: ${COMPILER}"
 [[ -d "${SRC_ROOT}" ]] || die "源码目录不存在: ${SRC_ROOT}"

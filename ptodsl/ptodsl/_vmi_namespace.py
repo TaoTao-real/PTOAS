@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from mlir.dialects import pto as _pto
-from mlir.ir import BF16Type, F16Type, F32Type, Float8E4M3FNType, Float8E5M2Type, IntegerType, MemRefType
+from ptoas.mlir.dialects import pto as _pto
+from ptoas.mlir.ir import BF16Type, F16Type, F32Type, Float8E4M3FNType, Float8E5M2Type, IntegerType, MemRefType
 
 from ._scalar_coercion import coerce_scalar_to_type
 from ._surface_values import _coerce_index_value, _try_get_constant_index, unwrap_surface_value, wrap_surface_value

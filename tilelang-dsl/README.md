@@ -111,9 +111,9 @@ To check that the generated MLIR passes the current repo VPTO authoring-stage
 legality path:
 
 ```bash
-source scripts/ptoas_env.sh
+LLVM_BUILD_DIR=/path/to/llvm/build ./quick_install.sh
 PYTHONPATH=$PWD/tilelang-dsl/python python3 tilelang-dsl/examples/v1_verify_smoke.py /tmp/tilelang_v1_verify.mlir
-build/tools/ptoas/ptoas --pto-arch a5 --pto-backend=vpto --emit-vpto \
+ptoas --pto-arch a5 --pto-backend=vpto --emit-vpto \
   /tmp/tilelang_v1_verify.mlir -o /tmp/tilelang_v1_verify.checked.mlir
 ```
 

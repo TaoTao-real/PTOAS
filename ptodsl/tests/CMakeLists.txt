@@ -7,18 +7,15 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 
 if(NOT DEFINED _pto_python_test_env)
-  get_filename_component(_llvm_root "${LLVM_DIR}/../../.." ABSOLUTE)
   get_filename_component(_pto_python_bin_dir "${Python3_EXECUTABLE}" DIRECTORY)
   set(_ptodsl_test_pythonpath
-    "${CMAKE_BINARY_DIR}/python:${MLIR_PYTHON_PACKAGE_DIR}:${CMAKE_INSTALL_PREFIX}:$ENV{PYTHONPATH}"
+    "${CMAKE_BINARY_DIR}/python:$ENV{PYTHONPATH}"
   )
-  if(DEFINED ENV{PTO_INSTALL_DIR} AND NOT "$ENV{PTO_INSTALL_DIR}" STREQUAL "")
-    set(_ptodsl_test_pythonpath "$ENV{PTO_INSTALL_DIR}:${_ptodsl_test_pythonpath}")
-  endif()
   set(_pto_python_test_env
     "PYTHONPATH=${_ptodsl_test_pythonpath}"
-    "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/lib:${_llvm_root}/lib:${CMAKE_INSTALL_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
+    "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/lib:${LLVM_BUILD_LIBRARY_DIR}:${CMAKE_INSTALL_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
     "PATH=${CMAKE_BINARY_DIR}/tools/ptoas:${CMAKE_INSTALL_PREFIX}/bin:${_pto_python_bin_dir}:$ENV{PATH}"
+    "PTOAS_BIN=${CMAKE_BINARY_DIR}/tools/ptoas/ptoas"
   )
 endif()
 
@@ -59,7 +56,7 @@ endforeach()
 
 if(NOT TARGET check-dsl)
   set(_ptodsl_check_depends)
-  foreach(_target IN ITEMS PTODSLPackage PTOPythonModules ptoas_runtime_deps)
+  foreach(_target IN ITEMS PTODSLPackage PTOAS_Python ptoas_runtime_deps)
     if(TARGET ${_target})
       list(APPEND _ptodsl_check_depends ${_target})
     endif()

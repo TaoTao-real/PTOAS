@@ -1,32 +1,26 @@
-# pyproject.toml - Project metadata
-#
-# Build flow (requires LLVM already built):
-#   pip install .
-#
-# This will:
-#   1. CMake configure + Ninja build + install
-#   2. Package Python bindings into a wheel via docker/create_wheel.sh
-#
-# Environment variables (all optional):
-#   LLVM_BUILD_DIR               Path to LLVM build dir
-#                                (default: /llvm-workspace/llvm-project/build-shared)
-#   PTO_BUILD_DIR                Path to PTOAS build dir (default: <repo>/build)
-#   PTO_INSTALL_DIR              Install prefix (default: <repo>/install)
-#   CMAKE_C_COMPILER             Optional C compiler passed through to CMake
-#   CMAKE_CXX_COMPILER           Optional C++ compiler passed through to CMake
-#   PTOAS_PYTHON_PACKAGE_VERSION Wheel version override
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+# CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
+# Standard PEP 517 configuration for the `ptoas` distribution. Set
+# LLVM_BUILD_DIR to an existing LLVM/MLIR build. Pass
+# `--config-settings=build-dir=<path>` when tests or development tools require
+# a persistent CMake build tree.
 
 [build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "_ptoas_build_backend"
-backend-path = ["."]
+requires = ["scikit-build-core>=0.12.2,<2", "pybind11<3", "nanobind>=2.4"]
+build-backend = "scikit_build_core.build"
 
 [project]
 name = "ptoas"
-version = "0.51"
+dynamic = ["version"]
 description = "PTO Assembler & Optimizer"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = "Apache-2.0"
 dependencies = [
     "numpy",
@@ -35,8 +29,31 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
+
+[project.scripts]
+ptoas = "ptoas._cli:main"
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+cmake.version = "CMakeLists.txt"
+ninja.version = ">=1.10"
+build.verbose = false
+editable.mode = "redirect"
+install.components = ["PTOAS_Python"]
+
+[tool.scikit-build.wheel.packages]
+ptodsl = "ptodsl/ptodsl"
+ptoas = "ptodsl/ptoas"
+tilelang_dsl = "tilelang-dsl/python/tilelang_dsl"
+
+[tool.scikit-build.cmake.define]
+PTOAS_RELEASE_VERSION_OVERRIDE = { env = "PTOAS_RELEASE_VERSION_OVERRIDE", default = "" }
+
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "CMakeLists.txt"
+regex = 'project\s*\(\s*ptoas\s+VERSION\s+(?P<value>[0-9]+\.[0-9]+)\s*\)'

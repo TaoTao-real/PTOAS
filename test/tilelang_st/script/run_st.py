@@ -49,21 +49,18 @@ def _normalize_case_filters(case_filters):
 
 
 def find_ptoas_bin():
-    """Locate the ptoas binary by walking up from this script to the repo root."""
+    """Locate the ptoas entry point from an override or the active environment."""
     env_bin = os.environ.get("PTOAS_BIN")
-    if env_bin and os.path.isfile(env_bin):
-        return os.path.abspath(env_bin)
+    if env_bin:
+        resolved = shutil.which(env_bin)
+        if resolved:
+            return os.path.abspath(resolved)
+        if os.path.isfile(env_bin) and os.access(env_bin, os.X_OK):
+            return os.path.abspath(env_bin)
+        return None
 
-    search_dir = os.path.dirname(os.path.abspath(__file__))
-    for _ in range(8):
-        candidate = os.path.join(search_dir, "build", "tools", "ptoas", "ptoas")
-        if os.path.isfile(candidate):
-            return os.path.abspath(candidate)
-        parent = os.path.dirname(search_dir)
-        if parent == search_dir:
-            break
-        search_dir = parent
-    return None
+    resolved = shutil.which("ptoas")
+    return os.path.abspath(resolved) if resolved else None
 
 
 def set_env_variables(run_mode, soc_version):
@@ -118,7 +115,7 @@ def get_testcase_work_dir(testcase):
     return os.path.join("build", "testcase", testcase)
 
 
-def build_project(run_mode, soc_version, testcase, ptoas_bin):
+def build_project(run_mode, soc_version, testcase, ptoas_bin, build_jobs=None):
     build_dir = "build"
     if os.path.exists(build_dir):
         print(f"clean build: {build_dir}")
@@ -143,8 +140,8 @@ def build_project(run_mode, soc_version, testcase, ptoas_bin):
             text=True,
         )
 
-        cpu_count = os.cpu_count() or 4
-        make_cmd = ["make", "VERBOSE=1", "-j", str(cpu_count)]
+        build_jobs = build_jobs or os.cpu_count() or 4
+        make_cmd = ["make", "VERBOSE=1", "-j", str(build_jobs)]
         result = subprocess.run(
             make_cmd,
             cwd=build_dir,
@@ -275,8 +272,13 @@ def main():
                         help="Skip build (requires prior build)")
     parser.add_argument("--target-dir", required=False,
                         help="TileLang ST target directory. Defaults to npu/<soc>/src/st.")
+    parser.add_argument("--build-jobs", type=int, default=None,
+                        help="Maximum parallel jobs for the shared CMake build.")
 
     args = parser.parse_args()
+
+    if args.build_jobs is not None and args.build_jobs < 1:
+        parser.error("--build-jobs must be >= 1")
 
     if args.soc_version == "a5":
         default_soc_version = "Ascend950PR_9599"
@@ -315,7 +317,13 @@ def main():
         set_env_variables(args.run_mode, default_soc_version)
 
         if not args.without_build:
-            build_project(args.run_mode, default_soc_version, testcase, ptoas_bin)
+            build_project(
+                args.run_mode,
+                default_soc_version,
+                testcase,
+                ptoas_bin,
+                args.build_jobs,
+            )
 
         # gen golden → run binary → compare
         run_gen_data(testcase, args.case)

@@ -41,7 +41,7 @@ Target IR (expand_tileop_to_vpto_result.pto):
   }
 """
 
-from mlir.ir import (
+from ptoas.mlir.ir import (
     Attribute,
     Context,
     F32Type,
@@ -54,7 +54,7 @@ from mlir.ir import (
     StringAttr,
     Type,
 )
-from mlir.dialects import arith, func, pto, scf
+from ptoas.mlir.dialects import arith, func, pto, scf
 
 
 def build():

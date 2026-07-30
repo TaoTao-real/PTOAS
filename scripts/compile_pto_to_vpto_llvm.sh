@@ -15,12 +15,12 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PTO_FILE="${1:-}"
 OUT_DIR_ARG="${2:-}"
 
-PTOAS_BIN="${PTOAS_BIN:-${ROOT_DIR}/build/tools/ptoas/ptoas}"
+PTOAS_BIN="${PTOAS_BIN:-}"
 PTOAS_FLAGS="${PTOAS_FLAGS:---pto-arch a5}"
 VPTO_FLAGS="${VPTO_FLAGS:---pto-backend=vpto --vpto-emit-hivm-llvm}"
 AICORE_ARCH="${AICORE_ARCH:-dav-c310-vec}"
 ASCEND_HOME_PATH="${ASCEND_HOME_PATH:-${HOME}/cann}"
-BISHENG_BIN=""
+BISHENG_BIN="${BISHENG_BIN:-}"
 BISHENG_FLAGS="${BISHENG_FLAGS:-}"
 LLVM_IR=""
 DEVICE_OBJ=""
@@ -74,19 +74,21 @@ EOF
 [[ "${PTO_FILE}" == *.pto ]] || die "input must be a .pto file: ${PTO_FILE}"
 [[ -f "${PTO_FILE}" ]] || die "missing input file: ${PTO_FILE}"
 
-set +u
-source "${ROOT_DIR}/scripts/ptoas_env.sh"
-set -u
-
 if [[ -n "${ASCEND_HOME_PATH}" && -f "${ASCEND_HOME_PATH}/set_env.sh" ]]; then
   set +u
   source "${ASCEND_HOME_PATH}/set_env.sh" >/dev/null 2>&1
   set -u
 fi
 
+if [[ -z "${PTOAS_BIN}" ]]; then
+  PTOAS_BIN="$(command -v ptoas || true)"
+elif [[ "${PTOAS_BIN}" != */* ]]; then
+  PTOAS_BIN="$(command -v "${PTOAS_BIN}" || true)"
+fi
 BISHENG_BIN="${BISHENG_BIN:-${ASCEND_HOME_PATH}/bin/bisheng}"
 
-[[ -x "${PTOAS_BIN}" ]] || die "PTOAS_BIN is not executable: ${PTOAS_BIN}"
+[[ -n "${PTOAS_BIN}" && -x "${PTOAS_BIN}" ]] || \
+  die "ptoas not found; run ./quick_install.sh or set PTOAS_BIN"
 command -v "${BISHENG_BIN}" >/dev/null 2>&1 || die "bisheng not found: ${BISHENG_BIN}"
 
 pto_abs="$(cd "$(dirname "${PTO_FILE}")" && pwd)/$(basename "${PTO_FILE}")"

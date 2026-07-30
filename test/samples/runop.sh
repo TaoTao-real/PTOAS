@@ -35,7 +35,7 @@ Env:
   PTOBC_BIN   # path to ptobc executable (optional)
   PYTHON_BIN  # python executable to run samples (optional)
   PTOAS_OUT_DIR  # where generated *.mlir/*.cpp go (optional; defaults to a temp dir)
-  PTO_BUILD_DIR  # build directory root that contains tools/ptoas and tools/ptobc (optional)
+  PTO_BUILD_DIR  # build directory root that contains tools/ptobc (optional)
   PTOAS_FLAGS  # extra flags passed to ptoas (e.g. --enable-insert-sync)
   PTOAS_ENABLE_INSERT_SYNC  # 1 to append --enable-insert-sync to PTOAS_FLAGS (default: 1)
   PTO_PTO_DIRS  # space-separated dirs to run .pto directly (default: Sync Qwen3DecodeA3 Qwen3DecodeA5 DeepseekV4DecodeA3 DeepseekV4DecodeA5 CommSync Prelu Rem Rems Gemvmx MatmulMxLowPrecision TquantMx Movfp)
@@ -62,27 +62,16 @@ lcfirst() {
 
 resolve_ptoas_bin() {
   if [[ -n "${PTOAS_BIN}" ]]; then
-    echo "${PTOAS_BIN}"
-    return 0
+    local override
+    override="$(command -v "${PTOAS_BIN}" 2>/dev/null || true)"
+    if [[ -n "${override}" && -x "${override}" ]]; then
+      echo "${override}"
+      return 0
+    fi
+    return 1
   fi
 
-  # Common locations:
-  # - installed wrapper in repo: PTOAS/install/bin/ptoas
-  # - out-of-tree build in repo: PTOAS/build/tools/ptoas/ptoas
-  # - legacy layout: build/bin/ptoas
   local cand
-  if [[ -n "${PTO_BUILD_DIR}" ]]; then
-    cand="${PTO_BUILD_DIR%/build}/install/bin/ptoas"
-    [[ -x "$cand" ]] && { echo "$cand"; return 0; }
-    cand="${PTO_BUILD_DIR}/tools/ptoas/ptoas"
-    [[ -x "$cand" ]] && { echo "$cand"; return 0; }
-    cand="${PTO_BUILD_DIR}/bin/ptoas"
-    [[ -x "$cand" ]] && { echo "$cand"; return 0; }
-  fi
-  cand="${BASE_DIR}/../../build/tools/ptoas/ptoas"
-  [[ -x "$cand" ]] && { echo "$cand"; return 0; }
-  cand="${BASE_DIR}/../../../../build/bin/ptoas"
-  [[ -x "$cand" ]] && { echo "$cand"; return 0; }
   cand="$(command -v ptoas 2>/dev/null || true)"
   [[ -n "$cand" && -x "$cand" ]] && { echo "$cand"; return 0; }
 
@@ -240,7 +229,7 @@ process_one_dir() {
   fi
 
   if [[ -z "$ptoas" || ! -x "$ptoas" ]]; then
-    echo -e "${A}\tFAIL\tMissing executable: PTOAS_BIN (searched common paths)"
+    echo -e "${A}\tFAIL\tMissing ptoas command (install PTOAS or set PTOAS_BIN)"
     return 0
   fi
   if [[ -z "$python" || ! -x "$python" ]]; then

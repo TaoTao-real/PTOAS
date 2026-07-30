@@ -129,7 +129,7 @@ print_msprof_log() {
 python_can_import_ptodsl() {
   local python_bin="$1"
   "${python_bin}" - <<'PY' >/dev/null 2>&1
-import mlir.ir  # noqa: F401
+import ptoas.mlir.ir  # noqa: F401
 from ptodsl import pto  # noqa: F401
 PY
 }
@@ -232,7 +232,7 @@ if [[ -n "${RESOLVED_PTOAS_BIN:-}" ]]; then
   export PTOAS_BIN="${RESOLVED_PTOAS_BIN}"
 fi
 if ! python_can_import_ptodsl "${RESOLVED_PYTHON_BIN}"; then
-  die "active Python environment cannot import ptodsl/mlir.ir; install the PTOAS wheel or use a preconfigured environment"
+  die "active Python environment cannot import ptodsl/ptoas.mlir.ir; install the PTOAS wheel or use a preconfigured environment"
 fi
 if ! command -v ptoas >/dev/null 2>&1; then
   die "ptoas is not available on PATH; install the PTOAS wheel or export PTOAS_BIN"

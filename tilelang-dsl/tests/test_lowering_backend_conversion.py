@@ -6,22 +6,18 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-# =========================================================
-# Python Package Configuration
-# =========================================================
+import unittest
 
-add_custom_target(PTOPythonModules)
+from ptoas.mlir import ir
+from tilelang_dsl.lowering_backend import LoweringResult
 
-# [修改] 依赖必须指向 lib/Bindings/Python 中定义的 Target (_pto)
-add_dependencies(PTOPythonModules _pto) 
 
-# 生成 TableGen 绑定代码
-set(LLVM_TARGET_DEFINITIONS pto/dialects/PTOOps.td)
-mlir_tablegen(pto/dialects/_pto_ops_gen.py
-  -gen-python-op-bindings
-  -bind-dialect=pto
-  -I${PROJECT_SOURCE_DIR}/include
-)
-add_public_tablegen_target(PTOOpsPyGen)
+class LoweringBackendConversionTests(unittest.TestCase):
+    def test_text_result_parses_with_namespaced_pto_dialect(self):
+        module = LoweringResult(text="module {}").as_module()
 
-add_dependencies(PTOPythonModules PTOOpsPyGen)
+        self.assertIsInstance(module, ir.Module)
+
+
+if __name__ == "__main__":
+    unittest.main()

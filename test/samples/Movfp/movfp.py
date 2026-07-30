@@ -16,9 +16,9 @@ Important PTO-ISA constraints (a2a3/a5):
   - src must be ACC tile; dst must be MAT tile.
 """
 
-from mlir.ir import Context, Location, Module, InsertionPoint, UnitAttr
-from mlir.dialects import func, arith, pto
-from mlir.ir import F16Type, F32Type, IndexType, IntegerType
+from ptoas.mlir.ir import Context, Location, Module, InsertionPoint, UnitAttr
+from ptoas.mlir.dialects import func, arith, pto
+from ptoas.mlir.ir import F16Type, F32Type, IndexType, IntegerType
 
 
 def build():
