@@ -11345,15 +11345,27 @@ static bool isLocallyBoundTileSource(Value value) {
   if (!value || isa<BlockArgument>(value))
     return false;
 
+  Operation *def = value.getDefiningOp();
   if (isa<AllocTileOp, DeclareTileOp, BindTileOp, PointerCastOp,
-          MaterializeTileOp>(
-          value.getDefiningOp()))
+          MaterializeTileOp>(def))
     return true;
 
   if (auto bitcast = value.getDefiningOp<BitcastOp>())
     return isLocallyBoundTileSource(bitcast.getSrc());
   if (auto reshape = value.getDefiningOp<TReshapeOp>())
     return isLocallyBoundTileSource(reshape.getSrc());
+  if (auto subview = value.getDefiningOp<SubViewOp>())
+    return isLocallyBoundTileSource(subview.getSource());
+  if (auto fusionRegion = value.getDefiningOp<FusionRegionOp>()) {
+    auto result = dyn_cast<OpResult>(value);
+    if (!result)
+      return false;
+    auto yield =
+        dyn_cast<YieldOp>(fusionRegion.getBody().front().getTerminator());
+    if (!yield || result.getResultNumber() >= yield.getNumOperands())
+      return false;
+    return isLocallyBoundTileSource(yield.getOperand(result.getResultNumber()));
+  }
 
   return false;
 }

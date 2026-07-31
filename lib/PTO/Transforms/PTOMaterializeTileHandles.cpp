@@ -279,6 +279,17 @@ static TileHandleMetadata getTileHandleMetadata(Value value,
   meta.source = value;
   meta.config = TileBufConfigAttr::getDefault(ctx);
 
+  if (auto result = dyn_cast<OpResult>(value)) {
+    if (auto fusionRegion =
+            dyn_cast<pto::FusionRegionOp>(result.getOwner())) {
+      auto yield = dyn_cast<pto::YieldOp>(
+          fusionRegion.getBody().front().getTerminator());
+      if (yield && result.getResultNumber() < yield.getNumOperands())
+        return getTileHandleMetadata(yield.getOperand(result.getResultNumber()),
+                                     ctx);
+    }
+  }
+
   if (auto bind = value.getDefiningOp<BindTileOp>()) {
     meta.source = bind.getSource();
     meta.validRow = bind.getValidRow();
