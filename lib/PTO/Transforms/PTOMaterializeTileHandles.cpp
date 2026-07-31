@@ -279,6 +279,17 @@ static TileHandleMetadata getTileHandleMetadata(Value value,
   meta.source = value;
   meta.config = TileBufConfigAttr::getDefault(ctx);
 
+  if (auto result = dyn_cast<OpResult>(value)) {
+    if (auto fusionRegion =
+            dyn_cast<pto::FusionRegionOp>(result.getOwner())) {
+      auto yield = dyn_cast<pto::YieldOp>(
+          fusionRegion.getBody().front().getTerminator());
+      if (yield && result.getResultNumber() < yield.getNumOperands())
+        return getTileHandleMetadata(yield.getOperand(result.getResultNumber()),
+                                     ctx);
+    }
+  }
+
   if (auto bind = value.getDefiningOp<BindTileOp>()) {
     meta.source = bind.getSource();
     meta.validRow = bind.getValidRow();
@@ -1049,6 +1060,11 @@ static bool isTileViewSemantics(StringAttr viewSemantics) {
                            viewSemantics.getValue() == "bitcast");
 }
 
+static bool isDeclaredTileMemRefBacked(Value value) {
+  value = peelAddressSource(value);
+  return value.getDefiningOp<DeclareTileMemRefOp>() != nullptr;
+}
+
 static bool isTileOpHelper(func::FuncOp func) {
   return func->hasAttr("pto.tileop.helper");
 }
@@ -1460,14 +1476,26 @@ static Value materializeAnchorResult(Operation *anchor, Value anchoredValue,
       failedMaterialization = true;
       return Value();
     }
-    auto alloc = builder.create<AllocTileOp>(
-        anchor->getLoc(), tileTy, addr ? addr : Value(),
-        getAllocValidOperand(tileTy, meta.validRow, 0, builder,
-                             anchor->getLoc()),
-        getAllocValidOperand(tileTy, meta.validCol, 1, builder,
-                             anchor->getLoc()));
-    copyMaterializedTileAttrs(meta.attrs, alloc);
-    materialized = alloc.getResult();
+    if (!addr && isDeclaredTileMemRefBacked(anchoredValue)) {
+      auto materialize = builder.create<MaterializeTileOp>(
+          anchor->getLoc(), tileTy, anchoredValue,
+          getAllocValidOperand(tileTy, meta.validRow, 0, builder,
+                               anchor->getLoc()),
+          getAllocValidOperand(tileTy, meta.validCol, 1, builder,
+                               anchor->getLoc()),
+          meta.config);
+      copyMaterializedTileAttrs(meta.attrs, materialize);
+      materialized = materialize.getResult();
+    } else {
+      auto alloc = builder.create<AllocTileOp>(
+          anchor->getLoc(), tileTy, addr ? addr : Value(),
+          getAllocValidOperand(tileTy, meta.validRow, 0, builder,
+                               anchor->getLoc()),
+          getAllocValidOperand(tileTy, meta.validCol, 1, builder,
+                               anchor->getLoc()));
+      copyMaterializedTileAttrs(meta.attrs, alloc);
+      materialized = alloc.getResult();
+    }
   }
 
   for (OpOperand *use : usesToRewrite) {
@@ -1581,14 +1609,26 @@ struct PTOMaterializeTileHandlesPass
         failedMaterialization = true;
         continue;
       }
-      auto alloc = builder.create<AllocTileOp>(
-          op->getLoc(), tileTy, addr ? addr : Value(),
-          getAllocValidOperand(tileTy, meta.validRow, 0, builder,
-                               op->getLoc()),
-          getAllocValidOperand(tileTy, meta.validCol, 1, builder,
-                               op->getLoc()));
-      copyMaterializedTileAttrs(meta.attrs, alloc);
-      materialized = alloc.getResult();
+      if (!addr && isDeclaredTileMemRefBacked(oldValue)) {
+        auto materialize = builder.create<MaterializeTileOp>(
+            op->getLoc(), tileTy, oldValue,
+            getAllocValidOperand(tileTy, meta.validRow, 0, builder,
+                                 op->getLoc()),
+            getAllocValidOperand(tileTy, meta.validCol, 1, builder,
+                                 op->getLoc()),
+            meta.config);
+        copyMaterializedTileAttrs(meta.attrs, materialize);
+        materialized = materialize.getResult();
+      } else {
+        auto alloc = builder.create<AllocTileOp>(
+            op->getLoc(), tileTy, addr ? addr : Value(),
+            getAllocValidOperand(tileTy, meta.validRow, 0, builder,
+                                 op->getLoc()),
+            getAllocValidOperand(tileTy, meta.validCol, 1, builder,
+                                 op->getLoc()));
+        copyMaterializedTileAttrs(meta.attrs, alloc);
+        materialized = alloc.getResult();
+      }
       tileHandles[oldValue] = materialized;
       op->setOperand(operandNo, materialized);
       updateResultTypesAfterMaterializingOperand(op, operandNo, tileTy);
