@@ -227,6 +227,53 @@ static bool getStaticIntFromValue(Value value, int64_t &out) {
   return false;
 }
 
+static bool resolveDeclaredTpopTileValidShape(
+    Value value, SmallVectorImpl<int64_t> &validShape) {
+  if (!value.getDefiningOp<pto::DeclareTileOp>())
+    return false;
+
+  auto tileType = dyn_cast<pto::TileBufType>(value.getType());
+  if (!tileType || llvm::any_of(tileType.getShape(), ShapedType::isDynamic))
+    return false;
+
+  std::optional<SmallVector<int64_t, 2>> explicitValidShape;
+  bool hasTpopUser = false;
+  for (Operation *user : value.getUsers()) {
+    if (auto setValidShape = dyn_cast<pto::SetValidShapeOp>(user)) {
+      if (setValidShape.getSource() != value)
+        continue;
+
+      int64_t row = ShapedType::kDynamic;
+      int64_t col = ShapedType::kDynamic;
+      if (!getStaticIntFromValue(setValidShape.getValidRow(), row) ||
+          !getStaticIntFromValue(setValidShape.getValidCol(), col))
+        return false;
+
+      SmallVector<int64_t, 2> candidate{row, col};
+      if (explicitValidShape && *explicitValidShape != candidate)
+        return false;
+      explicitValidShape = std::move(candidate);
+      continue;
+    }
+
+    if (auto tpop = dyn_cast<pto::TPopOp>(user)) {
+      if (tpop.getTile() == value)
+        hasTpopUser = true;
+    }
+  }
+
+  if (explicitValidShape) {
+    validShape.assign(explicitValidShape->begin(), explicitValidShape->end());
+    return true;
+  }
+
+  if (!hasTpopUser)
+    return false;
+
+  validShape.assign(tileType.getShape().begin(), tileType.getShape().end());
+  return true;
+}
+
 static bool resolveStaticTileValidShape(Value value,
                                         SmallVectorImpl<int64_t> &validShape) {
   Value validRow;
@@ -234,6 +281,9 @@ static bool resolveStaticTileValidShape(Value value,
   Operation *def = value.getDefiningOp();
   if (!def)
     return false;
+
+  if (resolveDeclaredTpopTileValidShape(value, validShape))
+    return true;
 
   if (auto alloc = dyn_cast<pto::AllocTileOp>(def)) {
     validRow = alloc.getValidRow();
@@ -252,8 +302,16 @@ static bool resolveStaticTileValidShape(Value value,
     validCol = popAiv.getValidCol();
   }
 
-  if (!validRow || !validCol)
+  if (!validRow || !validCol) {
+    if ((isa<pto::TPopFromAicOp, pto::TPopFromAivOp>(def))) {
+      auto tileType = dyn_cast<pto::TileBufType>(value.getType());
+      if (tileType && !llvm::any_of(tileType.getShape(), ShapedType::isDynamic)) {
+        validShape.assign(tileType.getShape().begin(), tileType.getShape().end());
+        return true;
+      }
+    }
     return false;
+  }
 
   int64_t row = ShapedType::kDynamic;
   int64_t col = ShapedType::kDynamic;
@@ -788,6 +846,24 @@ buildOperandSpecsJson(Operation *operation) {
   return json;
 }
 
+static bool hasPipeTypedValue(Operation *operation) {
+  for (Type type : operation->getOperandTypes()) {
+    if (isa<pto::PipeType>(type))
+      return true;
+  }
+  for (Type type : operation->getResultTypes()) {
+    if (isa<pto::PipeType>(type))
+      return true;
+  }
+  return false;
+}
+
+static bool shouldSkipTemplateMetadata(Operation *operation) {
+  if (isa<pto::TGetValOp, pto::TSetValOp>(operation))
+    return true;
+  return hasPipeTypedValue(operation);
+}
+
 static std::optional<std::string>
 getTargetArch(Operation *operation) {
   auto module = operation->getParentOfType<ModuleOp>();
@@ -1049,6 +1125,8 @@ struct InsertTemplateAttributesPass
     SmallVector<Operation *> tileOperations;
     module.walk([&](Operation *operation) {
       if (isa<pto::TReshapeOp>(operation))
+        return;
+      if (shouldSkipTemplateMetadata(operation))
         return;
       if (isa<pto::OpPipeInterface>(operation))
         tileOperations.push_back(operation);
