@@ -113,6 +113,44 @@ static bool shouldMaterializeYieldOperand(Operation *owner) {
   return isa<scf::YieldOp, pto::YieldOp>(owner);
 }
 
+static bool canRetypeValueUsesToTile(Value value) {
+  for (OpOperand &use : value.getUses()) {
+    Operation *owner = use.getOwner();
+    if (shouldMaterializeOperand(owner) || shouldMaterializeYieldOperand(owner))
+      continue;
+    return false;
+  }
+  return true;
+}
+
+static bool canMaterializeYieldOperandUse(OpOperand &use) {
+  Operation *owner = use.getOwner();
+  unsigned operandNo = use.getOperandNumber();
+
+  if (auto yield = dyn_cast<pto::YieldOp>(owner)) {
+    auto parent = dyn_cast_or_null<pto::FusionRegionOp>(yield->getParentOp());
+    if (!parent || operandNo >= parent.getNumResults())
+      return false;
+    return canRetypeValueUsesToTile(parent.getResult(operandNo));
+  }
+
+  if (auto yield = dyn_cast<scf::YieldOp>(owner)) {
+    Operation *parent = yield->getParentOp();
+    if (auto forOp = dyn_cast_or_null<scf::ForOp>(parent)) {
+      if (operandNo >= forOp.getNumResults())
+        return false;
+      return canRetypeValueUsesToTile(forOp.getResult(operandNo));
+    }
+    if (auto ifOp = dyn_cast_or_null<scf::IfOp>(parent)) {
+      if (operandNo >= ifOp.getNumResults())
+        return false;
+      return canRetypeValueUsesToTile(ifOp.getResult(operandNo));
+    }
+  }
+
+  return false;
+}
+
 static bool hasStringAttr(ArrayRef<NamedAttribute> attrs, StringRef name,
                           StringRef value) {
   return llvm::any_of(attrs, [&](NamedAttribute attr) {
@@ -720,6 +758,8 @@ materializeSCFIfResults(ModuleOp module, DenseMap<Value, Value> &tileHandles) {
     for (auto [idx, result] : llvm::enumerate(ifOp.getResults())) {
       if (!isLocalTileMemRef(result.getType()))
         continue;
+      if (!canRetypeValueUsesToTile(result))
+        continue;
 
       Value thenTile =
           lookupMaterializedTileHandle(thenYield.getOperand(idx), tileHandles);
@@ -813,6 +853,9 @@ materializeSCFForResults(ModuleOp module, DenseMap<Value, Value> &tileHandles) {
 
     for (auto [idx, result] : llvm::enumerate(forOp.getResults())) {
       if (!isLocalTileMemRef(result.getType()))
+        continue;
+      if (!canRetypeValueUsesToTile(result) ||
+          !canRetypeValueUsesToTile(forOp.getRegionIterArg(idx)))
         continue;
 
       Value initTile =
@@ -914,6 +957,8 @@ materializeFusionRegionResults(ModuleOp module,
 
     for (auto [idx, result] : llvm::enumerate(fusionRegion.getResults())) {
       if (!isLocalTileMemRef(result.getType()))
+        continue;
+      if (!canRetypeValueUsesToTile(result))
         continue;
 
       Value yieldTile =
@@ -1366,7 +1411,8 @@ static Value materializeAnchorResult(Operation *anchor, Value anchoredValue,
   SmallVector<OpOperand *> usesToRewrite;
   for (OpOperand &use : anchoredValue.getUses()) {
     if (shouldMaterializeOperand(use.getOwner()) ||
-        shouldMaterializeYieldOperand(use.getOwner()))
+        (shouldMaterializeYieldOperand(use.getOwner()) &&
+         canMaterializeYieldOperandUse(use)))
       usesToRewrite.push_back(&use);
   }
 

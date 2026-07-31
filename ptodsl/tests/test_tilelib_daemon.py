@@ -13,7 +13,9 @@ import stat
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
+from ptodsl import _vmi_namespace
 from ptodsl.tilelib.serving.client import DaemonClient, DaemonError
 from ptodsl.tilelib.serving.daemon import (
     TileLibDaemonServer,
@@ -39,6 +41,16 @@ def _tile_spec(dtype="f32", shape=(8, 64)):
 
 
 def _view_spec(dtype="f32", shape=(1, 1, 1, 8, 64), strides=(512, 512, 512, 64, 1)):
+    return {
+        "kind": "view",
+        "dtype": dtype,
+        "shape": list(shape),
+        "strides": list(strides),
+        "memory_space": "gm",
+    }
+
+
+def _rank1_view_spec(dtype="f32", shape=(128,), strides=(1,)):
     return {
         "kind": "view",
         "dtype": dtype,
@@ -136,6 +148,77 @@ class TileLibDaemonTest(unittest.TestCase):
         self.assertIn(TADD, candidates)
         self.assertIn(VMI_TADD, candidates)
         self.assertIn("vmi", candidates[VMI_TADD]["tags"])
+
+    def test_get_metadata_filters_unsupported_vmi_trace_specs(self):
+        row_major = _tile_spec(shape=(8, 64))
+        row_scalar = _tile_spec(shape=(8, 1))
+        row_scalar["config"]["b_layout"] = "col_major"
+        row_scalar["config"]["s_layout"] = "row_major"
+        operands = [row_major, row_scalar, row_major]
+
+        metadata = self.client.get_metadata(
+            "a5",
+            "pto.trowexpandmul",
+            operands,
+            include_vmi_candidates=True,
+        )
+
+        candidates = metadata["candidates"]
+        self.assertEqual(set(candidates), {"template_trowexpandmul"})
+
+    def test_vmi_vstore_surface_accepts_generated_updated_base_signature(self):
+        calls = []
+
+        def generated_vstore(updated_base, values, destination, offset, mask, **kwargs):
+            calls.append((updated_base, values, destination, offset, mask, kwargs))
+            return "vstore-op"
+
+        with mock.patch.object(_vmi_namespace, "_generated", return_value=generated_vstore):
+            result = _vmi_namespace._emit_vstore_generated(
+                updated_base=None,
+                values=["value"],
+                destination="dst",
+                offset="offset",
+                mask=["mask"],
+                stride=None,
+                block_stride=None,
+                repeat_stride=None,
+                dist_mode=None,
+                group=None,
+                pmode=None,
+                loc=None,
+                ip=None,
+            )
+
+        self.assertEqual(result, "vstore-op")
+        self.assertEqual(calls[0][:5], (None, ["value"], "dst", "offset", ["mask"]))
+
+    def test_vmi_vstore_surface_returns_generated_updated_base_result(self):
+        class GeneratedVStore:
+            updated_base = "next-dst"
+
+        def generated_vstore(updated_base, values, destination, offset, mask, **kwargs):
+            self.assertEqual(updated_base, "dst-type")
+            return GeneratedVStore()
+
+        with mock.patch.object(_vmi_namespace, "_generated", return_value=generated_vstore):
+            result = _vmi_namespace._emit_vstore_generated(
+                updated_base="dst-type",
+                values=["value"],
+                destination="dst",
+                offset="offset",
+                mask=["mask"],
+                stride=None,
+                block_stride=None,
+                repeat_stride=None,
+                dist_mode=None,
+                group=None,
+                pmode=None,
+                loc=None,
+                ip=None,
+            )
+
+        self.assertEqual(result, "next-dst")
 
     def test_explicit_vmi_candidate_can_instantiate(self):
         mlir = self.client.instantiate(
@@ -256,6 +339,23 @@ class TileLibDaemonTest(unittest.TestCase):
 
     def test_view_operand_template_instantiates(self):
         operands = [_view_spec(), _tile_spec()]
+
+        mlir = self.client.instantiate(
+            "a5",
+            "pto.tload",
+            operands,
+            candidate_id="template_tload_nd2nd",
+        )
+
+        self.assertIn("func.func @template_tload_nd2nd", mlir)
+        self.assertIn("pto.tensor_view_addr", mlir)
+        self.assertIn("pto.mte_gm_ub", mlir)
+
+    def test_rank1_view_operand_template_instantiates(self):
+        operands = [
+            _rank1_view_spec(),
+            _tile_spec(shape=(1, 128)),
+        ]
 
         mlir = self.client.instantiate(
             "a5",

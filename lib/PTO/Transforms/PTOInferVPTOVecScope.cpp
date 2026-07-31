@@ -79,7 +79,17 @@ static bool isForbiddenInsideInferredVectorScope(Operation *op) {
 static bool isCloneableMaskProducer(Operation *op) {
   return isa<pto::PsetB8Op, pto::PsetB16Op, pto::PsetB32Op, pto::PgeB8Op,
              pto::PgeB16Op, pto::PgeB32Op, pto::PltB8Op, pto::PltB16Op,
-             pto::PltB32Op>(op);
+             pto::PltB32Op, pto::PandOp, pto::PorOp, pto::PnotOp>(op);
+}
+
+static bool isCloneableScalarBroadcastProducer(Operation *op) {
+  auto vdup = dyn_cast<pto::VdupOp>(op);
+  return vdup && !isa<pto::VRegType>(vdup.getInput().getType());
+}
+
+static bool isCloneableSharedProducer(Operation *op) {
+  return isCloneableMaskProducer(op) ||
+         isCloneableScalarBroadcastProducer(op);
 }
 
 static bool isVectorScopeBoundaryOperation(Operation *op) {
@@ -280,32 +290,43 @@ static void keepEarliestUseFirst(SmallVectorImpl<OpOperand *> &uses,
     std::swap(uses.front(), uses[earliest]);
 }
 
-static void cloneSharedMaskProducers(Block &block, MLIRContext *context) {
+static bool shouldCloneSharedResult(OpResult result) {
+  Type type = result.getType();
+  return isa<pto::MaskType, pto::VRegType>(type);
+}
+
+static void cloneSharedProducers(Block &block, MLIRContext *context) {
   IRRewriter rewriter(context);
-  SmallVector<Operation *, 32> ops;
-  for (Operation &op : block)
-    ops.push_back(&op);
+  bool changed = true;
+  while (changed) {
+    changed = false;
 
-  for (Operation *op : ops) {
-    if (!isCloneableMaskProducer(op))
-      continue;
+    SmallVector<Operation *, 32> ops;
+    for (Operation &op : block)
+      ops.push_back(&op);
 
-    for (OpResult result : op->getOpResults()) {
-      if (!isa<pto::MaskType>(result.getType()) || result.use_empty())
+    for (Operation *op : ops) {
+      if (!isCloneableSharedProducer(op))
         continue;
 
-      SmallVector<OpOperand *, 8> uses;
-      for (OpOperand &use : result.getUses())
-        uses.push_back(&use);
-      if (uses.size() < 2)
-        continue;
+      for (OpResult result : op->getOpResults()) {
+        if (!shouldCloneSharedResult(result) || result.use_empty())
+          continue;
 
-      keepEarliestUseFirst(uses, block);
-      for (OpOperand *use : ArrayRef<OpOperand *>(uses).drop_front()) {
-        Operation *user = use->getOwner();
-        rewriter.setInsertionPoint(user);
-        Operation *clone = rewriter.clone(*op);
-        use->set(clone->getResult(result.getResultNumber()));
+        SmallVector<OpOperand *, 8> uses;
+        for (OpOperand &use : result.getUses())
+          uses.push_back(&use);
+        if (uses.size() < 2)
+          continue;
+
+        keepEarliestUseFirst(uses, block);
+        for (OpOperand *use : ArrayRef<OpOperand *>(uses).drop_front()) {
+          Operation *user = use->getOwner();
+          rewriter.setInsertionPoint(user);
+          Operation *clone = rewriter.clone(*op);
+          use->set(clone->getResult(result.getResultNumber()));
+          changed = true;
+        }
       }
     }
   }
@@ -491,7 +512,7 @@ static LogicalResult wrapGreedySubclusters(ArrayRef<Operation *> ops,
 }
 
 static LogicalResult inferVecScopesInBlock(Block &block, MLIRContext *context) {
-  cloneSharedMaskProducers(block, context);
+  cloneSharedProducers(block, context);
 
   SmallVector<Operation *, 16> pending;
 

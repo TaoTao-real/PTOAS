@@ -588,6 +588,16 @@ static bool resolveStaticTileValidShape(Value value,
   } else if (auto popAiv = dyn_cast<pto::TPopFromAivOp>(def)) {
     validRow = popAiv.getValidRow();
     validCol = popAiv.getValidCol();
+  } else if (auto fusionRegion = dyn_cast<pto::FusionRegionOp>(def)) {
+    auto result = dyn_cast<OpResult>(value);
+    if (!result)
+      return false;
+    auto yieldOp =
+        dyn_cast<pto::YieldOp>(fusionRegion.getBody().front().getTerminator());
+    if (!yieldOp || result.getResultNumber() >= yieldOp.getNumOperands())
+      return false;
+    return resolveStaticTileValidShape(yieldOp.getOperand(result.getResultNumber()),
+                                       validShape);
   }
 
   if (!validRow || !validCol)

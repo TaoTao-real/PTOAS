@@ -2225,6 +2225,11 @@ struct PTOViewToMemrefPass
         return;
       }
 
+      if (failed(reconcileFusionRegionResultTypes(func))) {
+        signalPassFailure();
+        return;
+      }
+
       // ------------------------------------------------------------------
       // Stage 1.35: Lower pto.subview -> memref.subview + pto.bind_tile
       // ------------------------------------------------------------------
@@ -3659,7 +3664,8 @@ struct PTOViewToMemrefPass
         }
 
         if (maskPattern) {
-          rewriter.replaceOpWithNewOp<pto::TGatherOp>(
+          replaceOpWithClonedAttrs<pto::TGatherOp>(
+              rewriter,
               op,
               TypeRange{},
               src,
@@ -3683,7 +3689,8 @@ struct PTOViewToMemrefPass
             return;
           }
 
-          rewriter.replaceOpWithNewOp<pto::TGatherOp>(
+          replaceOpWithClonedAttrs<pto::TGatherOp>(
+              rewriter,
               op,
               TypeRange{},
               src,
@@ -3707,7 +3714,8 @@ struct PTOViewToMemrefPass
             return;
           }
 
-          rewriter.replaceOpWithNewOp<pto::TGatherOp>(
+          replaceOpWithClonedAttrs<pto::TGatherOp>(
+              rewriter,
               op,
               TypeRange{},
               src,
