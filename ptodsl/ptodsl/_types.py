@@ -506,7 +506,7 @@ def tile_buf_type(shape, dtype, valid_shape=None, *,
                   slayout: str = "NoneBox",
                   fractal_size: int = 512,
                   pad: str = "Null",
-                  compact: str = "normal") -> Type:
+                  compact: str = "null") -> Type:
     """
     Construct a ``!pto.tile_buf<…>`` type via the Python bindings.
 
@@ -514,8 +514,11 @@ def tile_buf_type(shape, dtype, valid_shape=None, *,
     When ``valid_shape`` is omitted, construct a tile type without a ``valid=``
     suffix and let the type's logical shape stand on its own.
     ``blayout="ColMajor"`` prints as ``blayout=col_major``.
-    ``compact`` selects the CompactMode: ``"normal"`` (default) or
-    ``"row_plus_one"`` (RowPlusOne — UB +1 padding band to avoid bank conflicts).
+    ``compact`` selects the CompactMode: ``"null"`` (default — matches the C++
+    ``TileBufConfigAttr`` default and prints with no ``compact=`` suffix),
+    ``"normal"`` (dense; lowers identically to ``"null"`` but prints
+    ``compact=1``), or ``"row_plus_one"`` (RowPlusOne — UB +1 padding band to
+    avoid bank conflicts, prints ``compact=2``).
 
     Requires an active MLIR context.
     """
@@ -527,12 +530,13 @@ def tile_buf_type(shape, dtype, valid_shape=None, *,
         )
     space_attr = _pto.AddressSpaceAttr.get(space_enum)
     compact_enum = {
+        "null": _pto.CompactMode.Null,
         "normal": _pto.CompactMode.Normal,
         "row_plus_one": _pto.CompactMode.RowPlusOne,
     }.get(compact)
     if compact_enum is None:
         raise ValueError(
-            f"Unknown compact '{compact}'; expected 'normal' or 'row_plus_one'"
+            f"Unknown compact '{compact}'; expected 'null', 'normal', or 'row_plus_one'"
         )
     cfg = _pto.TileBufConfigAttr.get(
         _pto.BLayoutAttr.get(getattr(_pto.BLayout, blayout)),
