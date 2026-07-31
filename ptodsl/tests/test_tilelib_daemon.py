@@ -13,7 +13,9 @@ import stat
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
+from ptodsl import _vmi_namespace
 from ptodsl.tilelib.serving.client import DaemonClient, DaemonError
 from ptodsl.tilelib.serving.daemon import (
     TileLibDaemonServer,
@@ -137,6 +139,76 @@ class TileLibDaemonTest(unittest.TestCase):
         self.assertIn(VMI_TADD, candidates)
         self.assertIn("vmi", candidates[VMI_TADD]["tags"])
 
+    def test_get_metadata_filters_unsupported_vmi_trace_specs(self):
+        row_major = _tile_spec(shape=(8, 64))
+        row_scalar = _tile_spec(shape=(8, 1))
+        row_scalar["config"]["b_layout"] = "col_major"
+        row_scalar["config"]["s_layout"] = "row_major"
+        operands = [row_major, row_scalar, row_major]
+
+        metadata = self.client.get_metadata(
+            "a5",
+            "pto.trowexpandmul",
+            operands,
+            include_vmi_candidates=True,
+        )
+
+        candidates = metadata["candidates"]
+        self.assertEqual(set(candidates), {"template_trowexpandmul"})
+
+    def test_vmi_vstore_surface_accepts_generated_updated_base_signature(self):
+        calls = []
+
+        def generated_vstore(updated_base, values, destination, offset, mask, **kwargs):
+            calls.append((updated_base, values, destination, offset, mask, kwargs))
+            return "vstore-op"
+
+        with mock.patch.object(_vmi_namespace, "_generated", return_value=generated_vstore):
+            result = _vmi_namespace._emit_vstore_generated(
+                updated_base=None,
+                values=["value"],
+                destination="dst",
+                offset="offset",
+                mask=["mask"],
+                stride=None,
+                block_stride=None,
+                repeat_stride=None,
+                dist_mode=None,
+                group=None,
+                pmode=None,
+                loc=None,
+                ip=None,
+            )
+
+        self.assertEqual(result, "vstore-op")
+        self.assertEqual(calls[0][:5], (None, ["value"], "dst", "offset", ["mask"]))
+
+    def test_vmi_vstore_surface_returns_generated_updated_base_result(self):
+        class GeneratedVStore:
+            updated_base = "next-dst"
+
+        def generated_vstore(updated_base, values, destination, offset, mask, **kwargs):
+            self.assertEqual(updated_base, "dst-type")
+            return GeneratedVStore()
+
+        with mock.patch.object(_vmi_namespace, "_generated", return_value=generated_vstore):
+            result = _vmi_namespace._emit_vstore_generated(
+                updated_base="dst-type",
+                values=["value"],
+                destination="dst",
+                offset="offset",
+                mask=["mask"],
+                stride=None,
+                block_stride=None,
+                repeat_stride=None,
+                dist_mode=None,
+                group=None,
+                pmode=None,
+                loc=None,
+                ip=None,
+            )
+
+        self.assertEqual(result, "next-dst")
     def test_explicit_vmi_candidate_can_instantiate(self):
         mlir = self.client.instantiate(
             "a5",
