@@ -41,6 +41,8 @@ namespace {
 static constexpr llvm::StringLiteral kFusionGroupIdAttr =
     "pto.fusion.group_id";
 static constexpr llvm::StringLiteral kFusionOrderAttr = "pto.fusion.order";
+static constexpr llvm::StringLiteral kVmiFusionBoundaryAttr =
+    "pto.vmi.fusion.boundary";
 
 struct PlannedFusionGroup {
   SmallVector<const pto::FusionComputeNode *, 8> members;
@@ -189,7 +191,8 @@ static void assignStableGroupMetadata(ArrayRef<PlannedFusionGroup> groups,
         FailureOr<pto::FusionOpSemantics> semanticsOr =
             pto::getFusionOpSemantics(op);
         include = succeeded(semanticsOr) &&
-                  semanticsOr->kind == pto::FusionOpKind::LocalBoundary;
+                  semanticsOr->kind == pto::FusionOpKind::LocalBoundary &&
+                  op->hasAttr(kVmiFusionBoundaryAttr);
       }
       if (!include) {
         if (op == last)
@@ -600,7 +603,9 @@ public:
       FailureOr<pto::FusionOpSemantics> semanticsOr =
           pto::getFusionOpSemantics(&op);
       if (failed(semanticsOr) ||
-          semanticsOr->kind == pto::FusionOpKind::HardBoundary)
+          semanticsOr->kind == pto::FusionOpKind::HardBoundary ||
+          (semanticsOr->kind == pto::FusionOpKind::LocalBoundary &&
+           !op.hasAttr(kVmiFusionBoundaryAttr)))
         hardBoundarySinceCompute = true;
     }
 
