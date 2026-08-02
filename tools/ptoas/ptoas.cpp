@@ -3186,6 +3186,16 @@ int mlir::pto::compilePTOASModule(
         buildInsertTemplateAttributesOptions(*expandOptions);
     pm.addPass(
         pto::createInsertTemplateAttributesPass(insertOptions));
+
+    // The VMI planner must see the selected implementation and its fallback
+    // boundary before it forms tile-native fusion regions. Keep the legacy
+    // path's ordinary selection in its historical position below so existing
+    // MI fusion behavior is unchanged.
+    if (useVMIFusionPipeline) {
+      pto::SelectTemplateCandidateOptions selectOptions;
+      selectOptions.selectionPolicy = "prefer-vmi";
+      pm.addPass(pto::createSelectTemplateCandidatePass(selectOptions));
+    }
   }
 
   // Keep frontend fusion on tile-native PTO IR and annotate last_use directly
@@ -3212,10 +3222,9 @@ int mlir::pto::compilePTOASModule(
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOFusionRegionGenPass());
   }
   if (!isA2A3 && expandOptions &&
-      expandOptions->tileLibBackend == "ptodsl") {
+      expandOptions->tileLibBackend == "ptodsl" && !useVMIFusionPipeline) {
     pto::SelectTemplateCandidateOptions selectOptions;
-    selectOptions.selectionPolicy =
-        useVMIFusionPipeline ? "prefer-vmi" : "ordinary-only";
+    selectOptions.selectionPolicy = "ordinary-only";
     pm.addPass(pto::createSelectTemplateCandidatePass(selectOptions));
   }
 
