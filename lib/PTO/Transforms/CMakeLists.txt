@@ -53,6 +53,7 @@ add_mlir_dialect_library(PTOTransforms
   VMILayoutSinkMaterialization.cpp
   VMIToVPTO.cpp
   PTOInferVPTOVecScope.cpp
+  TileShapeStateAnalysis.cpp
 
   InsertSync/PTOInsertSync.cpp
   PTOInjectBarrierAllSync.cpp
