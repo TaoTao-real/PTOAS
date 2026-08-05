@@ -79,7 +79,8 @@ static bool isForbiddenInsideInferredVectorScope(Operation *op) {
 static bool isCloneableMaskProducer(Operation *op) {
   return isa<pto::PsetB8Op, pto::PsetB16Op, pto::PsetB32Op, pto::PgeB8Op,
              pto::PgeB16Op, pto::PgeB32Op, pto::PltB8Op, pto::PltB16Op,
-             pto::PltB32Op, pto::PandOp, pto::PorOp, pto::PnotOp>(op);
+             pto::PltB32Op, pto::PandOp, pto::PorOp, pto::PnotOp,
+             pto::PintlvB8Op, pto::PintlvB16Op, pto::PintlvB32Op>(op);
 }
 
 static bool isCloneableScalarBroadcastProducer(Operation *op) {
@@ -309,24 +310,24 @@ static void cloneSharedProducers(Block &block, MLIRContext *context) {
       if (!isCloneableSharedProducer(op))
         continue;
 
+      SmallVector<OpOperand *, 8> uses;
       for (OpResult result : op->getOpResults()) {
         if (!shouldCloneSharedResult(result) || result.use_empty())
           continue;
-
-        SmallVector<OpOperand *, 8> uses;
         for (OpOperand &use : result.getUses())
           uses.push_back(&use);
-        if (uses.size() < 2)
-          continue;
+      }
+      if (uses.size() < 2)
+        continue;
 
-        keepEarliestUseFirst(uses, block);
-        for (OpOperand *use : ArrayRef<OpOperand *>(uses).drop_front()) {
-          Operation *user = use->getOwner();
-          rewriter.setInsertionPoint(user);
-          Operation *clone = rewriter.clone(*op);
-          use->set(clone->getResult(result.getResultNumber()));
-          changed = true;
-        }
+      keepEarliestUseFirst(uses, block);
+      for (OpOperand *use : ArrayRef<OpOperand *>(uses).drop_front()) {
+        auto result = cast<OpResult>(use->get());
+        Operation *user = use->getOwner();
+        rewriter.setInsertionPoint(user);
+        Operation *clone = rewriter.clone(*op);
+        use->set(clone->getResult(result.getResultNumber()));
+        changed = true;
       }
     }
   }
