@@ -8412,6 +8412,49 @@ struct OneToNVMIBinaryOpPattern : OpConversionPattern<SourceOp> {
   }
 };
 
+template <typename SourceOp, typename TargetOp>
+struct OneToNVMIVecScalarOpPattern : OpConversionPattern<SourceOp> {
+  using OpConversionPattern<SourceOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(
+      SourceOp op,
+      typename OpConversionPattern<SourceOp>::OneToNOpAdaptor adaptor,
+      ConversionPatternRewriter &rewriter) const override {
+    ValueRange sourceParts = adaptor.getSrc();
+    ValueRange maskParts = adaptor.getMask();
+    FailureOr<Value> scalar = getSingleValue(
+        op, adaptor.getScalar(),
+        "vector-scalar scalar must convert to one value", rewriter);
+    FailureOr<SmallVector<Type>> maybeResultTypes =
+        getConvertedResultTypes(op, 0, *this->getTypeConverter());
+    if (failed(scalar) || failed(maybeResultTypes))
+      return failure();
+    SmallVector<Type> resultTypes = std::move(*maybeResultTypes);
+    if (sourceParts.size() != maskParts.size() ||
+        sourceParts.size() != resultTypes.size())
+      return rewriter.notifyMatchFailure(
+          op, "physical vector-scalar arity mismatch");
+
+    SmallVector<Value> results;
+    results.reserve(resultTypes.size());
+    for (auto [source, mask, resultType] :
+         llvm::zip_equal(sourceParts, maskParts, resultTypes)) {
+      if (!isa<VRegType>(resultType) || source.getType() != resultType ||
+          !isa<MaskType>(mask.getType()))
+        return rewriter.notifyMatchFailure(
+            op, "physical vector-scalar part type mismatch");
+      results.push_back(
+          rewriter
+              .create<TargetOp>(op.getLoc(), resultType, source, *scalar, mask)
+              .getResult());
+    }
+
+    replaceOpWithFlatConvertedValues(rewriter, op, results,
+                                     *this->getTypeConverter());
+    return success();
+  }
+};
+
 struct OneToNVMIVmullOpPattern : OpConversionPattern<VMIVmullOp> {
   using OpConversionPattern<VMIVmullOp>::OpConversionPattern;
 
@@ -11804,6 +11847,10 @@ void populateVMIConversionPatterns(
       OneToNVMIBinaryOpPattern<VMIMinIOp, VminOp>,
       OneToNVMIBinaryOpPattern<VMIMaxFOp, VmaxOp>,
       OneToNVMIBinaryOpPattern<VMIMaxIOp, VmaxOp>,
+      OneToNVMIVecScalarOpPattern<VMIAddSOp, VaddsOp>,
+      OneToNVMIVecScalarOpPattern<VMIMulSOp, VmulsOp>,
+      OneToNVMIVecScalarOpPattern<VMIMaxSOp, VmaxsOp>,
+      OneToNVMIVecScalarOpPattern<VMIMinSOp, VminsOp>,
       OneToNVMIUnaryOpPattern<VMINegFOp, VnegOp>,
       OneToNVMIUnaryOpPattern<VMIAbsFOp, VabsOp>,
       OneToNVMIUnaryOpPattern<VMIAbsIOp, VabsOp>,
@@ -12891,6 +12938,22 @@ verifySupportedVMIToVPTOOps(ModuleOp module,
     if (auto maxi = dyn_cast<VMIMaxIOp>(op))
       return emitMaskableUnsupported(
           op, "pto.vmi.maxi", cast<VMIVRegType>(maxi.getResult().getType()));
+    if (auto scalarOp = dyn_cast<VMIAddSOp>(op))
+      return emitMaskableUnsupported(
+          op, "pto.vmi.vadds",
+          cast<VMIVRegType>(scalarOp.getResult().getType()));
+    if (auto scalarOp = dyn_cast<VMIMulSOp>(op))
+      return emitMaskableUnsupported(
+          op, "pto.vmi.vmuls",
+          cast<VMIVRegType>(scalarOp.getResult().getType()));
+    if (auto scalarOp = dyn_cast<VMIMaxSOp>(op))
+      return emitMaskableUnsupported(
+          op, "pto.vmi.vmaxs",
+          cast<VMIVRegType>(scalarOp.getResult().getType()));
+    if (auto scalarOp = dyn_cast<VMIMinSOp>(op))
+      return emitMaskableUnsupported(
+          op, "pto.vmi.vmins",
+          cast<VMIVRegType>(scalarOp.getResult().getType()));
     if (auto negf = dyn_cast<VMINegFOp>(op))
       return emitMaskableUnsupported(
           op, "pto.vmi.negf", cast<VMIVRegType>(negf.getResult().getType()));
