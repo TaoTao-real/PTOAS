@@ -96,6 +96,11 @@ static bool isVectorScopeBoundaryOperation(Operation *op) {
   return isa<pto::BarrierOp, pto::BarrierSyncOp>(op);
 }
 
+static bool isPureAddressOperation(Operation *op) {
+  return isa<pto::PointerCastOp, pto::CastPtrOp, pto::AddPtrOp,
+             pto::TileBufAddrOp, pto::BindTileOp>(op);
+}
+
 static bool hasVecScopeTypedOperandOrResult(Operation *op) {
   for (Type type : op->getOperandTypes()) {
     if (isVecScopeType(type))
@@ -127,6 +132,8 @@ static bool isSafeScalarOperation(Operation *op) {
     return false;
   if (isa<func::CallOp>(op))
     return false;
+  if (isPureAddressOperation(op))
+    return true;
   if (isPTOOperation(op) && !isMemoryEffectFree(op))
     return false;
   return isMemoryEffectFree(op);
@@ -364,9 +371,12 @@ emitEscapingVectorScopeValueError(const EscapingMovedValue &escapingValue) {
                                "users";
   if (escapingValue.value)
     diag << "; escaping value type is " << escapingValue.value.getType();
-  if (escapingValue.user)
+  if (escapingValue.user) {
+    diag << "; external user is '"
+         << escapingValue.user->getName().getStringRef() << "'";
     diag.attachNote(escapingValue.user->getLoc())
         << "external user is here";
+  }
   return failure();
 }
 
