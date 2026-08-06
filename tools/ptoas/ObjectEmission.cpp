@@ -260,7 +260,8 @@ static bool compileDeviceLLVMToObject(llvm::StringRef llPath,
                                       llvm::StringRef targetCPU,
                                       llvm::StringRef bishengPath,
                                       llvm::StringRef stderrPath,
-                                      llvm::raw_ostream &diagOS);
+                                      llvm::raw_ostream &diagOS,
+                                      mlir::pto::ObjectEmissionOptions options = {});
 static bool compileHostStubToObject(llvm::StringRef stubPath,
                                     llvm::StringRef outObjPath,
                                     llvm::StringRef moduleId,
@@ -332,7 +333,8 @@ public:
 
   bool emitVectorObject(llvm::Module *module,
                         const mlir::pto::CANNToolchain &toolchain,
-                        llvm::raw_ostream &diagOS) {
+                        llvm::raw_ostream &diagOS,
+                        mlir::pto::ObjectEmissionOptions options = {}) {
     if (!module)
       return true;
     if (failed(tempFiles.create("ptoas-device", ".ll", vectorLLPath, diagOS)))
@@ -340,7 +342,8 @@ public:
     if (failed(tempFiles.create("ptoas-device", ".o", vectorObjPath, diagOS)))
       return false;
     return succeeded(mlir::pto::emitVPTOVectorDeviceObject(
-        *module, vectorLLPath, vectorObjPath, toolchain, stderrPath, diagOS));
+        *module, vectorLLPath, vectorObjPath, toolchain, stderrPath, diagOS,
+        options));
   }
 
   bool mergeDeviceObjects(const mlir::pto::CANNToolchain &toolchain,
@@ -460,7 +463,8 @@ static bool compileDeviceLLVMToObject(llvm::StringRef llPath,
                                       llvm::StringRef targetCPU,
                                       llvm::StringRef bishengPath,
                                       llvm::StringRef stderrPath,
-                                      llvm::raw_ostream &diagOS) {
+                                      llvm::raw_ostream &diagOS,
+                                      mlir::pto::ObjectEmissionOptions options) {
   llvm::SmallVector<std::string, 24> args = {
       bishengPath.str(),
       std::string("--cce-aicore-arch=") + targetCPU.str(),
@@ -474,21 +478,26 @@ static bool compileDeviceLLVMToObject(llvm::StringRef llPath,
       "-mllvm",
       "-cce-dyn-kernel-stack-size=true",
   };
-  switch (bishengVFAutoSyncMode) {
-  case BishengVFAutoSyncMode::Unspecified:
-    break;
-  case BishengVFAutoSyncMode::Off:
+  if (options.disableBishengVFFusion) {
     args.push_back("-mllvm");
     args.push_back("-cce-vf-auto-sync=off");
-    break;
-  case BishengVFAutoSyncMode::Fused:
-    args.push_back("-mllvm");
-    args.push_back("-cce-vf-auto-sync=fused");
-    break;
-  case BishengVFAutoSyncMode::Global:
-    args.push_back("-mllvm");
-    args.push_back("-cce-vf-auto-sync=global");
-    break;
+  } else {
+    switch (bishengVFAutoSyncMode) {
+    case BishengVFAutoSyncMode::Unspecified:
+      break;
+    case BishengVFAutoSyncMode::Off:
+      args.push_back("-mllvm");
+      args.push_back("-cce-vf-auto-sync=off");
+      break;
+    case BishengVFAutoSyncMode::Fused:
+      args.push_back("-mllvm");
+      args.push_back("-cce-vf-auto-sync=fused");
+      break;
+    case BishengVFAutoSyncMode::Global:
+      args.push_back("-mllvm");
+      args.push_back("-cce-vf-auto-sync=global");
+      break;
+    }
   }
   // Enabling vector MI scheduling deliberately omits this argument instead of
   // passing `=1`, so Bisheng retains the default behavior of the selected
@@ -497,23 +506,21 @@ static bool compileDeviceLLVMToObject(llvm::StringRef llPath,
     args.push_back("-mllvm");
     args.push_back("--cce-aicore-vec-misched=0");
   }
-  // VPTO performs vector fusion before LLVM emission.  Disable Bisheng's
-  // independent VF pipeline so it cannot fuse or eliminate memory traffic a
-  // second time and obscure the effect of PTOAS's VMI fusion pipeline.
-  args.push_back("-mllvm");
-  args.push_back("-cce-vf-enable-vf-fusion=false");
-  args.push_back("-mllvm");
-  args.push_back("-cce-vf-enable-vf-loop-extender=false");
-  args.push_back("-mllvm");
-  args.push_back("-cce-vf-enable-loop-fusion=false");
-  args.push_back("-mllvm");
-  args.push_back("-cce-vf-enable-vf-ldst-elimination=false");
-  args.push_back("-mllvm");
-  args.push_back("-cce-vf-enable-ub-dead-st-elimination=false");
-  args.push_back("-mllvm");
-  args.push_back("-cce-vf-auto-sync=off");
-  args.push_back("-mllvm");
-  args.push_back("-cce-vf-enable-vf-ifelse-extender=false");
+  if (options.disableBishengVFFusion) {
+    // PTOAS VMI fusion has already handled these decisions. Auto-sync is forced
+    // off above, and Bisheng's independent VF pipeline is disabled here so it
+    // cannot optimize memory traffic a second time.
+    for (llvm::StringRef option : {
+             "-cce-vf-enable-vf-fusion=false",
+             "-cce-vf-enable-vf-loop-extender=false",
+             "-cce-vf-enable-loop-fusion=false",
+             "-cce-vf-enable-vf-ldst-elimination=false",
+             "-cce-vf-enable-ub-dead-st-elimination=false",
+             "-cce-vf-enable-vf-ifelse-extender=false"}) {
+      args.push_back("-mllvm");
+      args.push_back(option.str());
+    }
+  }
   args.push_back("-c");
   args.push_back("-x");
   args.push_back("ir");
@@ -999,7 +1006,7 @@ static mlir::LogicalResult applyVPTOLLVMABINames(llvm::Module &module,
 mlir::LogicalResult mlir::pto::emitVPTOVectorDeviceObject(
     llvm::Module &module, llvm::StringRef llPath, llvm::StringRef outObjPath,
     const CANNToolchain &toolchain, llvm::StringRef stderrPath,
-    llvm::raw_ostream &diagOS) {
+    llvm::raw_ostream &diagOS, ObjectEmissionOptions options) {
   if (failed(applyVPTOLLVMABINames(
           module,
           toolchain.vptoPublicABISuffix(ObjectEmissionDeviceTarget::Vector),
@@ -1010,7 +1017,8 @@ mlir::LogicalResult mlir::pto::emitVPTOVectorDeviceObject(
   return compileDeviceLLVMToObject(llPath, outObjPath,
                                    resolveTargetCPU(module,
                                                     ObjectEmissionDeviceTarget::Vector),
-                                   toolchain.bishengPath, stderrPath, diagOS)
+                                   toolchain.bishengPath, stderrPath, diagOS,
+                                   options)
              ? success()
              : failure();
 }
@@ -1038,7 +1046,8 @@ mlir::LogicalResult mlir::pto::emitFatobjLLVM(
     llvm::Module *cubeModule, llvm::Module *vectorModule,
     llvm::StringRef stubSource, llvm::StringRef outputPath,
     llvm::StringRef moduleId, const CANNToolchain &toolchain,
-    TempFileRegistry &tempFiles, llvm::raw_ostream &diagOS) {
+    TempFileRegistry &tempFiles, llvm::raw_ostream &diagOS,
+    ObjectEmissionOptions options) {
   if (!cubeModule && !vectorModule) {
     diagOS << "Error: VPTO fatobj emission requires at least one LLVM module.\n";
     return failure();
@@ -1051,7 +1060,7 @@ mlir::LogicalResult mlir::pto::emitFatobjLLVM(
     return failure();
   if (!artifacts.emitCubeObject(cubeModule, toolchain, diagOS))
     return failure();
-  if (!artifacts.emitVectorObject(vectorModule, toolchain, diagOS))
+  if (!artifacts.emitVectorObject(vectorModule, toolchain, diagOS, options))
     return failure();
   if (!artifacts.mergeDeviceObjects(toolchain, diagOS))
     return failure();
