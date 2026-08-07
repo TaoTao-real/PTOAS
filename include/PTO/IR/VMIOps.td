@@ -561,6 +561,7 @@ def VMITruncFOp : VMI_Op<"truncf", [Pure]> {
 def VMIFPToSIOp : VMI_Op<"fptosi", [Pure]> {
   let summary = "VMI floating-point to signed integer elementwise conversion";
   let arguments = (ins VMI_VRegTypeConstraint:$source,
+                   OptionalAttr<StrAttr>:$rounding,
                    OptionalAttr<StrAttr>:$saturate);
   let results = (outs VMI_VRegTypeConstraint:$result);
   let hasVerifier = 1;
@@ -569,7 +570,8 @@ def VMIFPToSIOp : VMI_Op<"fptosi", [Pure]> {
 
 def VMISIToFPOp : VMI_Op<"sitofp", [Pure]> {
   let summary = "VMI signed integer to floating-point elementwise conversion";
-  let arguments = (ins VMI_VRegTypeConstraint:$source);
+  let arguments = (ins VMI_VRegTypeConstraint:$source,
+                   OptionalAttr<StrAttr>:$rounding);
   let results = (outs VMI_VRegTypeConstraint:$result);
   let hasVerifier = 1;
   let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";
@@ -1305,8 +1307,8 @@ def VMICvtOp : VMI_Op<"vcvt", [Pure]> {
     - int → int, |dst| < |src|: integer truncation         (replaces trunci)
 
     Attributes:
-    - `rounding`: rounding mode for fp narrowing (A=away-from-zero,
-      H=half-up). Valid only when dst bit-width < src bit-width for fp types.
+    - `rounding`: physical rounding mode (R/A/H/Z) for fp narrowing,
+      fp-to-signed-int, and signed-int-to-fp conversions.
     - `saturate`: saturating behavior on overflow ("SAT"). Valid for any
       narrowing conversion (fp or int).
     - `pmode`: predication mode ("merge" | "zero").
