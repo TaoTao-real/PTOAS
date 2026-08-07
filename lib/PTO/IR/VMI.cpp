@@ -1767,6 +1767,12 @@ LogicalResult VMIFPToSIOp::verify() {
                        "type");
   if (getVMIElementBitWidth(resultType.getElementType()) != 32)
     return emitOpError("requires 32-bit integer result element type");
+  if (auto roundingAttr = (*this)->getAttrOfType<StringAttr>("rounding")) {
+    StringRef rounding = roundingAttr.getValue();
+    if (rounding != "R" && rounding != "A" && rounding != "H" &&
+        rounding != "Z")
+      return emitOpError("rounding attr must be R, A, H, or Z");
+  }
   auto satAttr = (*this)->getAttrOfType<StringAttr>("saturate");
   if (!satAttr)
     return emitOpError("'saturate' attribute is required (SAT or NOSAT)");
@@ -1791,6 +1797,12 @@ LogicalResult VMISIToFPOp::verify() {
     return emitOpError("requires 32-bit integer source element type");
   if (!resultType.getElementType().isF32())
     return emitOpError("requires f32 result element type");
+  if (auto roundingAttr = (*this)->getAttrOfType<StringAttr>("rounding")) {
+    StringRef rounding = roundingAttr.getValue();
+    if (rounding != "R" && rounding != "A" && rounding != "H" &&
+        rounding != "Z")
+      return emitOpError("rounding attr must be R, A, H, or Z");
+  }
   return success();
 }
 
@@ -3466,9 +3478,10 @@ LogicalResult VMICvtOp::verify() {
 
   // --- rounding ---
   if (auto roundingAttr = (*this)->getAttrOfType<StringAttr>("rounding")) {
-    if (dir != CvtDirection::FpNarrow)
+    if (dir != CvtDirection::FpNarrow && dir != CvtDirection::FpToSi &&
+        dir != CvtDirection::SiToFp)
       return emitOpError("'rounding' attribute is only valid for "
-                         "fp-narrowing conversions");
+                         "fp-narrowing, fp-to-si, or si-to-fp conversions");
     StringRef rnd = roundingAttr.getValue();
     if (rnd != "R" && rnd != "A" && rnd != "H" && rnd != "Z")
       return emitOpError("rounding must be 'R' (nearest-even), "

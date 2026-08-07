@@ -758,6 +758,55 @@ std::optional<std::string> getPrefixPattern(int64_t activeLanes,
   }
 }
 
+bool isExactPrefixMask(Value mask, int64_t activeLanes,
+                       int64_t lanesPerPart) {
+  std::optional<std::string> expected =
+      getPrefixPattern(activeLanes, lanesPerPart);
+  Operation *definingOp = mask.getDefiningOp();
+  if (!expected || !definingOp ||
+      !isa<PgeB8Op, PgeB16Op, PgeB32Op>(definingOp))
+    return false;
+  auto pattern = definingOp->getAttrOfType<StringAttr>("pattern");
+  return pattern && pattern.getValue() == *expected;
+}
+
+FailureOr<SmallVector<Value>> clampReductionMasksToLogicalLanes(
+    Location loc, VMIVRegType sourceType, ValueRange maskParts,
+    PatternRewriter &rewriter) {
+  FailureOr<int64_t> lanesPerPart =
+      getDataLanesPerPart(sourceType.getElementType());
+  if (failed(lanesPerPart) || *lanesPerPart <= 0)
+    return failure();
+
+  SmallVector<Value> effectiveMasks;
+  effectiveMasks.reserve(maskParts.size());
+  for (auto [index, userMask] : llvm::enumerate(maskParts)) {
+    int64_t firstLane = static_cast<int64_t>(index) * *lanesPerPart;
+    int64_t activeLanes = std::clamp<int64_t>(
+        sourceType.getElementCount() - firstLane, 0, *lanesPerPart);
+    if (activeLanes == *lanesPerPart ||
+        isExactPrefixMask(userMask, activeLanes, *lanesPerPart)) {
+      effectiveMasks.push_back(userMask);
+      continue;
+    }
+
+    auto maskType = dyn_cast<MaskType>(userMask.getType());
+    if (!maskType)
+      return failure();
+    FailureOr<Value> logicalLaneMask = createPrefixMaskForActiveLanes(
+        loc, maskType, activeLanes, rewriter);
+    FailureOr<Value> allMask = createAllTrueMask(loc, maskType, rewriter);
+    if (failed(logicalLaneMask) || failed(allMask))
+      return failure();
+    effectiveMasks.push_back(
+        rewriter
+            .create<PandOp>(loc, maskType, userMask, *logicalLaneMask,
+                            *allMask)
+            .getResult());
+  }
+  return effectiveMasks;
+}
+
 FailureOr<Value> getSingleValue(Operation *op, ValueRange values,
                                 StringRef description,
                                 PatternRewriter &rewriter) {
@@ -8412,6 +8461,49 @@ struct OneToNVMIBinaryOpPattern : OpConversionPattern<SourceOp> {
   }
 };
 
+template <typename SourceOp, typename TargetOp>
+struct OneToNVMIVecScalarOpPattern : OpConversionPattern<SourceOp> {
+  using OpConversionPattern<SourceOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(
+      SourceOp op,
+      typename OpConversionPattern<SourceOp>::OneToNOpAdaptor adaptor,
+      ConversionPatternRewriter &rewriter) const override {
+    ValueRange sourceParts = adaptor.getSrc();
+    ValueRange maskParts = adaptor.getMask();
+    FailureOr<Value> scalar = getSingleValue(
+        op, adaptor.getScalar(),
+        "vector-scalar scalar must convert to one value", rewriter);
+    FailureOr<SmallVector<Type>> maybeResultTypes =
+        getConvertedResultTypes(op, 0, *this->getTypeConverter());
+    if (failed(scalar) || failed(maybeResultTypes))
+      return failure();
+    SmallVector<Type> resultTypes = std::move(*maybeResultTypes);
+    if (sourceParts.size() != maskParts.size() ||
+        sourceParts.size() != resultTypes.size())
+      return rewriter.notifyMatchFailure(
+          op, "physical vector-scalar arity mismatch");
+
+    SmallVector<Value> results;
+    results.reserve(resultTypes.size());
+    for (auto [source, mask, resultType] :
+         llvm::zip_equal(sourceParts, maskParts, resultTypes)) {
+      if (!isa<VRegType>(resultType) || source.getType() != resultType ||
+          !isa<MaskType>(mask.getType()))
+        return rewriter.notifyMatchFailure(
+            op, "physical vector-scalar part type mismatch");
+      results.push_back(
+          rewriter
+              .create<TargetOp>(op.getLoc(), resultType, source, *scalar, mask)
+              .getResult());
+    }
+
+    replaceOpWithFlatConvertedValues(rewriter, op, results,
+                                     *this->getTypeConverter());
+    return success();
+  }
+};
+
 struct OneToNVMIVmullOpPattern : OpConversionPattern<VMIVmullOp> {
   using OpConversionPattern<VMIVmullOp>::OpConversionPattern;
 
@@ -9147,6 +9239,14 @@ struct OneToNVMIReduceAddIOpPattern
             op, "reduce_addi requires every mask chunk to have the same "
                 "predicate type");
 
+    FailureOr<SmallVector<Value>> effectiveMasks =
+        clampReductionMasksToLogicalLanes(
+            op.getLoc(), cast<VMIVRegType>(op.getSource().getType()),
+            maskParts, rewriter);
+    if (failed(effectiveMasks))
+      return rewriter.notifyMatchFailure(
+          op, "failed to exclude physical padding lanes from reduce_addi");
+
     FailureOr<Value> firstLaneMask =
         createPrefixMask(op.getLoc(), maskType, "PAT_VL1", rewriter);
     if (failed(firstLaneMask))
@@ -9154,12 +9254,12 @@ struct OneToNVMIReduceAddIOpPattern
           op, "failed to create reduce_addi first-lane mask");
 
     FailureOr<Value> combined = combineEquivalentMaskedParts<VaddOp>(
-        op.getLoc(), sourceParts, maskParts, resultType, rewriter);
+        op.getLoc(), sourceParts, *effectiveMasks, resultType, rewriter);
     if (succeeded(combined)) {
       Value reduced =
           rewriter
               .create<VcaddOp>(op.getLoc(), resultType, *combined,
-                               maskParts.front())
+                               effectiveMasks->front())
               .getResult();
       Value result =
           rewriter
@@ -9174,7 +9274,7 @@ struct OneToNVMIReduceAddIOpPattern
 
     Value accumulator = initParts.front();
     for (auto [sourcePart, maskPart] :
-         llvm::zip_equal(sourceParts, maskParts)) {
+         llvm::zip_equal(sourceParts, *effectiveMasks)) {
       Value reduced =
           rewriter
               .create<VcaddOp>(op.getLoc(), resultType, sourcePart, maskPart)
@@ -9231,6 +9331,14 @@ struct OneToNVMIReduceAddFOpPattern
             op, "reduce_addf requires every mask chunk to have the same "
                 "predicate type");
 
+    FailureOr<SmallVector<Value>> effectiveMasks =
+        clampReductionMasksToLogicalLanes(
+            op.getLoc(), cast<VMIVRegType>(op.getSource().getType()),
+            maskParts, rewriter);
+    if (failed(effectiveMasks))
+      return rewriter.notifyMatchFailure(
+          op, "failed to exclude physical padding lanes from reduce_addf");
+
     FailureOr<Value> firstLaneMask =
         createPrefixMask(op.getLoc(), maskType, "PAT_VL1", rewriter);
     if (failed(firstLaneMask))
@@ -9238,12 +9346,12 @@ struct OneToNVMIReduceAddFOpPattern
           op, "failed to create reduce_addf first-lane mask");
 
     FailureOr<Value> combined = combineEquivalentMaskedParts<VaddOp>(
-        op.getLoc(), sourceParts, maskParts, resultType, rewriter);
+        op.getLoc(), sourceParts, *effectiveMasks, resultType, rewriter);
     if (succeeded(combined)) {
       Value reduced =
           rewriter
               .create<VcaddOp>(op.getLoc(), resultType, *combined,
-                               maskParts.front())
+                               effectiveMasks->front())
               .getResult();
       Value result =
           rewriter
@@ -9258,7 +9366,7 @@ struct OneToNVMIReduceAddFOpPattern
 
     Value accumulator = initParts.front();
     for (auto [sourcePart, maskPart] :
-         llvm::zip_equal(sourceParts, maskParts)) {
+         llvm::zip_equal(sourceParts, *effectiveMasks)) {
       Value reduced =
           rewriter
               .create<VcaddOp>(op.getLoc(), resultType, sourcePart, maskPart)
@@ -10309,6 +10417,15 @@ struct OneToNVMIReduceMinMaxOpPattern : OpConversionPattern<SourceOp> {
             op, "min/max reduction requires every mask chunk to have "
                 "the same predicate type");
 
+    FailureOr<SmallVector<Value>> effectiveMasks =
+        clampReductionMasksToLogicalLanes(
+            op.getLoc(), cast<VMIVRegType>(op.getSource().getType()),
+            maskParts, rewriter);
+    if (failed(effectiveMasks))
+      return rewriter.notifyMatchFailure(
+          op, "failed to exclude physical padding lanes from min/max "
+              "reduction");
+
     FailureOr<Value> firstLaneMask =
         createPrefixMask(op.getLoc(), maskType, "PAT_VL1", rewriter);
     if (failed(firstLaneMask))
@@ -10316,12 +10433,12 @@ struct OneToNVMIReduceMinMaxOpPattern : OpConversionPattern<SourceOp> {
           op, "failed to create min/max reduction first-lane mask");
 
     FailureOr<Value> combined = combineEquivalentMaskedParts<CombineOp>(
-        op.getLoc(), sourceParts, maskParts, resultType, rewriter);
+        op.getLoc(), sourceParts, *effectiveMasks, resultType, rewriter);
     if (succeeded(combined)) {
       Value reduced =
           rewriter
               .create<ChunkReduceOp>(op.getLoc(), resultType, *combined,
-                                     maskParts.front())
+                                     effectiveMasks->front())
               .getResult();
       Value result =
           rewriter
@@ -10335,7 +10452,7 @@ struct OneToNVMIReduceMinMaxOpPattern : OpConversionPattern<SourceOp> {
 
     Value accumulator = initParts.front();
     for (auto [sourcePart, maskPart] :
-         llvm::zip_equal(sourceParts, maskParts)) {
+         llvm::zip_equal(sourceParts, *effectiveMasks)) {
       Value reduced = rewriter
                           .create<ChunkReduceOp>(op.getLoc(), resultType,
                                                  sourcePart, maskPart)
@@ -11238,7 +11355,9 @@ struct OneToNVMIFPToSIOpPattern : OpConversionPattern<VMIFPToSIOp> {
 
     SmallVector<Value> results;
     results.reserve(resultTypes.size());
-    StringAttr rnd = rewriter.getStringAttr("R");
+    StringAttr rnd = op.getRoundingAttr();
+    if (!rnd)
+      rnd = rewriter.getStringAttr("R");
     StringAttr sat = op->getAttrOfType<StringAttr>("saturate");
     for (auto [sourcePart, resultType] :
          llvm::zip_equal(sourceParts, resultTypes)) {
@@ -11286,7 +11405,9 @@ struct OneToNVMISIToFPOpPattern : OpConversionPattern<VMISIToFPOp> {
 
     SmallVector<Value> results;
     results.reserve(resultTypes.size());
-    StringAttr rnd = rewriter.getStringAttr("R");
+    StringAttr rnd = op.getRoundingAttr();
+    if (!rnd)
+      rnd = rewriter.getStringAttr("R");
     for (auto [sourcePart, resultType] :
          llvm::zip_equal(sourceParts, resultTypes)) {
       auto sourceType = dyn_cast<VRegType>(sourcePart.getType());
@@ -11804,6 +11925,10 @@ void populateVMIConversionPatterns(
       OneToNVMIBinaryOpPattern<VMIMinIOp, VminOp>,
       OneToNVMIBinaryOpPattern<VMIMaxFOp, VmaxOp>,
       OneToNVMIBinaryOpPattern<VMIMaxIOp, VmaxOp>,
+      OneToNVMIVecScalarOpPattern<VMIAddSOp, VaddsOp>,
+      OneToNVMIVecScalarOpPattern<VMIMulSOp, VmulsOp>,
+      OneToNVMIVecScalarOpPattern<VMIMaxSOp, VmaxsOp>,
+      OneToNVMIVecScalarOpPattern<VMIMinSOp, VminsOp>,
       OneToNVMIUnaryOpPattern<VMINegFOp, VnegOp>,
       OneToNVMIUnaryOpPattern<VMIAbsFOp, VabsOp>,
       OneToNVMIUnaryOpPattern<VMIAbsIOp, VabsOp>,
@@ -12229,11 +12354,10 @@ checkSupportedReduceShape(OpTy op, bool requiresReassoc,
       !maskLayout.isContiguous() || !resultLayout.isContiguous())
     return fail("requires contiguous source, init, mask, and result layouts");
 
-  std::string fullChunkReason;
-  if (failed(checkFullDataPhysicalChunks(sourceType, &fullChunkReason)))
-    return fail(Twine("requires full source physical chunks so padding lanes "
-                      "do not participate in the reduction; ") +
-                fullChunkReason);
+  // The conversion patterns clamp each physical predicate to the logical lane
+  // count. A5 vcadd/vcmax/vcmin consume that predicate as the input reduction
+  // mask, so a final partial physical chunk has the same semantics as filling
+  // its inactive lanes with the reduction identity.
 
   FailureOr<int64_t> sourceArity = getVMIPhysicalArity(sourceType);
   FailureOr<int64_t> initArity = getVMIPhysicalArity(initType);
@@ -12891,6 +13015,22 @@ verifySupportedVMIToVPTOOps(ModuleOp module,
     if (auto maxi = dyn_cast<VMIMaxIOp>(op))
       return emitMaskableUnsupported(
           op, "pto.vmi.maxi", cast<VMIVRegType>(maxi.getResult().getType()));
+    if (auto scalarOp = dyn_cast<VMIAddSOp>(op))
+      return emitMaskableUnsupported(
+          op, "pto.vmi.vadds",
+          cast<VMIVRegType>(scalarOp.getResult().getType()));
+    if (auto scalarOp = dyn_cast<VMIMulSOp>(op))
+      return emitMaskableUnsupported(
+          op, "pto.vmi.vmuls",
+          cast<VMIVRegType>(scalarOp.getResult().getType()));
+    if (auto scalarOp = dyn_cast<VMIMaxSOp>(op))
+      return emitMaskableUnsupported(
+          op, "pto.vmi.vmaxs",
+          cast<VMIVRegType>(scalarOp.getResult().getType()));
+    if (auto scalarOp = dyn_cast<VMIMinSOp>(op))
+      return emitMaskableUnsupported(
+          op, "pto.vmi.vmins",
+          cast<VMIVRegType>(scalarOp.getResult().getType()));
     if (auto negf = dyn_cast<VMINegFOp>(op))
       return emitMaskableUnsupported(
           op, "pto.vmi.negf", cast<VMIVRegType>(negf.getResult().getType()));
