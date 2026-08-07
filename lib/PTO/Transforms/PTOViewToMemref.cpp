@@ -1397,6 +1397,20 @@ static LogicalResult lowerSubViewOps(func::FuncOp func, MLIRContext *ctx) {
     auto resultTileTy =
         dyn_cast<mlir::pto::TileBufType>(op.getResult().getType());
     Value src = op->getOperand(0);
+    if (!isa<MemRefType>(src.getType())) {
+      if (auto regionResult = dyn_cast<OpResult>(src)) {
+        if (auto fusionRegion =
+                dyn_cast<pto::FusionRegionOp>(regionResult.getOwner())) {
+          auto yieldOp = dyn_cast<pto::YieldOp>(
+              fusionRegion.getBody().front().getTerminator());
+          unsigned resultIndex = regionResult.getResultNumber();
+          if (yieldOp && resultIndex < yieldOp.getNumOperands() &&
+              isa<MemRefType>(yieldOp.getOperand(resultIndex).getType())) {
+            regionResult.setType(yieldOp.getOperand(resultIndex).getType());
+          }
+        }
+      }
+    }
     auto srcMrTy = dyn_cast<MemRefType>(src.getType());
     if (!srcMrTy) {
       op.emitError("pto.subview source must be lowered to memref first");
