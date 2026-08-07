@@ -84,6 +84,8 @@ static bool isCloneableMaskProducer(Operation *op) {
 }
 
 static bool isCloneableScalarBroadcastProducer(Operation *op) {
+  if (isa<pto::VbrOp>(op))
+    return true;
   auto vdup = dyn_cast<pto::VdupOp>(op);
   return vdup && !isa<pto::VRegType>(vdup.getInput().getType());
 }
