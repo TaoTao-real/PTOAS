@@ -453,6 +453,17 @@ static llvm::cl::opt<bool> enableVMI(
                    "explicit --enable-op-fusion on A5 VPTO level2/level3"),
     llvm::cl::init(false));
 
+static llvm::cl::opt<bool> enableVMILoopFusion(
+    "enable-vmi-loop-fusion",
+    llvm::cl::desc("Enable VMI loop fusion inside the VMI fusion pipeline"),
+    llvm::cl::init(true));
+
+static llvm::cl::opt<bool> enableVMILoadStoreElision(
+    "enable-vmi-load-store-elision",
+    llvm::cl::desc(
+        "Enable VMI load/store elision inside the VMI fusion pipeline"),
+    llvm::cl::init(true));
+
 static llvm::cl::opt<std::string> daemonSocketPath(
     "daemon-socket-path",
     llvm::cl::desc("Path to Unix domain socket for daemon RPC "
@@ -2705,7 +2716,9 @@ static bool shouldDeclareVariablesAtTop(ModuleOp module) {
 }
 
 static void appendVMISemanticPipeline(OpPassManager &pm,
-                                      bool enableFusionOptimizations);
+                                      bool enableFusionOptimizations,
+                                      bool enableLoopFusion,
+                                      bool enableLoadStoreElision);
 
 static void prepareVPTOForEmission(PassManager &pm) {
   auto &kernelModulePM = pm.nest<ModuleOp>();
@@ -2799,7 +2812,8 @@ buildVPTOEmissionOptions(const pto::CANNVersion &cannVersion,
 
 static int emitVPTOBackendResult(ModuleOp module, PTOASCompileResult &result,
                                  bool emitHostStub,
-                                 const pto::CANNVersion &cannVersion) {
+                                 const pto::CANNVersion &cannVersion,
+                                 bool useVMIFusionPipeline) {
   if (emitVPTO) {
     result.kind = PTOASCompileResultKind::Text;
     llvm::raw_string_ostream os(result.textOutput);
@@ -2843,6 +2857,8 @@ static int emitVPTOBackendResult(ModuleOp module, PTOASCompileResult &result,
   }
 
   result.vptoStubSource = std::move(stubSource);
+  result.objectEmissionOptions.disableBishengVFFusion =
+      useVMIFusionPipeline;
   result.kind = PTOASCompileResultKind::VPTOObject;
   return 0;
 }
@@ -2886,7 +2902,9 @@ static LogicalResult runVPTOBackendPipeline(OwningOpRef<ModuleOp> &module,
     return WalkResult::advance();
   });
   if (enableVMI || containsVMI)
-    appendVMISemanticPipeline(kernelModulePM, useVMIFusionPipeline);
+    appendVMISemanticPipeline(kernelModulePM, useVMIFusionPipeline,
+                              enableVMILoopFusion,
+                              enableVMILoadStoreElision);
   prepareVPTOForEmission(pm);
   if (failed(applyConfiguredPassManagerCLOptions(
           pm, "VPTO unified emission pipeline")))
@@ -2899,7 +2917,9 @@ static LogicalResult runVPTOBackendPipeline(OwningOpRef<ModuleOp> &module,
 }
 
 static void appendVMISemanticPipeline(OpPassManager &pm,
-                                      bool enableFusionOptimizations) {
+                                      bool enableFusionOptimizations,
+                                      bool enableLoopFusion,
+                                      bool enableLoadStoreElision) {
   // Normalize signless integer element types on whitelisted ops to unsigned
   // before any verifier, layout, or lowering pass sees them.
   pm.addNestedPass<func::FuncOp>(
@@ -2908,13 +2928,17 @@ static void appendVMISemanticPipeline(OpPassManager &pm,
   pm.addPass(createCSEPass());
   if (enableFusionOptimizations) {
     // Optimize fusion regions while loads and stores are still unified VMI ops.
-    pm.addPass(pto::createPTOVmiLoopFusionPass());
-    pm.addPass(createCanonicalizerPass());
-    pm.addPass(createCSEPass());
-    pm.addNestedPass<func::FuncOp>(
-        pto::createPTOVmiLoadStoreElisionPass());
-    pm.addPass(createCanonicalizerPass());
-    pm.addPass(createCSEPass());
+    if (enableLoopFusion) {
+      pm.addPass(pto::createPTOVmiLoopFusionPass());
+      pm.addPass(createCanonicalizerPass());
+      pm.addPass(createCSEPass());
+    }
+    if (enableLoadStoreElision) {
+      pm.addNestedPass<func::FuncOp>(
+          pto::createPTOVmiLoadStoreElisionPass());
+      pm.addPass(createCanonicalizerPass());
+      pm.addPass(createCSEPass());
+    }
   }
   // Expand unified VMI ops to legacy ops before layout assignment,
   // so downstream passes only see legacy ops.
@@ -3154,7 +3178,8 @@ int mlir::pto::compilePTOASModule(
             useVMIFusionPipeline, enableLegacyVPTOFusionLifecycle)))
       return 1;
     return emitVPTOBackendResult(*module, result, emitVPTOHostStub,
-                                 context.getCANNVersionOrDefault());
+                                 context.getCANNVersionOrDefault(),
+                                 useVMIFusionPipeline);
   }
 
   // Main PassManager
@@ -3340,7 +3365,8 @@ int mlir::pto::compilePTOASModule(
             useVMIFusionPipeline, enableLegacyVPTOFusionLifecycle)))
       return 1;
     return emitVPTOBackendResult(*module, result, emitVPTOHostStub,
-                                 context.getCANNVersionOrDefault());
+                                 context.getCANNVersionOrDefault(),
+                                 useVMIFusionPipeline);
   }
 
   if (failed(pm.run(*module))) {
