@@ -692,6 +692,61 @@ static bool foldAddPtrChainIntoOffset(IRRewriter &rewriter, Location loc,
   return folded;
 }
 
+static Type getBufferLikeElementType(Value value) {
+  if (auto ptrTy = dyn_cast<pto::PtrType>(value.getType()))
+    return ptrTy.getElementType();
+  if (auto memrefTy = dyn_cast<BaseMemRefType>(value.getType()))
+    return memrefTy.getElementType();
+  return {};
+}
+
+// Vector memory ops use the same element-indexed offset convention as
+// pto.addptr.  Fold only when the pointer chain and the memory op agree on
+// the storage element size; otherwise leave the chain for the final diagnostic.
+static bool foldAddPtrIntoVectorMemoryOp(IRRewriter &rewriter, Operation *op,
+  bool isLoad) {
+  Value address = op->getOperand(isLoad ? 0 : 1);
+  if (!address.getDefiningOp<pto::AddPtrOp>())
+    return false;
+
+  Type addressElem = getBufferLikeElementType(address);
+  Type memoryElem;
+  if (isLoad) {
+    auto resultTy = dyn_cast<VRegType>(op->getResult(0).getType());
+    if (!resultTy)
+      return false;
+    memoryElem = resultTy.getElementType();
+  } else {
+    auto valueTy = dyn_cast<VRegType>(op->getOperand(0).getType());
+    if (!valueTy)
+      return false;
+    memoryElem = valueTy.getElementType();
+  }
+
+  unsigned addressBytes = getPTOStorageElemByteSize(addressElem);
+  unsigned memoryBytes = getPTOStorageElemByteSize(memoryElem);
+  if (addressBytes == 0 || memoryBytes == 0 || addressBytes != memoryBytes)
+    return false;
+
+  Value base = address;
+  Value totalOffset = ensureIndex(rewriter, op->getLoc(),
+                                  isLoad ? op->getOperand(1)
+                                         : op->getOperand(2), op);
+  if (!foldAddPtrChainIntoOffset(rewriter, op->getLoc(), base, totalOffset))
+    return false;
+
+  OperationState state(op->getLoc(), op->getName().getStringRef());
+  if (isLoad)
+    state.addOperands({base, totalOffset});
+  else
+    state.addOperands({op->getOperand(0), base, totalOffset, op->getOperand(3)});
+  state.addTypes(op->getResultTypes());
+  state.addAttributes(op->getAttrs());
+  Operation *replacement = rewriter.create(state);
+  rewriter.replaceOp(op, replacement->getResults());
+  return true;
+}
+
 static Value clampSubViewValidDim(IRRewriter &rewriter, Location loc,
                                   Value explicitValid, int64_t size,
                                   int64_t inferredValid, Operation *anchorOp) {
@@ -2421,6 +2476,28 @@ struct PTOViewToMemrefPass
               loc, base, totalOffset, op.getValue());
           rewriter.eraseOp(op);
         }
+      }
+
+      // ------------------------------------------------------------------
+      // Stage 1.65: Fold pto.addptr chains into vector memory ops.
+      // VPTOSubview normalization can leave a pointer-valued addptr directly
+      // feeding vlds/vsts.  These ops already carry an element offset, so
+      // combine the two offsets before the final addptr cleanup.
+      // ------------------------------------------------------------------
+      DefaultInlineVector<mlir::pto::VldsOp> vectorLoads;
+      func.walk([&](mlir::pto::VldsOp op) { vectorLoads.push_back(op); });
+      for (auto op : vectorLoads) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+        (void)foldAddPtrIntoVectorMemoryOp(rewriter, op.getOperation(), true);
+      }
+
+      DefaultInlineVector<mlir::pto::VstsOp> vectorStores;
+      func.walk([&](mlir::pto::VstsOp op) { vectorStores.push_back(op); });
+      for (auto op : vectorStores) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+        (void)foldAddPtrIntoVectorMemoryOp(rewriter, op.getOperation(), false);
       }
 
       // ------------------------------------------------------------------
