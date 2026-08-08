@@ -1390,31 +1390,58 @@ static LogicalResult lowerSubViewOps(func::FuncOp func, MLIRContext *ctx) {
   DefaultInlineVector<mlir::pto::SubViewOp> subViews;
   func.walk([&](mlir::pto::SubViewOp op) { subViews.push_back(op); });
 
+  // Walk order for nested regions is not guaranteed to put a producer before
+  // its consumer.  Lower the deepest views first: a view yielded from a
+  // fusion region must become a memref before an enclosing view consumes the
+  // corresponding fusion result.
+  auto nestingDepth = [](Operation *op) {
+    unsigned depth = 0;
+    for (Operation *parent = op->getParentOp(); parent;
+         parent = parent->getParentOp())
+      ++depth;
+    return depth;
+  };
+  llvm::stable_sort(subViews, [&](mlir::pto::SubViewOp lhs,
+                                 mlir::pto::SubViewOp rhs) {
+    return nestingDepth(lhs.getOperation()) >
+           nestingDepth(rhs.getOperation());
+  });
+
   for (auto op : subViews) {
+    // A previously lowered subview may be yielded from a fusion region.  Keep
+    // the region result types synchronized incrementally so a later subview
+    // consuming such a result sees the new memref type in the same pass.
+    if (failed(reconcileFusionRegionResultTypes(func)))
+      return failure();
+
     IRRewriter rewriter(ctx);
     rewriter.setInsertionPoint(op);
     Location loc = op.getLoc();
     auto resultTileTy =
         dyn_cast<mlir::pto::TileBufType>(op.getResult().getType());
     Value src = op->getOperand(0);
-    if (!isa<MemRefType>(src.getType())) {
-      if (auto regionResult = dyn_cast<OpResult>(src)) {
-        if (auto fusionRegion =
-                dyn_cast<pto::FusionRegionOp>(regionResult.getOwner())) {
-          auto yieldOp = dyn_cast<pto::YieldOp>(
-              fusionRegion.getBody().front().getTerminator());
-          unsigned resultIndex = regionResult.getResultNumber();
-          if (yieldOp && resultIndex < yieldOp.getNumOperands() &&
-              isa<MemRefType>(yieldOp.getOperand(resultIndex).getType())) {
-            regionResult.setType(yieldOp.getOperand(resultIndex).getType());
-          }
+    if (auto regionResult = dyn_cast<OpResult>(src)) {
+      if (auto fusionRegion =
+              dyn_cast<mlir::pto::FusionRegionOp>(regionResult.getOwner())) {
+        auto yieldOp = dyn_cast<mlir::pto::YieldOp>(
+            fusionRegion.getBody().front().getTerminator());
+        unsigned resultIndex = regionResult.getResultNumber();
+        if (yieldOp && resultIndex < yieldOp.getNumOperands()) {
+          Type yieldedType = yieldOp.getOperand(resultIndex).getType();
+          // Keep the SSA result type in lockstep with the yielded value.  The
+          // fusion generator can leave a stale tile type on one result even
+          // after its yield has been rewritten to a memref.
+          if (src.getType() != yieldedType)
+            src.setType(yieldedType);
         }
       }
     }
     auto srcMrTy = dyn_cast<MemRefType>(src.getType());
     if (!srcMrTy) {
-      op.emitError("pto.subview source must be lowered to memref first");
-      return failure();
+      // A consumer can appear before the subview that produces its source
+      // (for example, a subview inside a nested fusion region).  Defer it to
+      // the next dependency-resolution round instead of rejecting valid IR.
+      continue;
     }
 
     ArrayAttr sizeAttr = op.getSizes();
@@ -1520,6 +1547,28 @@ static LogicalResult lowerSubViewOps(func::FuncOp func, MLIRContext *ctx) {
                                ctx);
     bindOp->setAttr("pto.view_semantics", rewriter.getStringAttr("subview"));
     rewriter.replaceOp(op, bindOp.getResult());
+  }
+
+  // Lowering a producer may turn a fusion result (and consequently its
+  // consumers) from tile_buf into memref.  Retry deferred consumers until a
+  // complete round makes no progress; the latter indicates a genuine
+  // non-lowerable source and gets the actionable diagnostic below.
+  unsigned remaining = 0;
+  func.walk([&](mlir::pto::SubViewOp) { ++remaining; });
+  if (remaining) {
+    if (remaining == subViews.size()) {
+      mlir::pto::SubViewOp stuck;
+      func.walk([&](mlir::pto::SubViewOp op) {
+        if (!stuck)
+          stuck = op;
+      });
+      if (stuck) {
+        stuck.emitError("pto.subview source must be lowered to memref first; got ")
+            << stuck->getOperand(0).getType();
+      }
+      return failure();
+    }
+    return lowerSubViewOps(func, ctx);
   }
   return success();
 }
