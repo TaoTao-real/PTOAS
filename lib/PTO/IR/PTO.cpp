@@ -3590,10 +3590,12 @@ LogicalResult mlir::pto::SyncSetOp::verify() {
     switch (getPipe().getPipe()) {
     case PIPE::PIPE_FIX:
     case PIPE::PIPE_MTE3:
+    case PIPE::PIPE_V:
+    case PIPE::PIPE_MTE1:
       return success();
     default:
       return emitOpError()
-             << "A5 sync.set expects pipe to be one of <PIPE_FIX>, <PIPE_MTE3>";
+             << "A5 sync.set expects pipe to be one of <PIPE_FIX>, <PIPE_MTE1>, <PIPE_MTE3>, <PIPE_V>";
     }
   };
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
@@ -15248,7 +15250,8 @@ getEnclosingFunctionKernelKind(Operation *op) {
 
 static bool isInsideSectionOrAttributedKernel(Operation *op) {
   return isInsideSectionCube(op) || isInsideSectionVector(op) ||
-         isInsideTileOpHelper(op) || getEnclosingFunctionKernelKind(op).has_value();
+         isInsideTileOpHelper(op) ||
+         getEnclosingFunctionKernelKind(op).has_value();
 }
 
 static LogicalResult verifySplitAttr(Operation *op, int64_t split) {
