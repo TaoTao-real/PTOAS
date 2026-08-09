@@ -29,6 +29,8 @@ from ._vmi_common import (  # noqa: E402
     dtypes=(("f32", "f32", "f32"),),
     constraints=(row_reduce_vmi_constraint,),
     tags=("supports_partial_valid_shape",),
+    resource_scope="tile",
+    resource_vector_values=1,
 )
 def vmi_trowsum(src: Tile, workspace: Tile, dst: Tile):
     emit_row_reduce_vmi(src, workspace, dst, kind="sum")

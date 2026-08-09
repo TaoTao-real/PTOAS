@@ -869,6 +869,43 @@ _REDUCE_MERGE_OP = {
 }
 
 
+_ONE_VECTOR_CANDIDATES = {"texpands", "tmov", "tcolexpand"}
+_THREE_VECTOR_CANDIDATES = {
+    "add",
+    "div",
+    "mul",
+    "sub",
+    "tadd",
+    "tdiv",
+    "tmax",
+    "tmul",
+    "tsub",
+    "tcolexpandadd",
+    "tcolexpanddiv",
+    "tcolexpandmul",
+    "tcolexpandsub",
+    "tcolmax",
+    "tcolmin",
+    "tcolsum",
+    "trowexpanddiv",
+    "trowexpandmul",
+    "trowexpandsub",
+    "tcvt",
+}
+
+
+def _default_resource_vector_values(op: str) -> int:
+    """Return the conservative peak wide values for a canonical candidate."""
+
+    unqualified = op.removeprefix("pto.")
+    if unqualified in _ONE_VECTOR_CANDIDATES:
+        return 1
+    if unqualified in _THREE_VECTOR_CANDIDATES:
+        return 3
+    # Unary and vector-scalar candidates materialize an input and result.
+    return 2
+
+
 def canonical_vmi_template(
     *,
     target: str = "a5",
@@ -880,6 +917,9 @@ def canonical_vmi_template(
     tags: tuple[str, ...] | list[str] = (),
     requires_full_physical_row: bool = True,
     min_row_bytes: int = 256,
+    resource_scope: str = "row",
+    resource_vector_values: int | None = None,
+    resource_chunk_streaming: bool = False,
 ):
     """Register one canonical VMI implementation in this provider module."""
 
@@ -910,6 +950,13 @@ def canonical_vmi_template(
             context_constraints=context_constraints,
             constraints=effective_constraints,
             tags=tuple(tags),
+            resource_scope=resource_scope,
+            resource_vector_values=(
+                resource_vector_values
+                if resource_vector_values is not None
+                else _default_resource_vector_values(op)
+            ),
+            resource_chunk_streaming=resource_chunk_streaming,
         )(fn)
         _tilelib_registry.register(descriptor)
         VMI_TILELIB_REGISTRY.register(descriptor)

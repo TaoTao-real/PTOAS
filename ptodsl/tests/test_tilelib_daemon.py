@@ -148,6 +148,9 @@ class TileLibDaemonTest(unittest.TestCase):
         self.assertIn(TADD, candidates)
         self.assertIn(VMI_TADD, candidates)
         self.assertIn("vmi", candidates[VMI_TADD]["tags"])
+        self.assertEqual(candidates[VMI_TADD]["resource_scope"], "row")
+        self.assertEqual(candidates[VMI_TADD]["resource_vector_values"], 3)
+        self.assertFalse(candidates[VMI_TADD]["resource_chunk_streaming"])
 
     def test_get_metadata_filters_unsupported_vmi_trace_specs(self):
         row_major = _tile_spec(shape=(8, 64))
