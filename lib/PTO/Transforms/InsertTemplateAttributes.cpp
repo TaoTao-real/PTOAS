@@ -930,7 +930,7 @@ parseCandidateAttributes(Operation *operation, StringRef metadataJson) {
     return failure();
   }
 
-  SmallVector<CandidateMetadata> parsedCandidates;
+  SmallVector<CandidateMetadata, 2> parsedCandidates;
   parsedCandidates.reserve(candidates->size());
   for (const auto &entry : *candidates) {
     auto *metadata = entry.second.getAsObject();
