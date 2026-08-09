@@ -1105,7 +1105,7 @@ from ._vmi_common import (  # noqa: E402
     ),
     context_constraints={
         "round_mode": ("RINT", "ROUND", "TRUNC"),
-        "sat_mode": ("ON", "OFF"),
+        "sat_mode": ("DEFAULT", "ON", "OFF"),
     },
     constraints=(convert_vmi_constraint,),
     min_row_bytes=128,
