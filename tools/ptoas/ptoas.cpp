@@ -464,6 +464,12 @@ static llvm::cl::opt<bool> enableVMILoadStoreElision(
         "Enable VMI load/store elision inside the VMI fusion pipeline"),
     llvm::cl::init(true));
 
+static llvm::cl::opt<bool> disableBishengVFFusion(
+    "disable-bisheng-vf-fusion",
+    llvm::cl::desc("Disable Bisheng VF, loop-fusion, and load/store "
+                   "elimination for VPTO device compilation"),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<std::string> daemonSocketPath(
     "daemon-socket-path",
     llvm::cl::desc("Path to Unix domain socket for daemon RPC "
@@ -2858,7 +2864,7 @@ static int emitVPTOBackendResult(ModuleOp module, PTOASCompileResult &result,
 
   result.vptoStubSource = std::move(stubSource);
   result.objectEmissionOptions.disableBishengVFFusion =
-      useVMIFusionPipeline;
+      useVMIFusionPipeline || disableBishengVFFusion;
   result.kind = PTOASCompileResultKind::VPTOObject;
   return 0;
 }
