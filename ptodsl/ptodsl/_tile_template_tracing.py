@@ -870,6 +870,9 @@ class TileTemplate:
     context_constraints: tuple[tuple[str, tuple[object, ...]], ...]
     constraints: tuple[object, ...] = ()
     tags: tuple[str, ...] = ()
+    priority: int = 100
+    candidate_id: int = 1000
+    single_logical_row_loop: bool = True
     resource_scope: str | None = None
     resource_vector_values: int | None = None
     resource_chunk_streaming: bool = False
@@ -885,26 +888,25 @@ class TileTemplate:
             if self.context_constraints:
                 constraints.append(self._context_constraints_match)
             constraints.extend(self.constraints)
+            tags = ["vmi"]
+            if self.single_logical_row_loop:
+                tags.extend(("fusion_eligible", "single_logical_row_loop"))
+            tags.extend(self.tags)
             return _RegistryTemplateMetadata.build(
                 op=self.op,
                 target=self.target,
                 name=self.name,
                 dtypes=self.dtypes,
                 constraints=tuple(constraints),
-                priority=100,
-                fusible=True,
-                loop_depth=1,
-                id=1000,
+                priority=self.priority,
+                fusible=self.single_logical_row_loop,
+                loop_depth=1 if self.single_logical_row_loop else 0,
+                id=self.candidate_id,
                 is_post_update=False,
                 iteration_axis="row",
                 op_engine="vector",
                 op_class="other",
-                tags=(
-                    "vmi",
-                    "fusion_eligible",
-                    "single_logical_row_loop",
-                    *self.tags,
-                ),
+                tags=tuple(tags),
                 resource_scope=self.resource_scope,
                 resource_vector_values=self.resource_vector_values,
                 resource_chunk_streaming=self.resource_chunk_streaming,
@@ -1009,6 +1011,9 @@ def tile_template(
     context_constraints: dict[str, tuple[object, ...]] | None = None,
     constraints: tuple[object, ...] | list[object] = (),
     tags: tuple[str, ...] | list[str] = (),
+    priority: int = 100,
+    candidate_id: int = 1000,
+    single_logical_row_loop: bool = True,
     resource_scope: str | None = None,
     resource_vector_values: int | None = None,
     resource_chunk_streaming: bool = False,
@@ -1036,6 +1041,9 @@ def tile_template(
             context_constraints=normalized_context_constraints,
             constraints=tuple(constraints),
             tags=tuple(tags),
+            priority=priority,
+            candidate_id=candidate_id,
+            single_logical_row_loop=single_logical_row_loop,
             resource_scope=resource_scope,
             resource_vector_values=resource_vector_values,
             resource_chunk_streaming=resource_chunk_streaming,

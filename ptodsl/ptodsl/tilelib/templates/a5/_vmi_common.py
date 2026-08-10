@@ -144,6 +144,22 @@ def row_reduce_vmi_constraint(
     )
 
 
+def row_reduce_streaming_vmi_constraint(**context):
+    """Use row streaming when the full static tile exceeds one A5 VREG."""
+
+    if not row_reduce_vmi_constraint(**context):
+        return False
+    src_shape = context.get("src_shape", ())
+    if len(src_shape) != 2:
+        return False
+    rows, cols = src_shape
+    return (
+        isinstance(rows, int)
+        and isinstance(cols, int)
+        and rows * cols * f32.bytewidth > 256
+    )
+
+
 def _vreg_lanes(value: _VectorValue) -> int:
     return _pto_dialect.VMIVRegType(value.value.type).element_count
 
@@ -849,6 +865,9 @@ def canonical_vmi_template(
     context_constraints: dict[str, tuple[object, ...]] | None = None,
     constraints: tuple[object, ...] | list[object] = (),
     tags: tuple[str, ...] | list[str] = (),
+    priority: int = 100,
+    candidate_id: int = 1000,
+    single_logical_row_loop: bool = True,
     requires_full_physical_row: bool = True,
     min_row_bytes: int = 256,
     resource_scope: str = "row",
@@ -882,6 +901,9 @@ def canonical_vmi_template(
             context_constraints=context_constraints,
             constraints=effective_constraints,
             tags=tuple(tags),
+            priority=priority,
+            candidate_id=candidate_id,
+            single_logical_row_loop=single_logical_row_loop,
             resource_scope=resource_scope,
             resource_vector_values=(
                 resource_vector_values
@@ -1819,6 +1841,45 @@ def emit_row_reduce_vmi(
     )
 
 
+def emit_row_reduce_streaming_vmi(
+    src: _TileProxy,
+    workspace: _TileProxy,
+    dst: _TileProxy,
+    *,
+    kind: str,
+) -> None:
+    """Reduce one logical row per iteration for compatible VMI fusion."""
+
+    rows, physical_cols, valid_cols = _validate_row_reduce_tiles(src, workspace, dst)
+    if valid_cols != physical_cols:
+        raise ValueError("row-streaming reduction requires a full static source tile")
+    _prepare_tile_access(src, dst)
+    active = src._trace.index_const(valid_cols)
+    row_mask = _wrap_mask(
+        _vmi_builder.create_mask(active.value, size=physical_cols), f32
+    )
+    row_stride = dst._trace._coerce_index(1)
+    with for_(0, rows, step=1) as row:
+        src_offset = index_mul(row, physical_cols)
+        source = _vload_linear(src, src_offset, lanes=physical_cols)
+        if kind == "max":
+            reduced_value = _vmi_builder.vcmax(source.value, row_mask.value)
+        else:
+            reduced_value = _vmi_builder.vcadd(
+                source.value, row_mask.value, reassoc=True
+            )
+        reduced = _wrap_vreg(reduced_value, f32)
+        dst_ptr = dst._trace.ensure_tile_ptr(dst)
+        dst_offset = dst._trace._coerce_index(row)
+        _vmi_builder.vstore(
+            reduced.value,
+            dst_ptr.value,
+            dst_offset.value,
+            stride=row_stride.value,
+            group=1,
+        )
+
+
 def emit_row_expand_binary_vmi(
     row_tensor: _TileProxy,
     compact_row_state: _TileProxy,
@@ -2286,9 +2347,11 @@ __all__ = [
     "emit_row_expand_binary_vmi",
     "row_expand_binary_vmi_constraint",
     "emit_row_reduce_vmi",
+    "emit_row_reduce_streaming_vmi",
     "emit_rsqrt_vmi",
     "emit_sqrt_high_precision_vmi",
     "emit_sqrt_vmi",
     "f32",
     "row_reduce_vmi_constraint",
+    "row_reduce_streaming_vmi_constraint",
 ]

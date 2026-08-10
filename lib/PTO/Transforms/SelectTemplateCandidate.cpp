@@ -213,25 +213,25 @@ static void recordSelection(Operation *op, DictionaryAttr candidate, bool isVMI,
                   builder.getI64IntegerAttr(estimate->peakVectorChunks));
     }
   }
-  if (isVMI)
+  if (isVMI && candidateHasTag(candidate, "fusion_eligible"))
     return;
 
-  bool hard = isHardBoundaryFallback(op, candidate);
+  bool hard = !isVMI && isHardBoundaryFallback(op, candidate);
   op->setAttr(kVmiFusionBoundaryAttr,
               StringAttr::get(op->getContext(), hard ? "hard" : "local"));
-  op->setAttr(
-      kVmiFusionBoundaryReasonAttr,
-      StringAttr::get(op->getContext(),
-                      !fallbackReason.empty()
-                          ? fallbackReason
-                          : (hard ? "non_vmi_hard_boundary_fallback"
-                                  : "non_vmi_local_boundary_fallback")));
+  StringRef reason = fallbackReason;
+  if (isVMI)
+    reason = "vmi_non_fusion_eligible_candidate";
+  else if (reason.empty())
+    reason = hard ? "non_vmi_hard_boundary_fallback"
+                  : "non_vmi_local_boundary_fallback";
+  op->setAttr(kVmiFusionBoundaryReasonAttr,
+              StringAttr::get(op->getContext(), reason));
 }
 
 static bool isLegalVMIChoice(Operation *op, DictionaryAttr candidate,
                              bool hardBoundary) {
   return !hardBoundary && candidateHasTag(candidate, "vmi") &&
-         candidateHasTag(candidate, "fusion_eligible") &&
          (pto::hasStaticFullTileValidShape(op) ||
           candidateHasTag(candidate, "supports_partial_valid_shape")) &&
          (!hasMaterializationSensitiveSubview(op) ||
@@ -286,9 +286,9 @@ struct SelectTemplateCandidatePass
           });
       std::optional<VMIResourceEstimate> preferredRejectedEstimate;
       if (selectionPolicy == "prefer-vmi") {
-        for (DictionaryAttr candidate : parsed) {
+        auto trySelect = [&](DictionaryAttr candidate) {
           if (!isLegalVMIChoice(op, candidate, hardBoundary))
-            continue;
+            return false;
           VMIResourceEstimate estimate =
               estimateCandidateResource(op, candidate);
           const bool guardDisabled = maxCandidateVectorBytes == 0;
@@ -310,7 +310,7 @@ struct SelectTemplateCandidatePass
                     << "VMI candidate '" << name
                     << "' accepted because the resource guard is disabled";
             }
-            return WalkResult::advance();
+            return true;
           }
 
           if (!preferredRejectedEstimate)
@@ -327,6 +327,25 @@ struct SelectTemplateCandidatePass
                                << "' rejected: resource contract is missing "
                                   "or cannot be evaluated";
           }
+          return false;
+        };
+
+        for (DictionaryAttr candidate : parsed) {
+          if (candidateHasTag(candidate, "row_streaming") &&
+              candidateHasTag(candidate, "single_logical_row_loop") &&
+              trySelect(candidate))
+            return WalkResult::advance();
+        }
+        for (DictionaryAttr candidate : parsed) {
+          if (!candidateHasTag(candidate, "row_streaming") &&
+              candidateHasTag(candidate, "fusion_eligible") &&
+              trySelect(candidate))
+            return WalkResult::advance();
+        }
+        for (DictionaryAttr candidate : parsed) {
+          if (!candidateHasTag(candidate, "fusion_eligible") &&
+              trySelect(candidate))
+            return WalkResult::advance();
         }
       }
 
