@@ -168,6 +168,9 @@ def _metadata_for_descriptor(descriptor, constraint_context: dict) -> dict:
         "op_engine": metadata.op_engine,
         "op_class": metadata.op_class,
         "tags": list(metadata.tags),
+        "resource_scope": metadata.resource_scope,
+        "resource_vector_values": metadata.resource_vector_values,
+        "resource_chunk_streaming": metadata.resource_chunk_streaming,
     }
 
 

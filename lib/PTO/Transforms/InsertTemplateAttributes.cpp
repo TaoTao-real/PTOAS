@@ -62,6 +62,9 @@ struct CandidateMetadata {
   bool postUpdate;
   bool tail;
   SmallVector<std::string, 4> tags;
+  std::optional<std::string> resourceScope;
+  std::optional<int64_t> resourceVectorValues;
+  bool resourceChunkStreaming = false;
 };
 
 static std::string getDtypeString(Type elementType) {
@@ -927,7 +930,7 @@ parseCandidateAttributes(Operation *operation, StringRef metadataJson) {
     return failure();
   }
 
-  SmallVector<CandidateMetadata> parsedCandidates;
+  SmallVector<CandidateMetadata, 2> parsedCandidates;
   parsedCandidates.reserve(candidates->size());
   for (const auto &entry : *candidates) {
     auto *metadata = entry.second.getAsObject();
@@ -963,6 +966,28 @@ parseCandidateAttributes(Operation *operation, StringRef metadataJson) {
       }
     }
 
+    std::optional<std::string> resourceScope;
+    if (auto scope = metadata->getString("resource_scope"))
+      resourceScope = scope->str();
+    std::optional<int64_t> resourceVectorValues;
+    if (auto count = metadata->getInteger("resource_vector_values"))
+      resourceVectorValues = *count;
+    const bool resourceChunkStreaming =
+        metadata->getBoolean("resource_chunk_streaming").value_or(false);
+    if (resourceScope && *resourceScope != "row" &&
+        *resourceScope != "tile") {
+      operation->emitError("InsertTemplateAttributes candidate has invalid "
+                           "resource_scope '")
+          << *resourceScope << "'";
+      return failure();
+    }
+    if (resourceVectorValues && *resourceVectorValues <= 0) {
+      operation->emitError(
+          "InsertTemplateAttributes candidate resource_vector_values must "
+          "be greater than zero");
+      return failure();
+    }
+
     parsedCandidates.push_back(CandidateMetadata{
         id.value_or(0),
         name->str(),
@@ -970,6 +995,9 @@ parseCandidateAttributes(Operation *operation, StringRef metadataJson) {
         *postUpdate,
         *tail,
         std::move(tags),
+        std::move(resourceScope),
+        resourceVectorValues,
+        resourceChunkStreaming,
     });
   }
 
@@ -997,22 +1025,31 @@ parseCandidateAttributes(Operation *operation, StringRef metadataJson) {
     for (const std::string &tag : candidate.tags)
       tagAttrs.push_back(builder.getStringAttr(tag));
 
-    attributes.push_back(DictionaryAttr::get(
-        operation->getContext(),
-        {
-            builder.getNamedAttr("id", builder.getI64IntegerAttr(candidate.id)),
-            builder.getNamedAttr("name",
-                                 builder.getStringAttr(candidate.name)),
-            builder.getNamedAttr(
-                "loop_depth",
-                builder.getI64IntegerAttr(candidate.loopDepth)),
-            builder.getNamedAttr(
-                "postupdate",
-                builder.getI64IntegerAttr(candidate.postUpdate ? 1 : 0)),
-            builder.getNamedAttr(
-                "tail", builder.getI64IntegerAttr(candidate.tail ? 1 : 0)),
-            builder.getNamedAttr("tags", builder.getArrayAttr(tagAttrs)),
-        }));
+    SmallVector<NamedAttribute> candidateAttrs{
+        builder.getNamedAttr("id", builder.getI64IntegerAttr(candidate.id)),
+        builder.getNamedAttr("name", builder.getStringAttr(candidate.name)),
+        builder.getNamedAttr("loop_depth",
+                             builder.getI64IntegerAttr(candidate.loopDepth)),
+        builder.getNamedAttr(
+            "postupdate",
+            builder.getI64IntegerAttr(candidate.postUpdate ? 1 : 0)),
+        builder.getNamedAttr(
+            "tail", builder.getI64IntegerAttr(candidate.tail ? 1 : 0)),
+        builder.getNamedAttr("tags", builder.getArrayAttr(tagAttrs)),
+    };
+    if (candidate.resourceScope)
+      candidateAttrs.push_back(builder.getNamedAttr(
+          "resource_scope", builder.getStringAttr(*candidate.resourceScope)));
+    if (candidate.resourceVectorValues)
+      candidateAttrs.push_back(builder.getNamedAttr(
+          "resource_vector_values",
+          builder.getI64IntegerAttr(*candidate.resourceVectorValues)));
+    if (candidate.resourceScope || candidate.resourceVectorValues)
+      candidateAttrs.push_back(builder.getNamedAttr(
+          "resource_chunk_streaming",
+          builder.getBoolAttr(candidate.resourceChunkStreaming)));
+    attributes.push_back(
+        DictionaryAttr::get(operation->getContext(), candidateAttrs));
   }
   return builder.getArrayAttr(attributes);
 }

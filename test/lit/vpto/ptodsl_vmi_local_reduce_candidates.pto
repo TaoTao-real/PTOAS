@@ -11,12 +11,12 @@
 
 module {
   func.func @narrow_rowmax() {
-    %src = pto.alloc_tile : !pto.tile_buf<vec, 64x32xf32>
-    %workspace = pto.alloc_tile : !pto.tile_buf<vec, 64x128xf32>
-    %dst = pto.alloc_tile : !pto.tile_buf<vec, 64x1xf32, blayout=col_major>
+    %src = pto.alloc_tile : !pto.tile_buf<vec, 16x32xf32>
+    %workspace = pto.alloc_tile : !pto.tile_buf<vec, 16x32xf32>
+    %dst = pto.alloc_tile : !pto.tile_buf<vec, 16x1xf32, blayout=col_major>
     pto.trowmax
-      ins(%src, %workspace : !pto.tile_buf<vec, 64x32xf32>, !pto.tile_buf<vec, 64x128xf32>)
-      outs(%dst : !pto.tile_buf<vec, 64x1xf32, blayout=col_major>)
+      ins(%src, %workspace : !pto.tile_buf<vec, 16x32xf32>, !pto.tile_buf<vec, 16x32xf32>)
+      outs(%dst : !pto.tile_buf<vec, 16x1xf32, blayout=col_major>)
     return
   }
 
@@ -33,8 +33,12 @@ module {
 
 // EXPAND-LABEL: func.func @narrow_rowmax
 // EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_trowmax
+// EXPAND-SAME: pto.vmi.resource.estimate_exact = true
+// EXPAND-SAME: pto.vmi.resource.estimated_peak_vector_bytes = 2048 : i64
 // EXPAND-LABEL: func.func @narrow_rowsum
 // EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_trowsum
+// EXPAND-SAME: pto.vmi.resource.estimate_exact = true
+// EXPAND-SAME: pto.vmi.resource.estimated_peak_vector_bytes = 4096 : i64
 // FINAL-LABEL: func.func @narrow_rowmax
 // FINAL: %[[MAX_MASK:.*]] = pto.pset_b32 "PAT_ALL"
 // FINAL: pto.vcgmax {{.*}}, %[[MAX_MASK]]

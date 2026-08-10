@@ -109,7 +109,8 @@ static bool areEquivalentHeaderValues(Value lhs, Value rhs) {
 static bool isFusionProvenanceAttr(NamedAttribute attr) {
   StringRef name = attr.getName().strref();
   return name.starts_with("pto.tilelib.") ||
-         name.starts_with("pto.vmi.fusion.");
+         name.starts_with("pto.vmi.fusion.") ||
+         name.starts_with("pto.vmi.resource.");
 }
 
 static SmallVector<NamedAttribute, 4> getSemanticLoopAttrs(scf::ForOp loop) {

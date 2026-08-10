@@ -49,6 +49,12 @@ static constexpr llvm::StringLiteral kVmiFusionBoundaryAttr =
     "pto.vmi.fusion.boundary";
 static constexpr llvm::StringLiteral kVmiFusionBoundaryReasonAttr =
     "pto.vmi.fusion.boundary_reason";
+static constexpr llvm::StringLiteral kVmiEstimatedPeakVectorBytesAttr =
+    "pto.vmi.resource.estimated_peak_vector_bytes";
+static constexpr llvm::StringLiteral kVmiEstimatedPeakVectorChunksAttr =
+    "pto.vmi.resource.estimated_peak_vector_chunks";
+static constexpr llvm::StringLiteral kVmiResourceEstimateExactAttr =
+    "pto.vmi.resource.estimate_exact";
 static constexpr llvm::StringLiteral kVmiFusionPrincipalLoopAttr =
     "pto.vmi.fusion.principal_loop";
 static constexpr llvm::StringLiteral kErrInstanceBodyMissing =
@@ -136,7 +142,10 @@ static void copyTileLibSelectionAttrs(Operation *dst, Operation *src) {
        {StringRef(kTileLibImplAttr), StringRef(kTileLibCandidateAttr),
         StringRef(kVmiFusionSourceAttr), StringRef(kVmiFusionTileOpAttr),
         StringRef(kVmiFusionBoundaryAttr),
-        StringRef(kVmiFusionBoundaryReasonAttr)}) {
+        StringRef(kVmiFusionBoundaryReasonAttr),
+        StringRef(kVmiEstimatedPeakVectorBytesAttr),
+        StringRef(kVmiEstimatedPeakVectorChunksAttr),
+        StringRef(kVmiResourceEstimateExactAttr)}) {
     if (Attribute attr = src->getAttr(attrName))
       dst->setAttr(attrName, attr);
   }
