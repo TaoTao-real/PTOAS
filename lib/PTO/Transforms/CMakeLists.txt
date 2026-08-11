@@ -57,10 +57,12 @@ add_mlir_dialect_library(PTOTransforms
   VmiMemoryLocation.cpp
 
   VecScopeMemBar/VecScopeMemoryFootprint.cpp
+  VecScopeMemBar/VecScopeMemBarIR.cpp
   VecScopeMemBar/VecScopeMemBarAnalysis.cpp
   VecScopeMemBar/VecScopeMemBarPlacement.cpp
   VecScopeMemBar/VecScopeMemBarCodegen.cpp
   VecScopeMemBar/PTOInsertVecScopeMemBarPass.cpp
+  VecScopeMemBar/PTOInsertVecScopeMemBarAllPass.cpp
 
   InsertSync/PTOInsertSync.cpp
   PTOInjectBarrierAllSync.cpp
