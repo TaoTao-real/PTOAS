@@ -1101,7 +1101,14 @@ def _can_use_contiguous_native_chunks(
         and chunk_lanes % cols == 0
         and total_lanes % chunk_lanes == 0
     )
-    if not one_row_multi_chunk and not packed_short_rows:
+    multi_row_multi_chunk = (
+        rows > 1 and cols > chunk_lanes and cols % chunk_lanes == 0
+    )
+    if (
+        not one_row_multi_chunk
+        and not packed_short_rows
+        and not multi_row_multi_chunk
+    ):
         return False
     return all(
         tile._spec.shape == dst._spec.shape

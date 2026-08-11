@@ -49,22 +49,20 @@ module {
 // EXPAND-COUNT-8: pto.tilelib.impl = "vmi"
 
 // INLINE-LABEL: func.func @local_convert_candidates
-// INLINE-DAG: pto.vmi.vcvt {{.*}} : !pto.vmi.vreg<128xbf16> -> !pto.vmi.vreg<128xf32>
-// INLINE-DAG: pto.vmi.vcvt {{.*}} : !pto.vmi.vreg<128xf16> -> !pto.vmi.vreg<128xf32>
-// INLINE-DAG: pto.vmi.vcvt {{.*}} : !pto.vmi.vreg<128xi32> -> !pto.vmi.vreg<128xf32>
-// INLINE-DAG: pto.vmi.vcvt {{.*}}rounding = "Z"{{.*}}saturate = "SAT"{{.*}} : !pto.vmi.vreg<128xf32> -> !pto.vmi.vreg<128xi32>
-// INLINE-DAG: pto.vmi.vcvt {{.*}}rounding = "R"{{.*}}saturate = "SAT"{{.*}} : !pto.vmi.vreg<128xf32> -> !pto.vmi.vreg<128xbf16>
-// INLINE-DAG: pto.vmi.vcvt {{.*}}rounding = "R"{{.*}}saturate = "NOSAT"{{.*}} : !pto.vmi.vreg<128xf32> -> !pto.vmi.vreg<128xbf16>
-// INLINE-DAG: pto.vmi.vcvt {{.*}}rounding = "A"{{.*}}saturate = "SAT"{{.*}} : !pto.vmi.vreg<128xf32> -> !pto.vmi.vreg<128xf16>
-// INLINE-DAG: %[[I32_TO_F32:.*]] = pto.vmi.vcvt {{.*}} : !pto.vmi.vreg<128xi32> -> !pto.vmi.vreg<128xf32>
-// INLINE-DAG: pto.vmi.vcvt %[[I32_TO_F32]] {{.*}}rounding = "A"{{.*}}saturate = "SAT"{{.*}} : !pto.vmi.vreg<128xf32> -> !pto.vmi.vreg<128xf16>
+// INLINE-DAG: pto.vmi.vcvt {{.*}} : !pto.vmi.vreg<64xbf16> -> !pto.vmi.vreg<64xf32>
+// INLINE-DAG: pto.vmi.vcvt {{.*}} : !pto.vmi.vreg<64xf16> -> !pto.vmi.vreg<64xf32>
+// INLINE-DAG: pto.vmi.vcvt {{.*}} : !pto.vmi.vreg<64xi32> -> !pto.vmi.vreg<64xf32>
+// INLINE-DAG: pto.vmi.vcvt {{.*}}rounding = "Z"{{.*}}saturate = "SAT"{{.*}} : !pto.vmi.vreg<64xf32> -> !pto.vmi.vreg<64xi32>
+// INLINE-DAG: pto.vmi.vcvt {{.*}}rounding = "R"{{.*}}saturate = "SAT"{{.*}} : !pto.vmi.vreg<64xf32> -> !pto.vmi.vreg<64xbf16>
+// INLINE-DAG: pto.vmi.vcvt {{.*}}rounding = "R"{{.*}}saturate = "NOSAT"{{.*}} : !pto.vmi.vreg<64xf32> -> !pto.vmi.vreg<64xbf16>
+// INLINE-DAG: pto.vmi.vcvt {{.*}}rounding = "A"{{.*}}saturate = "SAT"{{.*}} : !pto.vmi.vreg<64xf32> -> !pto.vmi.vreg<64xf16>
+// INLINE-DAG: %[[I32_TO_F32:.*]] = pto.vmi.vcvt {{.*}} : !pto.vmi.vreg<64xi32> -> !pto.vmi.vreg<64xf32>
+// INLINE-DAG: pto.vmi.vcvt %[[I32_TO_F32]] {{.*}}rounding = "A"{{.*}}saturate = "SAT"{{.*}} : !pto.vmi.vreg<64xf32> -> !pto.vmi.vreg<64xf16>
 
 // FINAL-LABEL: func.func @local_convert_candidates
 // FINAL-NOT: pto.vmi.
 // FINAL-DAG: pto.vcvt {{.*}} {part = "EVEN"} : !pto.vreg<128xbf16>, !pto.mask<b16> -> !pto.vreg<64xf32>
-// FINAL-DAG: pto.vcvt {{.*}} {part = "ODD"} : !pto.vreg<128xbf16>, !pto.mask<b16> -> !pto.vreg<64xf32>
 // FINAL-DAG: pto.vcvt {{.*}} {part = "EVEN"} : !pto.vreg<128xf16>, !pto.mask<b16> -> !pto.vreg<64xf32>
-// FINAL-DAG: pto.vcvt {{.*}} {part = "ODD"} : !pto.vreg<128xf16>, !pto.mask<b16> -> !pto.vreg<64xf32>
 // FINAL-DAG: pto.vcvt {{.*}} {rnd = "R"} : !pto.vreg<64xi32>, !pto.mask<b32> -> !pto.vreg<64xf32>
 // FINAL-DAG: pto.vcvt {{.*}} {rnd = "Z", sat = "SAT"} : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<64xi32>
 // FINAL-DAG: pto.vcvt {{.*}} {part = "EVEN", rnd = "R", sat = "SAT"} : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<128xbf16>
