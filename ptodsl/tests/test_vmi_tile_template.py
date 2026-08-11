@@ -252,7 +252,7 @@ def check_candidate_ir() -> tuple[str, str, str]:
 
 
 def check_rope_128b_candidates() -> dict[str, tuple[str, str]]:
-    """DSv4 RoPE's 32xf32 rows remain one logical VMI row iteration."""
+    """DSv4 RoPE full-shape elementwise candidates use native chunks."""
 
     wide = TileSpec(ROPE_TILE_SHAPE, f32)
     column = TileSpec((1, ROPE_TILE_SHAPE[1]), f32)
@@ -270,22 +270,31 @@ def check_rope_128b_candidates() -> dict[str, tuple[str, str]]:
     for name, artifact, expected_op in candidates:
         artifact.verify()
         text = artifact.mlir_text()
-        expect(text.count("scf.for") == 1, f"{name} should contain one row loop")
+        expect(text.count("scf.for") == 1, f"{name} should contain one chunk loop")
         expect(
-            "arith.constant 64 : index" in text,
-            f"{name} should iterate over the 64-row domain",
+            "arith.constant 2048 : index" in text
+            and "arith.constant 64 : index" in text,
+            f"{name} should cover the full tile in native f32 chunks",
         )
         expect(
-            "!pto.vmi.vreg<32xf32>" in text,
-            f"{name} should preserve one 32-lane logical row",
+            "!pto.vmi.vreg<64xf32>" in text,
+            f"{name} should use one native f32 vector per iteration",
+        )
+        expect(
+            "arith.muli" not in text,
+            f"{name} should use its chunk induction variable as the linear offset",
         )
         lowering_cases[name] = (text, expected_op)
 
     fill = vmi_texpands.specialize(scalar=f32, dst=wide)
     fill.verify()
     fill_text = fill.mlir_text()
-    expect(fill_text.count("scf.for") == 1, "RoPE texpands should contain one row loop")
-    expect("!pto.vmi.vreg<32xf32>" in fill_text, "RoPE texpands should use 32 lanes")
+    expect(fill_text.count("scf.for") == 1, "RoPE texpands should contain one chunk loop")
+    expect(
+        "arith.constant 2048 : index" in fill_text
+        and "!pto.vmi.vreg<64xf32>" in fill_text,
+        "RoPE texpands should fill the full tile in native f32 chunks",
+    )
     lowering_cases["vmi_texpands_rope128"] = (fill_text, "pto.vdup")
 
     col_mul = vmi_tcolexpandmul.specialize(src=wide, col_values=column, dst=wide)
@@ -298,6 +307,16 @@ def check_rope_128b_candidates() -> dict[str, tuple[str, str]]:
     )
     expect("!pto.vmi.vreg<32xf32>" in col_mul_text, "RoPE column multiply should use 32 lanes")
     lowering_cases["vmi_tcolexpandmul_rope128"] = (col_mul_text, "pto.vmul")
+
+    tail = TileSpec(ROPE_TILE_SHAPE, f32, valid_shape=(63, 32))
+    tail_tmuls = vmi_tmuls.specialize(src=tail, scale=f32, dst=tail)
+    tail_tmuls.verify()
+    tail_text = tail_tmuls.mlir_text()
+    expect(
+        "!pto.vmi.vreg<32xf32>" in tail_text
+        and "arith.constant 2048 : index" not in tail_text,
+        "RoPE tails must retain the row-aware masked form",
+    )
 
     i32_tile = TileSpec(ROPE_TILE_SHAPE, i32)
     bf16_tile = TileSpec(ROPE_TILE_SHAPE, bf16)
@@ -330,9 +349,12 @@ def check_rope_128b_candidates() -> dict[str, tuple[str, str]]:
     for name, artifact in conversions:
         artifact.verify()
         text = artifact.mlir_text()
-        expect(text.count("scf.for") == 1, f"{name} should contain one row loop")
+        expect(text.count("scf.for") == 1, f"{name} should contain one chunk loop")
         expect("pto.vmi.vcvt" in text, f"{name} should emit a VMI conversion")
-        expect("vreg<32x" in text, f"{name} should preserve 32 logical lanes")
+        expect(
+            "arith.constant 2048 : index" in text and "vreg<64x" in text,
+            f"{name} should convert the full tile in 64-lane chunks",
+        )
         if name == "vmi_tcvt_i32_f32_rope128":
             expect(
                 "rounding" not in text,
