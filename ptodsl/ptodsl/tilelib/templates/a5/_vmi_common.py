@@ -931,9 +931,11 @@ def emit_elementwise_vmi(
 ) -> None:
     """Emit one flat principal loop for a standalone elementwise candidate.
 
-    Multi-row tiles retain the logical-row domain used by VMI fusion. A static
-    one-row f32 tile can use the equivalent native-chunk domain so physical
-    lowering keeps a compact hardware loop instead of unrolling a wide vreg.
+    Static full-shape row-major tiles use the equivalent contiguous
+    native-chunk domain when they are either one multi-VL row or several
+    short rows that exactly pack a native vector. This matches the PTO-ISA 1D
+    implementation while preserving a common principal loop for compatible
+    elementwise chains. Partial or grouped shapes retain row-aware domains.
     """
 
     if not sources:
@@ -965,12 +967,8 @@ def emit_elementwise_vmi(
     ):
         _emit_elementwise_grouped_8x8_vmi(dst, sources, compute)
         return
-    if (
-        logical_lanes == cols
-        and rows == 1
-        and dst.element_type == f32
-        and cols > native_lanes
-        and cols % native_lanes == 0
+    if logical_lanes == cols and _can_use_contiguous_native_chunks(
+        dst, sources, chunk_lanes=native_lanes
     ):
         _emit_elementwise_contiguous_blocks_vmi(
             dst, sources, compute, block_lanes=native_lanes
@@ -1055,23 +1053,63 @@ def _emit_elementwise_contiguous_blocks_vmi(
     *,
     block_lanes: int,
 ) -> None:
-    """Keep a full one-row, multi-VL elementwise tile as one chunk loop."""
+    """Process a full contiguous tile as one native-chunk principal loop."""
 
     rows, cols = dst._spec.shape
-    if rows != 1 or cols % block_lanes != 0:
-        raise ValueError("contiguous VMI blocks require one exactly tiled row")
+    total_lanes = rows * cols
+    if not _can_use_contiguous_native_chunks(
+        dst, sources, chunk_lanes=block_lanes
+    ):
+        raise ValueError("contiguous VMI blocks require an exactly tiled full shape")
 
     _prepare_tile_access(*sources, dst)
     mask = _create_mask_lanes(
         block_lanes, block_lanes, dst.element_type, trace=dst._trace
     )
-    with for_(0, cols, step=block_lanes) as offset:
+    with for_(0, total_lanes, step=block_lanes) as offset:
         values = tuple(
             _vload_linear(source, offset, lanes=block_lanes)
             for source in sources
         )
         result = compute(values, mask)
         _vstore_linear(result, dst, offset, mask)
+
+
+def _can_use_contiguous_native_chunks(
+    dst: _TileProxy,
+    sources: Sequence[_TileProxy] = (),
+    *,
+    chunk_lanes: int,
+) -> bool:
+    """Return whether a tile chain is a full contiguous linear stream."""
+
+    if not isinstance(chunk_lanes, int) or chunk_lanes <= 0:
+        return False
+    tiles = (dst, *sources)
+    if any(not isinstance(tile, _TileProxy) for tile in tiles):
+        return False
+    rows, cols = dst._spec.shape
+    if not isinstance(rows, int) or not isinstance(cols, int):
+        return False
+    total_lanes = rows * cols
+    one_row_multi_chunk = (
+        rows == 1 and cols > chunk_lanes and cols % chunk_lanes == 0
+    )
+    packed_short_rows = (
+        rows > 1
+        and cols < chunk_lanes
+        and chunk_lanes % cols == 0
+        and total_lanes % chunk_lanes == 0
+    )
+    if not one_row_multi_chunk and not packed_short_rows:
+        return False
+    return all(
+        tile._spec.shape == dst._spec.shape
+        and tile._spec.effective_valid_shape == tile._spec.shape
+        and tile._spec.b_layout == "row_major"
+        and getattr(tile._spec, "s_layout", "none_box") == "none_box"
+        for tile in tiles
+    )
 
 
 def emit_scalar_fill_vmi(
@@ -1094,12 +1132,8 @@ def emit_scalar_fill_vmi(
 
     rows, cols = dst._spec.shape
     native_lanes = dst.element_type.lanes
-    if (
-        rows == 1
-        and dst.element_type == f32
-        and cols > native_lanes
-        and cols % native_lanes == 0
-    ):
+    if _can_use_contiguous_native_chunks(dst, chunk_lanes=native_lanes):
+        total_lanes = rows * cols
         _prepare_tile_access(dst)
         mask = _create_mask_lanes(
             native_lanes, native_lanes, dst.element_type, trace=dst._trace
@@ -1108,7 +1142,7 @@ def emit_scalar_fill_vmi(
             _vmi_builder.vbrc(scalar.value, size=native_lanes),
             dst.element_type,
         )
-        with for_(0, cols, step=native_lanes) as offset:
+        with for_(0, total_lanes, step=native_lanes) as offset:
             _vstore_linear(fill, dst, offset, mask)
         return
 
@@ -2294,11 +2328,7 @@ def emit_convert_vmi(src: _TileProxy, dst: _TileProxy) -> None:
         raise ValueError("tcvt source and destination shapes must match")
     if src._spec.b_layout != "row_major" or dst._spec.b_layout != "row_major":
         raise ValueError("tcvt VMI candidate requires row-major tiles")
-    _, cols = src._spec.shape
-    block_map = CanonicalBlockMap.from_tile(src, logical_lanes=cols)
-
-    _prepare_tile_access(src, dst)
-    dst_mask = _create_mask_lanes(cols, cols, dst.element_type, trace=src._trace)
+    rows, cols = src._spec.shape
     round_mode = _context_attr(src, "round_mode", "RINT")
     rounding = {
         "RINT": "R",
@@ -2316,8 +2346,8 @@ def emit_convert_vmi(src: _TileProxy, dst: _TileProxy) -> None:
         saturate = "SAT"
     else:
         saturate = "SAT" if sat_mode == "ON" else "NOSAT"
-    with for_(0, block_map.logical_block_count, step=1) as logical_block:
-        coordinate = block_map.coordinate(logical_block)
+
+    def convert(source: _VectorValue) -> _VectorValue:
         kwargs = {}
         if src.element_type == f32 and dst.element_type in (f16, bf16):
             kwargs["rounding"] = rounding
@@ -2327,7 +2357,6 @@ def emit_convert_vmi(src: _TileProxy, dst: _TileProxy) -> None:
             # Preserve TileOp TRUNC explicitly as the physical Z mode.
             kwargs["rounding"] = rounding
             kwargs["saturate"] = saturate
-        source = _vload(src, coordinate)
         if src.element_type == i32 and dst.element_type == f16:
             # Integer widening has no rounding semantics.  Apply the TileOp
             # rounding mode only to the subsequent f32 -> f16 narrowing.
@@ -2340,6 +2369,28 @@ def emit_convert_vmi(src: _TileProxy, dst: _TileProxy) -> None:
             )
         else:
             converted = _vcvt(source, dst.element_type, **kwargs)
+        return converted
+
+    chunk_lanes = min(src.element_type.lanes, dst.element_type.lanes)
+    if _can_use_contiguous_native_chunks(dst, (src,), chunk_lanes=chunk_lanes):
+        total_lanes = rows * cols
+        _prepare_tile_access(src, dst)
+        dst_mask = _create_mask_lanes(
+            chunk_lanes, chunk_lanes, dst.element_type, trace=src._trace
+        )
+        with for_(0, total_lanes, step=chunk_lanes) as offset:
+            source = _vload_linear(src, offset, lanes=chunk_lanes)
+            converted = convert(source)
+            _vstore_linear(converted, dst, offset, dst_mask)
+        return
+
+    block_map = CanonicalBlockMap.from_tile(src, logical_lanes=cols)
+    _prepare_tile_access(src, dst)
+    dst_mask = _create_mask_lanes(cols, cols, dst.element_type, trace=src._trace)
+    with for_(0, block_map.logical_block_count, step=1) as logical_block:
+        coordinate = block_map.coordinate(logical_block)
+        source = _vload(src, coordinate)
+        converted = convert(source)
         _vstore(converted, dst, coordinate, dst_mask)
 
 
