@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
-from ptodsl import pto
+from ptodsl import pto, scalar
 from ptodsl._surface_values import unwrap_surface_value
 from ptodsl._surface_types import Tile
 from ptodsl._runtime_scalar_ops import emit_runtime_binary_op
@@ -1882,7 +1882,7 @@ def emit_row_reduce_vmi(
             "grouped row-reduce requires a full static source tile or the "
             "registered 8x8/8x4 micro-tile form"
         )
-    _prepare_tile_access(src, dst)
+    _prepare_tile_access(src, workspace, dst)
     total_lanes = rows * physical_cols
     active = src._trace.index_const(valid_cols)
     full_mask = _wrap_mask(
@@ -1902,15 +1902,34 @@ def emit_row_reduce_vmi(
         )
     reduced = _wrap_vreg(reduced_value, f32)
 
-    dst_ptr = dst._trace.ensure_tile_ptr(dst)
     offset = dst._trace._coerce_index(0)
-    row_stride = dst._trace._coerce_index(1)
-    _vmi_builder.vstore(
-        reduced.value,
-        dst_ptr.value,
-        offset.value,
-        stride=row_stride.value,
-        group=rows,
+    if physical_cols < f32.lanes:
+        # A grouped physical reduction already packs the per-row values into
+        # one native register, so one aligned compact store is sufficient.
+        dst_ptr = dst._trace.ensure_tile_ptr(dst)
+        row_stride = dst._trace._coerce_index(1)
+        _vmi_builder.vstore(
+            reduced.value,
+            dst_ptr.value,
+            offset.value,
+            stride=row_stride.value,
+            group=rows,
+        )
+        return
+
+    # A wide grouped reduction is represented as one compact logical value per
+    # row but may be assigned one physical register per group. A grouped VST to
+    # compact [rows, 1] would therefore issue unaligned point stores. Scatter
+    # keeps the UB base aligned while expressing the compact element offsets.
+    dst_ptr = dst._trace.ensure_tile_ptr(dst)
+    compact_mask = _create_mask_lanes(rows, rows, f32, trace=dst._trace)
+    zero_i32 = dst._trace.scalar_const(0, i32)
+    offsets = _wrap_vreg(
+        _vmi_builder.vci(zero_i32.value, size=rows, order="ASC"),
+        i32,
+    )
+    _vmi_builder.vscatter(
+        reduced.value, dst_ptr.value, offsets.value, compact_mask.value
     )
 
 
@@ -2006,17 +2025,26 @@ def emit_row_expand_binary_vmi(
         return
 
     full_mask = _create_mask_lanes(cols, cols, f32, trace=row_tensor._trace)
+    scalar_mask = _create_mask_lanes(1, 1, f32, trace=row_tensor._trace)
+    state_ptr = compact_row_state._trace.ensure_tile_ptr(compact_row_state)
     with for_(0, rows, step=1) as row:
-        # Load one compact-row scalar and broadcast it to the full row width.
-        # Use a 1-lane vload + pto.vmi.vbrc (which lowers to pto.vmi.broadcast,
-        # a layout-agnostic scalar broadcast) instead of vload{dist_mode="brc"}:
-        # the latter lowers to pto.vmi.group_broadcast_load with
-        # source_group_stride=0 / num_groups=1, which the VMI layout/lowering
-        # tables only support for full-part group sizes. Narrow columns (e.g.
-        # 32 lanes, the four-block class) cannot materialize any layout from
-        # that form, so the fused broadcast load is reserved for the grouped
-        # micro-tile path above and the explicit broadcast is used here.
-        row_scalar = _vload_linear(compact_row_state, row, lanes=1)
+        # Compact [rows, 1] states are not block-aligned after row zero. Read
+        # each scalar through an indexed load from the aligned base, then
+        # broadcast lane zero to the logical row. PTO-ISA uses vldas/vldus for
+        # the same unaligned scalar access; gather preserves that safety while
+        # keeping the value in VMI form for later fusion.
+        row_i32 = _Value(
+            unwrap_surface_value(scalar.index_cast(pto.i32, row.value))
+        )
+        offsets = _wrap_vreg(
+            _vmi_builder.vci(row_i32.value, size=1, order="ASC"), i32
+        )
+        row_scalar = _wrap_vreg(
+            _vmi_builder.vgather(
+                state_ptr.value, offsets.value, scalar_mask.value
+            ),
+            f32,
+        )
         broadcast = _vbrc(row_scalar, lanes=cols)
         src_offset = index_mul(row, src_physical_cols)
         dst_offset = index_mul(row, dst_physical_cols)

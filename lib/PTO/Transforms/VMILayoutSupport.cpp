@@ -325,6 +325,11 @@ static constexpr EnsureLayoutPattern kEnsureLayoutPatterns[] = {
     {bits<8>(), anyN(), gs(8, 4), gs(8)},
     {bits<8>(), anyN(), gs(8, 2), gs(8, 4)},
     {bits<8>(), anyN(), gs(8, 4), gs(8, 2)},
+
+    // A full-width grouped row reduction produces one lane-zero value in
+    // every physical part. Pack those values into a compact contiguous f32
+    // carrier before indexed consumers such as scatter.
+    {bits<32>(), N<1, 2, 4, 8, 16, 32, 64>(), gs(1), c()},
 };
 
 struct EnsureMaskLayoutPattern {

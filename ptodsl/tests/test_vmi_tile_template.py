@@ -536,8 +536,9 @@ def check_local_broadcast_candidates() -> dict[str, tuple[str, str]]:
         artifact.verify()
         text = artifact.mlir_text()
         expect(text.count("scf.for") == 1, f"{name} should contain one row loop")
-        expect(text.count("pto.vmi.vload") == 2, f"{name} should load row and state")
-        expect("!pto.vmi.vreg<1xf32>" in text, f"{name} should load row state as one scalar lane")
+        expect(text.count("pto.vmi.vload") == 1, f"{name} should load one data row")
+        expect(text.count("pto.vmi.vgather") == 1, f"{name} should gather one compact row state")
+        expect("!pto.vmi.vreg<1xf32>" in text, f"{name} should gather row state as one scalar lane")
         expect(text.count("pto.vmi.vbrc") == 1, f"{name} should broadcast row state to full width")
         expect(text.count('dist_mode = "brc"') == 0, f"{name} should not use the restricted group broadcast load")
         expect(text.count(vmi_op) == 1, f"{name} should emit {vmi_op}")
@@ -1129,7 +1130,16 @@ def check_row_reduce_candidates() -> dict[str, tuple[str, str, int]]:
             )
             expect(text.count("pto.vmi.vload") == 1, f"{name} should load one row")
             expect("group = 8" in text, f"{name} should preserve eight row groups")
-            expect(text.count("pto.vmi.vstore") == 1, f"{name} should store compact rows")
+            expected_stores = 1 if cols < f32.lanes else 0
+            expect(
+                text.count("pto.vmi.vstore") == expected_stores,
+                f"{name} should use allocation-safe row-result stores",
+            )
+            if expected_stores == 0:
+                expect(
+                    "pto.vmi.vscatter" in text,
+                    f"{name} should scatter compact rows from an aligned base",
+                )
             expected_physical_op = (
                 physical_op.replace("pto.vc", "pto.vcg")
                 if cols < f32.lanes
@@ -1655,7 +1665,7 @@ def check_vmi_to_vpto_lowering(
     mlir_text: str,
     expected_op: str,
     expected_loop_count: int = 1,
-) -> None:
+) -> str:
     ptoas = shutil.which("ptoas")
     expect(ptoas is not None, "ptoas must be available for VMI-to-VPTO regression coverage")
     with TemporaryDirectory() as temp_dir:
@@ -1686,6 +1696,7 @@ def check_vmi_to_vpto_lowering(
         completed.stdout.count("scf.for") == expected_loop_count,
         f"{name} should lower to {expected_loop_count} principal loop(s)",
     )
+    return completed.stdout
 
 
 def main() -> None:
@@ -1703,10 +1714,20 @@ def main() -> None:
     for name, (text, expected_op) in check_rmsnorm_256b_row_candidates().items():
         check_vmi_to_vpto_lowering(name, text, expected_op)
     for name, (text, expected_op) in check_local_broadcast_candidates().items():
-        check_vmi_to_vpto_lowering(name, text, expected_op)
+        lowered = check_vmi_to_vpto_lowering(name, text, expected_op)
+        if name.startswith("vmi_trowexpand"):
+            expect(
+                "pto.vgather2_bc" in lowered,
+                f"{name} should lower compact state access to aligned gather",
+            )
     for name, (text, expected_op, expected_loop_count) in check_row_reduce_candidates().items():
-        check_vmi_to_vpto_lowering(
+        lowered = check_vmi_to_vpto_lowering(
             name, text, expected_op, expected_loop_count
+        )
+        expected_store = "pto.vscatter" if name.endswith("_128lanes") else "pto.vsts"
+        expect(
+            expected_store in lowered,
+            f"{name} should lower row results with {expected_store}",
         )
     check_col_reduce_candidate()
     check_col_reduce_split()
