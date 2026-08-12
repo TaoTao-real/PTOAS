@@ -44,21 +44,28 @@ struct PTOInsertVecScopeMemBarPass
         scopes.push_back(op);
     });
 
-    for (Operation *scope : scopes) {
-      auto result = runVecScopeMemBarAnalysis(scope);
-      if (failed(result)) {
-        signalPassFailure();
-        return;
-      }
+    auto analyzeAndApply = [&](FailureOr<VecScopeMemBarAnalysisResult> result) {
+      if (failed(result))
+        return failure();
       auto plan = solveVecScopeMemBarPlacement(*result);
-      if (failed(plan)) {
+      if (failed(plan))
+        return failure();
+      return applyVecScopeMemBarPlan(*result, *plan);
+    };
+
+    for (Operation *scope : scopes) {
+      if (failed(analyzeAndApply(runVecScopeMemBarAnalysis(scope)))) {
         signalPassFailure();
         return;
       }
-      if (failed(applyVecScopeMemBarPlan(*result, *plan))) {
-        signalPassFailure();
-        return;
-      }
+    }
+
+    // TileLib expansion may put a producer and consumer into separate sibling
+    // vecscopes. Preserve the established per-scope analysis above, then add a
+    // narrow function-level pass that retains only such cross-scope hazards.
+    if (failed(analyzeAndApply(runCrossVecScopeMemBarAnalysis(func)))) {
+      signalPassFailure();
+      return;
     }
   }
 };
