@@ -24,6 +24,7 @@ from ._vmi_common import (  # noqa: E402
     canonical_vmi_template,
     emit_row_expand_binary_vmi,
     row_expand_binary_vmi_constraint,
+    sinkhorn_grouped_row_expand_vmi_constraint,
 )
 
 
@@ -36,4 +37,19 @@ from ._vmi_common import (  # noqa: E402
     min_row_bytes=128,
 )
 def vmi_trowexpandmul(src: pto.Tile, row_values: pto.Tile, dst: pto.Tile):
+    emit_row_expand_binary_vmi(src, row_values, dst, "mul")
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="trowexpandmul",
+    name="vmi_trowexpandmul_sinkhorn_grouped",
+    dtypes=(("f32", "f32", "f32"),),
+    constraints=(sinkhorn_grouped_row_expand_vmi_constraint,),
+    requires_full_physical_row=False,
+    tags=("supports_partial_valid_shape",),
+)
+def vmi_trowexpandmul_sinkhorn_grouped(
+    src: pto.Tile, row_values: pto.Tile, dst: pto.Tile
+):
     emit_row_expand_binary_vmi(src, row_values, dst, "mul")

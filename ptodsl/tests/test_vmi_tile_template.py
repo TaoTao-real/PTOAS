@@ -561,12 +561,13 @@ def check_local_broadcast_candidates() -> dict[str, tuple[str, str]]:
 
     for op in ("trowexpandmul", "trowexpanddiv", "tcolexpand"):
         candidates = VMI_TILELIB_REGISTRY.lookup(op, "a5")
-        expect(len(candidates) == 1, f"{op} should register one VMI candidate")
-        expect(
-            candidates[0].metadata.tags[:3]
-            == ("vmi", "fusion_eligible", "single_logical_row_loop"),
-            f"{op} should carry canonical VMI fusion tags",
-        )
+        expect(candidates, f"{op} should register at least one VMI candidate")
+        for candidate in candidates:
+            expect(
+                candidate.metadata.tags[:3]
+                == ("vmi", "fusion_eligible", "single_logical_row_loop"),
+                f"{candidate.name} should carry canonical VMI fusion tags",
+            )
 
     row_specs = {"src": wide, "row_values": compact, "dst": wide}
     expect(
@@ -653,12 +654,13 @@ def check_local_broadcast_candidates() -> dict[str, tuple[str, str]]:
 def check_provider_helper() -> None:
     registered_tadd = VMI_TILELIB_REGISTRY.lookup("tadd", "a5")
     expect(
-        len(registered_tadd) == 1,
-        "tadd must have one registered canonical VMI template",
+        vmi_tadd_block64 in registered_tadd,
+        "tadd must retain its canonical wide VMI template",
     )
     expect(
-        registered_tadd[0] is vmi_tadd_block64,
-        "the registered tadd template must be the exported canonical implementation",
+        len({candidate.name for candidate in registered_tadd})
+        == len(registered_tadd),
+        "tadd VMI semantic forms must use unique candidate names",
     )
     expect(
         dict(vmi_texp_block64.context_constraints)

@@ -114,6 +114,10 @@ def row_reduce_vmi_constraint(
     rows, cols = src_shape
     valid_rows, valid_cols = src_valid_shape
     workspace_rows, workspace_cols = workspace_shape
+    sinkhorn_grouped_form = (
+        src_shape == (8, 8)
+        and src_valid_shape in {(8, 4), (8, 8)}
+    )
     return (
         isinstance(rows, int)
         and isinstance(cols, int)
@@ -124,8 +128,11 @@ def row_reduce_vmi_constraint(
         and valid_rows == rows
         and isinstance(valid_cols, int)
         and 0 < valid_cols <= cols
-        and src_valid_shape == src_shape
-        and cols * _DTYPE_BYTEWIDTH["f32"] >= 128
+        and (src_valid_shape == src_shape or sinkhorn_grouped_form)
+        and (
+            cols * _DTYPE_BYTEWIDTH["f32"] >= 128
+            or sinkhorn_grouped_form
+        )
         and workspace_rows == rows
         and workspace_cols >= 1
         and workspace_valid_shape == workspace_shape
@@ -629,6 +636,42 @@ def min_128b_row_vmi_constraint(**metadata) -> bool:
     return _physical_row_vmi_constraint(128, **metadata)
 
 
+def sinkhorn_compact_elementwise_vmi_constraint(**metadata) -> bool:
+    """Accept only the static compact f32 forms used by DSv4 Sinkhorn."""
+
+    operands = []
+    for name, shape in metadata.items():
+        if not name.endswith("_shape") or name.endswith("_valid_shape"):
+            continue
+        operand = name[:-6]
+        valid_shape = metadata.get(f"{operand}_valid_shape")
+        dtype = metadata.get(f"{operand}_dtype")
+        config = metadata.get(f"{operand}_config")
+        if not isinstance(shape, (tuple, list)) or not isinstance(
+            valid_shape, (tuple, list)
+        ):
+            return False
+        operands.append((tuple(shape), tuple(valid_shape), dtype, config))
+
+    if not operands:
+        return False
+    shape, valid_shape, _, _ = operands[0]
+    accepted_form = (shape, valid_shape) in {
+        ((8, 8), (8, 8)),
+        ((8, 8), (8, 4)),
+        ((1, 8), (1, 8)),
+    }
+    return accepted_form and all(
+        operand_shape == shape
+        and operand_valid_shape == valid_shape
+        and dtype == "f32"
+        and config is not None
+        and config.b_layout == "row_major"
+        and config.s_layout == "none_box"
+        for operand_shape, operand_valid_shape, dtype, config in operands
+    )
+
+
 def _is_safe_static_row_prefix(
     shape: tuple[int, ...],
     valid_shape: tuple[int, ...],
@@ -698,8 +741,42 @@ def row_expand_binary_vmi_constraint(
         and src_valid_shape == src_shape
         and dst_valid_shape == dst_shape
         and safe_row_access
+        and dst_shape == src_shape
         and dst_valid_shape == src_valid_shape
         and row_values_shape == (rows, 1)
+        and row_values_valid_shape == row_values_shape
+        and src_config is not None
+        and src_config.b_layout == "row_major"
+        and src_config.s_layout == "none_box"
+        and row_values_config is not None
+        and row_values_config.b_layout == "col_major"
+        and row_values_config.s_layout == "none_box"
+        and dst_config is not None
+        and dst_config.b_layout == "row_major"
+        and dst_config.s_layout == "none_box"
+    )
+
+
+def sinkhorn_grouped_row_expand_vmi_constraint(
+    src_shape=(),
+    src_valid_shape=(),
+    src_config=None,
+    row_values_shape=(),
+    row_values_valid_shape=(),
+    row_values_config=None,
+    dst_shape=(),
+    dst_valid_shape=(),
+    dst_config=None,
+    **_,
+):
+    """Accept the exact DSv4 Sinkhorn 8x8 row-state forms."""
+
+    return (
+        src_shape == (8, 8)
+        and src_valid_shape in {(8, 4), (8, 8)}
+        and dst_shape == src_shape
+        and dst_valid_shape == src_valid_shape
+        and row_values_shape == (8, 1)
         and row_values_valid_shape == row_values_shape
         and src_config is not None
         and src_config.b_layout == "row_major"
@@ -730,13 +807,24 @@ def col_expand_vmi_constraint(
     ):
         return False
     rows, cols = dst_shape
+    sinkhorn_grouped_form = (
+        src_shape == (1, 8)
+        and src_valid_shape in {(1, 4), (1, 8)}
+        and dst_shape == (8, 8)
+        and dst_valid_shape == (8, src_valid_shape[1])
+    )
     return (
         rows > 0
         and cols > 0
         and src_shape == (1, cols)
-        and src_valid_shape == (1, cols)
-        and dst_valid_shape == dst_shape
-        and cols * _DTYPE_BYTEWIDTH["f32"] >= 128
+        and (
+            (
+                src_valid_shape == (1, cols)
+                and dst_valid_shape == dst_shape
+                and cols * _DTYPE_BYTEWIDTH["f32"] >= 128
+            )
+            or sinkhorn_grouped_form
+        )
         and src_config is not None
         and src_config.b_layout == "row_major"
         and src_config.s_layout == "none_box"
@@ -949,6 +1037,17 @@ def emit_elementwise_vmi(
 
     rows, cols = dst._spec.shape
     native_lanes = dst.element_type.lanes
+    valid_shape = dst._spec.effective_valid_shape
+    if dst.element_type == f32 and (
+        ((rows, cols), valid_shape)
+        in {
+            ((8, 8), (8, 8)),
+            ((8, 8), (8, 4)),
+            ((1, 8), (1, 8)),
+        }
+    ):
+        _emit_elementwise_sinkhorn_grouped_vmi(dst, sources, compute)
+        return
     if logical_lanes == cols and _can_use_contiguous_native_chunks(
         dst, sources, chunk_lanes=native_lanes
     ):
@@ -966,6 +1065,58 @@ def emit_elementwise_vmi(
         values = tuple(_vload(source, coordinate) for source in sources)
         result = compute(values, mask)
         _vstore(result, dst, coordinate, mask)
+
+
+def _emit_elementwise_sinkhorn_grouped_vmi(
+    dst: _TileProxy,
+    sources: Sequence[_TileProxy],
+    compute: ElementwiseCompute,
+) -> None:
+    """Process one statically proven compact Sinkhorn tile safely."""
+
+    rows, cols = dst._spec.shape
+    _, active_cols = dst._spec.effective_valid_shape
+    total_lanes = rows * cols
+    groups = rows if rows > 1 else cols
+    stride = dst._trace.index_const(cols if rows > 1 else 1)
+    zero = dst._trace.index_const(0)
+    _prepare_tile_access(*sources, dst)
+    active = dst._trace.index_const(active_cols if rows > 1 else total_lanes)
+    mask = _wrap_mask(
+        _vmi_builder.create_mask(
+            active.value,
+            size=total_lanes,
+            group=groups if rows > 1 else None,
+        ),
+        dst.element_type,
+    )
+    with for_(0, 1, step=1):
+        values = tuple(
+            _wrap_vreg(
+                _vmi_builder.vload(
+                    source._trace.ensure_tile_ptr(source).value,
+                    zero.value,
+                    size=total_lanes,
+                    stride=stride.value,
+                    group=groups,
+                ),
+                f32,
+            )
+            for source in sources
+        )
+        result = compute(values, mask)
+        dst_ptr = dst._trace.ensure_tile_ptr(dst)
+        # The physical Sinkhorn tile owns every group lane. Inactive tail
+        # values are semantically outside valid_shape and are materialized by
+        # the following tfillpad when needed, so a layout-preserving group
+        # store is both in-bounds and preferable to a plain masked store.
+        _vmi_builder.vstore(
+            result.value,
+            dst_ptr.value,
+            zero.value,
+            stride=stride.value,
+            group=groups,
+        )
 
 
 def _emit_elementwise_contiguous_blocks_vmi(
@@ -1761,9 +1912,14 @@ def _validate_row_reduce_tiles(
     if valid_rows != rows or valid_cols <= 0 or valid_cols > physical_cols:
         raise ValueError("row-reduce valid shape must fit the physical source tile")
     safe_read_cols = ((valid_cols + f32.lanes - 1) // f32.lanes) * f32.lanes
+    sinkhorn_grouped_form = (
+        src._spec.shape == (8, 8)
+        and src._spec.effective_valid_shape == (8, 4)
+    )
     if (
         src._spec.effective_valid_shape != src._spec.shape
         and safe_read_cols > physical_cols
+        and not sinkhorn_grouped_form
     ):
         raise ValueError(
             "row-reduce source must contain every physical lane read by its mask"
@@ -1788,8 +1944,15 @@ def emit_row_reduce_vmi(
     kind: str,
 ) -> None:
     rows, physical_cols, valid_cols = _validate_row_reduce_tiles(src, workspace, dst)
-    if valid_cols != physical_cols:
-        raise ValueError("grouped row-reduce requires a full static source tile")
+    sinkhorn_grouped_form = (
+        src._spec.shape == (8, 8)
+        and src._spec.effective_valid_shape == (8, 4)
+    )
+    if valid_cols != physical_cols and not sinkhorn_grouped_form:
+        raise ValueError(
+            "grouped row-reduce requires a full static source tile or the "
+            "registered Sinkhorn 8x8/8x4 form"
+        )
     _prepare_tile_access(src, workspace, dst)
     total_lanes = rows * physical_cols
     active = src._trace.index_const(valid_cols)
@@ -1799,7 +1962,21 @@ def emit_row_reduce_vmi(
         ),
         f32,
     )
-    source = _vload_linear(src, 0, lanes=total_lanes)
+    if src._spec.shape == (8, 8):
+        offset = src._trace._coerce_index(0)
+        row_stride = src._trace._coerce_index(physical_cols)
+        source = _wrap_vreg(
+            _vmi_builder.vload(
+                src._trace.ensure_tile_ptr(src).value,
+                offset.value,
+                size=total_lanes,
+                stride=row_stride.value,
+                group=rows,
+            ),
+            f32,
+        )
+    else:
+        source = _vload_linear(src, 0, lanes=total_lanes)
     if kind == "max":
         reduced_value = _vmi_builder.vcmax(
             source.value, full_mask.value, group=rows
@@ -1914,14 +2091,23 @@ def emit_row_expand_binary_vmi(
         raise ValueError(
             "row-expand source and destination logical shapes must match"
         )
-    if not _is_safe_static_row_prefix(
-        row_tensor._spec.shape,
-        logical_shape,
-        native_lanes=f32.lanes,
-    ) or not _is_safe_static_row_prefix(
-        output._spec.shape,
-        output._spec.effective_valid_shape,
-        native_lanes=f32.lanes,
+    sinkhorn_grouped_form = (
+        row_tensor._spec.shape == (8, 8)
+        and logical_shape in {(8, 4), (8, 8)}
+        and output._spec.shape == (8, 8)
+        and output._spec.effective_valid_shape == logical_shape
+    )
+    if not sinkhorn_grouped_form and (
+        not _is_safe_static_row_prefix(
+            row_tensor._spec.shape,
+            logical_shape,
+            native_lanes=f32.lanes,
+        )
+        or not _is_safe_static_row_prefix(
+            output._spec.shape,
+            output._spec.effective_valid_shape,
+            native_lanes=f32.lanes,
+        )
     ):
         raise ValueError("row-expand logical row exceeds its physical storage")
     rows, cols = logical_shape
@@ -1935,6 +2121,52 @@ def emit_row_expand_binary_vmi(
         )
     src_physical_cols = row_tensor._spec.shape[1]
     dst_physical_cols = output._spec.shape[1]
+
+    if sinkhorn_grouped_form:
+        _prepare_tile_access(row_tensor, compact_row_state, output)
+        zero = row_tensor._trace.index_const(0)
+        row_stride = row_tensor._trace.index_const(8)
+        state_stride = row_tensor._trace.index_const(1)
+        active = row_tensor._trace.index_const(cols)
+        mask = _wrap_mask(
+            _vmi_builder.create_mask(active.value, size=64, group=8), f32
+        )
+        with for_(0, 1, step=1):
+            value = _wrap_vreg(
+                _vmi_builder.vload(
+                    row_tensor._trace.ensure_tile_ptr(row_tensor).value,
+                    zero.value,
+                    size=64,
+                    stride=row_stride.value,
+                    group=8,
+                ),
+                f32,
+            )
+            state = _wrap_vreg(
+                _vmi_builder.vload(
+                    compact_row_state._trace.ensure_tile_ptr(
+                        compact_row_state
+                    ).value,
+                    zero.value,
+                    size=8,
+                    stride=state_stride.value,
+                    group=8,
+                ),
+                f32,
+            )
+            broadcast = _wrap_vreg(
+                _vmi_builder.vbrc(state.value, size=64, group=8), f32
+            )
+            result = operations[operation](value, broadcast, mask)
+            output_ptr = output._trace.ensure_tile_ptr(output)
+            _vmi_builder.vstore(
+                result.value,
+                output_ptr.value,
+                zero.value,
+                stride=row_stride.value,
+                group=8,
+            )
+        return
 
     _prepare_tile_access(row_tensor, compact_row_state, output)
     full_mask = _create_mask_lanes(cols, cols, f32, trace=row_tensor._trace)
@@ -1987,6 +2219,50 @@ def emit_col_expand_vmi(src: _TileProxy, dst: _TileProxy) -> None:
         raise ValueError(
             "tcolexpand source and destination valid columns must match"
         )
+    if (
+        src._spec.shape == (1, 8)
+        and dst._spec.shape == (8, 8)
+        and dst._spec.effective_valid_shape in {(8, 4), (8, 8)}
+    ):
+        _prepare_tile_access(src, dst)
+        src_ptr = src._trace.ensure_tile_ptr(src)
+        zero = dst._trace.index_const(0)
+        row_stride = dst._trace.index_const(8)
+        active = dst._trace.index_const(valid_cols)
+        mask = _wrap_mask(
+            _vmi_builder.create_mask(active.value, size=64, group=8), f32
+        )
+        with for_(0, 1, step=1):
+            base = src._trace.scalar_const(0, i32)
+            period = src._trace.scalar_const(cols - 1, i32)
+            lane_ids = _wrap_vreg(
+                _vmi_builder.vci(base.value, size=64, order="ASC"), i32
+            )
+            period_mask = _wrap_vreg(
+                _vmi_builder.vbrc(period.value, size=64), i32
+            )
+            offsets = _wrap_vreg(
+                _vmi_builder.vand(
+                    lane_ids.value, period_mask.value, mask.value
+                ),
+                i32,
+            )
+            broadcast = _wrap_vreg(
+                _vmi_builder.vgather(
+                    src_ptr.value, offsets.value, mask.value
+                ),
+                f32,
+            )
+            dst_ptr = dst._trace.ensure_tile_ptr(dst)
+            _vmi_builder.vstore(
+                broadcast.value,
+                dst_ptr.value,
+                zero.value,
+                stride=row_stride.value,
+                group=8,
+            )
+        return
+
     block_map = CanonicalBlockMap.from_tile(dst, logical_lanes=cols)
 
     _prepare_tile_access(src, dst)
@@ -2346,6 +2622,8 @@ __all__ = [
     "emit_row_expand_sub_vmi",
     "emit_row_expand_binary_vmi",
     "row_expand_binary_vmi_constraint",
+    "sinkhorn_compact_elementwise_vmi_constraint",
+    "sinkhorn_grouped_row_expand_vmi_constraint",
     "emit_row_reduce_vmi",
     "emit_row_reduce_streaming_vmi",
     "emit_rsqrt_vmi",
