@@ -7895,6 +7895,34 @@ struct OneToNVMIGroupStoreOpPattern
         return rewriter.notifyMatchFailure(
             op, "one-block group_store physical arity mismatch");
 
+      std::optional<int64_t> rowStrideConst =
+          getConstantIndexValue(op.getRowStride());
+      if (rowStrideConst && *rowStrideConst == plan->groupSize) {
+        FailureOr<int64_t> lanesPerPart =
+            getDataLanesPerPart(valueVMIType.getElementType());
+        if (failed(lanesPerPart))
+          return rewriter.notifyMatchFailure(
+              op, "failed to derive contiguous group_store chunk width");
+        for (auto [part, value] : llvm::enumerate(valueParts)) {
+          auto vregType = dyn_cast<VRegType>(value.getType());
+          if (!vregType)
+            return rewriter.notifyMatchFailure(
+                op, "contiguous group_store value must be vreg");
+          FailureOr<Value> mask = createContiguousStoreMask(
+              op.getLoc(), valueVMIType, part, vregType, rewriter);
+          if (failed(mask))
+            return rewriter.notifyMatchFailure(
+                op, "failed to create contiguous group_store mask");
+          Value partOffset = createChunkOffset(
+              op.getLoc(), *offset, part * *lanesPerPart, rewriter);
+          rewriter.create<VstsOp>(op.getLoc(), /*updated_base=*/Type{}, value,
+                                  *destination, partOffset,
+                                  /*dist=*/nullptr, *mask);
+        }
+        rewriter.eraseOp(op);
+        return success();
+      }
+
       Value blockStride = rewriter.create<arith::ConstantIntOp>(
           op.getLoc(), plan->blockStride, 16);
       Value repeatStride =
