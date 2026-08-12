@@ -108,8 +108,10 @@ module {
 // EXPAND-SAME: pto.tilelib.impl = "vmi"
 // EXPAND: call {{.*}}__vmi_tmuls_sinkhorn_compact
 // EXPAND-SAME: pto.tilelib.impl = "vmi"
-// EXPAND: call {{.*}}__vmi_trowexpandmul_sinkhorn_grouped
-// EXPAND-SAME: pto.tilelib.impl = "vmi"
+// EXPAND: call {{.*}}__template_trowexpandmul
+// EXPAND-SAME: pto.tilelib.impl = "ptodsl"
+// EXPAND-SAME: pto.vmi.fusion.boundary = "local"
+// EXPAND-SAME: pto.vmi.fusion.boundary_reason = "non_vmi_local_boundary_fallback"
 // EXPAND-LABEL: func.func @sinkhorn_compact_state
 // EXPAND: call {{.*}}__vmi_tadds_sinkhorn_compact
 // EXPAND-SAME: pto.tilelib.impl = "vmi"

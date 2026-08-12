@@ -757,39 +757,6 @@ def row_expand_binary_vmi_constraint(
     )
 
 
-def sinkhorn_grouped_row_expand_vmi_constraint(
-    src_shape=(),
-    src_valid_shape=(),
-    src_config=None,
-    row_values_shape=(),
-    row_values_valid_shape=(),
-    row_values_config=None,
-    dst_shape=(),
-    dst_valid_shape=(),
-    dst_config=None,
-    **_,
-):
-    """Accept the exact DSv4 Sinkhorn 8x8 row-state forms."""
-
-    return (
-        src_shape == (8, 8)
-        and src_valid_shape in {(8, 4), (8, 8)}
-        and dst_shape == src_shape
-        and dst_valid_shape == src_valid_shape
-        and row_values_shape == (8, 1)
-        and row_values_valid_shape == row_values_shape
-        and src_config is not None
-        and src_config.b_layout == "row_major"
-        and src_config.s_layout == "none_box"
-        and row_values_config is not None
-        and row_values_config.b_layout == "col_major"
-        and row_values_config.s_layout == "none_box"
-        and dst_config is not None
-        and dst_config.b_layout == "row_major"
-        and dst_config.s_layout == "none_box"
-    )
-
-
 def col_expand_vmi_constraint(
     src_shape=(),
     src_valid_shape=(),
@@ -2623,7 +2590,6 @@ __all__ = [
     "emit_row_expand_binary_vmi",
     "row_expand_binary_vmi_constraint",
     "sinkhorn_compact_elementwise_vmi_constraint",
-    "sinkhorn_grouped_row_expand_vmi_constraint",
     "emit_row_reduce_vmi",
     "emit_row_reduce_streaming_vmi",
     "emit_rsqrt_vmi",
