@@ -757,6 +757,39 @@ def row_expand_binary_vmi_constraint(
     )
 
 
+def sinkhorn_row_expand_vmi_constraint(
+    src_shape=(),
+    src_valid_shape=(),
+    src_config=None,
+    row_values_shape=(),
+    row_values_valid_shape=(),
+    row_values_config=None,
+    dst_shape=(),
+    dst_valid_shape=(),
+    dst_config=None,
+    **_,
+):
+    """Accept Sinkhorn row expands whose compact state uses gather loading."""
+
+    return (
+        src_shape == (8, 8)
+        and src_valid_shape in {(8, 4), (8, 8)}
+        and dst_shape == src_shape
+        and dst_valid_shape == src_valid_shape
+        and row_values_shape == (8, 1)
+        and row_values_valid_shape == row_values_shape
+        and src_config is not None
+        and src_config.b_layout == "row_major"
+        and src_config.s_layout == "none_box"
+        and row_values_config is not None
+        and row_values_config.b_layout == "col_major"
+        and row_values_config.s_layout == "none_box"
+        and dst_config is not None
+        and dst_config.b_layout == "row_major"
+        and dst_config.s_layout == "none_box"
+    )
+
+
 def col_expand_vmi_constraint(
     src_shape=(),
     src_valid_shape=(),
@@ -2089,52 +2122,6 @@ def emit_row_expand_binary_vmi(
     src_physical_cols = row_tensor._spec.shape[1]
     dst_physical_cols = output._spec.shape[1]
 
-    if sinkhorn_grouped_form:
-        _prepare_tile_access(row_tensor, compact_row_state, output)
-        zero = row_tensor._trace.index_const(0)
-        row_stride = row_tensor._trace.index_const(8)
-        state_stride = row_tensor._trace.index_const(1)
-        active = row_tensor._trace.index_const(cols)
-        mask = _wrap_mask(
-            _vmi_builder.create_mask(active.value, size=64, group=8), f32
-        )
-        with for_(0, 1, step=1):
-            value = _wrap_vreg(
-                _vmi_builder.vload(
-                    row_tensor._trace.ensure_tile_ptr(row_tensor).value,
-                    zero.value,
-                    size=64,
-                    stride=row_stride.value,
-                    group=8,
-                ),
-                f32,
-            )
-            state = _wrap_vreg(
-                _vmi_builder.vload(
-                    compact_row_state._trace.ensure_tile_ptr(
-                        compact_row_state
-                    ).value,
-                    zero.value,
-                    size=8,
-                    stride=state_stride.value,
-                    group=8,
-                ),
-                f32,
-            )
-            broadcast = _wrap_vreg(
-                _vmi_builder.vbrc(state.value, size=64, group=8), f32
-            )
-            result = operations[operation](value, broadcast, mask)
-            output_ptr = output._trace.ensure_tile_ptr(output)
-            _vmi_builder.vstore(
-                result.value,
-                output_ptr.value,
-                zero.value,
-                stride=row_stride.value,
-                group=8,
-            )
-        return
-
     _prepare_tile_access(row_tensor, compact_row_state, output)
     full_mask = _create_mask_lanes(cols, cols, f32, trace=row_tensor._trace)
     scalar_mask = _create_mask_lanes(1, 1, f32, trace=row_tensor._trace)
@@ -2160,7 +2147,28 @@ def emit_row_expand_binary_vmi(
         broadcast = _vbrc(row_scalar, lanes=cols)
         src_offset = index_mul(row, src_physical_cols)
         dst_offset = index_mul(row, dst_physical_cols)
-        value = _vload_linear(row_tensor, src_offset, lanes=cols)
+        if sinkhorn_grouped_form:
+            src_offset_i32 = _Value(
+                unwrap_surface_value(
+                    scalar.index_cast(pto.i32, src_offset.value)
+                )
+            )
+            src_offsets = _wrap_vreg(
+                _vmi_builder.vci(
+                    src_offset_i32.value, size=cols, order="ASC"
+                ),
+                i32,
+            )
+            value = _wrap_vreg(
+                _vmi_builder.vgather(
+                    row_tensor._trace.ensure_tile_ptr(row_tensor).value,
+                    src_offsets.value,
+                    full_mask.value,
+                ),
+                f32,
+            )
+        else:
+            value = _vload_linear(row_tensor, src_offset, lanes=cols)
         result = operations[operation](value, broadcast, full_mask)
         _vstore_linear(result, output, dst_offset, full_mask)
 
@@ -2590,6 +2598,7 @@ __all__ = [
     "emit_row_expand_binary_vmi",
     "row_expand_binary_vmi_constraint",
     "sinkhorn_compact_elementwise_vmi_constraint",
+    "sinkhorn_row_expand_vmi_constraint",
     "emit_row_reduce_vmi",
     "emit_row_reduce_streaming_vmi",
     "emit_rsqrt_vmi",

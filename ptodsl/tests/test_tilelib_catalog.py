@@ -951,7 +951,7 @@ class TileLibCatalogTest(unittest.TestCase):
                 if op in {"pto.trowmax", "pto.trowsum"}:
                     self.assertIn("group = 8", text)
 
-    def test_vmi_grouped_sinkhorn_row_expand_uses_ordinary_fallback(self):
+    def test_vmi_grouped_sinkhorn_row_expand_uses_gather_candidate(self):
         data = TileSpec(
             shape=(8, 8),
             dtype=ScalarType("f32"),
@@ -967,9 +967,18 @@ class TileLibCatalogTest(unittest.TestCase):
         selected = select(
             "pto.trowexpandmul",
             "a5",
-            {"src0": data, "src1": compact, "dst": data},
+            {"src": data, "row_values": compact, "dst": data},
+            candidate_id="vmi_trowexpandmul_sinkhorn_row_loop",
         )
-        self.assertEqual(selected.name, "template_trowexpandmul")
+        self.assertEqual(selected.name, "vmi_trowexpandmul_sinkhorn_row_loop")
+        text = selected.specialize(
+            src=data, row_values=compact, dst=data
+        ).mlir_text()
+        self.assertEqual(text.count("scf.for"), 1)
+        self.assertEqual(text.count("pto.vmi.vgather"), 2)
+        self.assertNotIn("pto.vmi.vload", text)
+        self.assertIn("pto.vmi.vstore", text)
+        self.assertNotIn("group = 8", text)
 
     def test_vmi_grouped_sinkhorn_forms_reject_unregistered_tail_width(self):
         data = TileSpec(
