@@ -66,8 +66,7 @@ from ._vmi_common import (  # noqa: E402
     name="vmi_tdiv",
     dtypes=(("f16", "f16", "f16"), ("f32", "f32", "f32")),
     context_constraints={"precisionType": ("default", "high_precision")},
-    min_row_bytes=32,
-    tags=("supports_partial_valid_shape",),
+    min_row_bytes=128,
 )
 def vmi_tdiv(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
     if _context_attr(src0, "precisionType", "default") == "high_precision":

@@ -7,7 +7,6 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --enable-vmi --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl --ptodsl-pkg-path=%S/../../../ptodsl --ptodsl-python-exe=%python_executable --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-expand-tile-op 2>&1 | FileCheck %s --check-prefix=EXPAND
-// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --enable-vmi --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl --ptodsl-pkg-path=%S/../../../ptodsl --ptodsl-python-exe=%python_executable --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-inline-libcall 2>&1 | FileCheck %s --check-prefix=INLINE
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --enable-vmi --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl --ptodsl-pkg-path=%S/../../../ptodsl --ptodsl-python-exe=%python_executable --emit-vpto %s -o - | FileCheck %s --check-prefix=FINAL --implicit-check-not=pto.vmi.v --implicit-check-not=!pto.vmi.
 
 module {
@@ -103,66 +102,54 @@ module {
 }
 
 // EXPAND-LABEL: func.func @sinkhorn_grouped_tail
-// EXPAND: call {{.*}}__vmi_tcolexpand
-// EXPAND-SAME: pto.tilelib.impl = "vmi"
-// EXPAND: call {{.*}}__vmi_tadd_block64
-// EXPAND-SAME: pto.tilelib.impl = "vmi"
-// EXPAND: call {{.*}}__vmi_tmuls
-// EXPAND-SAME: pto.tilelib.impl = "vmi"
-// EXPAND: call {{.*}}__vmi_trowexpandmul
-// EXPAND-SAME: pto.tilelib.impl = "vmi"
+// EXPAND: call {{.*}}__template_tcolexpand
+// EXPAND-SAME: pto.tilelib.impl = "ptodsl"
+// EXPAND-SAME: pto.vmi.fusion.boundary = "local"
+// EXPAND: call {{.*}}__template_tadd
+// EXPAND-SAME: pto.tilelib.impl = "ptodsl"
+// EXPAND-SAME: pto.vmi.fusion.boundary = "local"
+// EXPAND: call {{.*}}__template_tmuls
+// EXPAND-SAME: pto.tilelib.impl = "ptodsl"
+// EXPAND-SAME: pto.vmi.fusion.boundary = "local"
+// EXPAND: call {{.*}}__template_trowexpandmul
+// EXPAND-SAME: pto.tilelib.impl = "ptodsl"
+// EXPAND-SAME: pto.vmi.fusion.boundary = "local"
 // EXPAND-LABEL: func.func @sinkhorn_compact_state
-// EXPAND: call {{.*}}__vmi_tadds
-// EXPAND-SAME: pto.tilelib.impl = "vmi"
+// EXPAND: call {{.*}}__template_tadds
+// EXPAND-SAME: pto.tilelib.impl = "ptodsl"
+// EXPAND-SAME: pto.vmi.fusion.boundary = "local"
 // EXPAND-LABEL: func.func @sinkhorn_identity_reductions
-// EXPAND: call {{.*}}__vmi_trowmax
-// EXPAND-SAME: pto.tilelib.impl = "vmi"
-// EXPAND: call {{.*}}__vmi_trowsum
-// EXPAND-SAME: pto.tilelib.impl = "vmi"
+// EXPAND: call {{.*}}__template_trowmax
+// EXPAND-SAME: pto.tilelib.impl = "ptodsl"
+// EXPAND-SAME: pto.vmi.fusion.boundary = "local"
+// EXPAND: call {{.*}}__template_trowsum
+// EXPAND-SAME: pto.tilelib.impl = "ptodsl"
+// EXPAND-SAME: pto.vmi.fusion.boundary = "local"
 // EXPAND-LABEL: func.func @sinkhorn_grouped_tail_reductions
-// EXPAND: call {{.*}}__vmi_trowmax
-// EXPAND-SAME: pto.tilelib.impl = "vmi"
-// EXPAND: call {{.*}}__vmi_trowsum
-// EXPAND-SAME: pto.tilelib.impl = "vmi"
+// EXPAND: call {{.*}}__template_trowmax
+// EXPAND-SAME: pto.tilelib.impl = "ptodsl"
+// EXPAND-SAME: pto.vmi.fusion.boundary = "local"
+// EXPAND: call {{.*}}__template_trowsum
+// EXPAND-SAME: pto.tilelib.impl = "ptodsl"
+// EXPAND-SAME: pto.vmi.fusion.boundary = "local"
 // EXPAND-LABEL: func.func @sinkhorn_full_shape_pad_metadata
-// EXPAND: call {{.*}}__vmi_trowmax
-// EXPAND-SAME: pto.tilelib.impl = "vmi"
-// EXPAND: call {{.*}}__vmi_trowsum
-// EXPAND-SAME: pto.tilelib.impl = "vmi"
+// EXPAND: call {{.*}}__template_trowmax
+// EXPAND-SAME: pto.tilelib.impl = "ptodsl"
+// EXPAND-SAME: pto.vmi.fusion.boundary = "local"
+// EXPAND: call {{.*}}__template_trowsum
+// EXPAND-SAME: pto.tilelib.impl = "ptodsl"
+// EXPAND-SAME: pto.vmi.fusion.boundary = "local"
 // EXPAND-LABEL: func.func @sinkhorn_unsupported_forms
 // EXPAND: pto.vmi.fusion.boundary = "local"
 
-// INLINE-LABEL: func.func @sinkhorn_grouped_tail
-// INLINE: pto.vmi.create_group_mask
-// INLINE: pto.vmi.vgather
-// INLINE: pto.vmi.create_group_mask
-// INLINE: pto.vmi.vadd
-// INLINE: pto.vmi.create_group_mask
-// INLINE: pto.vmi.vmuls
-// INLINE: pto.vmi.create_group_mask
-// INLINE: pto.vmi.vmul
-// INLINE-LABEL: func.func @sinkhorn_compact_state
-// INLINE: pto.vmi.vgather
-// INLINE: pto.vmi.vadds
-// INLINE-LABEL: func.func @sinkhorn_identity_reductions
-// INLINE: pto.vmi.vcmax
-// INLINE: pto.vmi.vcadd
-// INLINE-LABEL: func.func @sinkhorn_grouped_tail_reductions
-// INLINE: pto.vmi.create_group_mask
-// INLINE: pto.vmi.vcmax
-// INLINE: pto.vmi.create_group_mask
-// INLINE: pto.vmi.vcadd
-
 // FINAL-LABEL: func.func @sinkhorn_grouped_tail
-// FINAL: pto.vgather2_bc
 // FINAL: pto.vadd
 // FINAL-COUNT-2: pto.vmul
 // FINAL-LABEL: func.func @sinkhorn_compact_state
-// FINAL: pto.vgather2_bc
 // FINAL: pto.vadd
 // FINAL-LABEL: func.func @sinkhorn_identity_reductions
-// FINAL: pto.vcgmax
-// FINAL: pto.vcgadd
+// FINAL: pto.vcmax
+// FINAL: pto.vcadd
 // FINAL-LABEL: func.func @sinkhorn_grouped_tail_reductions
-// FINAL: pto.vcgmax
-// FINAL: pto.vcgadd
+// FINAL: pto.vcmax
+// FINAL: pto.vcadd

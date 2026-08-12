@@ -79,7 +79,6 @@ from ._vmi_common import (  # noqa: E402
     dtypes=(("f32", "f32"),),
     constraints=(col_expand_vmi_constraint,),
     requires_full_physical_row=False,
-    tags=("supports_partial_valid_shape",),
 )
 def vmi_tcolexpand(src: pto.Tile, dst: pto.Tile):
     emit_col_expand_vmi(src, dst)

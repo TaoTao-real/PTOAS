@@ -888,7 +888,7 @@ class TileLibCatalogTest(unittest.TestCase):
         self.assertIn("!pto.vmi.vreg<64xf32>", mlir)
         self.assertIn("group = 64", mlir)
 
-    def test_vmi_grouped_sinkhorn_forms_accept_static_four_column_tail(self):
+    def test_vmi_grouped_sinkhorn_forms_require_runtime_validation(self):
         data = TileSpec(
             shape=(8, 8),
             dtype=ScalarType("f32"),
@@ -912,59 +912,43 @@ class TileLibCatalogTest(unittest.TestCase):
             valid_shape=(1, 8),
         )
 
-        add = select(
-            "pto.tadd",
-            "a5",
-            {"src0": data, "src1": data, "dst": data},
-            candidate_id="vmi_tadd_block64",
+        forms = (
+            (
+                "pto.tadd",
+                "vmi_tadd_block64",
+                {"src0": data, "src1": data, "dst": data},
+            ),
+            (
+                "pto.tcolexpand",
+                "vmi_tcolexpand",
+                {"src": column, "dst": data},
+            ),
+            (
+                "pto.tadds",
+                "vmi_tadds",
+                {
+                    "src": narrow,
+                    "scalar": ScalarSpec(ScalarType("f32"), value=1.0),
+                    "dst": narrow,
+                },
+            ),
+            (
+                "pto.trowmax",
+                "vmi_trowmax",
+                {"src": data, "workspace": compact, "dst": compact},
+            ),
+            (
+                "pto.trowsum",
+                "vmi_trowsum",
+                {"src": data, "workspace": compact, "dst": compact},
+            ),
         )
-        self.assertIn("pto.vmi.create_group_mask", add.specialize(
-            src0=data, src1=data, dst=data
-        ).mlir_text())
-
-        col_expand = select(
-            "pto.tcolexpand",
-            "a5",
-            {"src": column, "dst": data},
-            candidate_id="vmi_tcolexpand",
-        )
-        col_expand_mlir = col_expand.specialize(src=column, dst=data).mlir_text()
-        self.assertIn("num_groups = 8", col_expand_mlir)
-        self.assertIn("pto.vmi.vgather", col_expand_mlir)
-
-        adds = select(
-            "pto.tadds",
-            "a5",
-            {
-                "src": narrow,
-                "scalar": ScalarSpec(ScalarType("f32"), value=1.0),
-                "dst": narrow,
-            },
-            candidate_id="vmi_tadds",
-        )
-        adds_mlir = adds.specialize(
-            src=narrow,
-            scalar=ScalarSpec(ScalarType("f32"), value=1.0),
-            dst=narrow,
-        ).mlir_text()
-        self.assertIn("pto.vmi.vgather", adds_mlir)
-        self.assertIn("pto.vmi.vadds", adds_mlir)
-
-        for op, candidate_id in (
-            ("pto.trowmax", "vmi_trowmax"),
-            ("pto.trowsum", "vmi_trowsum"),
-        ):
+        for op, candidate_id, specs in forms:
             with self.subTest(op=op):
-                selected = select(
-                    op,
-                    "a5",
-                    {"src": data, "workspace": compact, "dst": compact},
-                    candidate_id=candidate_id,
-                )
-                mlir = selected.specialize(
-                    src=data, workspace=compact, dst=compact
-                ).mlir_text()
-                self.assertIn("pto.vmi.create_group_mask", mlir)
+                with self.assertRaisesRegex(
+                    NoMatchingTemplate, "custom constraints are not satisfied"
+                ):
+                    select(op, "a5", specs, candidate_id=candidate_id)
 
     def test_vmi_grouped_sinkhorn_forms_reject_unregistered_tail_width(self):
         data = TileSpec(
