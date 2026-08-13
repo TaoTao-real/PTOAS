@@ -2003,6 +2003,15 @@ checkSupportedMaskedLoadShape(VMIMaskedLoadOp op, std::string *reason) {
               "; fallback decision: " + accessPlan.fallbackDecision.reason);
 }
 
+static bool isSingleContiguousPrefixChunk(Type type) {
+  FailureOr<int64_t> elementCount = getVMITypeElementCount(type);
+  FailureOr<int64_t> lanesPerPart = getVMITypeLanesPerPart(type);
+  FailureOr<int64_t> arity = getVMIPhysicalArity(type);
+  return succeeded(elementCount) && succeeded(lanesPerPart) &&
+         succeeded(arity) && *arity == 1 && *elementCount > 0 &&
+         *elementCount <= *lanesPerPart;
+}
+
 LogicalResult
 checkSupportedGatherShape(VMIGatherOp op, std::string *reason) {
   auto fail = [&](const Twine &message) -> LogicalResult {
@@ -2058,6 +2067,15 @@ checkSupportedGatherShape(VMIGatherOp op, std::string *reason) {
                 "same physical arity");
 
   if (isB32Gather) {
+    if (*resultArity == 1 && isSingleContiguousPrefixChunk(resultType) &&
+        isSingleContiguousPrefixChunk(indicesType) &&
+        isSingleContiguousPrefixChunk(passthruType) &&
+        isSingleContiguousPrefixChunk(maskType) &&
+        resultType.getElementCount() == indicesType.getElementCount() &&
+        resultType.getElementCount() == passthruType.getElementCount() &&
+        resultType.getElementCount() == maskType.getElementCount())
+      return success();
+
     std::string resultReason;
     std::string indicesReason;
     std::string passthruReason;
@@ -2122,6 +2140,17 @@ checkSupportedScatterShape(VMIScatterOp op, std::string *reason) {
   if (*valueArity != *indicesArity || *valueArity != *maskArity)
     return fail("requires value, indices, and mask to have the same physical "
                 "arity");
+
+  // A single logical prefix is carried by one full physical register. The
+  // converted mask keeps padding lanes inactive, so the target vscatter sees
+  // matching physical value/index/mask widths without touching extra
+  // destinations. Keep multi-part scatter restricted to full chunks.
+  if (*valueArity == 1 && isSingleContiguousPrefixChunk(valueType) &&
+      isSingleContiguousPrefixChunk(indicesType) &&
+      isSingleContiguousPrefixChunk(maskType) &&
+      valueType.getElementCount() == indicesType.getElementCount() &&
+      valueType.getElementCount() == maskType.getElementCount())
+    return success();
 
   std::string valueReason;
   std::string indicesReason;
@@ -3957,6 +3986,63 @@ FailureOr<SmallVector<Value>> materializeDataLayoutConversion(
     return materializeGroupSlotLaneStride(
         op, sourceParts, resultTypes, sourceVMIElementType,
         sourceLayout.getLaneStride(), resultLayout.getLaneStride(), rewriter);
+  }
+
+  if (sourceLayout.isGroupSlots() && sourceLayout.getSlots() == 1 &&
+      sourceLayout.getNumGroups() == static_cast<int64_t>(sourceParts.size()) &&
+      resultLayout.isContiguous() && resultTypes.size() == 1) {
+    auto resultType = dyn_cast<VRegType>(resultTypes.front());
+    if (!resultType || sourceParts.empty()) {
+      (void)rewriter.notifyMatchFailure(
+          op, "group_slots(1) packing requires physical vreg parts");
+      return failure();
+    }
+    auto firstType = dyn_cast<VRegType>(sourceParts.front().getType());
+    if (!firstType || firstType != resultType) {
+      (void)rewriter.notifyMatchFailure(
+          op, "group_slots(1) packing requires matching physical types");
+      return failure();
+    }
+    FailureOr<MaskType> maskType =
+        getMaskTypeForVReg(firstType, rewriter.getContext());
+    FailureOr<Value> allMask =
+        createAllTrueMaskForVReg(op->getLoc(), firstType, rewriter);
+    if (failed(maskType) || failed(allMask)) {
+      (void)rewriter.notifyMatchFailure(
+          op, "failed to create group_slots(1) packing mask");
+      return failure();
+    }
+
+    Value packed =
+        rewriter
+            .create<VdupOp>(op->getLoc(), firstType, sourceParts.front(),
+                            *allMask, rewriter.getStringAttr("LOWEST"))
+            .getResult();
+    for (auto [group, sourcePart] : llvm::enumerate(sourceParts.drop_front())) {
+      if (sourcePart.getType() != firstType) {
+        (void)rewriter.notifyMatchFailure(
+            op, "group_slots(1) packing requires uniform source parts");
+        return failure();
+      }
+      Value splat =
+          rewriter
+              .create<VdupOp>(op->getLoc(), firstType, sourcePart, *allMask,
+                              rewriter.getStringAttr("LOWEST"))
+              .getResult();
+      int64_t lane = static_cast<int64_t>(group) + 1;
+      FailureOr<Value> laneMask = createLaneRangeMask(
+          op->getLoc(), *maskType, lane, lane + 1, rewriter);
+      if (failed(laneMask)) {
+        (void)rewriter.notifyMatchFailure(
+            op, "failed to create group_slots(1) lane mask");
+        return failure();
+      }
+      packed = rewriter
+                   .create<VselOp>(op->getLoc(), firstType, splat, packed,
+                                   *laneMask)
+                   .getResult();
+    }
+    return SmallVector<Value>{packed};
   }
 
   auto isElementDeinterleaved = [](VMILayoutAttr layout, int64_t factor) {
@@ -12816,8 +12902,9 @@ verifySupportedVMIToVPTOOps(ModuleOp module,
       gather.emitError()
           << kVMIDiagUnsupportedPrefix
           << "pto.vmi.gather lowers through pto.vgather2_bc + pto.vsel only "
-             "for UB pointer sources, contiguous full physical chunks, "
-             "32-bit result elements, i32 indices, and b32 masks ("
+             "for UB pointer sources, matching contiguous full chunks or one "
+             "contiguous prefix chunk, 32-bit result elements, i32 indices, "
+             "and b32 masks ("
           << reason << ")";
       return WalkResult::interrupt();
     }
@@ -12909,8 +12996,9 @@ verifySupportedVMIToVPTOOps(ModuleOp module,
       scatter.emitError()
           << kVMIDiagUnsupportedPrefix
           << "pto.vmi.scatter lowers through pto.vscatter only with a UB "
-             "pointer destination, contiguous full physical chunks, 32-bit "
-             "value elements, i32 indices, and b32 masks ("
+             "pointer destination, matching contiguous full chunks or one "
+             "contiguous prefix chunk, 32-bit value elements, i32 indices, "
+             "and b32 masks ("
           << reason << ")";
       return WalkResult::interrupt();
     }

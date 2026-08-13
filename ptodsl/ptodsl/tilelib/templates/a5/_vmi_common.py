@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
-from ptodsl import pto
+from ptodsl import pto, scalar
 from ptodsl._surface_values import unwrap_surface_value
 from ptodsl._surface_types import Tile
 from ptodsl._runtime_scalar_ops import emit_runtime_binary_op
@@ -978,9 +978,11 @@ def emit_elementwise_vmi(
 ) -> None:
     """Emit one flat principal loop for a standalone elementwise candidate.
 
-    Multi-row tiles retain the logical-row domain used by VMI fusion. A static
-    one-row f32 tile can use the equivalent native-chunk domain so physical
-    lowering keeps a compact hardware loop instead of unrolling a wide vreg.
+    Static full-shape row-major tiles use the equivalent contiguous
+    native-chunk domain when they are either one multi-VL row or several
+    short rows that exactly pack a native vector. This matches the PTO-ISA 1D
+    implementation while preserving a common principal loop for compatible
+    elementwise chains. Partial or grouped shapes retain row-aware domains.
     """
 
     if not sources:
@@ -1012,12 +1014,8 @@ def emit_elementwise_vmi(
     ):
         _emit_elementwise_grouped_8x8_vmi(dst, sources, compute)
         return
-    if (
-        logical_lanes == cols
-        and rows == 1
-        and dst.element_type == f32
-        and cols > native_lanes
-        and cols % native_lanes == 0
+    if logical_lanes == cols and _can_use_contiguous_native_chunks(
+        dst, sources, chunk_lanes=native_lanes
     ):
         _emit_elementwise_contiguous_blocks_vmi(
             dst, sources, compute, block_lanes=native_lanes
@@ -1102,23 +1100,70 @@ def _emit_elementwise_contiguous_blocks_vmi(
     *,
     block_lanes: int,
 ) -> None:
-    """Keep a full one-row, multi-VL elementwise tile as one chunk loop."""
+    """Process a full contiguous tile as one native-chunk principal loop."""
 
     rows, cols = dst._spec.shape
-    if rows != 1 or cols % block_lanes != 0:
-        raise ValueError("contiguous VMI blocks require one exactly tiled row")
+    total_lanes = rows * cols
+    if not _can_use_contiguous_native_chunks(
+        dst, sources, chunk_lanes=block_lanes
+    ):
+        raise ValueError("contiguous VMI blocks require an exactly tiled full shape")
 
     _prepare_tile_access(*sources, dst)
     mask = _create_mask_lanes(
         block_lanes, block_lanes, dst.element_type, trace=dst._trace
     )
-    with for_(0, cols, step=block_lanes) as offset:
+    with for_(0, total_lanes, step=block_lanes) as offset:
         values = tuple(
             _vload_linear(source, offset, lanes=block_lanes)
             for source in sources
         )
         result = compute(values, mask)
         _vstore_linear(result, dst, offset, mask)
+
+
+def _can_use_contiguous_native_chunks(
+    dst: _TileProxy,
+    sources: Sequence[_TileProxy] = (),
+    *,
+    chunk_lanes: int,
+) -> bool:
+    """Return whether a tile chain is a full contiguous linear stream."""
+
+    if not isinstance(chunk_lanes, int) or chunk_lanes <= 0:
+        return False
+    tiles = (dst, *sources)
+    if any(not isinstance(tile, _TileProxy) for tile in tiles):
+        return False
+    rows, cols = dst._spec.shape
+    if not isinstance(rows, int) or not isinstance(cols, int):
+        return False
+    total_lanes = rows * cols
+    one_row_multi_chunk = (
+        rows == 1 and cols > chunk_lanes and cols % chunk_lanes == 0
+    )
+    packed_short_rows = (
+        rows > 1
+        and cols < chunk_lanes
+        and chunk_lanes % cols == 0
+        and total_lanes % chunk_lanes == 0
+    )
+    multi_row_multi_chunk = (
+        rows > 1 and cols > chunk_lanes and cols % chunk_lanes == 0
+    )
+    if (
+        not one_row_multi_chunk
+        and not packed_short_rows
+        and not multi_row_multi_chunk
+    ):
+        return False
+    return all(
+        tile._spec.shape == dst._spec.shape
+        and tile._spec.effective_valid_shape == tile._spec.shape
+        and tile._spec.b_layout == "row_major"
+        and getattr(tile._spec, "s_layout", "none_box") == "none_box"
+        for tile in tiles
+    )
 
 
 def emit_scalar_fill_vmi(
@@ -1141,12 +1186,8 @@ def emit_scalar_fill_vmi(
 
     rows, cols = dst._spec.shape
     native_lanes = dst.element_type.lanes
-    if (
-        rows == 1
-        and dst.element_type == f32
-        and cols > native_lanes
-        and cols % native_lanes == 0
-    ):
+    if _can_use_contiguous_native_chunks(dst, chunk_lanes=native_lanes):
+        total_lanes = rows * cols
         _prepare_tile_access(dst)
         mask = _create_mask_lanes(
             native_lanes, native_lanes, dst.element_type, trace=dst._trace
@@ -1155,7 +1196,7 @@ def emit_scalar_fill_vmi(
             _vmi_builder.vbrc(scalar.value, size=native_lanes),
             dst.element_type,
         )
-        with for_(0, cols, step=native_lanes) as offset:
+        with for_(0, total_lanes, step=native_lanes) as offset:
             _vstore_linear(fill, dst, offset, mask)
         return
 
@@ -1888,7 +1929,7 @@ def emit_row_reduce_vmi(
             "grouped row-reduce requires a full static source tile or the "
             "registered 8x8/8x4 micro-tile form"
         )
-    _prepare_tile_access(src, dst)
+    _prepare_tile_access(src, workspace, dst)
     total_lanes = rows * physical_cols
     active = src._trace.index_const(valid_cols)
     full_mask = _wrap_mask(
@@ -1908,15 +1949,34 @@ def emit_row_reduce_vmi(
         )
     reduced = _wrap_vreg(reduced_value, f32)
 
-    dst_ptr = dst._trace.ensure_tile_ptr(dst)
     offset = dst._trace._coerce_index(0)
-    row_stride = dst._trace._coerce_index(1)
-    _vmi_builder.vstore(
-        reduced.value,
-        dst_ptr.value,
-        offset.value,
-        stride=row_stride.value,
-        group=rows,
+    if physical_cols < f32.lanes:
+        # A grouped physical reduction already packs the per-row values into
+        # one native register, so one aligned compact store is sufficient.
+        dst_ptr = dst._trace.ensure_tile_ptr(dst)
+        row_stride = dst._trace._coerce_index(1)
+        _vmi_builder.vstore(
+            reduced.value,
+            dst_ptr.value,
+            offset.value,
+            stride=row_stride.value,
+            group=rows,
+        )
+        return
+
+    # A wide grouped reduction is represented as one compact logical value per
+    # row but may be assigned one physical register per group. A grouped VST to
+    # compact [rows, 1] would therefore issue unaligned point stores. Scatter
+    # keeps the UB base aligned while expressing the compact element offsets.
+    dst_ptr = dst._trace.ensure_tile_ptr(dst)
+    compact_mask = _create_mask_lanes(rows, rows, f32, trace=dst._trace)
+    zero_i32 = dst._trace.scalar_const(0, i32)
+    offsets = _wrap_vreg(
+        _vmi_builder.vci(zero_i32.value, size=rows, order="ASC"),
+        i32,
+    )
+    _vmi_builder.vscatter(
+        reduced.value, dst_ptr.value, offsets.value, compact_mask.value
     )
 
 
@@ -2012,17 +2072,26 @@ def emit_row_expand_binary_vmi(
         return
 
     full_mask = _create_mask_lanes(cols, cols, f32, trace=row_tensor._trace)
+    scalar_mask = _create_mask_lanes(1, 1, f32, trace=row_tensor._trace)
+    state_ptr = compact_row_state._trace.ensure_tile_ptr(compact_row_state)
     with for_(0, rows, step=1) as row:
-        # Load one compact-row scalar and broadcast it to the full row width.
-        # Use a 1-lane vload + pto.vmi.vbrc (which lowers to pto.vmi.broadcast,
-        # a layout-agnostic scalar broadcast) instead of vload{dist_mode="brc"}:
-        # the latter lowers to pto.vmi.group_broadcast_load with
-        # source_group_stride=0 / num_groups=1, which the VMI layout/lowering
-        # tables only support for full-part group sizes. Narrow columns (e.g.
-        # 32 lanes, the four-block class) cannot materialize any layout from
-        # that form, so the fused broadcast load is reserved for the grouped
-        # micro-tile path above and the explicit broadcast is used here.
-        row_scalar = _vload_linear(compact_row_state, row, lanes=1)
+        # Compact [rows, 1] states are not block-aligned after row zero. Read
+        # each scalar through an indexed load from the aligned base, then
+        # broadcast lane zero to the logical row. PTO-ISA uses vldas/vldus for
+        # the same unaligned scalar access; gather preserves that safety while
+        # keeping the value in VMI form for later fusion.
+        row_i32 = _Value(
+            unwrap_surface_value(scalar.index_cast(pto.i32, row.value))
+        )
+        offsets = _wrap_vreg(
+            _vmi_builder.vci(row_i32.value, size=1, order="ASC"), i32
+        )
+        row_scalar = _wrap_vreg(
+            _vmi_builder.vgather(
+                state_ptr.value, offsets.value, scalar_mask.value
+            ),
+            f32,
+        )
         broadcast = _vbrc(row_scalar, lanes=cols)
         src_offset = index_mul(row, src_physical_cols)
         dst_offset = index_mul(row, dst_physical_cols)
@@ -2341,11 +2410,7 @@ def emit_convert_vmi(src: _TileProxy, dst: _TileProxy) -> None:
         raise ValueError("tcvt source and destination shapes must match")
     if src._spec.b_layout != "row_major" or dst._spec.b_layout != "row_major":
         raise ValueError("tcvt VMI candidate requires row-major tiles")
-    _, cols = src._spec.shape
-    block_map = CanonicalBlockMap.from_tile(src, logical_lanes=cols)
-
-    _prepare_tile_access(src, dst)
-    dst_mask = _create_mask_lanes(cols, cols, dst.element_type, trace=src._trace)
+    rows, cols = src._spec.shape
     round_mode = _context_attr(src, "round_mode", "RINT")
     rounding = {
         "RINT": "R",
@@ -2363,8 +2428,8 @@ def emit_convert_vmi(src: _TileProxy, dst: _TileProxy) -> None:
         saturate = "SAT"
     else:
         saturate = "SAT" if sat_mode == "ON" else "NOSAT"
-    with for_(0, block_map.logical_block_count, step=1) as logical_block:
-        coordinate = block_map.coordinate(logical_block)
+
+    def convert(source: _VectorValue) -> _VectorValue:
         kwargs = {}
         if src.element_type == f32 and dst.element_type in (f16, bf16):
             kwargs["rounding"] = rounding
@@ -2374,7 +2439,6 @@ def emit_convert_vmi(src: _TileProxy, dst: _TileProxy) -> None:
             # Preserve TileOp TRUNC explicitly as the physical Z mode.
             kwargs["rounding"] = rounding
             kwargs["saturate"] = saturate
-        source = _vload(src, coordinate)
         if src.element_type == i32 and dst.element_type == f16:
             # Integer widening has no rounding semantics.  Apply the TileOp
             # rounding mode only to the subsequent f32 -> f16 narrowing.
@@ -2387,6 +2451,28 @@ def emit_convert_vmi(src: _TileProxy, dst: _TileProxy) -> None:
             )
         else:
             converted = _vcvt(source, dst.element_type, **kwargs)
+        return converted
+
+    chunk_lanes = min(src.element_type.lanes, dst.element_type.lanes)
+    if _can_use_contiguous_native_chunks(dst, (src,), chunk_lanes=chunk_lanes):
+        total_lanes = rows * cols
+        _prepare_tile_access(src, dst)
+        dst_mask = _create_mask_lanes(
+            chunk_lanes, chunk_lanes, dst.element_type, trace=src._trace
+        )
+        with for_(0, total_lanes, step=chunk_lanes) as offset:
+            source = _vload_linear(src, offset, lanes=chunk_lanes)
+            converted = convert(source)
+            _vstore_linear(converted, dst, offset, dst_mask)
+        return
+
+    block_map = CanonicalBlockMap.from_tile(src, logical_lanes=cols)
+    _prepare_tile_access(src, dst)
+    dst_mask = _create_mask_lanes(cols, cols, dst.element_type, trace=src._trace)
+    with for_(0, block_map.logical_block_count, step=1) as logical_block:
+        coordinate = block_map.coordinate(logical_block)
+        source = _vload(src, coordinate)
+        converted = convert(source)
         _vstore(converted, dst, coordinate, dst_mask)
 
 

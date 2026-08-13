@@ -100,25 +100,27 @@ static bool isCloneableScalarBroadcastProducer(Operation *op) {
   return vdup && !isa<pto::VRegType>(vdup.getInput().getType());
 }
 
-static bool isGatherIndexConsumer(Operation *op) {
-  return isa<pto::Vgather2Op, pto::Vgather2BcOp>(op);
+static bool isIndexedVectorMemoryConsumer(Operation *op) {
+  return isa<pto::Vgather2Op, pto::Vgather2BcOp, pto::VscatterOp>(op);
 }
 
-static bool hasOnlyGatherIndexUsers(Operation *op) {
+static bool hasOnlyIndexedVectorMemoryUsers(Operation *op) {
   for (Value result : op->getResults()) {
     for (Operation *user : result.getUsers()) {
-      if (isGatherIndexConsumer(user))
+      if (isIndexedVectorMemoryConsumer(user))
         continue;
       auto vand = dyn_cast<pto::VandOp>(user);
-      if (!vand || !llvm::all_of(vand->getUsers(), isGatherIndexConsumer))
+      if (!vand || !llvm::all_of(vand->getUsers(),
+                                 isIndexedVectorMemoryConsumer))
         return false;
     }
   }
   return true;
 }
 
-static bool isCloneableGatherIndexProducer(Operation *op) {
-  return isa<pto::VciOp, pto::VandOp>(op) && hasOnlyGatherIndexUsers(op);
+static bool isCloneableIndexedMemoryIndexProducer(Operation *op) {
+  return isa<pto::VciOp, pto::VandOp>(op) &&
+         hasOnlyIndexedVectorMemoryUsers(op);
 }
 
 static bool isCloneableScalarVRegProducer(Operation *op) {
@@ -129,7 +131,7 @@ static bool isCloneableSharedProducer(Operation *op) {
   return isCloneableMaskProducer(op) ||
          isCloneableScalarBroadcastProducer(op) ||
          isCloneableScalarVRegProducer(op) ||
-         isCloneableGatherIndexProducer(op);
+         isCloneableIndexedMemoryIndexProducer(op);
 }
 
 static bool isVectorScopeBoundaryOperation(Operation *op) {

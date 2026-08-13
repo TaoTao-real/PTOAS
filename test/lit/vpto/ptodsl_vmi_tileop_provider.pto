@@ -58,8 +58,10 @@ module {
 // PIPE: pto.vmi.vstore
 // PIPE: func.func private {{.*}}__pto_ptodsl_vmi_a5_texp
 // PIPE: pto.vmi.vexp
-// PIPE: !pto.vmi.vreg<128xf32>
-// PIPE: !pto.vmi.mask<128xpred>
+// The full 32x128 tile is streamed as native A5 chunks rather than a wide
+// 128-lane physical vector.
+// PIPE: !pto.vmi.vreg<64xf32>
+// PIPE: !pto.vmi.mask<64xpred>
 // PIPE: IR Dump After PTOInlineLibCall
 // PIPE: func.func @ptodsl_vmi_tileop_provider
 // PIPE: pto.vmi.create_mask

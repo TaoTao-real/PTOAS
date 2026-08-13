@@ -57,11 +57,13 @@ module {
 
 // INLINE-LABEL: func.func @local_broadcast_candidates
 // INLINE: scf.for
-// INLINE: pto.vmi.vload {{.*}} -> !pto.vmi.vreg<1xf32>
+// INLINE: pto.vmi.vci {{.*}} -> !pto.vmi.vreg<1xi32>
+// INLINE: pto.vmi.vgather {{.*}} -> !pto.vmi.vreg<1xf32>
 // INLINE: pto.vmi.vbrc
 // INLINE: pto.vmi.vmul
 // INLINE: scf.for
-// INLINE: pto.vmi.vload {{.*}} -> !pto.vmi.vreg<1xf32>
+// INLINE: pto.vmi.vci {{.*}} -> !pto.vmi.vreg<1xi32>
+// INLINE: pto.vmi.vgather {{.*}} -> !pto.vmi.vreg<1xf32>
 // INLINE: pto.vmi.vbrc
 // INLINE: pto.vmi.vdiv
 // INLINE: pto.vmi.vload
@@ -74,6 +76,7 @@ module {
 // FINAL-NOT: pto.vmi.vmul
 // FINAL-NOT: pto.vmi.vdiv
 // FINAL-NOT: pto.vmi.vstore
+// FINAL: pto.vgather2_bc
 // FINAL: pto.vdup
 // FINAL: pto.vmul
 // FINAL: pto.vdiv

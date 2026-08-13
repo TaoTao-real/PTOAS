@@ -29,13 +29,15 @@ module {
 }
 
 // INLINE-LABEL: func.func @narrow_row_broadcast
-// INLINE: pto.vmi.vload {{.*}} -> !pto.vmi.vreg<1xf32>
+// INLINE: pto.vmi.vci {{.*}} -> !pto.vmi.vreg<1xi32>
+// INLINE: pto.vmi.vgather {{.*}} -> !pto.vmi.vreg<1xf32>
 // INLINE: pto.vmi.vbrc
 // INLINE: pto.vmi.vmul
 
 // FINAL-LABEL: func.func @narrow_row_broadcast
 // FINAL-NOT: pto.vmi.vload
 // FINAL-NOT: pto.vmi.vbrc
+// FINAL: pto.vgather2_bc
 // FINAL: pto.vdup
 // FINAL: pto.vmul
 // FINAL: pto.vsts
