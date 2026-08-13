@@ -538,7 +538,10 @@ def check_local_broadcast_candidates() -> dict[str, tuple[str, str]]:
         artifact.verify()
         text = artifact.mlir_text()
         expect(text.count("scf.for") == 1, f"{name} should contain one row loop")
-        expect(text.count("pto.vmi.vload") == 1, f"{name} should load one aligned data row")
+        expect(
+            text.count("pto.vmi.vload") == 2,
+            f"{name} should load one data row and one compact row state",
+        )
         expect(text.count("pto.vmi.vgather") == 0, f"{name} should not use gather for compact row state")
         expect(text.count("pto.vmi.vbrc") == 0, f"{name} should use a native broadcast load")
         expect(text.count('dist_mode = "brc"') == 1, f"{name} should broadcast-load one compact row state")
@@ -1714,8 +1717,8 @@ def main() -> None:
         lowered = check_vmi_to_vpto_lowering(name, text, expected_op)
         if name.startswith("vmi_trowexpand"):
             expect(
-                "pto.vgather2_bc" in lowered,
-                f"{name} should lower compact state access to aligned gather",
+                'pto.vlds' in lowered and 'dist = "BRC_B32"' in lowered,
+                f"{name} should lower compact state access to native broadcast load",
             )
     for name, (text, expected_op, expected_loop_count) in (
         check_row_reduce_candidates().items()
