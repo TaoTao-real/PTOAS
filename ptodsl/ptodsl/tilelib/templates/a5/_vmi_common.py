@@ -1079,7 +1079,6 @@ def _emit_elementwise_sinkhorn_grouped_vmi(
     _, active_cols = dst._spec.effective_valid_shape
     total_lanes = rows * cols
     groups = rows if rows > 1 else cols
-    stride = dst._trace.index_const(cols if rows > 1 else 1)
     zero = dst._trace.index_const(0)
     _prepare_tile_access(*sources, dst)
     active = dst._trace.index_const(active_cols if rows > 1 else total_lanes)
@@ -1092,32 +1091,32 @@ def _emit_elementwise_sinkhorn_grouped_vmi(
         dst.element_type,
     )
     with for_(0, 1, step=1):
-        values = tuple(
-            _wrap_vreg(
-                _vmi_builder.vload(
-                    source._trace.ensure_tile_ptr(source).value,
-                    zero.value,
-                    size=total_lanes,
-                    stride=stride.value,
-                    group=groups,
-                ),
-                f32,
+        if rows == 1:
+            base = dst._trace.scalar_const(0, i32)
+            offsets = _wrap_vreg(
+                _vmi_builder.vci(base.value, size=total_lanes, order="ASC"),
+                i32,
             )
-            for source in sources
-        )
+            values = tuple(
+                _wrap_vreg(
+                    _vmi_builder.vgather(
+                        source._trace.ensure_tile_ptr(source).value,
+                        offsets.value,
+                        mask.value,
+                    ),
+                    f32,
+                )
+                for source in sources
+            )
+        else:
+            # The 8x8 storage is one contiguous 64-lane physical tile. Grouping
+            # describes the compute mask, not a strided memory layout.
+            values = tuple(
+                _vload_linear(source, 0, lanes=total_lanes)
+                for source in sources
+            )
         result = compute(values, mask)
-        dst_ptr = dst._trace.ensure_tile_ptr(dst)
-        # The physical Sinkhorn tile owns every group lane. Inactive tail
-        # values are semantically outside valid_shape and are materialized by
-        # the following tfillpad when needed, so a layout-preserving group
-        # store is both in-bounds and preferable to a plain masked store.
-        _vmi_builder.vstore(
-            result.value,
-            dst_ptr.value,
-            zero.value,
-            stride=stride.value,
-            group=groups,
-        )
+        _vstore_linear(result, dst, zero, mask)
 
 
 def _emit_elementwise_contiguous_blocks_vmi(
@@ -1963,21 +1962,7 @@ def emit_row_reduce_vmi(
         ),
         f32,
     )
-    if src._spec.shape == (8, 8):
-        offset = src._trace._coerce_index(0)
-        row_stride = src._trace._coerce_index(physical_cols)
-        source = _wrap_vreg(
-            _vmi_builder.vload(
-                src._trace.ensure_tile_ptr(src).value,
-                offset.value,
-                size=total_lanes,
-                stride=row_stride.value,
-                group=rows,
-            ),
-            f32,
-        )
-    else:
-        source = _vload_linear(src, 0, lanes=total_lanes)
+    source = _vload_linear(src, 0, lanes=total_lanes)
     if kind == "max":
         reduced_value = _vmi_builder.vcmax(
             source.value, full_mask.value, group=rows
@@ -1990,8 +1975,8 @@ def emit_row_reduce_vmi(
 
     offset = dst._trace._coerce_index(0)
     if physical_cols < f32.lanes:
-        # A grouped physical reduction already packs the per-row values into
-        # one native register, so one aligned compact store is sufficient.
+        # The compact reduction result intentionally has group_slots layout:
+        # one value per source row. This is the memory form group_store models.
         dst_ptr = dst._trace.ensure_tile_ptr(dst)
         row_stride = dst._trace._coerce_index(1)
         _vmi_builder.vstore(
@@ -2003,10 +1988,9 @@ def emit_row_reduce_vmi(
         )
         return
 
-    # A wide grouped reduction is represented as one compact logical value per
-    # row but may be assigned one physical register per group. A grouped VST to
-    # compact [rows, 1] would therefore issue unaligned point stores. Scatter
-    # keeps the UB base aligned while expressing the compact element offsets.
+    # The grouped reduction produces one logical value per row. Scatter these
+    # compact values from an aligned UB base instead of reinterpreting them as
+    # a grouped strided memory store.
     dst_ptr = dst._trace.ensure_tile_ptr(dst)
     compact_mask = _create_mask_lanes(rows, rows, f32, trace=dst._trace)
     zero_i32 = dst._trace.scalar_const(0, i32)
@@ -2203,7 +2187,6 @@ def emit_col_expand_vmi(src: _TileProxy, dst: _TileProxy) -> None:
         _prepare_tile_access(src, dst)
         src_ptr = src._trace.ensure_tile_ptr(src)
         zero = dst._trace.index_const(0)
-        row_stride = dst._trace.index_const(8)
         active = dst._trace.index_const(valid_cols)
         mask = _wrap_mask(
             _vmi_builder.create_mask(active.value, size=64, group=8), f32
@@ -2229,14 +2212,7 @@ def emit_col_expand_vmi(src: _TileProxy, dst: _TileProxy) -> None:
                 ),
                 f32,
             )
-            dst_ptr = dst._trace.ensure_tile_ptr(dst)
-            _vmi_builder.vstore(
-                broadcast.value,
-                dst_ptr.value,
-                zero.value,
-                stride=row_stride.value,
-                group=8,
-            )
+            _vstore_linear(broadcast, dst, zero, mask)
         return
 
     block_map = CanonicalBlockMap.from_tile(dst, logical_lanes=cols)
