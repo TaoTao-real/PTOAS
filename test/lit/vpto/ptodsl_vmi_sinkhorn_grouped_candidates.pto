@@ -7,6 +7,7 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --enable-vmi --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl --ptodsl-pkg-path=%S/../../../ptodsl --ptodsl-python-exe=%python_executable --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-expand-tile-op 2>&1 | FileCheck %s --check-prefix=EXPAND
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --enable-vmi --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl --ptodsl-pkg-path=%S/../../../ptodsl --ptodsl-python-exe=%python_executable --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-inline-libcall 2>&1 | FileCheck %s --check-prefix=INLINE
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --enable-vmi --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl --ptodsl-pkg-path=%S/../../../ptodsl --ptodsl-python-exe=%python_executable --emit-vpto %s -o - | FileCheck %s --check-prefix=FINAL --implicit-check-not=pto.vmi.v --implicit-check-not=!pto.vmi.
 
 module {
@@ -130,6 +131,15 @@ module {
 // EXPAND-SAME: pto.tilelib.impl = "vmi"
 // EXPAND-LABEL: func.func @sinkhorn_unsupported_forms
 // EXPAND: pto.vmi.fusion.boundary = "local"
+
+// INLINE-LABEL: func.func @sinkhorn_grouped_tail
+// INLINE: arith.constant {{.*}} 4 : index
+// INLINE: pto.vmi.create_group_mask {{.*}} {group_size = 8 : i64, num_groups = 8 : i64{{.*}}} : index -> !pto.vmi.mask<64xpred>
+// INLINE: scf.for
+// INLINE: pto.vmi.vload {{.*}} -> !pto.vmi.vreg<64xf32>
+// INLINE: pto.vmi.vload {{.*}} -> !pto.vmi.vreg<64xf32>
+// INLINE: pto.vmi.vadd {{.*}} !pto.vmi.mask<64xpred> -> !pto.vmi.vreg<64xf32>
+// INLINE: pto.vmi.vstore
 
 // FINAL-LABEL: func.func @sinkhorn_grouped_tail
 // FINAL: pto.vadd

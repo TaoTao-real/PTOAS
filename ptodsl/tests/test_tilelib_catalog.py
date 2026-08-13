@@ -948,6 +948,12 @@ class TileLibCatalogTest(unittest.TestCase):
                 selected = select(op, "a5", specs, candidate_id=candidate_id)
                 text = selected.specialize(**specs).mlir_text()
                 self.assertIn("pto.vmi.v", text)
+                if op == "pto.tadd":
+                    self.assertEqual(text.count("scf.for"), 1)
+                    self.assertIn("!pto.vmi.vreg<64xf32>", text)
+                    self.assertIn("group_size = 8", text)
+                    self.assertIn("num_groups = 8", text)
+                    self.assertNotIn("!pto.vmi.vreg<8xf32>", text)
                 if op in {"pto.trowmax", "pto.trowsum"}:
                     self.assertIn("group = 8", text)
 

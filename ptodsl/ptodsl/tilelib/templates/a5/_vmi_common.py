@@ -1090,18 +1090,38 @@ def _emit_elementwise_sinkhorn_grouped_vmi(
 
     rows, cols = dst._spec.shape
     _, active_cols = dst._spec.effective_valid_shape
+    total_lanes = rows * cols
     _prepare_tile_access(*sources, dst)
-    mask = _create_mask_lanes(
-        active_cols, cols, dst.element_type, trace=dst._trace
+
+    if rows == 1:
+        mask = _create_mask_lanes(
+            active_cols, cols, dst.element_type, trace=dst._trace
+        )
+        zero = dst._trace.index_const(0)
+        with for_(0, 1, step=1):
+            values = tuple(
+                _vload_linear(source, zero, lanes=cols) for source in sources
+            )
+            result = compute(values, mask)
+            _vstore_linear(result, dst, zero, mask)
+        return
+
+    # The compact 8x8 storage is one contiguous 64-lane physical tile. The
+    # grouped mask describes valid columns in each row; it is not a strided
+    # memory layout. Loading each 8-lane row separately would advance the A5
+    # vector load by only 32 bytes and is unsafe after row zero.
+    zero = dst._trace.index_const(0)
+    active = dst._trace.index_const(active_cols)
+    mask = _wrap_mask(
+        _vmi_builder.create_mask(active.value, size=total_lanes, group=rows),
+        dst.element_type,
     )
-    with for_(0, rows, step=1) as row:
-        row_offset = index_mul(row, cols)
+    with for_(0, 1, step=1):
         values = tuple(
-            _vload_linear(source, row_offset, lanes=cols)
-            for source in sources
+            _vload_linear(source, zero, lanes=total_lanes) for source in sources
         )
         result = compute(values, mask)
-        _vstore_linear(result, dst, row_offset, mask)
+        _vstore_linear(result, dst, zero, mask)
 
 
 def _emit_elementwise_contiguous_blocks_vmi(
