@@ -32,16 +32,22 @@ module {
 }
 
 // EXPAND-LABEL: func.func @narrow_rowmax
-// EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_trowmax
+// EXPAND: call {{.*}}__vmi_trowmax_row
+// EXPAND-SAME: pto.tilelib.candidate = "vmi_trowmax_row"
 // EXPAND-SAME: pto.vmi.resource.estimate_exact = true
-// EXPAND-SAME: pto.vmi.resource.estimated_peak_vector_bytes = 2048 : i64
+// EXPAND-SAME: pto.vmi.resource.estimated_peak_vector_bytes = 256 : i64
 // EXPAND-LABEL: func.func @narrow_rowsum
-// EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_trowsum
+// EXPAND: call {{.*}}__vmi_trowsum_row
+// EXPAND-SAME: pto.tilelib.candidate = "vmi_trowsum_row"
 // EXPAND-SAME: pto.vmi.resource.estimate_exact = true
-// EXPAND-SAME: pto.vmi.resource.estimated_peak_vector_bytes = 4096 : i64
+// EXPAND-SAME: pto.vmi.resource.estimated_peak_vector_bytes = 512 : i64
 // FINAL-LABEL: func.func @narrow_rowmax
-// FINAL: %[[MAX_MASK:.*]] = pto.pset_b32 "PAT_ALL"
-// FINAL: pto.vcgmax {{.*}}, %[[MAX_MASK]]
+// FINAL: scf.for
+// FINAL: pto.vcmax
+// FINAL: pto.vmax
+// FINAL: pto.vsts {{.*}} {dist = "1PT_B32"}
 // FINAL-LABEL: func.func @narrow_rowsum
-// FINAL: %[[SUM_MASK:.*]] = pto.pset_b32 "PAT_ALL"
-// FINAL: pto.vcgadd {{.*}}, %[[SUM_MASK]]
+// FINAL: scf.for
+// FINAL: pto.vcadd
+// FINAL: pto.vadd
+// FINAL: pto.vsts {{.*}} {dist = "1PT_B32"}

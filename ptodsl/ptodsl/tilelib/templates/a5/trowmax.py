@@ -23,7 +23,9 @@ template_trowmax = register_row_extreme(
 from ._vmi_common import (  # noqa: E402
     canonical_vmi_template,
     emit_row_reduce_vmi,
+    emit_row_reduce_streaming_vmi,
     row_reduce_vmi_constraint,
+    row_reduce_streaming_vmi_constraint,
 )
 
 
@@ -34,8 +36,27 @@ from ._vmi_common import (  # noqa: E402
     requires_full_physical_row=False,
     dtypes=(("f32", "f32", "f32"),),
     constraints=(row_reduce_vmi_constraint,),
+    tags=("grouped_rows",),
+    priority=101,
+    single_logical_row_loop=False,
     resource_scope="tile",
     resource_vector_values=1,
 )
 def vmi_trowmax(src: pto.Tile, workspace: pto.Tile, dst: pto.Tile):
     emit_row_reduce_vmi(src, workspace, dst, kind="max")
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="trowmax",
+    name="vmi_trowmax_row",
+    requires_full_physical_row=False,
+    dtypes=(("f32", "f32", "f32"),),
+    constraints=(row_reduce_streaming_vmi_constraint,),
+    tags=("row_streaming",),
+    candidate_id=1001,
+    resource_scope="row",
+    resource_vector_values=1,
+)
+def vmi_trowmax_row(src: pto.Tile, workspace: pto.Tile, dst: pto.Tile):
+    emit_row_reduce_streaming_vmi(src, workspace, dst, kind="max")

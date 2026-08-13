@@ -58,7 +58,9 @@ from ptodsl.vmi_tilelib import (
     vmi_trowexpanddiv,
     vmi_trowexpandmul,
     vmi_trowmax,
+    vmi_trowmax_row,
     vmi_trowsum,
+    vmi_trowsum_row,
     vmi_tsub,
     vmi_tsubs,
 )
@@ -1170,6 +1172,41 @@ def check_row_reduce_candidates() -> dict[str, tuple[str, str, int]]:
     return lowering_cases
 
 
+def check_row_streaming_reduce_candidates() -> dict[str, tuple[str, str, int]]:
+    lowering_cases = {}
+    src = TileSpec((8, 128), f32)
+    workspace = TileSpec((8, 128), f32)
+    dst = TileSpec((8, 1), f32, b_layout="col_major")
+    for op_name, candidate, vmi_op, physical_op in (
+        ("trowmax", vmi_trowmax_row, "pto.vmi.vcmax", "pto.vcmax"),
+        ("trowsum", vmi_trowsum_row, "pto.vmi.vcadd", "pto.vcadd"),
+    ):
+        artifact = candidate.specialize(src=src, workspace=workspace, dst=dst)
+        artifact.verify()
+        text = artifact.mlir_text()
+        name = f"vmi_{op_name}_row_streaming"
+        expect(candidate.metadata.id == 1001, f"{name} should have a unique id")
+        expect(
+            candidate.metadata.fusible
+            and "row_streaming" in candidate.metadata.tags
+            and "single_logical_row_loop" in candidate.metadata.tags,
+            f"{name} should advertise its row-loop fusion contract",
+        )
+        expect(text.count("scf.for") == 1, f"{name} should emit one row loop")
+        expect(
+            "!pto.vmi.vreg<1024xf32>" not in text
+            and "!pto.vmi.vreg<128xf32>" in text,
+            f"{name} should materialize one row rather than the full tile",
+        )
+        expect(text.count(vmi_op) == 1, f"{name} should issue one reduction")
+        expect(
+            text.count("pto.vmi.vstore") == 1 and "group = 1" in text,
+            f"{name} should use an unaligned-safe one-point group store",
+        )
+        lowering_cases[name] = (text, physical_op, 1)
+    return lowering_cases
+
+
 def check_col_expand_candidate() -> None:
     """ColExpandBinary (tcolexpandsub/add/mul/div) broadcasts a [1, VL] column
     result across every row of a [rows, VL] tile, mirroring pto-isa
@@ -1679,7 +1716,9 @@ def main() -> None:
                 "pto.vgather2_bc" in lowered,
                 f"{name} should lower compact state access to aligned gather",
             )
-    for name, (text, expected_op, expected_loop_count) in check_row_reduce_candidates().items():
+    for name, (text, expected_op, expected_loop_count) in (
+        check_row_reduce_candidates().items()
+    ):
         lowered = check_vmi_to_vpto_lowering(
             name, text, expected_op, expected_loop_count
         )
@@ -1688,6 +1727,10 @@ def main() -> None:
             expected_store in lowered,
             f"{name} should lower row results with {expected_store}",
         )
+    for name, (text, expected_op, expected_loop_count) in (
+        check_row_streaming_reduce_candidates().items()
+    ):
+        check_vmi_to_vpto_lowering(name, text, expected_op, expected_loop_count)
     check_col_reduce_candidate()
     check_col_reduce_split()
     check_col_expand_candidate()
