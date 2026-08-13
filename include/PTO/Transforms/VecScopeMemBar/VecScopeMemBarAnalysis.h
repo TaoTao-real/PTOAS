@@ -90,6 +90,9 @@ struct VecScopeMemBarAnalysisResult {
 FailureOr<VecScopeMemBarAnalysisResult>
 runVecScopeMemBarAnalysis(Operation *scope);
 
+FailureOr<VecScopeMemBarAnalysisResult>
+runCrossVecScopeMemBarAnalysis(Operation *scope);
+
 Operation *findSameIterationAnchor(Operation *producer, Operation *consumer,
                                    Operation *scope);
 

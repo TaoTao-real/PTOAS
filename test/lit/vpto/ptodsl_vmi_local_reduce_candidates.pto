@@ -21,11 +21,11 @@ module {
   }
 
   func.func @narrow_rowsum() {
-    %src = pto.alloc_tile : !pto.tile_buf<vec, 8x8xf32>
+    %src = pto.alloc_tile : !pto.tile_buf<vec, 8x32xf32>
     %workspace = pto.alloc_tile : !pto.tile_buf<vec, 8x128xf32>
     %dst = pto.alloc_tile : !pto.tile_buf<vec, 8x1xf32, blayout=col_major>
     pto.trowsum
-      ins(%src, %workspace : !pto.tile_buf<vec, 8x8xf32>, !pto.tile_buf<vec, 8x128xf32>)
+      ins(%src, %workspace : !pto.tile_buf<vec, 8x32xf32>, !pto.tile_buf<vec, 8x128xf32>)
       outs(%dst : !pto.tile_buf<vec, 8x1xf32, blayout=col_major>)
     return
   }

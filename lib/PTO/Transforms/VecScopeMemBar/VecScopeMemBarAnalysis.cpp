@@ -492,8 +492,23 @@ Operation *vecscopemembar::findSameIterationAnchor(Operation *producer,
                                                    Operation *scope) {
   for (Operation *p = producer; p && p != scope; p = p->getParentOp()) {
     for (Operation *c = consumer; c && c != scope; c = c->getParentOp()) {
-      if (p->getBlock() == c->getBlock() && p->isBeforeInBlock(c))
-        return c;
+      if (p->getBlock() != c->getBlock() || !p->isBeforeInBlock(c))
+        continue;
+      // A mem_bar is a vector micro-op and must remain inside the consumer's
+      // vector scope. For a dependence crossing sibling vecscopes, anchor at
+      // the first operation in the consumer scope rather than before the scope
+      // container in the parent block.
+      if (isa<pto::VecScopeOp, pto::StrictVecScopeOp>(c)) {
+        Region &body = c->getRegion(0);
+        if (!body.empty() && !body.front().empty()) {
+          Operation *anchor = &body.front().front();
+          while (isa<pto::MemBarOp>(anchor) && anchor->getNextNode())
+            anchor = anchor->getNextNode();
+          return anchor;
+        }
+        return consumer;
+      }
+      return c;
     }
   }
   return nullptr;
@@ -1059,6 +1074,116 @@ vecscopemembar::runVecScopeMemBarAnalysis(Operation *scope) {
           }
         }
       }
+    }
+  }
+
+  return result;
+}
+
+FailureOr<VecScopeMemBarAnalysisResult>
+vecscopemembar::runCrossVecScopeMemBarAnalysis(Operation *scope) {
+  VecScopeMemBarAnalysisResult result;
+  result.scope = scope;
+
+  auto enclosingVecScope = [](Operation *op) -> Operation * {
+    for (Operation *parent = op ? op->getParentOp() : nullptr; parent;
+         parent = parent->getParentOp())
+      if (isa<pto::VecScopeOp, pto::StrictVecScopeOp>(parent))
+        return parent;
+    return nullptr;
+  };
+  auto isVectorMemoryOp = [](Operation *op) {
+    if (!isa<pto::VectorMicroOpInterface>(op))
+      return false;
+    auto iface = dyn_cast<MemoryEffectOpInterface>(op);
+    if (!iface)
+      return false;
+    SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>, 4> effects;
+    iface.getEffects(effects);
+    return llvm::any_of(effects, [](const auto &effect) {
+      Value value = effect.getValue();
+      return value && isUBBackedType(value.getType()) &&
+             (isa<MemoryEffects::Read>(effect.getEffect()) ||
+              isa<MemoryEffects::Write>(effect.getEffect()));
+    });
+  };
+  auto crossScopeKind =
+      [](VecScopeAccessKind producer,
+         VecScopeAccessKind consumer) -> std::optional<MemBarKind> {
+    if (producer == VecScopeAccessKind::Store &&
+        consumer == VecScopeAccessKind::Load)
+      return MemBarKind::VST_VLD;
+    if (producer == VecScopeAccessKind::Store &&
+        consumer == VecScopeAccessKind::Store)
+      return MemBarKind::VST_VST;
+    if (producer == VecScopeAccessKind::Load &&
+        consumer == VecScopeAccessKind::Store)
+      return MemBarKind::VLD_VST;
+    return std::nullopt;
+  };
+
+  unsigned lexicalOrder = 0;
+  bool anyFailed = false;
+  scope->walk([&](Operation *op) {
+    if (!isVectorMemoryOp(op) || !enclosingVecScope(op))
+      return;
+    auto descriptor = buildAccessDescriptor(op, /*ivs=*/{});
+    if (failed(descriptor)) {
+      anyFailed = true;
+      return;
+    }
+    AccessOccurrence access;
+    access.id = result.accesses.size();
+    access.op = op;
+    access.kind = descriptor->kind;
+    access.footprint = footprintFromDescriptor(*descriptor, /*ivs=*/{});
+    access.lexicalOrder = lexicalOrder++;
+    result.accesses.push_back(access);
+  });
+  if (anyFailed)
+    return failure();
+
+  scope->walk([&](pto::MemBarOp op) {
+    ExistingBarrier barrier;
+    barrier.op = op;
+    barrier.kind = op.getKind().getKind();
+    barrier.phase = op->getParentOfType<scf::ForOp>()
+                        ? ExistingBarrier::LoopLatch
+                        : ExistingBarrier::SameIteration;
+    result.existingBarriers.push_back(barrier);
+  });
+
+  auto isOrderedSiblingPair = [&](unsigned producer, unsigned consumer) {
+    Operation *producerScope = enclosingVecScope(result.accesses[producer].op);
+    Operation *consumerScope = enclosingVecScope(result.accesses[consumer].op);
+    return producerScope && consumerScope && producerScope != consumerScope &&
+           producerScope->getBlock() == consumerScope->getBlock() &&
+           producerScope->isBeforeInBlock(consumerScope);
+  };
+
+  for (unsigned producer = 0; producer < result.accesses.size(); ++producer) {
+    for (unsigned consumer = producer + 1; consumer < result.accesses.size();
+         ++consumer) {
+      auto kind = crossScopeKind(result.accesses[producer].kind,
+                                 result.accesses[consumer].kind);
+      if (!kind || !isOrderedSiblingPair(producer, consumer))
+        continue;
+      if (aliasSameIteration(result.accesses[producer].footprint,
+                             result.accesses[consumer].footprint) ==
+          VecScopeAliasResult::NoAlias)
+        continue;
+
+      MemoryHazard hazard;
+      hazard.id = result.hazards.size();
+      hazard.producer = producer;
+      hazard.consumer = consumer;
+      hazard.kind = *kind;
+      hazard.scope = VecScopeHazardScope::SameIteration;
+      hazard.sameIterationAnchor = findSameIterationAnchor(
+          result.accesses[producer].op, result.accesses[consumer].op, scope);
+      if (!hazard.sameIterationAnchor)
+        hazard.sameIterationAnchor = result.accesses[consumer].op;
+      result.hazards.push_back(hazard);
     }
   }
 

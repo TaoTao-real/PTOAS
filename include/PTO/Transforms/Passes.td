@@ -1005,8 +1005,9 @@ def PTOInsertVecScopeMemBar
   let summary = "Insert memory barriers for VPTO vecscope memory hazards";
   let description = [{
     Inserts `pto.mem_bar` barriers for analyzable memory hazards between
-    vector UB loads/stores inside `pto.vecscope` and `pto.strict_vecscope`
-    regions. A read-only analysis phase builds the access/hazard schedule;
+    vector UB loads/stores, including dependencies that cross sibling
+    `pto.vecscope` and `pto.strict_vecscope` regions. A read-only analysis
+    phase builds the function-level vector access/hazard schedule;
     the codegen phase inserts barriers. Statically modelled domains drive
     insertion on proven non-empty dependence; dynamic loop bounds fall back
     conservatively.

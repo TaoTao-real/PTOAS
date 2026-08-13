@@ -114,10 +114,6 @@ def row_reduce_vmi_constraint(
     rows, cols = src_shape
     valid_rows, valid_cols = src_valid_shape
     workspace_rows, workspace_cols = workspace_shape
-    grouped_micro_tile = (
-        tuple(src_shape) == (8, 8)
-        and tuple(src_valid_shape) == (8, 4)
-    )
     return (
         isinstance(rows, int)
         and isinstance(cols, int)
@@ -128,7 +124,8 @@ def row_reduce_vmi_constraint(
         and valid_rows == rows
         and isinstance(valid_cols, int)
         and 0 < valid_cols <= cols
-        and (src_valid_shape == src_shape or grouped_micro_tile)
+        and src_valid_shape == src_shape
+        and cols * _DTYPE_BYTEWIDTH["f32"] >= 128
         and workspace_rows == rows
         and workspace_cols >= 1
         and workspace_valid_shape == workspace_shape
@@ -138,8 +135,6 @@ def row_reduce_vmi_constraint(
         and src_config.b_layout == "row_major"
         and src_config.s_layout == "none_box"
         # Padding metadata is irrelevant when every physical lane is valid.
-        # The grouped tail is explicitly masked, so its inactive physical
-        # lanes do not participate either.
         and workspace_config is not None
         and _has_null_pad(workspace_config.pad_value)
         and dst_config is not None
@@ -609,71 +604,13 @@ def full_physical_row_vmi_constraint(**metadata) -> bool:
 
 
 def min_128b_row_vmi_constraint(**metadata) -> bool:
-    """Allow statically full rows with at least 128 bytes of data."""
+    """Allow statically full rows with at least 128 bytes of data.
 
-    return _physical_row_vmi_constraint(128, **metadata)
-
-
-def grouped_8x8_f32_vmi_constraint(**metadata) -> bool:
-    """Allow the statically proven DSv4 Sinkhorn f32 micro-tile forms.
-
-    Every row-major data tile is packed into one complete 64-lane physical
-    vector. A valid 8x4 prefix is represented by a grouped predicate and does
-    not reduce the physical allocation read footprint. A full 1x8 compact
-    state is read with a masked gather instead of an allocation-wide load.
+    Sub-VL rows need a separately validated A5 access and mask contract; static
+    allocation bounds alone are not sufficient to make them VMI candidates.
     """
 
-    saw_data_tile = False
-    for name, shape in metadata.items():
-        if not name.endswith("_shape") or name.endswith("_valid_shape"):
-            continue
-        operand = name[:-6]
-        if metadata.get(f"{operand}_dtype") != "f32":
-            return False
-        config = metadata.get(f"{operand}_config")
-        if config is None:
-            return False
-        shape = tuple(shape)
-        valid_shape_value = metadata.get(f"{operand}_valid_shape")
-        if valid_shape_value is None:
-            return False
-        valid_shape = tuple(valid_shape_value)
-        if (
-            shape == (8, 1)
-            and valid_shape == shape
-            and config.b_layout == "col_major"
-        ):
-            continue
-        if (
-            config.b_layout == "row_major"
-            and shape == (8, 8)
-            and valid_shape in {(8, 8), (8, 4)}
-        ):
-            saw_data_tile = True
-            continue
-        if (
-            config.b_layout == "row_major"
-            and shape == (1, 8)
-            and valid_shape == shape
-        ):
-            saw_data_tile = True
-            continue
-        return False
-    return saw_data_tile
-
-
-def min_128b_or_grouped_8x8_f32_vmi_constraint(**metadata) -> bool:
-    full_static_tiles = True
-    for name, shape in metadata.items():
-        if not name.endswith("_shape") or name.endswith("_valid_shape"):
-            continue
-        valid_shape = metadata.get(f"{name[:-6]}_valid_shape")
-        if valid_shape is not None and tuple(valid_shape) != tuple(shape):
-            full_static_tiles = False
-            break
-    return (
-        full_static_tiles and min_128b_row_vmi_constraint(**metadata)
-    ) or grouped_8x8_f32_vmi_constraint(**metadata)
+    return _physical_row_vmi_constraint(128, **metadata)
 
 
 def _is_safe_static_row_prefix(
@@ -738,16 +675,13 @@ def row_expand_binary_vmi_constraint(
             dst_shape, dst_valid_shape, native_lanes=f32.lanes
         )
     )
-    grouped_micro_tile = (
-        tuple(src_shape) == (8, 8)
-        and tuple(dst_shape) == (8, 8)
-        and tuple(src_valid_shape) in {(8, 8), (8, 4)}
-        and tuple(dst_valid_shape) == tuple(src_valid_shape)
-    )
     return (
         rows > 0
         and logical_cols > 0
-        and (safe_row_access or grouped_micro_tile)
+        and logical_cols * _DTYPE_BYTEWIDTH["f32"] >= 128
+        and src_valid_shape == src_shape
+        and dst_valid_shape == dst_shape
+        and safe_row_access
         and dst_valid_shape == src_valid_shape
         and row_values_shape == (rows, 1)
         and row_values_valid_shape == row_values_shape
@@ -780,16 +714,13 @@ def col_expand_vmi_constraint(
     ):
         return False
     rows, cols = dst_shape
-    valid_rows, valid_cols = dst_valid_shape
     return (
         rows > 0
         and cols > 0
         and src_shape == (1, cols)
-        and src_valid_shape == (1, valid_cols)
-        and (
-            dst_valid_shape == dst_shape
-            or (tuple(dst_shape) == (8, 8) and tuple(dst_valid_shape) == (8, 4))
-        )
+        and src_valid_shape == (1, cols)
+        and dst_valid_shape == dst_shape
+        and cols * _DTYPE_BYTEWIDTH["f32"] >= 128
         and src_config is not None
         and src_config.b_layout == "row_major"
         and src_config.s_layout == "none_box"
@@ -934,11 +865,9 @@ def canonical_vmi_template(
                 row_constraint = full_physical_row_vmi_constraint
             elif min_row_bytes == 128:
                 row_constraint = min_128b_row_vmi_constraint
-            elif min_row_bytes == 32:
-                row_constraint = min_128b_or_grouped_8x8_f32_vmi_constraint
             else:
                 raise ValueError(
-                    "canonical VMI templates support only 32B grouped, 128B, or 256B row constraints"
+                    "canonical VMI templates support only 128B or 256B row constraints"
                 )
             effective_constraints = (
                 row_constraint,
@@ -998,22 +927,6 @@ def emit_elementwise_vmi(
 
     rows, cols = dst._spec.shape
     native_lanes = dst.element_type.lanes
-    valid_rows, valid_cols = dst._spec.effective_valid_shape
-    if (
-        dst.element_type == f32
-        and (rows, cols) == (1, 8)
-        and (valid_rows, valid_cols) == (rows, cols)
-    ):
-        _emit_elementwise_narrow_gather_vmi(dst, sources, compute)
-        return
-    if (
-        dst.element_type == f32
-        and (rows, cols) == (8, 8)
-        and valid_rows == rows
-        and valid_cols in (4, 8)
-    ):
-        _emit_elementwise_grouped_8x8_vmi(dst, sources, compute)
-        return
     if logical_lanes == cols and _can_use_contiguous_native_chunks(
         dst, sources, chunk_lanes=native_lanes
     ):
@@ -1031,66 +944,6 @@ def emit_elementwise_vmi(
         values = tuple(_vload(source, coordinate) for source in sources)
         result = compute(values, mask)
         _vstore(result, dst, coordinate, mask)
-
-
-def _emit_elementwise_grouped_8x8_vmi(
-    dst: _TileProxy,
-    sources: Sequence[_TileProxy],
-    compute: ElementwiseCompute,
-) -> None:
-    """Process an 8x8 f32 micro-tile as one allocation-safe VMI value."""
-
-    rows, cols = dst._spec.shape
-    _, active_cols = dst._spec.effective_valid_shape
-    total_lanes = rows * cols
-    _prepare_tile_access(*sources, dst)
-    active = dst._trace.index_const(active_cols)
-    mask = _wrap_mask(
-        _vmi_builder.create_mask(
-            active.value, size=total_lanes, group=rows
-        ),
-        dst.element_type,
-    )
-    with for_(0, 1, step=1):
-        values = tuple(
-            _vload_linear(source, 0, lanes=total_lanes) for source in sources
-        )
-        result = compute(values, mask)
-        _vstore_linear(result, dst, 0, mask)
-
-
-def _emit_elementwise_narrow_gather_vmi(
-    dst: _TileProxy,
-    sources: Sequence[_TileProxy],
-    compute: ElementwiseCompute,
-) -> None:
-    """Read a full sub-VL row without crossing its physical allocation."""
-
-    _, cols = dst._spec.shape
-    _prepare_tile_access(*sources, dst)
-    active = dst._trace.index_const(cols)
-    mask = _wrap_mask(
-        _vmi_builder.create_mask(active.value, size=f32.lanes), f32
-    )
-    zero = dst._trace.index_const(0)
-    with for_(0, 1, step=1):
-        base = dst._trace.scalar_const(0, i32)
-        offsets = _wrap_vreg(
-            _vmi_builder.vci(base.value, size=f32.lanes, order="ASC"), i32
-        )
-        values = tuple(
-            _wrap_vreg(
-                _vmi_builder.vgather(
-                    source._trace.ensure_tile_ptr(source).value,
-                    offsets.value,
-                    mask.value,
-                ),
-                f32,
-            )
-            for source in sources
-        )
-        result = compute(values, mask)
-        _vstore_linear(result, dst, zero, mask)
 
 
 def _emit_elementwise_contiguous_blocks_vmi(
@@ -1885,17 +1738,10 @@ def _validate_row_reduce_tiles(
     valid_rows, valid_cols = src._spec.effective_valid_shape
     if valid_rows != rows or valid_cols <= 0 or valid_cols > physical_cols:
         raise ValueError("row-reduce valid shape must fit the physical source tile")
-    total_lanes = rows * physical_cols
-    packed_full_chunks = (
-        src._spec.shape == (8, 8)
-        and src._spec.effective_valid_shape in {(8, 8), (8, 4)}
-        and total_lanes == f32.lanes
-    )
     safe_read_cols = ((valid_cols + f32.lanes - 1) // f32.lanes) * f32.lanes
     if (
         src._spec.effective_valid_shape != src._spec.shape
         and safe_read_cols > physical_cols
-        and not packed_full_chunks
     ):
         raise ValueError(
             "row-reduce source must contain every physical lane read by its mask"
@@ -1920,15 +1766,8 @@ def emit_row_reduce_vmi(
     kind: str,
 ) -> None:
     rows, physical_cols, valid_cols = _validate_row_reduce_tiles(src, workspace, dst)
-    grouped_micro_tile = (
-        src._spec.shape == (8, 8)
-        and src._spec.effective_valid_shape == (8, 4)
-    )
-    if valid_cols != physical_cols and not grouped_micro_tile:
-        raise ValueError(
-            "grouped row-reduce requires a full static source tile or the "
-            "registered 8x8/8x4 micro-tile form"
-        )
+    if valid_cols != physical_cols:
+        raise ValueError("grouped row-reduce requires a full static source tile")
     _prepare_tile_access(src, workspace, dst)
     total_lanes = rows * physical_cols
     active = src._trace.index_const(valid_cols)
@@ -2014,12 +1853,7 @@ def emit_row_expand_binary_vmi(
         raise ValueError(
             "row-expand source and destination logical shapes must match"
         )
-    grouped_micro_tile = (
-        row_tensor._spec.shape == (8, 8)
-        and output._spec.shape == (8, 8)
-        and logical_shape in {(8, 8), (8, 4)}
-    )
-    if not grouped_micro_tile and (not _is_safe_static_row_prefix(
+    if not _is_safe_static_row_prefix(
         row_tensor._spec.shape,
         logical_shape,
         native_lanes=f32.lanes,
@@ -2027,7 +1861,7 @@ def emit_row_expand_binary_vmi(
         output._spec.shape,
         output._spec.effective_valid_shape,
         native_lanes=f32.lanes,
-    )):
+    ):
         raise ValueError("row-expand logical row exceeds its physical storage")
     rows, cols = logical_shape
     if (
@@ -2042,35 +1876,6 @@ def emit_row_expand_binary_vmi(
     dst_physical_cols = output._spec.shape[1]
 
     _prepare_tile_access(row_tensor, compact_row_state, output)
-    if grouped_micro_tile:
-        total_lanes = rows * row_tensor._spec.shape[1]
-        active = row_tensor._trace.index_const(cols)
-        mask = _wrap_mask(
-            _vmi_builder.create_mask(
-                active.value, size=total_lanes, group=rows
-            ),
-            f32,
-        )
-        state_ptr = compact_row_state._trace.ensure_tile_ptr(compact_row_state)
-        zero = compact_row_state._trace.index_const(0)
-        stride = compact_row_state._trace.index_const(1)
-        broadcast = _wrap_vreg(
-            _vmi_builder.vload(
-                state_ptr.value,
-                zero.value,
-                size=total_lanes,
-                stride=stride.value,
-                group=rows,
-                dist_mode="brc",
-            ),
-            f32,
-        )
-        with for_(0, 1, step=1):
-            value = _vload_linear(row_tensor, 0, lanes=total_lanes)
-            result = operations[operation](value, broadcast, mask)
-            _vstore_linear(result, output, 0, mask)
-        return
-
     full_mask = _create_mask_lanes(cols, cols, f32, trace=row_tensor._trace)
     scalar_mask = _create_mask_lanes(1, 1, f32, trace=row_tensor._trace)
     state_ptr = compact_row_state._trace.ensure_tile_ptr(compact_row_state)
@@ -2116,45 +1921,11 @@ def emit_col_expand_vmi(src: _TileProxy, dst: _TileProxy) -> None:
     rows, cols = dst._spec.shape
     if src._spec.shape != (1, cols):
         raise ValueError("tcolexpand source must be a row-major [1, cols] tile")
-    valid_rows, valid_cols = dst._spec.effective_valid_shape
+    _, valid_cols = dst._spec.effective_valid_shape
     if src._spec.effective_valid_shape != (1, valid_cols):
         raise ValueError(
             "tcolexpand source and destination valid columns must match"
         )
-    if (rows, cols) == (8, 8) and valid_rows == rows and valid_cols in (4, 8):
-        _prepare_tile_access(src, dst)
-        src_ptr = src._trace.ensure_tile_ptr(src)
-        zero = src._trace.index_const(0)
-        total_lanes = rows * cols
-        active = dst._trace.index_const(valid_cols)
-        mask = _wrap_mask(
-            _vmi_builder.create_mask(
-                active.value, size=total_lanes, group=rows
-            ),
-            f32,
-        )
-        with for_(0, 1, step=1):
-            base = src._trace.scalar_const(0, i32)
-            period = src._trace.scalar_const(cols - 1, i32)
-            lane_ids = _wrap_vreg(
-                _vmi_builder.vci(base.value, size=total_lanes, order="ASC"),
-                i32,
-            )
-            period_mask = _wrap_vreg(
-                _vmi_builder.vbrc(period.value, size=total_lanes), i32
-            )
-            offsets = _wrap_vreg(
-                _vmi_builder.vand(
-                    lane_ids.value, period_mask.value, mask.value
-                ),
-                i32,
-            )
-            broadcast = _wrap_vreg(
-                _vmi_builder.vgather(src_ptr.value, offsets.value, mask.value),
-                f32,
-            )
-            _vstore_linear(broadcast, dst, zero, mask)
-        return
     block_map = CanonicalBlockMap.from_tile(dst, logical_lanes=cols)
 
     _prepare_tile_access(src, dst)
