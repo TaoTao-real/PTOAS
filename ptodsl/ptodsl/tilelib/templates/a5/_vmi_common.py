@@ -1090,46 +1090,32 @@ def _emit_elementwise_sinkhorn_grouped_vmi(
 
     rows, cols = dst._spec.shape
     _, active_cols = dst._spec.effective_valid_shape
-    total_lanes = rows * cols
-    groups = rows if rows > 1 else cols
-    zero = dst._trace.index_const(0)
     _prepare_tile_access(*sources, dst)
-    active = dst._trace.index_const(active_cols if rows > 1 else total_lanes)
-    mask = _wrap_mask(
-        _vmi_builder.create_mask(
-            active.value,
-            size=total_lanes,
-            group=groups if rows > 1 else None,
-        ),
-        dst.element_type,
+    mask = _create_mask_lanes(
+        active_cols, cols, dst.element_type, trace=dst._trace
     )
-    with for_(0, 1, step=1):
-        if rows == 1:
-            base = dst._trace.scalar_const(0, i32)
-            offsets = _wrap_vreg(
-                _vmi_builder.vci(base.value, size=total_lanes, order="ASC"),
-                i32,
+    with for_(0, rows, step=1) as row:
+        row_offset = index_mul(row, cols)
+        row_offset_i32 = _Value(
+            unwrap_surface_value(scalar.index_cast(pto.i32, row_offset.value))
+        )
+        offsets = _wrap_vreg(
+            _vmi_builder.vci(row_offset_i32.value, size=cols, order="ASC"),
+            i32,
+        )
+        values = tuple(
+            _wrap_vreg(
+                _vmi_builder.vgather(
+                    source._trace.ensure_tile_ptr(source).value,
+                    offsets.value,
+                    mask.value,
+                ),
+                f32,
             )
-            values = tuple(
-                _wrap_vreg(
-                    _vmi_builder.vgather(
-                        source._trace.ensure_tile_ptr(source).value,
-                        offsets.value,
-                        mask.value,
-                    ),
-                    f32,
-                )
-                for source in sources
-            )
-        else:
-            # The 8x8 storage is one contiguous 64-lane physical tile. Grouping
-            # describes the compute mask, not a strided memory layout.
-            values = tuple(
-                _vload_linear(source, 0, lanes=total_lanes)
-                for source in sources
-            )
+            for source in sources
+        )
         result = compute(values, mask)
-        _vstore_linear(result, dst, zero, mask)
+        _vstore_linear(result, dst, row_offset, mask)
 
 
 def _emit_elementwise_contiguous_blocks_vmi(
@@ -2202,33 +2188,17 @@ def emit_col_expand_vmi(src: _TileProxy, dst: _TileProxy) -> None:
     ):
         _prepare_tile_access(src, dst)
         src_ptr = src._trace.ensure_tile_ptr(src)
-        zero = dst._trace.index_const(0)
-        active = dst._trace.index_const(valid_cols)
-        mask = _wrap_mask(
-            _vmi_builder.create_mask(active.value, size=64, group=8), f32
+        mask = _create_mask_lanes(valid_cols, cols, f32, trace=dst._trace)
+        zero_i32 = src._trace.scalar_const(0, i32)
+        offsets = _wrap_vreg(
+            _vmi_builder.vci(zero_i32.value, size=cols, order="ASC"), i32
         )
-        with for_(0, 1, step=1):
-            base = src._trace.scalar_const(0, i32)
-            period = src._trace.scalar_const(cols - 1, i32)
-            lane_ids = _wrap_vreg(
-                _vmi_builder.vci(base.value, size=64, order="ASC"), i32
-            )
-            period_mask = _wrap_vreg(
-                _vmi_builder.vbrc(period.value, size=64), i32
-            )
-            offsets = _wrap_vreg(
-                _vmi_builder.vand(
-                    lane_ids.value, period_mask.value, mask.value
-                ),
-                i32,
-            )
-            broadcast = _wrap_vreg(
-                _vmi_builder.vgather(
-                    src_ptr.value, offsets.value, mask.value
-                ),
-                f32,
-            )
-            _vstore_linear(broadcast, dst, zero, mask)
+        broadcast = _wrap_vreg(
+            _vmi_builder.vgather(src_ptr.value, offsets.value, mask.value), f32
+        )
+        with for_(0, rows, step=1) as row:
+            dst_offset = index_mul(row, cols)
+            _vstore_linear(broadcast, dst, dst_offset, mask)
         return
 
     block_map = CanonicalBlockMap.from_tile(dst, logical_lanes=cols)
