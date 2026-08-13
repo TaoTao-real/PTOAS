@@ -9,6 +9,7 @@
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --enable-vmi --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl --ptodsl-pkg-path=%S/../../../ptodsl --ptodsl-python-exe=%python_executable --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-expand-tile-op 2>&1 | FileCheck %s --check-prefix=EXPAND
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --enable-vmi --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl --ptodsl-pkg-path=%S/../../../ptodsl --ptodsl-python-exe=%python_executable --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-inline-libcall 2>&1 | FileCheck %s --check-prefix=INLINE
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --enable-vmi --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl --ptodsl-pkg-path=%S/../../../ptodsl --ptodsl-python-exe=%python_executable --emit-vpto %s -o - | FileCheck %s --check-prefix=FINAL --implicit-check-not=pto.vmi.v --implicit-check-not=!pto.vmi.
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --enable-vmi=false --enable-op-fusion=false --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl --ptodsl-pkg-path=%S/../../../ptodsl --ptodsl-python-exe=%python_executable --emit-vpto %s -o - | FileCheck %s --check-prefix=ORDINARY
 
 module {
   func.func @sinkhorn_grouped_tail(%scale: f32) {
@@ -144,7 +145,7 @@ module {
 // FINAL-LABEL: func.func @sinkhorn_grouped_tail
 // FINAL: pto.vadd
 // FINAL: pto.vmul
-// FINAL: pto.vlds {{.*}} {dist = "BRC_B32"}
+// FINAL: pto.vlds {{.*}} {dist = "E2B_B32"}
 // FINAL: pto.vmul
 // FINAL-LABEL: func.func @sinkhorn_compact_state
 // FINAL: pto.vadd
@@ -154,3 +155,11 @@ module {
 // FINAL-LABEL: func.func @sinkhorn_grouped_tail_reductions
 // FINAL: pto.vcmax
 // FINAL: pto.vcadd
+
+// ORDINARY-LABEL: func.func @sinkhorn_grouped_tail
+// ORDINARY: pto.vci
+// ORDINARY: pto.vshrs
+// ORDINARY: pto.vgather2_bc
+// ORDINARY: pto.vmul
+// ORDINARY-NOT: pto.vmi.v
+// ORDINARY-NOT: !pto.vmi.

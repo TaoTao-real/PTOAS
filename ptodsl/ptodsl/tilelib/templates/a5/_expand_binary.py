@@ -239,6 +239,27 @@ def _emit_row_expand_body(src0, src1, dst, vector_op):
         "f32": "BRC_B32",
     }[str(dtype)]
 
+    sinkhorn_grouped_form = (
+        str(dtype) == "f32"
+        and tuple(src0.shape) == (8, 8)
+        and src0._template_static_valid_shape in {(8, 4), (8, 8)}
+        and tuple(src1.shape) == (8, 1)
+        and src1._template_static_valid_shape == (8, 1)
+        and tuple(dst.shape) == (8, 8)
+        and dst._template_static_valid_shape
+        == src0._template_static_valid_shape
+    )
+    if sinkhorn_grouped_form:
+        full_mask, _ = pto.make_mask(dtype, 64)
+        lane_ids = pto.vci(pto.i32(0), "ASC")
+        row_ids = pto.vshrs(lane_ids, pto.i16(3), full_mask)
+        with pto.for_(0, 1, step=1):
+            lhs = pto.vlds(src0[0, 0:])
+            rhs = pto.vgather2_bc(src1.as_ptr(), row_ids, full_mask)
+            result = vector_op(lhs, rhs, full_mask)
+            pto.vsts(result, dst[0, 0:], full_mask)
+        return
+
     with pto.for_(0, valid_rows, step=1) as row:
         col_loop = pto.for_(0, valid_cols, step=lanes).carry(remained=valid_cols)
         with col_loop:

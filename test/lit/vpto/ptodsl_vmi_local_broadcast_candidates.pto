@@ -72,8 +72,7 @@ module {
 // FINAL-NOT: pto.vmi.vmul
 // FINAL-NOT: pto.vmi.vdiv
 // FINAL-NOT: pto.vmi.vstore
-// FINAL: pto.vgather2_bc
-// FINAL: pto.vdup
+// FINAL: pto.vlds {{.*}} {dist = "BRC_B32"}
 // FINAL: pto.vmul
 // FINAL: pto.vdiv
 // FINAL: pto.vsts

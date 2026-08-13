@@ -2117,6 +2117,44 @@ def emit_row_expand_binary_vmi(
     io_lanes = ((cols + f32.lanes - 1) // f32.lanes) * f32.lanes
 
     _prepare_tile_access(row_tensor, compact_row_state, output)
+    if sinkhorn_grouped_form:
+        total_lanes = rows * src_physical_cols
+        zero = row_tensor._trace.index_const(0)
+        one = row_tensor._trace.index_const(1)
+        active = row_tensor._trace.index_const(cols)
+        mask = _wrap_mask(
+            _vmi_builder.create_mask(
+                active.value, size=total_lanes, group=rows
+            ),
+            f32,
+        )
+        state_ptr = compact_row_state._trace.ensure_tile_ptr(compact_row_state)
+        with for_(0, 1, step=1):
+            # Load one compact scalar per row into group slots, then broadcast
+            # each slot to that row's physical lanes. This keeps the 8x8 tile
+            # in one aligned 64-lane domain instead of issuing 32-byte row
+            # loads that a following grouped TileOp cannot consume safely.
+            slots = _wrap_vreg(
+                _vmi_builder.vload(
+                    state_ptr.value,
+                    zero.value,
+                    size=rows,
+                    stride=one.value,
+                    group=rows,
+                ),
+                f32,
+            )
+            broadcast = _wrap_vreg(
+                _vmi_builder.vbrc(
+                    slots.value, size=total_lanes, group=rows
+                ),
+                f32,
+            )
+            value = _vload_linear(row_tensor, zero, lanes=total_lanes)
+            result = operations[operation](value, broadcast, mask)
+            _vstore_linear(result, output, zero, mask)
+        return
+
     full_mask = _create_mask_lanes(cols, io_lanes, f32, trace=row_tensor._trace)
     state_ptr = compact_row_state._trace.ensure_tile_ptr(compact_row_state)
     with for_(0, rows, step=1) as row:
