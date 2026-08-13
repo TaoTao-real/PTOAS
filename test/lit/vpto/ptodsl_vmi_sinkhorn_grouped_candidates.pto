@@ -132,9 +132,10 @@ module {
 // EXPAND: pto.vmi.fusion.boundary = "local"
 
 // FINAL-LABEL: func.func @sinkhorn_grouped_tail
-// FINAL: pto.vgather2_bc
 // FINAL: pto.vadd
-// FINAL-COUNT-2: pto.vmul
+// FINAL: pto.vmul
+// FINAL: pto.vgather2_bc
+// FINAL: pto.vmul
 // FINAL-LABEL: func.func @sinkhorn_compact_state
 // FINAL: pto.vadd
 // FINAL-LABEL: func.func @sinkhorn_identity_reductions
