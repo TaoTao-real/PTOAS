@@ -26,6 +26,8 @@ module {
       {candidates = [
         {id = 0 : i64, name = "template_tmov", tags = ["elementwise"]},
         {id = 1000 : i64, name = "vmi_tmov",
+         resource_scope = "row", resource_vector_values = 1 : i64,
+         resource_chunk_streaming = false,
          tags = ["vmi", "fusion_eligible"]}
       ]}
     return

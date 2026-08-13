@@ -91,6 +91,12 @@ constexpr llvm::StringLiteral kVmiFusionTileOpAttr = "pto.vmi.fusion.tileop";
 constexpr llvm::StringLiteral kVmiFusionBoundaryAttr = "pto.vmi.fusion.boundary";
 constexpr llvm::StringLiteral kVmiFusionBoundaryReasonAttr =
     "pto.vmi.fusion.boundary_reason";
+constexpr llvm::StringLiteral kVmiEstimatedPeakVectorBytesAttr =
+    "pto.vmi.resource.estimated_peak_vector_bytes";
+constexpr llvm::StringLiteral kVmiEstimatedPeakVectorChunksAttr =
+    "pto.vmi.resource.estimated_peak_vector_chunks";
+constexpr llvm::StringLiteral kVmiResourceEstimateExactAttr =
+    "pto.vmi.resource.estimate_exact";
 
 static bool hasPipeTypedValue(Operation *operation) {
   for (Type type : operation->getOperandTypes()) {
@@ -987,7 +993,10 @@ static void copyTileLibSelectionAttrs(Operation *dst, Operation *src) {
        {StringRef(kTileLibImplAttr), StringRef(kTileLibCandidateAttr),
         StringRef(kVmiFusionSourceAttr), StringRef(kVmiFusionTileOpAttr),
         StringRef(kVmiFusionBoundaryAttr),
-        StringRef(kVmiFusionBoundaryReasonAttr)}) {
+        StringRef(kVmiFusionBoundaryReasonAttr),
+        StringRef(kVmiEstimatedPeakVectorBytesAttr),
+        StringRef(kVmiEstimatedPeakVectorChunksAttr),
+        StringRef(kVmiResourceEstimateExactAttr)}) {
     if (Attribute attr = src->getAttr(attrName))
       dst->setAttr(attrName, attr);
   }
@@ -1489,6 +1498,7 @@ LogicalResult ExpandState::expandTileOpsInFunction(func::FuncOp func,
           << opName;
       return failure();
     }
+    copyTileLibSelectionAttrs(dslFn, op);
 
     // Replace tile op with func.call.  For view operands whose caller type
     // (memref) differs from the template parameter type (tensor_view /

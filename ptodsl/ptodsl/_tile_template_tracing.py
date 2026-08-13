@@ -870,6 +870,9 @@ class TileTemplate:
     context_constraints: tuple[tuple[str, tuple[object, ...]], ...]
     constraints: tuple[object, ...] = ()
     tags: tuple[str, ...] = ()
+    resource_scope: str | None = None
+    resource_vector_values: int | None = None
+    resource_chunk_streaming: bool = False
 
     @property
     def param_names(self) -> tuple[str, ...]:
@@ -902,6 +905,9 @@ class TileTemplate:
                     "single_logical_row_loop",
                     *self.tags,
                 ),
+                resource_scope=self.resource_scope,
+                resource_vector_values=self.resource_vector_values,
+                resource_chunk_streaming=self.resource_chunk_streaming,
             )
 
         return _RegistryTemplateMetadata.build(
@@ -1003,6 +1009,9 @@ def tile_template(
     context_constraints: dict[str, tuple[object, ...]] | None = None,
     constraints: tuple[object, ...] | list[object] = (),
     tags: tuple[str, ...] | list[str] = (),
+    resource_scope: str | None = None,
+    resource_vector_values: int | None = None,
+    resource_chunk_streaming: bool = False,
 ):
     if target != "a5":
         raise ValueError("tile-template tracing currently only supports target='a5'")
@@ -1027,6 +1036,9 @@ def tile_template(
             context_constraints=normalized_context_constraints,
             constraints=tuple(constraints),
             tags=tuple(tags),
+            resource_scope=resource_scope,
+            resource_vector_values=resource_vector_values,
+            resource_chunk_streaming=resource_chunk_streaming,
         )
 
     return decorator

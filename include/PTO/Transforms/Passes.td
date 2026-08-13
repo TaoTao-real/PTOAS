@@ -553,11 +553,12 @@ def SelectTemplateCandidate
     : Pass<"pto-select-template-candidate", "ModuleOp"> {
   let summary = "Select one implementation from each tile operation's candidates";
   let description = [{
-    Applies candidate-selection policy after fusion planning. Hard-boundary
+    Applies candidate-selection policy before fusion planning. Hard-boundary
     operations and candidates never select VMI implementations. For the
     remaining operations, `prefer-vmi` selects a fusion-eligible VMI
-    implementation when its shape capability is sufficient, then falls back to
-    an ordinary PTODSL implementation.
+    implementation when its shape capability and candidate resource contract
+    fit the configured vector-byte budget, then falls back to an ordinary
+    PTODSL implementation.
     `ordinary-only` excludes VMI implementations. The selected implementation
     and any VMI fusion boundary are recorded for ExpandTileOp to consume.
   }];
@@ -566,7 +567,13 @@ def SelectTemplateCandidate
   let options = [
     Option<"selectionPolicy", "selection-policy", "std::string",
            /*default=*/"\"prefer-vmi\"",
-           "Candidate policy: prefer-vmi or ordinary-only">
+           "Candidate policy: prefer-vmi or ordinary-only">,
+    Option<"maxCandidateVectorBytes", "max-candidate-vector-bytes", "int64_t",
+           /*default=*/"6144",
+           "Maximum estimated peak vector bytes for one VMI candidate; zero disables the resource guard">,
+    Option<"emitResourceRemarks", "emit-resource-remarks", "bool",
+           /*default=*/"false",
+           "Emit candidate resource selection and fallback remarks">
   ];
 }
 
