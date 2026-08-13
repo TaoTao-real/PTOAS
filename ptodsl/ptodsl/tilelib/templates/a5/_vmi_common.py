@@ -168,6 +168,19 @@ def row_reduce_streaming_vmi_constraint(**context):
     )
 
 
+def sinkhorn_row_reduce_streaming_vmi_constraint(**context):
+    """Recognize the statically bounded 8x8 Sinkhorn row-reduce forms."""
+
+    if (
+        context.get("src_shape") != (8, 8)
+        or context.get("src_valid_shape") not in {(8, 4), (8, 8)}
+    ):
+        return False
+    full_context = dict(context)
+    full_context["src_valid_shape"] = (8, 8)
+    return row_reduce_vmi_constraint(**full_context)
+
+
 def _vreg_lanes(value: _VectorValue) -> int:
     return _pto_dialect.VMIVRegType(value.value.type).element_count
 
@@ -2013,7 +2026,10 @@ def emit_row_reduce_streaming_vmi(
     """Reduce one logical row per iteration for compatible VMI fusion."""
 
     rows, physical_cols, valid_cols = _validate_row_reduce_tiles(src, workspace, dst)
-    if valid_cols != physical_cols:
+    sinkhorn_row_form = (
+        (rows, physical_cols) == (8, 8) and valid_cols in {4, 8}
+    )
+    if valid_cols != physical_cols and not sinkhorn_row_form:
         raise ValueError("row-streaming reduction requires a full static source tile")
     _prepare_tile_access(src, dst)
     active = src._trace.index_const(valid_cols)
@@ -2584,4 +2600,5 @@ __all__ = [
     "f32",
     "row_reduce_vmi_constraint",
     "row_reduce_streaming_vmi_constraint",
+    "sinkhorn_row_reduce_streaming_vmi_constraint",
 ]

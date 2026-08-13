@@ -20,6 +20,7 @@ from ._vmi_common import (  # noqa: E402
     emit_row_reduce_streaming_vmi,
     row_reduce_vmi_constraint,
     row_reduce_streaming_vmi_constraint,
+    sinkhorn_row_reduce_streaming_vmi_constraint,
 )
 
 
@@ -53,4 +54,21 @@ def vmi_trowsum(src: Tile, workspace: Tile, dst: Tile):
     resource_vector_values=1,
 )
 def vmi_trowsum_row(src: Tile, workspace: Tile, dst: Tile):
+    emit_row_reduce_streaming_vmi(src, workspace, dst, kind="sum")
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="trowsum",
+    name="vmi_trowsum_sinkhorn_row",
+    requires_full_physical_row=False,
+    dtypes=(("f32", "f32", "f32"),),
+    constraints=(sinkhorn_row_reduce_streaming_vmi_constraint,),
+    tags=("row_streaming", "supports_partial_valid_shape"),
+    priority=102,
+    candidate_id=1002,
+    resource_scope="row",
+    resource_vector_values=1,
+)
+def vmi_trowsum_sinkhorn_row(src: Tile, workspace: Tile, dst: Tile):
     emit_row_reduce_streaming_vmi(src, workspace, dst, kind="sum")

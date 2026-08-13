@@ -138,8 +138,8 @@ module {
 // FINAL-LABEL: func.func @sinkhorn_compact_state
 // FINAL: pto.vadd
 // FINAL-LABEL: func.func @sinkhorn_identity_reductions
-// FINAL: pto.vcgmax
-// FINAL: pto.vcgadd
+// FINAL: pto.vcmax
+// FINAL: pto.vcadd
 // FINAL-LABEL: func.func @sinkhorn_grouped_tail_reductions
-// FINAL: pto.vcgmax
-// FINAL: pto.vcgadd
+// FINAL: pto.vcmax
+// FINAL: pto.vcadd
