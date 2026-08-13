@@ -26,6 +26,7 @@ from ._vmi_common import (  # noqa: E402
     emit_row_reduce_streaming_vmi,
     row_reduce_vmi_constraint,
     row_reduce_streaming_vmi_constraint,
+    sinkhorn_row_reduce_streaming_vmi_constraint,
 )
 
 
@@ -36,7 +37,7 @@ from ._vmi_common import (  # noqa: E402
     requires_full_physical_row=False,
     dtypes=(("f32", "f32", "f32"),),
     constraints=(row_reduce_vmi_constraint,),
-    tags=("grouped_rows",),
+    tags=("grouped_rows", "supports_partial_valid_shape"),
     priority=101,
     single_logical_row_loop=False,
     resource_scope="tile",
@@ -59,4 +60,23 @@ def vmi_trowmax(src: pto.Tile, workspace: pto.Tile, dst: pto.Tile):
     resource_vector_values=1,
 )
 def vmi_trowmax_row(src: pto.Tile, workspace: pto.Tile, dst: pto.Tile):
+    emit_row_reduce_streaming_vmi(src, workspace, dst, kind="max")
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="trowmax",
+    name="vmi_trowmax_sinkhorn_row",
+    requires_full_physical_row=False,
+    dtypes=(("f32", "f32", "f32"),),
+    constraints=(sinkhorn_row_reduce_streaming_vmi_constraint,),
+    tags=("row_streaming", "supports_partial_valid_shape"),
+    priority=102,
+    candidate_id=1002,
+    resource_scope="row",
+    resource_vector_values=1,
+)
+def vmi_trowmax_sinkhorn_row(
+    src: pto.Tile, workspace: pto.Tile, dst: pto.Tile
+):
     emit_row_reduce_streaming_vmi(src, workspace, dst, kind="max")

@@ -26,6 +26,7 @@ from ._vmi_common import (  # noqa: E402
     canonical_vmi_template,
     emit_elementwise_vmi,
     f32,
+    sinkhorn_compact_elementwise_vmi_constraint,
 )
 
 
@@ -37,6 +38,23 @@ from ._vmi_common import (  # noqa: E402
     min_row_bytes=128,
 )
 def vmi_tmuls(src: pto.Tile, scale: f32, dst: pto.Tile):
+    emit_elementwise_vmi(
+        dst,
+        (src,),
+        lambda values, mask: _vmi_vmuls(values[0], scale, mask),
+    )
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="tmuls",
+    name="vmi_tmuls_sinkhorn_compact",
+    dtypes=(("f32", "f32", "f32"),),
+    constraints=(sinkhorn_compact_elementwise_vmi_constraint,),
+    requires_full_physical_row=False,
+    tags=("supports_partial_valid_shape",),
+)
+def vmi_tmuls_sinkhorn_compact(src: pto.Tile, scale: f32, dst: pto.Tile):
     emit_elementwise_vmi(
         dst,
         (src,),

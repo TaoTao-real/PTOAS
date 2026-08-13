@@ -737,6 +737,32 @@ class TileLibCatalogTest(unittest.TestCase):
                 selected = select("pto.tstore", "a5", specs)
                 self.assertEqual(selected.name, "template_tstore_nd")
 
+    def test_tfillpad_short_row_preserves_valid_prefix_before_padding(self):
+        specs = {
+            "src": TileSpec(
+                shape=(8, 8),
+                dtype=ScalarType("f32"),
+                memory_space="vec",
+                valid_shape=(8, 4),
+            ),
+            "dst": TileSpec(
+                shape=(8, 8),
+                dtype=ScalarType("f32"),
+                memory_space="vec",
+                valid_shape=(8, 8),
+                pad_value="Min",
+            ),
+        }
+        selected = select("pto.tfillpad", "a5", specs)
+        self.assertEqual(selected.name, "template_tfillpad")
+        mlir = selected.specialize(**specs).mlir_text()
+        self.assertIn("pto.vlds", mlir)
+        self.assertIn("pto.vsel", mlir)
+        self.assertIn("pto.vsts", mlir)
+        self.assertNotIn("pto.store", mlir)
+        self.assertLess(mlir.index("pto.vlds"), mlir.index("pto.vsel"))
+        self.assertLess(mlir.index("pto.vsel"), mlir.index("pto.vsts"))
+
     def test_row_expand_accepts_col_major_single_column_broadcast(self):
         for op, expected_op in (
             ("pto.trowexpandmul", "pto.vmul"),
@@ -888,7 +914,7 @@ class TileLibCatalogTest(unittest.TestCase):
         self.assertIn("!pto.vmi.vreg<64xf32>", mlir)
         self.assertIn("group = 64", mlir)
 
-    def test_vmi_grouped_sinkhorn_forms_require_runtime_validation(self):
+    def test_vmi_grouped_sinkhorn_forms_use_grouped_candidates(self):
         data = TileSpec(
             shape=(8, 8),
             dtype=ScalarType("f32"),
@@ -915,7 +941,7 @@ class TileLibCatalogTest(unittest.TestCase):
         forms = (
             (
                 "pto.tadd",
-                "vmi_tadd_block64",
+                "vmi_tadd_sinkhorn_compact",
                 {"src0": data, "src1": data, "dst": data},
             ),
             (
@@ -925,7 +951,7 @@ class TileLibCatalogTest(unittest.TestCase):
             ),
             (
                 "pto.tadds",
-                "vmi_tadds",
+                "vmi_tadds_sinkhorn_compact",
                 {
                     "src": narrow,
                     "scalar": ScalarSpec(ScalarType("f32"), value=1.0),
@@ -945,10 +971,87 @@ class TileLibCatalogTest(unittest.TestCase):
         )
         for op, candidate_id, specs in forms:
             with self.subTest(op=op):
+                selected = select(op, "a5", specs, candidate_id=candidate_id)
+                text = selected.specialize(**specs).mlir_text()
+                self.assertIn("pto.vmi.v", text)
+                if op == "pto.tadd":
+                    self.assertEqual(text.count("scf.for"), 1)
+                    self.assertIn("!pto.vmi.vreg<64xf32>", text)
+                    self.assertIn("group_size = 8", text)
+                    self.assertIn("num_groups = 8", text)
+                    self.assertNotIn("!pto.vmi.vreg<8xf32>", text)
+                if op in {"pto.trowmax", "pto.trowsum"}:
+                    self.assertIn("group = 8", text)
+
+        for op in ("pto.trowmax", "pto.trowsum"):
+            with self.subTest(op=op, candidate="row_streaming"):
                 with self.assertRaisesRegex(
                     NoMatchingTemplate, "custom constraints are not satisfied"
                 ):
-                    select(op, "a5", specs, candidate_id=candidate_id)
+                    select(
+                        op,
+                        "a5",
+                        {"src": data, "workspace": compact, "dst": compact},
+                        candidate_id="vmi_" + op.removeprefix("pto.") + "_row",
+                    )
+
+    def test_vmi_grouped_sinkhorn_row_expand_uses_group_slots(self):
+        data = TileSpec(
+            shape=(8, 8),
+            dtype=ScalarType("f32"),
+            valid_shape=(8, 4),
+        )
+        compact = TileSpec(
+            shape=(8, 1),
+            dtype=ScalarType("f32"),
+            valid_shape=(8, 1),
+            b_layout="col_major",
+        )
+
+        selected = select(
+            "pto.trowexpandmul",
+            "a5",
+            {"src": data, "row_values": compact, "dst": data},
+            candidate_id="vmi_trowexpandmul_sinkhorn_row_loop",
+        )
+        self.assertEqual(selected.name, "vmi_trowexpandmul_sinkhorn_row_loop")
+        text = selected.specialize(
+            src=data, row_values=compact, dst=data
+        ).mlir_text()
+        self.assertEqual(text.count("scf.for"), 1)
+        self.assertEqual(text.count("pto.vmi.vload"), 2)
+        self.assertIn("pto.vmi.vbrc", text)
+        self.assertIn("pto.vmi.create_group_mask", text)
+        self.assertNotIn("pto.vmi.vgather", text)
+        self.assertIn("pto.vmi.vstore", text)
+        self.assertIn("group = 8", text)
+
+    def test_ordinary_grouped_sinkhorn_row_expand_uses_safe_gather(self):
+        data = TileSpec(
+            shape=(8, 8),
+            dtype=ScalarType("f32"),
+            valid_shape=(8, 4),
+        )
+        compact = TileSpec(
+            shape=(8, 1),
+            dtype=ScalarType("f32"),
+            valid_shape=(8, 1),
+            b_layout="col_major",
+        )
+
+        selected = select(
+            "pto.trowexpanddiv",
+            "a5",
+            {"src0": data, "src1": compact, "dst": data},
+            candidate_id="template_trowexpanddiv",
+        )
+        text = selected.specialize(src0=data, src1=compact, dst=data).mlir_text()
+        self.assertEqual(text.count("scf.for"), 1)
+        self.assertIn("pto.vci", text)
+        self.assertIn("pto.vshrs", text)
+        self.assertIn("pto.vgather2_bc", text)
+        self.assertIn("pto.vdiv", text)
+        self.assertIn("pto.vsts", text)
 
     def test_vmi_grouped_sinkhorn_forms_reject_unregistered_tail_width(self):
         data = TileSpec(
@@ -963,7 +1066,7 @@ class TileLibCatalogTest(unittest.TestCase):
                 "pto.tadd",
                 "a5",
                 {"src0": data, "src1": data, "dst": data},
-                candidate_id="vmi_tadd_block64",
+                candidate_id="vmi_tadd_sinkhorn_compact",
             )
 
     def test_vmi_grouped_sinkhorn_forms_reject_mismatched_storage(self):
@@ -985,7 +1088,7 @@ class TileLibCatalogTest(unittest.TestCase):
                 "pto.tadd",
                 "a5",
                 {"src0": col_major_tail, "src1": tail, "dst": tail},
-                candidate_id="vmi_tadd_block64",
+                candidate_id="vmi_tadd_sinkhorn_compact",
             )
 
         column = TileSpec(

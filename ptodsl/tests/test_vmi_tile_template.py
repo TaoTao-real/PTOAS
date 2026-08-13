@@ -538,11 +538,13 @@ def check_local_broadcast_candidates() -> dict[str, tuple[str, str]]:
         artifact.verify()
         text = artifact.mlir_text()
         expect(text.count("scf.for") == 1, f"{name} should contain one row loop")
-        expect(text.count("pto.vmi.vload") == 1, f"{name} should load one data row")
-        expect(text.count("pto.vmi.vgather") == 1, f"{name} should gather one compact row state")
-        expect("!pto.vmi.vreg<1xf32>" in text, f"{name} should gather row state as one scalar lane")
-        expect(text.count("pto.vmi.vbrc") == 1, f"{name} should broadcast row state to full width")
-        expect(text.count('dist_mode = "brc"') == 0, f"{name} should not use the restricted group broadcast load")
+        expect(
+            text.count("pto.vmi.vload") == 2,
+            f"{name} should load one data row and one compact row state",
+        )
+        expect(text.count("pto.vmi.vgather") == 0, f"{name} should not use gather for compact row state")
+        expect(text.count("pto.vmi.vbrc") == 0, f"{name} should use a native broadcast load")
+        expect(text.count('dist_mode = "brc"') == 1, f"{name} should broadcast-load one compact row state")
         expect(text.count(vmi_op) == 1, f"{name} should emit {vmi_op}")
         expect(text.count("pto.vmi.vstore") == 1, f"{name} should store one row")
         lowering_cases[name] = (text, vpto_op)
@@ -561,12 +563,13 @@ def check_local_broadcast_candidates() -> dict[str, tuple[str, str]]:
 
     for op in ("trowexpandmul", "trowexpanddiv", "tcolexpand"):
         candidates = VMI_TILELIB_REGISTRY.lookup(op, "a5")
-        expect(len(candidates) == 1, f"{op} should register one VMI candidate")
-        expect(
-            candidates[0].metadata.tags[:3]
-            == ("vmi", "fusion_eligible", "single_logical_row_loop"),
-            f"{op} should carry canonical VMI fusion tags",
-        )
+        expect(candidates, f"{op} should register at least one VMI candidate")
+        for candidate in candidates:
+            expect(
+                candidate.metadata.tags[:3]
+                == ("vmi", "fusion_eligible", "single_logical_row_loop"),
+                f"{candidate.name} should carry canonical VMI fusion tags",
+            )
 
     row_specs = {"src": wide, "row_values": compact, "dst": wide}
     expect(
@@ -653,12 +656,13 @@ def check_local_broadcast_candidates() -> dict[str, tuple[str, str]]:
 def check_provider_helper() -> None:
     registered_tadd = VMI_TILELIB_REGISTRY.lookup("tadd", "a5")
     expect(
-        len(registered_tadd) == 1,
-        "tadd must have one registered canonical VMI template",
+        vmi_tadd_block64 in registered_tadd,
+        "tadd must retain its canonical wide VMI template",
     )
     expect(
-        registered_tadd[0] is vmi_tadd_block64,
-        "the registered tadd template must be the exported canonical implementation",
+        len({candidate.name for candidate in registered_tadd})
+        == len(registered_tadd),
+        "tadd VMI semantic forms must use unique candidate names",
     )
     expect(
         dict(vmi_texp_block64.context_constraints)
@@ -834,12 +838,12 @@ def check_provider_helper() -> None:
         context_attrs={},
     ).mlir_text()
     expect(
-        "pto.vmi.vbrc" in row_expand,
-        "row expand should broadcast one scalar value per row to full width",
+        'dist_mode = "brc"' in row_expand,
+        "row expand should broadcast-load one scalar value per row",
     )
     expect(
-        'dist_mode = "brc"' not in row_expand,
-        "row expand should not use the restricted group broadcast load form",
+        "pto.vmi.vbrc" not in row_expand,
+        "row expand should use the native broadcast-load form",
     )
 
     convert_src_spec = {
@@ -1713,8 +1717,8 @@ def main() -> None:
         lowered = check_vmi_to_vpto_lowering(name, text, expected_op)
         if name.startswith("vmi_trowexpand"):
             expect(
-                "pto.vgather2_bc" in lowered,
-                f"{name} should lower compact state access to aligned gather",
+                'pto.vlds' in lowered and 'dist = "BRC_B32"' in lowered,
+                f"{name} should lower compact state access to native broadcast load",
             )
     for name, (text, expected_op, expected_loop_count) in (
         check_row_reduce_candidates().items()
