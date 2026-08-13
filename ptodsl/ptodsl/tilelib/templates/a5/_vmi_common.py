@@ -2094,31 +2094,26 @@ def emit_row_expand_binary_vmi(
         )
     src_physical_cols = row_tensor._spec.shape[1]
     dst_physical_cols = output._spec.shape[1]
+    io_lanes = ((cols + f32.lanes - 1) // f32.lanes) * f32.lanes
 
     _prepare_tile_access(row_tensor, compact_row_state, output)
-    full_mask = _create_mask_lanes(cols, cols, f32, trace=row_tensor._trace)
-    scalar_mask = _create_mask_lanes(1, 1, f32, trace=row_tensor._trace)
+    full_mask = _create_mask_lanes(cols, io_lanes, f32, trace=row_tensor._trace)
     state_ptr = compact_row_state._trace.ensure_tile_ptr(compact_row_state)
     with for_(0, rows, step=1) as row:
-        # Compact row states after row zero are not 32B aligned. Indexed load
-        # preserves that point-access contract; the row tensor itself remains
-        # a regular aligned prefix load below.
-        row_i32 = _Value(
-            unwrap_surface_value(scalar.index_cast(pto.i32, row.value))
-        )
-        offsets = _wrap_vreg(
-            _vmi_builder.vci(row_i32.value, size=1, order="ASC"), i32
-        )
-        row_scalar = _wrap_vreg(
-            _vmi_builder.vgather(
-                state_ptr.value, offsets.value, scalar_mask.value
+        # Match PTO-ISA TRowExpandBinOps: load compact state[row] with the
+        # scalar-broadcast distribution, then consume it in the same row loop.
+        broadcast = _wrap_vreg(
+            _vmi_builder.vload(
+                state_ptr.value,
+                row.value,
+                size=io_lanes,
+                dist_mode="brc",
             ),
             f32,
         )
-        broadcast = _vbrc(row_scalar, lanes=cols)
         src_offset = index_mul(row, src_physical_cols)
         dst_offset = index_mul(row, dst_physical_cols)
-        value = _vload_linear(row_tensor, src_offset, lanes=cols)
+        value = _vload_linear(row_tensor, src_offset, lanes=io_lanes)
         result = operations[operation](value, broadcast, full_mask)
         _vstore_linear(result, output, dst_offset, full_mask)
 

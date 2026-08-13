@@ -134,7 +134,7 @@ module {
 // FINAL-LABEL: func.func @sinkhorn_grouped_tail
 // FINAL: pto.vadd
 // FINAL: pto.vmul
-// FINAL: pto.vgather2_bc
+// FINAL: pto.vlds {{.*}} {dist = "BRC_B32"}
 // FINAL: pto.vmul
 // FINAL-LABEL: func.func @sinkhorn_compact_state
 // FINAL: pto.vadd
