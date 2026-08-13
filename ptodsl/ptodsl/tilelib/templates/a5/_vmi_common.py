@@ -1096,22 +1096,8 @@ def _emit_elementwise_sinkhorn_grouped_vmi(
     )
     with for_(0, rows, step=1) as row:
         row_offset = index_mul(row, cols)
-        row_offset_i32 = _Value(
-            unwrap_surface_value(scalar.index_cast(pto.i32, row_offset.value))
-        )
-        offsets = _wrap_vreg(
-            _vmi_builder.vci(row_offset_i32.value, size=cols, order="ASC"),
-            i32,
-        )
         values = tuple(
-            _wrap_vreg(
-                _vmi_builder.vgather(
-                    source._trace.ensure_tile_ptr(source).value,
-                    offsets.value,
-                    mask.value,
-                ),
-                f32,
-            )
+            _vload_linear(source, row_offset, lanes=cols)
             for source in sources
         )
         result = compute(values, mask)
@@ -2111,51 +2097,14 @@ def emit_row_expand_binary_vmi(
 
     _prepare_tile_access(row_tensor, compact_row_state, output)
     full_mask = _create_mask_lanes(cols, cols, f32, trace=row_tensor._trace)
-    scalar_mask = _create_mask_lanes(1, 1, f32, trace=row_tensor._trace)
-    state_ptr = compact_row_state._trace.ensure_tile_ptr(compact_row_state)
     with for_(0, rows, step=1) as row:
-        # Compact [rows, 1] states are not block-aligned after row zero. Read
-        # each scalar through an indexed load from the aligned base, then
-        # broadcast lane zero to the logical row. PTO-ISA uses vldas/vldus for
-        # the same unaligned scalar access; gather preserves that safety while
-        # keeping the value in VMI form for later fusion.
-        row_i32 = _Value(
-            unwrap_surface_value(scalar.index_cast(pto.i32, row.value))
-        )
-        offsets = _wrap_vreg(
-            _vmi_builder.vci(row_i32.value, size=1, order="ASC"), i32
-        )
-        row_scalar = _wrap_vreg(
-            _vmi_builder.vgather(
-                state_ptr.value, offsets.value, scalar_mask.value
-            ),
-            f32,
-        )
+        # Only lane zero is consumed. VMIToVPTO materializes this prefix load
+        # as the same point-load form used by the ordinary PTODSL template.
+        row_scalar = _vload_linear(compact_row_state, row, lanes=1)
         broadcast = _vbrc(row_scalar, lanes=cols)
         src_offset = index_mul(row, src_physical_cols)
         dst_offset = index_mul(row, dst_physical_cols)
-        if sinkhorn_grouped_form:
-            src_offset_i32 = _Value(
-                unwrap_surface_value(
-                    scalar.index_cast(pto.i32, src_offset.value)
-                )
-            )
-            src_offsets = _wrap_vreg(
-                _vmi_builder.vci(
-                    src_offset_i32.value, size=cols, order="ASC"
-                ),
-                i32,
-            )
-            value = _wrap_vreg(
-                _vmi_builder.vgather(
-                    row_tensor._trace.ensure_tile_ptr(row_tensor).value,
-                    src_offsets.value,
-                    full_mask.value,
-                ),
-                f32,
-            )
-        else:
-            value = _vload_linear(row_tensor, src_offset, lanes=cols)
+        value = _vload_linear(row_tensor, src_offset, lanes=cols)
         result = operations[operation](value, broadcast, full_mask)
         _vstore_linear(result, output, dst_offset, full_mask)
 
@@ -2187,15 +2136,8 @@ def emit_col_expand_vmi(src: _TileProxy, dst: _TileProxy) -> None:
         and dst._spec.effective_valid_shape in {(8, 4), (8, 8)}
     ):
         _prepare_tile_access(src, dst)
-        src_ptr = src._trace.ensure_tile_ptr(src)
         mask = _create_mask_lanes(valid_cols, cols, f32, trace=dst._trace)
-        zero_i32 = src._trace.scalar_const(0, i32)
-        offsets = _wrap_vreg(
-            _vmi_builder.vci(zero_i32.value, size=cols, order="ASC"), i32
-        )
-        broadcast = _wrap_vreg(
-            _vmi_builder.vgather(src_ptr.value, offsets.value, mask.value), f32
-        )
+        broadcast = _vload_linear(src, 0, lanes=cols)
         with for_(0, rows, step=1) as row:
             dst_offset = index_mul(row, cols)
             _vstore_linear(broadcast, dst, dst_offset, mask)

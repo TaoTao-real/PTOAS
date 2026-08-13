@@ -538,9 +538,9 @@ def check_local_broadcast_candidates() -> dict[str, tuple[str, str]]:
         artifact.verify()
         text = artifact.mlir_text()
         expect(text.count("scf.for") == 1, f"{name} should contain one row loop")
-        expect(text.count("pto.vmi.vload") == 1, f"{name} should load one data row")
-        expect(text.count("pto.vmi.vgather") == 1, f"{name} should gather one compact row state")
-        expect("!pto.vmi.vreg<1xf32>" in text, f"{name} should gather row state as one scalar lane")
+        expect(text.count("pto.vmi.vload") == 2, f"{name} should load one data row and one compact row state")
+        expect(text.count("pto.vmi.vgather") == 0, f"{name} should not gather a contiguous compact row state")
+        expect("!pto.vmi.vreg<1xf32>" in text, f"{name} should load row state as one scalar lane")
         expect(text.count("pto.vmi.vbrc") == 1, f"{name} should broadcast row state to full width")
         expect(text.count('dist_mode = "brc"') == 0, f"{name} should not use the restricted group broadcast load")
         expect(text.count(vmi_op) == 1, f"{name} should emit {vmi_op}")
@@ -1715,8 +1715,8 @@ def main() -> None:
         lowered = check_vmi_to_vpto_lowering(name, text, expected_op)
         if name.startswith("vmi_trowexpand"):
             expect(
-                "pto.vgather2_bc" in lowered,
-                f"{name} should lower compact state access to aligned gather",
+                "pto.vlds" in lowered,
+                f"{name} should lower compact state access to a prefix load",
             )
     for name, (text, expected_op, expected_loop_count) in (
         check_row_reduce_candidates().items()
