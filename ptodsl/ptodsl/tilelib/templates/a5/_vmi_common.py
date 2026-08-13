@@ -157,7 +157,8 @@ def row_reduce_streaming_vmi_constraint(**context):
     if not row_reduce_vmi_constraint(**context):
         return False
     src_shape = context.get("src_shape", ())
-    if len(src_shape) != 2:
+    src_valid_shape = context.get("src_valid_shape", ())
+    if len(src_shape) != 2 or src_valid_shape != src_shape:
         return False
     rows, cols = src_shape
     return (

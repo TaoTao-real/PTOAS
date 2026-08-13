@@ -951,6 +951,18 @@ class TileLibCatalogTest(unittest.TestCase):
                 if op in {"pto.trowmax", "pto.trowsum"}:
                     self.assertIn("group = 8", text)
 
+        for op in ("pto.trowmax", "pto.trowsum"):
+            with self.subTest(op=op, candidate="row_streaming"):
+                with self.assertRaisesRegex(
+                    NoMatchingTemplate, "custom constraints are not satisfied"
+                ):
+                    select(
+                        op,
+                        "a5",
+                        {"src": data, "workspace": compact, "dst": compact},
+                        candidate_id="vmi_" + op.removeprefix("pto.") + "_row",
+                    )
+
     def test_vmi_grouped_sinkhorn_row_expand_uses_gather_candidate(self):
         data = TileSpec(
             shape=(8, 8),

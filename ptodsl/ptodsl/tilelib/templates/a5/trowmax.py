@@ -36,7 +36,7 @@ from ._vmi_common import (  # noqa: E402
     requires_full_physical_row=False,
     dtypes=(("f32", "f32", "f32"),),
     constraints=(row_reduce_vmi_constraint,),
-    tags=("grouped_rows",),
+    tags=("grouped_rows", "supports_partial_valid_shape"),
     priority=101,
     single_logical_row_loop=False,
     resource_scope="tile",
