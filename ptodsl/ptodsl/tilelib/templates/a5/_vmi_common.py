@@ -679,6 +679,8 @@ def row_expand_binary_vmi_constraint(
         rows > 0
         and logical_cols > 0
         and logical_cols * _DTYPE_BYTEWIDTH["f32"] >= 128
+        and src_valid_shape == src_shape
+        and dst_valid_shape == dst_shape
         and safe_row_access
         and dst_valid_shape == src_valid_shape
         and row_values_shape == (rows, 1)
