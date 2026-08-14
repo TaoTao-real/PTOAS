@@ -168,7 +168,7 @@ def row_reduce_streaming_vmi_constraint(**context):
     )
 
 
-def sinkhorn_row_reduce_streaming_vmi_constraint(**context):
+def sinkhorn_row_reduce_vmi_constraint(**context):
     """Recognize the statically bounded 8x8 Sinkhorn row-reduce forms."""
 
     if (
@@ -176,9 +176,13 @@ def sinkhorn_row_reduce_streaming_vmi_constraint(**context):
         or context.get("src_valid_shape") not in {(8, 4), (8, 8)}
     ):
         return False
-    full_context = dict(context)
-    full_context["src_valid_shape"] = (8, 8)
-    return row_reduce_vmi_constraint(**full_context)
+    return row_reduce_vmi_constraint(**context)
+
+
+def sinkhorn_row_reduce_streaming_vmi_constraint(**context):
+    """Keep the row-streaming Sinkhorn fallback independently selectable."""
+
+    return sinkhorn_row_reduce_vmi_constraint(**context)
 
 
 def _vreg_lanes(value: _VectorValue) -> int:
@@ -970,6 +974,7 @@ def canonical_vmi_template(
     priority: int = 100,
     candidate_id: int = 1000,
     single_logical_row_loop: bool = True,
+    principal_loop_kind: str | None = None,
     requires_full_physical_row: bool = True,
     min_row_bytes: int = 256,
     resource_scope: str = "row",
@@ -1006,6 +1011,7 @@ def canonical_vmi_template(
             priority=priority,
             candidate_id=candidate_id,
             single_logical_row_loop=single_logical_row_loop,
+            principal_loop_kind=principal_loop_kind,
             resource_scope=resource_scope,
             resource_vector_values=(
                 resource_vector_values
@@ -1967,45 +1973,46 @@ def emit_row_reduce_vmi(
         ),
         f32,
     )
-    source = _vload_linear(src, 0, lanes=total_lanes)
-    if kind == "max":
-        reduced_value = _vmi_builder.vcmax(
-            source.value, full_mask.value, group=rows
-        )
-    else:
-        reduced_value = _vmi_builder.vcadd(
-            source.value, full_mask.value, group=rows, reassoc=True
-        )
-    reduced = _wrap_vreg(reduced_value, f32)
+    with for_(0, 1, step=1):
+        source = _vload_linear(src, 0, lanes=total_lanes)
+        if kind == "max":
+            reduced_value = _vmi_builder.vcmax(
+                source.value, full_mask.value, group=rows
+            )
+        else:
+            reduced_value = _vmi_builder.vcadd(
+                source.value, full_mask.value, group=rows, reassoc=True
+            )
+        reduced = _wrap_vreg(reduced_value, f32)
 
-    offset = dst._trace._coerce_index(0)
-    if physical_cols < f32.lanes:
-        # The compact reduction result intentionally has group_slots layout:
-        # one value per source row. This is the memory form group_store models.
+        offset = dst._trace._coerce_index(0)
+        if physical_cols < f32.lanes:
+            # The compact reduction result intentionally has group_slots layout:
+            # one value per source row. This is the memory form group_store models.
+            dst_ptr = dst._trace.ensure_tile_ptr(dst)
+            row_stride = dst._trace._coerce_index(1)
+            _vmi_builder.vstore(
+                reduced.value,
+                dst_ptr.value,
+                offset.value,
+                stride=row_stride.value,
+                group=rows,
+            )
+            return
+
+        # The grouped reduction produces one logical value per row. Scatter
+        # these compact values from an aligned UB base instead of reinterpreting
+        # them as a grouped strided memory store.
         dst_ptr = dst._trace.ensure_tile_ptr(dst)
-        row_stride = dst._trace._coerce_index(1)
-        _vmi_builder.vstore(
-            reduced.value,
-            dst_ptr.value,
-            offset.value,
-            stride=row_stride.value,
-            group=rows,
+        compact_mask = _create_mask_lanes(rows, rows, f32, trace=dst._trace)
+        zero_i32 = dst._trace.scalar_const(0, i32)
+        offsets = _wrap_vreg(
+            _vmi_builder.vci(zero_i32.value, size=rows, order="ASC"),
+            i32,
         )
-        return
-
-    # The grouped reduction produces one logical value per row. Scatter these
-    # compact values from an aligned UB base instead of reinterpreting them as
-    # a grouped strided memory store.
-    dst_ptr = dst._trace.ensure_tile_ptr(dst)
-    compact_mask = _create_mask_lanes(rows, rows, f32, trace=dst._trace)
-    zero_i32 = dst._trace.scalar_const(0, i32)
-    offsets = _wrap_vreg(
-        _vmi_builder.vci(zero_i32.value, size=rows, order="ASC"),
-        i32,
-    )
-    _vmi_builder.vscatter(
-        reduced.value, dst_ptr.value, offsets.value, compact_mask.value
-    )
+        _vmi_builder.vscatter(
+            reduced.value, dst_ptr.value, offsets.value, compact_mask.value
+        )
 
 
 def emit_row_reduce_streaming_vmi(
@@ -2579,5 +2586,6 @@ __all__ = [
     "f32",
     "row_reduce_vmi_constraint",
     "row_reduce_streaming_vmi_constraint",
+    "sinkhorn_row_reduce_vmi_constraint",
     "sinkhorn_row_reduce_streaming_vmi_constraint",
 ]

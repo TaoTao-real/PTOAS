@@ -1,0 +1,108 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software; you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root directory of the software repository for the full text of the License.
+
+// Exact compact grouped stores and loads describe one scalar lane per group.
+// They may forward only when group count, positive constant stride, storage,
+// offset, element type, and logical VREG type are identical.
+
+// RUN: pto-test-opt %s -pto-vmi-load-store-elision \
+// RUN:   | FileCheck %s --check-prefix=ELIDE
+
+module {
+  func.func @exact_grouped_forward() -> (!pto.vmi.vreg<8xf32>) {
+    %addr = arith.constant 0 : i64
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    %one = arith.constant 1.0 : f32
+    %pc = pto.pointer_cast(%addr) {config = #pto.tile_buf_config<blayout=#pto.blayout<col_major>, slayout=#pto.slayout<none_box>, s_fractal_size=512, pad=#pto.pad_value<null>, compact=#pto.compact_mode<null>>} : memref<8xf32, #pto.address_space<vec>>
+    %ub = pto.castptr %pc : memref<8xf32, #pto.address_space<vec>> -> !pto.ptr<f32, ub>
+    %mask = pto.vmi.create_mask %c8 : index -> !pto.vmi.mask<8xpred>
+    %value = pto.vmi.broadcast %one : f32 -> !pto.vmi.vreg<8xf32>
+    // ELIDE-LABEL: func.func @exact_grouped_forward
+    // ELIDE: pto.vmi.vstore %[[VALUE:.*]], %[[UB:.*]][%c0], %c1 {group = 8 : i64}
+    // ELIDE-NOT: pto.vmi.vload
+    // ELIDE: %[[USE:.*]] = pto.vmi.vmuls %[[VALUE]],
+    %r = pto.fusion_region {
+      pto.vmi.vstore %value, %ub[%c0], %c1 {group = 8 : i64} : !pto.vmi.vreg<8xf32>, !pto.ptr<f32, ub>
+      %reload = pto.vmi.vload %ub[%c0], %c1 {group = 8 : i64} : !pto.ptr<f32, ub> -> !pto.vmi.vreg<8xf32>
+      %use = pto.vmi.vmuls %reload, %one, %mask : !pto.vmi.vreg<8xf32>, f32, !pto.vmi.mask<8xpred> -> !pto.vmi.vreg<8xf32>
+      pto.yield(%use) : (!pto.vmi.vreg<8xf32>) -> ()
+    } : !pto.vmi.vreg<8xf32>
+    return %r : !pto.vmi.vreg<8xf32>
+  }
+
+  func.func @different_group_stride() -> (!pto.vmi.vreg<8xf32>) {
+    %addr = arith.constant 0 : i64
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %c8 = arith.constant 8 : index
+    %one = arith.constant 1.0 : f32
+    %pc = pto.pointer_cast(%addr) {config = #pto.tile_buf_config<blayout=#pto.blayout<col_major>, slayout=#pto.slayout<none_box>, s_fractal_size=512, pad=#pto.pad_value<null>, compact=#pto.compact_mode<null>>} : memref<16xf32, #pto.address_space<vec>>
+    %ub = pto.castptr %pc : memref<16xf32, #pto.address_space<vec>> -> !pto.ptr<f32, ub>
+    %mask = pto.vmi.create_mask %c8 : index -> !pto.vmi.mask<8xpred>
+    %value = pto.vmi.broadcast %one : f32 -> !pto.vmi.vreg<8xf32>
+    // ELIDE-LABEL: func.func @different_group_stride
+    // ELIDE: pto.vmi.vstore {{.*}}, %[[UB:.*]][%c0], %c1 {group = 8 : i64}
+    // ELIDE: %[[LOAD:.*]] = pto.vmi.vload %[[UB]][%c0], %c2 {group = 8 : i64}
+    // ELIDE: pto.vmi.vmuls %[[LOAD]]
+    %r = pto.fusion_region {
+      pto.vmi.vstore %value, %ub[%c0], %c1 {group = 8 : i64} : !pto.vmi.vreg<8xf32>, !pto.ptr<f32, ub>
+      %reload = pto.vmi.vload %ub[%c0], %c2 {group = 8 : i64} : !pto.ptr<f32, ub> -> !pto.vmi.vreg<8xf32>
+      %use = pto.vmi.vmuls %reload, %one, %mask : !pto.vmi.vreg<8xf32>, f32, !pto.vmi.mask<8xpred> -> !pto.vmi.vreg<8xf32>
+      pto.yield(%use) : (!pto.vmi.vreg<8xf32>) -> ()
+    } : !pto.vmi.vreg<8xf32>
+    return %r : !pto.vmi.vreg<8xf32>
+  }
+
+  func.func @different_group_count() -> (!pto.vmi.vreg<4xf32>) {
+    %addr = arith.constant 0 : i64
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %one = arith.constant 1.0 : f32
+    %pc = pto.pointer_cast(%addr) {config = #pto.tile_buf_config<blayout=#pto.blayout<col_major>, slayout=#pto.slayout<none_box>, s_fractal_size=512, pad=#pto.pad_value<null>, compact=#pto.compact_mode<null>>} : memref<8xf32, #pto.address_space<vec>>
+    %ub = pto.castptr %pc : memref<8xf32, #pto.address_space<vec>> -> !pto.ptr<f32, ub>
+    %stored = pto.vmi.broadcast %one : f32 -> !pto.vmi.vreg<8xf32>
+    %mask = pto.vmi.create_mask %c4 : index -> !pto.vmi.mask<4xpred>
+    // ELIDE-LABEL: func.func @different_group_count
+    // ELIDE: pto.vmi.vstore {{.*}}, %[[UB:.*]][%c0], %c1 {group = 8 : i64}
+    // ELIDE: %[[LOAD:.*]] = pto.vmi.vload %[[UB]][%c0], %c1 {group = 4 : i64}
+    // ELIDE: pto.vmi.vmuls %[[LOAD]]
+    %r = pto.fusion_region {
+      pto.vmi.vstore %stored, %ub[%c0], %c1 {group = 8 : i64} : !pto.vmi.vreg<8xf32>, !pto.ptr<f32, ub>
+      %reload = pto.vmi.vload %ub[%c0], %c1 {group = 4 : i64} : !pto.ptr<f32, ub> -> !pto.vmi.vreg<4xf32>
+      %use = pto.vmi.vmuls %reload, %one, %mask : !pto.vmi.vreg<4xf32>, f32, !pto.vmi.mask<4xpred> -> !pto.vmi.vreg<4xf32>
+      pto.yield(%use) : (!pto.vmi.vreg<4xf32>) -> ()
+    } : !pto.vmi.vreg<4xf32>
+    return %r : !pto.vmi.vreg<4xf32>
+  }
+
+  func.func @dynamic_group_stride(%stride: index) -> (!pto.vmi.vreg<8xf32>) {
+    %addr = arith.constant 0 : i64
+    %c0 = arith.constant 0 : index
+    %c8 = arith.constant 8 : index
+    %one = arith.constant 1.0 : f32
+    %pc = pto.pointer_cast(%addr) {config = #pto.tile_buf_config<blayout=#pto.blayout<col_major>, slayout=#pto.slayout<none_box>, s_fractal_size=512, pad=#pto.pad_value<null>, compact=#pto.compact_mode<null>>} : memref<16xf32, #pto.address_space<vec>>
+    %ub = pto.castptr %pc : memref<16xf32, #pto.address_space<vec>> -> !pto.ptr<f32, ub>
+    %mask = pto.vmi.create_mask %c8 : index -> !pto.vmi.mask<8xpred>
+    %value = pto.vmi.broadcast %one : f32 -> !pto.vmi.vreg<8xf32>
+    // ELIDE-LABEL: func.func @dynamic_group_stride
+    // ELIDE: pto.vmi.vstore
+    // ELIDE: %[[LOAD:.*]] = pto.vmi.vload
+    // ELIDE: pto.vmi.vmuls %[[LOAD]]
+    %r = pto.fusion_region {
+      pto.vmi.vstore %value, %ub[%c0], %stride {group = 8 : i64} : !pto.vmi.vreg<8xf32>, !pto.ptr<f32, ub>
+      %reload = pto.vmi.vload %ub[%c0], %stride {group = 8 : i64} : !pto.ptr<f32, ub> -> !pto.vmi.vreg<8xf32>
+      %use = pto.vmi.vmuls %reload, %one, %mask : !pto.vmi.vreg<8xf32>, f32, !pto.vmi.mask<8xpred> -> !pto.vmi.vreg<8xf32>
+      pto.yield(%use) : (!pto.vmi.vreg<8xf32>) -> ()
+    } : !pto.vmi.vreg<8xf32>
+    return %r : !pto.vmi.vreg<8xf32>
+  }
+}

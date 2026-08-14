@@ -873,6 +873,7 @@ class TileTemplate:
     priority: int = 100
     candidate_id: int = 1000
     single_logical_row_loop: bool = True
+    principal_loop_kind: str | None = None
     resource_scope: str | None = None
     resource_vector_values: int | None = None
     resource_chunk_streaming: bool = False
@@ -889,8 +890,17 @@ class TileTemplate:
                 constraints.append(self._context_constraints_match)
             constraints.extend(self.constraints)
             tags = ["vmi"]
-            if self.single_logical_row_loop:
-                tags.extend(("fusion_eligible", "single_logical_row_loop"))
+            principal_loop_kind = self.principal_loop_kind
+            if principal_loop_kind is None and self.single_logical_row_loop:
+                principal_loop_kind = "row"
+            if principal_loop_kind is not None:
+                tags.append("fusion_eligible")
+                if principal_loop_kind == "row":
+                    tags.append("single_logical_row_loop")
+                elif principal_loop_kind == "grouped_tile":
+                    tags.extend(
+                        ("grouped_tile_loop", "single_logical_grouped_tile_loop")
+                    )
             tags.extend(self.tags)
             return _RegistryTemplateMetadata.build(
                 op=self.op,
@@ -899,11 +909,13 @@ class TileTemplate:
                 dtypes=self.dtypes,
                 constraints=tuple(constraints),
                 priority=self.priority,
-                fusible=self.single_logical_row_loop,
-                loop_depth=1 if self.single_logical_row_loop else 0,
+                fusible=principal_loop_kind is not None,
+                loop_depth=1 if principal_loop_kind is not None else 0,
                 id=self.candidate_id,
                 is_post_update=False,
-                iteration_axis="row",
+                iteration_axis=(
+                    "row" if principal_loop_kind == "row" else "none"
+                ),
                 op_engine="vector",
                 op_class="other",
                 tags=tuple(tags),
@@ -1014,6 +1026,7 @@ def tile_template(
     priority: int = 100,
     candidate_id: int = 1000,
     single_logical_row_loop: bool = True,
+    principal_loop_kind: str | None = None,
     resource_scope: str | None = None,
     resource_vector_values: int | None = None,
     resource_chunk_streaming: bool = False,
@@ -1022,6 +1035,14 @@ def tile_template(
         raise ValueError("tile-template tracing currently only supports target='a5'")
     if ir_level not in {"vpto", "vmi"}:
         raise ValueError("tile-template tracing ir_level must be 'vpto' or 'vmi'")
+    if principal_loop_kind not in {None, "row", "grouped_tile"}:
+        raise ValueError(
+            "principal_loop_kind must be None, 'row', or 'grouped_tile'"
+        )
+    if principal_loop_kind is not None and single_logical_row_loop:
+        raise ValueError(
+            "principal_loop_kind requires single_logical_row_loop=False"
+        )
 
     normalized_context_constraints = tuple(
         (key, tuple(values)) for key, values in (context_constraints or {}).items()
@@ -1044,6 +1065,7 @@ def tile_template(
             priority=priority,
             candidate_id=candidate_id,
             single_logical_row_loop=single_logical_row_loop,
+            principal_loop_kind=principal_loop_kind,
             resource_scope=resource_scope,
             resource_vector_values=resource_vector_values,
             resource_chunk_streaming=resource_chunk_streaming,

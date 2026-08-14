@@ -52,6 +52,9 @@ def vmi_tadds(src: pto.Tile, scalar: f32, dst: pto.Tile):
     dtypes=(("f32", "f32", "f32"),),
     constraints=(sinkhorn_compact_elementwise_vmi_constraint,),
     requires_full_physical_row=False,
+    single_logical_row_loop=False,
+    principal_loop_kind="grouped_tile",
+    resource_scope="tile",
     tags=("supports_partial_valid_shape",),
 )
 def vmi_tadds_sinkhorn_compact(src: pto.Tile, scalar: f32, dst: pto.Tile):

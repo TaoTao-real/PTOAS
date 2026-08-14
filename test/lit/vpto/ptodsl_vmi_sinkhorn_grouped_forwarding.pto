@@ -1,0 +1,43 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software; you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root directory of the software repository for the full text of the License.
+
+// A compact grouped reduction and its row-broadcast consumer share the same
+// grouped_tile domain. The reduction store remains observable, while the exact
+// group-slot reload is forwarded to the reduction SSA value.
+
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --enable-vmi \
+// RUN:   --enable-op-fusion --enable-vmi-loop-fusion \
+// RUN:   --enable-vmi-load-store-elision --pto-arch=a5 --pto-backend=vpto \
+// RUN:   --tile-lib-backend=ptodsl --ptodsl-pkg-path=%S/../../../ptodsl \
+// RUN:   --ptodsl-python-exe=%python_executable --emit-vpto %s -o /dev/null \
+// RUN:   --mlir-print-ir-after=pto-vmi-load-store-elision 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=FORWARD
+
+module {
+  func.func @sinkhorn_reduce_broadcast() {
+    %src = pto.alloc_tile : !pto.tile_buf<vec, 8x8xf32, valid=8x4, pad=3>
+    %workspace = pto.alloc_tile : !pto.tile_buf<vec, 8x1xf32, blayout=col_major>
+    %state = pto.alloc_tile : !pto.tile_buf<vec, 8x1xf32, blayout=col_major>
+    %dst = pto.alloc_tile : !pto.tile_buf<vec, 8x8xf32, valid=8x4, pad=3>
+
+    pto.trowmax
+      ins(%src, %workspace : !pto.tile_buf<vec, 8x8xf32, valid=8x4, pad=3>, !pto.tile_buf<vec, 8x1xf32, blayout=col_major>)
+      outs(%state : !pto.tile_buf<vec, 8x1xf32, blayout=col_major>)
+    pto.trowexpandsub
+      ins(%src, %state : !pto.tile_buf<vec, 8x8xf32, valid=8x4, pad=3>, !pto.tile_buf<vec, 8x1xf32, blayout=col_major>)
+      outs(%dst : !pto.tile_buf<vec, 8x8xf32, valid=8x4, pad=3>)
+    return
+  }
+}
+
+// FORWARD-LABEL: func.func @sinkhorn_reduce_broadcast
+// FORWARD: %[[REDUCED:.*]] = pto.vmi.vcmax
+// FORWARD: pto.vmi.vstore %[[REDUCED]], {{.*}} {group = 8 : i64}
+// FORWARD-NOT: pto.vmi.vload {{.*}} {group = 8 : i64}
+// FORWARD: %[[BROADCAST:.*]] = pto.vmi.vbrc %[[REDUCED]] {group = 8 : i64}
+// FORWARD: pto.vmi.vsub

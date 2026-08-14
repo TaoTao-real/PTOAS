@@ -47,6 +47,9 @@ def vmi_trowexpandmul(src: pto.Tile, row_values: pto.Tile, dst: pto.Tile):
     dtypes=(("f32", "f32", "f32"),),
     constraints=(sinkhorn_row_expand_vmi_constraint,),
     requires_full_physical_row=False,
+    single_logical_row_loop=False,
+    principal_loop_kind="grouped_tile",
+    resource_scope="tile",
     tags=("supports_partial_valid_shape",),
 )
 def vmi_trowexpandmul_sinkhorn_row_loop(

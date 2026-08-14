@@ -51,6 +51,9 @@ def vmi_texp_block64(src: pto.Tile, dst: pto.Tile):
     context_constraints={"precisionType": ("default",)},
     constraints=(sinkhorn_compact_elementwise_vmi_constraint,),
     requires_full_physical_row=False,
+    single_logical_row_loop=False,
+    principal_loop_kind="grouped_tile",
+    resource_scope="tile",
     tags=("supports_partial_valid_shape",),
 )
 def vmi_texp_sinkhorn_compact(src: pto.Tile, dst: pto.Tile):
