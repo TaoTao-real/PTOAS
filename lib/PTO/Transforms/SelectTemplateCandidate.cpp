@@ -330,6 +330,16 @@ struct SelectTemplateCandidatePass
           return false;
         };
 
+        // Only an explicitly preferred, resource-feasible grouped-tile form
+        // outranks row streaming. This keeps the existing row-domain policy for
+        // ordinary reductions while allowing compact domains to opt in.
+        for (DictionaryAttr candidate : parsed) {
+          if (candidateHasTag(candidate, "grouped_tile_loop") &&
+              candidateHasTag(candidate, "grouped_preferred") &&
+              candidateHasTag(candidate, "fusion_eligible") &&
+              trySelect(candidate))
+            return WalkResult::advance();
+        }
         for (DictionaryAttr candidate : parsed) {
           if (candidateHasTag(candidate, "row_streaming") &&
               candidateHasTag(candidate, "single_logical_row_loop") &&

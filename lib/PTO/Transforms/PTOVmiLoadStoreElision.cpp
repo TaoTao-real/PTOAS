@@ -17,10 +17,11 @@
 // eliminates redundant ones in reverse order.
 //
 // FIRST-VERSION LEGALITY SCOPE (conservative; "correct first, broaden later"):
-//   - Only continuous, single-result (load) / single-value (store) vmi.vload/
-//     vmi.vstore with no stride / block_stride / repeat_stride / group /
-//     dist_mode and (for stores) no updated_base (post_update) result are
-//     modeled. Any other shape (dintlv dual load, group load/store, block-
+//   - Continuous single-result loads/stores and exact compact grouped accesses
+//     are modeled. A compact grouped access has one scalar lane per group, the
+//     same positive constant group count/stride on producer and consumer, no
+//     mask/dist/block/repeat/post-update form, and identical logical VREG type.
+//     Any other shape (dintlv dual load, general group load/store, block-
 //     strided load/store, multi-value store, post_update store) is left alone:
 //     loads become non-matchable entries that flush the table; stores flush the
 //     table and are not registered as forward targets.
@@ -640,22 +641,65 @@ inferVMILoadUserMask(pto::VMIvLoadOp load) {
   return inferred; // empty if all consumers mask-free, else the shared mask
 }
 
-// First-version shape guard: this pass models ONLY the continuous, single
-// result (load) / single value (store) vmi.vload/vmi.vstore, with no stride,
-// block_stride, repeat_stride, group or dist_mode, and (for stores) no
-// updated_base (post_update) result. Every other shape — dintlv dual load
-// (2 results), unpack/brc load, grouped load/store, block-strided load/store,
-// multi-value store, post_update store — is left untouched: loads are
-// recorded as non-matchable (unknown read set) and flush the table; stores
-// flush the table (we cannot soundly model which lanes they define).
-static bool isContinuousSingleVLoad(pto::VMIvLoadOp op) {
+// Access-shape guard. General grouped memory operations can represent strided
+// rows or multiple lanes per group and remain unmodeled. The compact form below
+// is exact: one logical scalar lane is loaded/stored for every group.
+static bool isPositiveConstantIndex(Value value) {
+  auto constant = value ? value.getDefiningOp<arith::ConstantOp>() : nullptr;
+  if (!constant)
+    return false;
+  auto integer = dyn_cast<IntegerAttr>(constant.getValue());
+  return integer && integer.getInt() > 0;
+}
+
+static bool isCompactGroupSlotVLoad(pto::VMIvLoadOp op) {
+  auto group = op.getGroupAttr();
+  if (!group || group.getInt() <= 0 || !op.getStride() || op.getDistMode() ||
+      op.getBlockStride() || op.getRepeatStride() ||
+      op.getResults().size() != 1 || !isPositiveConstantIndex(op.getStride()))
+    return false;
+  auto resultType = dyn_cast<pto::VMIVRegType>(op->getResult(0).getType());
+  return resultType && resultType.getElementCount() == group.getInt();
+}
+
+static bool isCompactGroupSlotVStore(pto::VMIvStoreOp op) {
+  auto group = op.getGroupAttr();
+  if (!group || group.getInt() <= 0 || !op.getStride() || op.getDistMode() ||
+      op.getBlockStride() || op.getRepeatStride() ||
+      op.getValues().size() != 1 || !op.getMask().empty() ||
+      op.getUpdatedBase() || !isPositiveConstantIndex(op.getStride()))
+    return false;
+  auto valueType = dyn_cast<pto::VMIVRegType>(op.getValues()[0].getType());
+  return valueType && valueType.getElementCount() == group.getInt();
+}
+
+static bool isModeledSingleVLoad(pto::VMIvLoadOp op) {
+  if (isCompactGroupSlotVLoad(op))
+    return true;
   if (op.getStride() || op.getBlockStride() || op.getRepeatStride())
     return false;
   if (op.getDistMode() || op.getGroup())
     return false;
   return op.getResults().size() == 1;
 }
-static bool isContinuousSingleVStore(pto::VMIvStoreOp op) {
+
+// A compact grouped reload followed by vbrc has a profitable direct physical
+// form (group_broadcast_load / E2B). Forwarding the reload before layout
+// assignment destroys that form and can require vdup/pand/vsel packing of a
+// producer such as group_reduce. Keep the UB edge until layout-aware costing
+// can prove that the register path is cheaper.
+static bool preservesDirectGroupedBroadcastLoad(pto::VMIvLoadOp op) {
+  if (!isCompactGroupSlotVLoad(op))
+    return false;
+  for (Operation *user : op->getUsers())
+    if (isa<pto::VMIVbrcOp>(user))
+      return true;
+  return false;
+}
+
+static bool isModeledSingleVStore(pto::VMIvStoreOp op) {
+  if (isCompactGroupSlotVStore(op))
+    return true;
   if (op.getStride() || op.getBlockStride() || op.getRepeatStride())
     return false;
   if (op.getDistMode() || op.getGroup())
@@ -666,6 +710,32 @@ static bool isContinuousSingleVStore(pto::VMIvStoreOp op) {
   if (op.getUpdatedBase())
     return false;
   return true;
+}
+
+static bool haveEquivalentAccessShape(Operation *lhs, Operation *rhs) {
+  auto lhsLoad = dyn_cast<pto::VMIvLoadOp>(lhs);
+  auto lhsStore = dyn_cast<pto::VMIvStoreOp>(lhs);
+  auto rhsLoad = dyn_cast<pto::VMIvLoadOp>(rhs);
+  auto rhsStore = dyn_cast<pto::VMIvStoreOp>(rhs);
+  if ((!lhsLoad && !lhsStore) || (!rhsLoad && !rhsStore))
+    return false;
+
+  const bool lhsGrouped = lhsLoad ? isCompactGroupSlotVLoad(lhsLoad)
+                                  : isCompactGroupSlotVStore(lhsStore);
+  const bool rhsGrouped = rhsLoad ? isCompactGroupSlotVLoad(rhsLoad)
+                                  : isCompactGroupSlotVStore(rhsStore);
+  if (lhsGrouped != rhsGrouped)
+    return false;
+  if (!lhsGrouped)
+    return true;
+
+  IntegerAttr lhsGroup =
+      lhsLoad ? lhsLoad.getGroupAttr() : lhsStore.getGroupAttr();
+  IntegerAttr rhsGroup =
+      rhsLoad ? rhsLoad.getGroupAttr() : rhsStore.getGroupAttr();
+  Value lhsStride = lhsLoad ? lhsLoad.getStride() : lhsStore.getStride();
+  Value rhsStride = rhsLoad ? rhsLoad.getStride() : rhsStore.getStride();
+  return lhsGroup == rhsGroup && areEquivalentValues(lhsStride, rhsStride);
 }
 
 // Whether `op` is safe to step over without invalidating tracked UB content.
@@ -773,16 +843,18 @@ static bool elideOpRange(OpRange ops) {
   // Match helpers operating on the live entry set (stale entries skipped).
   // Two accesses locate the same UB iff their bases must-alias (constant or
   // affine identity) and their offsets are equivalent.
-  auto sameLoc = [&](const ContentEntry &e, Value base, Value offset) {
+  auto sameLoc = [&](const ContentEntry &e, Operation *access, Value base,
+                     Value offset) {
     return basesMustAlias(resolveBaseIdentity(e.base),
                           resolveBaseIdentity(base)) &&
            e.base.getType() == base.getType() &&
-           areEquivalentValues(e.offset, offset);
+           areEquivalentValues(e.offset, offset) &&
+           haveEquivalentAccessShape(e.op, access);
   };
 
   for (Operation &op : ops) {
     if (auto load = dyn_cast<pto::VMIvLoadOp>(op)) {
-      if (!isContinuousSingleVLoad(load)) {
+      if (!isModeledSingleVLoad(load)) {
         // Non-continuous / multi-result / grouped / block-strided load: its
         // read set cannot be bounded as a prefix interval, and the load may
         // touch UBs we don't track. It is still a PURE READ, so it must not
@@ -839,24 +911,26 @@ static bool elideOpRange(OpRange ops) {
       // Look for a preceding entry that fully covers readLanes with no
       // intervening intersecting write. Scan from nearest backwards.
       int matchIdx = -1;
-      for (int i = static_cast<int>(entries.size()) - 1; i >= 0; --i) {
-        ContentEntry &e = entries[i];
-        if (e.stale || e.eraseMark)
-          continue;
-        if (!sameLoc(e, base, offset))
-          continue;
-        if (e.sourceValue.getType() != load->getResult(0).getType())
-          continue;
-        // Need e.lanes to fully cover readLanes.
-        if (!e.lanes.contains(readLanes))
-          continue;
-        // For a store match: any intervening write to the same loc between e
-        // and this load would have invalidated e (it would be stale/erased or
-        // a newer entry). Because stale entries are skipped and a later write
-        // to intersecting lanes marks prior entries stale, reaching here means
-        // no intervening write touched readLanes -> safe to forward.
-        matchIdx = i;
-        break;
+      if (!preservesDirectGroupedBroadcastLoad(load)) {
+        for (int i = static_cast<int>(entries.size()) - 1; i >= 0; --i) {
+          ContentEntry &e = entries[i];
+          if (e.stale || e.eraseMark)
+            continue;
+          if (!sameLoc(e, load, base, offset))
+            continue;
+          if (e.sourceValue.getType() != load->getResult(0).getType())
+            continue;
+          // Need e.lanes to fully cover readLanes.
+          if (!e.lanes.contains(readLanes))
+            continue;
+          // For a store match: any intervening write to the same loc between e
+          // and this load would have invalidated e (it would be stale/erased or
+          // a newer entry). Because stale entries are skipped and a later write
+          // to intersecting lanes marks prior entries stale, reaching here means
+          // no intervening write touched readLanes -> safe to forward.
+          matchIdx = i;
+          break;
+        }
       }
       if (matchIdx >= 0) {
         entries.push_back({load, base, offset, readLanes, true,
@@ -884,7 +958,7 @@ static bool elideOpRange(OpRange ops) {
     }
 
     if (auto store = dyn_cast<pto::VMIvStoreOp>(op)) {
-      if (!isContinuousSingleVStore(store)) {
+      if (!isModeledSingleVStore(store)) {
         // Unmodeled store shape (dintlv/group/block-stride/multi-value/
         // post_update): conservatively invalidate all tracked content and do
         // not register it as a forward target.
@@ -932,7 +1006,7 @@ static bool elideOpRange(OpRange ops) {
         ContentEntry &e = entries[i];
         if (e.isLoad || e.stale || e.eraseMark)
           continue;
-        if (!sameLoc(e, base, offset))
+        if (!sameLoc(e, store, base, offset))
           continue;
         if (!areEquivalentMaskValues(e.storeMask, mask))
           continue;
@@ -978,7 +1052,7 @@ static bool elideOpRange(OpRange ops) {
         }
         // Without a byte-range alias model, a different offset or view on the
         // same storage root may partially overlap this write.
-        if (!sameLoc(e, base, offset)) {
+        if (!sameLoc(e, store, base, offset)) {
           e.stale = true;
           continue;
         }

@@ -960,12 +960,12 @@ class TileLibCatalogTest(unittest.TestCase):
             ),
             (
                 "pto.trowmax",
-                "vmi_trowmax",
+                "vmi_trowmax_sinkhorn_grouped",
                 {"src": data, "workspace": compact, "dst": compact},
             ),
             (
                 "pto.trowsum",
-                "vmi_trowsum",
+                "vmi_trowsum_sinkhorn_grouped",
                 {"src": data, "workspace": compact, "dst": compact},
             ),
         )
@@ -974,6 +974,19 @@ class TileLibCatalogTest(unittest.TestCase):
                 selected = select(op, "a5", specs, candidate_id=candidate_id)
                 text = selected.specialize(**specs).mlir_text()
                 self.assertIn("pto.vmi.v", text)
+                self.assertTrue(selected.metadata.fusible)
+                self.assertEqual(selected.metadata.loop_depth, 1)
+                if op == "pto.tcolexpand":
+                    self.assertIn(
+                        "single_logical_row_loop", selected.metadata.tags
+                    )
+                else:
+                    self.assertEqual(selected.metadata.resource_scope, "tile")
+                    self.assertIn("grouped_tile_loop", selected.metadata.tags)
+                    self.assertIn(
+                        "single_logical_grouped_tile_loop",
+                        selected.metadata.tags,
+                    )
                 if op == "pto.tadd":
                     self.assertEqual(text.count("scf.for"), 1)
                     self.assertIn("!pto.vmi.vreg<64xf32>", text)
@@ -982,6 +995,7 @@ class TileLibCatalogTest(unittest.TestCase):
                     self.assertNotIn("!pto.vmi.vreg<8xf32>", text)
                 if op in {"pto.trowmax", "pto.trowsum"}:
                     self.assertIn("group = 8", text)
+                    self.assertIn("grouped_preferred", selected.metadata.tags)
 
         for op in ("pto.trowmax", "pto.trowsum"):
             with self.subTest(op=op, candidate="row_streaming"):
@@ -1015,6 +1029,9 @@ class TileLibCatalogTest(unittest.TestCase):
             candidate_id="vmi_trowexpandmul_sinkhorn_row_loop",
         )
         self.assertEqual(selected.name, "vmi_trowexpandmul_sinkhorn_row_loop")
+        self.assertIn("grouped_tile_loop", selected.metadata.tags)
+        self.assertNotIn("single_logical_row_loop", selected.metadata.tags)
+        self.assertEqual(selected.metadata.resource_scope, "tile")
         text = selected.specialize(
             src=data, row_values=compact, dst=data
         ).mlir_text()

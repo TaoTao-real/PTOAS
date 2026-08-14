@@ -565,9 +565,14 @@ def check_local_broadcast_candidates() -> dict[str, tuple[str, str]]:
         candidates = VMI_TILELIB_REGISTRY.lookup(op, "a5")
         expect(candidates, f"{op} should register at least one VMI candidate")
         for candidate in candidates:
+            expected_domain_tag = (
+                "single_logical_grouped_tile_loop"
+                if "sinkhorn" in candidate.name
+                else "single_logical_row_loop"
+            )
             expect(
-                candidate.metadata.tags[:3]
-                == ("vmi", "fusion_eligible", "single_logical_row_loop"),
+                candidate.metadata.tags[0:2] == ("vmi", "fusion_eligible")
+                and expected_domain_tag in candidate.metadata.tags,
                 f"{candidate.name} should carry canonical VMI fusion tags",
             )
 
@@ -825,7 +830,10 @@ def check_provider_helper() -> None:
         provider_module="ptodsl.vmi_tilelib",
         context_attrs={},
     ).mlir_text()
-    expect("scf.for" not in rowmax, "rowmax should emit one grouped reduction")
+    expect(
+        rowmax.count("scf.for") == 1,
+        "rowmax should expose one grouped-tile principal loop",
+    )
     expect(rowmax.count("pto.vmi.vcmax") == 1, "rowmax should reduce all row groups")
     expect("group = 32" in rowmax, "rowmax should preserve 32 compact row groups")
     expect("!pto.vmi.vreg<32xf32>" in rowmax, "rowmax should produce one value per row")
@@ -1129,7 +1137,16 @@ def check_row_reduce_candidates() -> dict[str, tuple[str, str, int]]:
             artifact.verify()
             text = artifact.mlir_text()
             name = f"vmi_{op_name}_{cols}lanes"
-            expect("scf.for" not in text, f"{name} should use one grouped reduction")
+            expect(
+                text.count("scf.for") == 1,
+                f"{name} should expose one grouped-tile principal loop",
+            )
+            expect(
+                candidate.metadata.fusible
+                and "grouped_tile_loop" in candidate.metadata.tags
+                and "single_logical_grouped_tile_loop" in candidate.metadata.tags,
+                f"{name} should advertise its grouped-tile fusion contract",
+            )
             expect(
                 f"!pto.vmi.vreg<{8 * cols}xf32>" in text,
                 f"{name} should reduce the complete logical row group",
