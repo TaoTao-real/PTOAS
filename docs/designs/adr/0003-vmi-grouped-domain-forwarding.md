@@ -41,11 +41,15 @@ currently marked non-fusible because it has no principal loop.
    - positive constant group count and group stride;
    - one scalar lane per group;
    - no mask, post-update, block stride, repeat stride, or distribution mode.
-5. Forwarding replaces an exact grouped reload with the stored SSA value.  A
-   following `vbrc` or other layout operation remains explicit.  Observable
-   stores are retained unless ordinary dead-store rules independently prove
-   them dead.
-6. Different group counts or strides, unknown masks, dynamic access forms,
+5. Forwarding normally replaces an exact grouped reload with the stored SSA
+   value.  Subsequent layout operations remain explicit, and observable stores
+   are retained unless ordinary dead-store rules independently prove them dead.
+6. A compact grouped reload feeding `vbrc` is retained when it can lower to the
+   direct `group_broadcast_load`/E2B form.  Forwarding that edge before layout
+   assignment can replace one physical load-broadcast with multiple register
+   packing operations.  This is a physical-form profitability barrier, not an
+   alias or fusion boundary.
+7. Different group counts or strides, unknown masks, dynamic access forms,
    region boundaries, synchronization, and unknown aliasing remain conservative
    barriers.  No transformation crosses a hard boundary or vecscope.
 
@@ -73,6 +77,9 @@ mapping and make mask and alias proofs harder.
 - Large tiles remain protected by the resource guard.
 - Grouped forwarding is an exact AccessMap extension, not a general gather or
   masked-load optimization.
+- A legal forwarding opportunity is not automatically profitable.  Direct
+  memory-to-broadcast forms remain materialized until layout-aware costing can
+  compare them with register rematerialization.
 - The one-trip semantic loop normally canonicalizes away.  Candidate-only and
   fused A5 results must still both be reported because grouped candidate
   selection and access forwarding are separate effects.

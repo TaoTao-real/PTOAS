@@ -7,8 +7,9 @@
 // See LICENSE in the root directory of the software repository for the full text of the License.
 
 // A compact grouped reduction and its row-broadcast consumer share the same
-// grouped_tile domain. The reduction store remains observable, while the exact
-// group-slot reload is forwarded to the reduction SSA value.
+// grouped_tile domain. The reduction store remains observable. The exact
+// group-slot reload is intentionally retained because reload + vbrc combines
+// into the direct group_broadcast_load/E2B physical form.
 
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --enable-vmi \
 // RUN:   --enable-op-fusion --enable-vmi-loop-fusion \
@@ -38,6 +39,6 @@ module {
 // FORWARD-LABEL: func.func @sinkhorn_reduce_broadcast
 // FORWARD: %[[REDUCED:.*]] = pto.vmi.vcmax
 // FORWARD: pto.vmi.vstore %[[REDUCED]], {{.*}} {group = 8 : i64}
-// FORWARD-NOT: pto.vmi.vload {{.*}} {group = 8 : i64}
-// FORWARD: %[[BROADCAST:.*]] = pto.vmi.vbrc %[[REDUCED]] {group = 8 : i64}
+// FORWARD: %[[RELOAD:.*]] = pto.vmi.vload {{.*}} {group = 8 : i64}
+// FORWARD: %[[BROADCAST:.*]] = pto.vmi.vbrc %[[RELOAD]] {group = 8 : i64}
 // FORWARD: pto.vmi.vsub

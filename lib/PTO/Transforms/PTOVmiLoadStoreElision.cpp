@@ -682,6 +682,21 @@ static bool isModeledSingleVLoad(pto::VMIvLoadOp op) {
     return false;
   return op.getResults().size() == 1;
 }
+
+// A compact grouped reload followed by vbrc has a profitable direct physical
+// form (group_broadcast_load / E2B). Forwarding the reload before layout
+// assignment destroys that form and can require vdup/pand/vsel packing of a
+// producer such as group_reduce. Keep the UB edge until layout-aware costing
+// can prove that the register path is cheaper.
+static bool preservesDirectGroupedBroadcastLoad(pto::VMIvLoadOp op) {
+  if (!isCompactGroupSlotVLoad(op))
+    return false;
+  for (Operation *user : op->getUsers())
+    if (isa<pto::VMIVbrcOp>(user))
+      return true;
+  return false;
+}
+
 static bool isModeledSingleVStore(pto::VMIvStoreOp op) {
   if (isCompactGroupSlotVStore(op))
     return true;
@@ -896,24 +911,26 @@ static bool elideOpRange(OpRange ops) {
       // Look for a preceding entry that fully covers readLanes with no
       // intervening intersecting write. Scan from nearest backwards.
       int matchIdx = -1;
-      for (int i = static_cast<int>(entries.size()) - 1; i >= 0; --i) {
-        ContentEntry &e = entries[i];
-        if (e.stale || e.eraseMark)
-          continue;
-        if (!sameLoc(e, load, base, offset))
-          continue;
-        if (e.sourceValue.getType() != load->getResult(0).getType())
-          continue;
-        // Need e.lanes to fully cover readLanes.
-        if (!e.lanes.contains(readLanes))
-          continue;
-        // For a store match: any intervening write to the same loc between e
-        // and this load would have invalidated e (it would be stale/erased or
-        // a newer entry). Because stale entries are skipped and a later write
-        // to intersecting lanes marks prior entries stale, reaching here means
-        // no intervening write touched readLanes -> safe to forward.
-        matchIdx = i;
-        break;
+      if (!preservesDirectGroupedBroadcastLoad(load)) {
+        for (int i = static_cast<int>(entries.size()) - 1; i >= 0; --i) {
+          ContentEntry &e = entries[i];
+          if (e.stale || e.eraseMark)
+            continue;
+          if (!sameLoc(e, load, base, offset))
+            continue;
+          if (e.sourceValue.getType() != load->getResult(0).getType())
+            continue;
+          // Need e.lanes to fully cover readLanes.
+          if (!e.lanes.contains(readLanes))
+            continue;
+          // For a store match: any intervening write to the same loc between e
+          // and this load would have invalidated e (it would be stale/erased or
+          // a newer entry). Because stale entries are skipped and a later write
+          // to intersecting lanes marks prior entries stale, reaching here means
+          // no intervening write touched readLanes -> safe to forward.
+          matchIdx = i;
+          break;
+        }
       }
       if (matchIdx >= 0) {
         entries.push_back({load, base, offset, readLanes, true,
