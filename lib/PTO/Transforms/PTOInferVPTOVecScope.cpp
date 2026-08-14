@@ -104,14 +104,19 @@ static bool isIndexedVectorMemoryConsumer(Operation *op) {
   return isa<pto::Vgather2Op, pto::Vgather2BcOp, pto::VscatterOp>(op);
 }
 
+static bool isIndexedMemoryIndexTransform(Operation *op) {
+  return isa<pto::VandOp, pto::VshrsOp>(op);
+}
+
 static bool hasOnlyIndexedVectorMemoryUsers(Operation *op) {
+  // Keep rematerialization limited to pure index expressions. General vector
+  // values remain local to the vecscope that defines them.
   for (Value result : op->getResults()) {
     for (Operation *user : result.getUsers()) {
       if (isIndexedVectorMemoryConsumer(user))
         continue;
-      auto vand = dyn_cast<pto::VandOp>(user);
-      if (!vand || !llvm::all_of(vand->getUsers(),
-                                 isIndexedVectorMemoryConsumer))
+      if (!isIndexedMemoryIndexTransform(user) ||
+          !hasOnlyIndexedVectorMemoryUsers(user))
         return false;
     }
   }
@@ -119,7 +124,7 @@ static bool hasOnlyIndexedVectorMemoryUsers(Operation *op) {
 }
 
 static bool isCloneableIndexedMemoryIndexProducer(Operation *op) {
-  return isa<pto::VciOp, pto::VandOp>(op) &&
+  return isa<pto::VciOp, pto::VandOp, pto::VshrsOp>(op) &&
          hasOnlyIndexedVectorMemoryUsers(op);
 }
 
