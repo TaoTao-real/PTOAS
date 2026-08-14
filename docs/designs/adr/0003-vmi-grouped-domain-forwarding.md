@@ -89,8 +89,9 @@ mapping and make mask and alias proofs harder.
 - Positive and negative lit tests for exact grouped forwarding, mismatched
   stride/group, alias barriers, and observable stores.
 - PTODSL metadata tests for grouped-domain selection and resource fallback.
-- DSv4 Sinkhorn pass dumps must show grouped candidates and a non-zero grouped
-  VMI load-elision delta.  Loop counts are reported at every fusion stage; a
-  one-trip grouped loop may already be gone before loop fusion.
+- DSv4 Sinkhorn pass dumps must show grouped candidates and report the grouped
+  VMI load-elision delta.  A zero delta is valid when retaining a reload enables
+  a cheaper direct physical broadcast form.  Loop counts are reported at every
+  fusion stage; a one-trip grouped loop may already be gone before loop fusion.
 - CAmodel and A5 must pass fixed-input cold-first correctness.  Final acceptance
   requires an independent golden and reports B/C/D separately.
