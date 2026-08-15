@@ -41,6 +41,8 @@ static constexpr llvm::StringLiteral kOpLibAttrInstDType =
 static constexpr llvm::StringLiteral kTileLibImplAttr = "pto.tilelib.impl";
 static constexpr llvm::StringLiteral kTileLibCandidateAttr =
     "pto.tilelib.candidate";
+static constexpr llvm::StringLiteral kTileLibPostUpdateAttr =
+    "pto.tilelib.postupdate";
 static constexpr llvm::StringLiteral kVmiFusionSourceAttr =
     "pto.vmi.fusion.source";
 static constexpr llvm::StringLiteral kVmiFusionTileOpAttr =
@@ -140,6 +142,7 @@ static Operation *cloneOpForInlineWithFix(OpBuilder &builder, Operation &op,
 static void copyTileLibSelectionAttrs(Operation *dst, Operation *src) {
   for (StringRef attrName :
        {StringRef(kTileLibImplAttr), StringRef(kTileLibCandidateAttr),
+        StringRef(kTileLibPostUpdateAttr),
         StringRef(kVmiFusionSourceAttr), StringRef(kVmiFusionTileOpAttr),
         StringRef(kVmiFusionBoundaryAttr),
         StringRef(kVmiFusionBoundaryReasonAttr),

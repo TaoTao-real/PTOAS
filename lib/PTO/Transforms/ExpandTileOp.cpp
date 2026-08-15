@@ -86,6 +86,8 @@ constexpr llvm::StringLiteral kSelectedCandidateAttr =
     "pto.tilelib.selected_candidate";
 constexpr llvm::StringLiteral kTileLibImplAttr = "pto.tilelib.impl";
 constexpr llvm::StringLiteral kTileLibCandidateAttr = "pto.tilelib.candidate";
+constexpr llvm::StringLiteral kTileLibPostUpdateAttr =
+    "pto.tilelib.postupdate";
 constexpr llvm::StringLiteral kVmiFusionSourceAttr = "pto.vmi.fusion.source";
 constexpr llvm::StringLiteral kVmiFusionTileOpAttr = "pto.vmi.fusion.tileop";
 constexpr llvm::StringLiteral kVmiFusionBoundaryAttr = "pto.vmi.fusion.boundary";
@@ -991,6 +993,7 @@ static void annotateTileLibSelection(Operation *op, MLIRContext *ctx,
 static void copyTileLibSelectionAttrs(Operation *dst, Operation *src) {
   for (StringRef attrName :
        {StringRef(kTileLibImplAttr), StringRef(kTileLibCandidateAttr),
+        StringRef(kTileLibPostUpdateAttr),
         StringRef(kVmiFusionSourceAttr), StringRef(kVmiFusionTileOpAttr),
         StringRef(kVmiFusionBoundaryAttr),
         StringRef(kVmiFusionBoundaryReasonAttr),

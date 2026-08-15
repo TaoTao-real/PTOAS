@@ -117,6 +117,44 @@ module {
     return
   }
 
+  // Post-update is a physical-form contract, so a fused loop may retain it
+  // only when every source candidate requested that form.
+  // LOOP-LABEL: func.func @loop_fuse_mixed_postupdate
+  // LOOP: scf.for
+  // LOOP-NOT: pto.tilelib.postupdate
+  // LOOP-NOT: scf.for
+  func.func @loop_fuse_mixed_postupdate() -> () {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c128 = arith.constant 128 : index
+    %result = pto.fusion_region {
+      scf.for %i = %c0 to %c128 step %c1 {
+      } {pto.tilelib.impl = "vmi", pto.tilelib.postupdate = true, pto.vmi.fusion.principal_loop, pto.vmi.fusion.source = "tilelib"}
+      scf.for %i = %c0 to %c128 step %c1 {
+      } {pto.tilelib.impl = "vmi", pto.vmi.fusion.principal_loop, pto.vmi.fusion.source = "tilelib"}
+      pto.yield(%c0) : (index) -> ()
+    } : index
+    return
+  }
+
+  // LOOP-LABEL: func.func @loop_fuse_all_postupdate
+  // LOOP: scf.for
+  // LOOP: pto.tilelib.postupdate = true
+  // LOOP-NOT: scf.for
+  func.func @loop_fuse_all_postupdate() -> () {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c128 = arith.constant 128 : index
+    %result = pto.fusion_region {
+      scf.for %i = %c0 to %c128 step %c1 {
+      } {pto.tilelib.impl = "vmi", pto.tilelib.postupdate = true, pto.vmi.fusion.principal_loop, pto.vmi.fusion.source = "tilelib"}
+      scf.for %i = %c0 to %c128 step %c1 {
+      } {pto.tilelib.impl = "vmi", pto.tilelib.postupdate = true, pto.vmi.fusion.principal_loop, pto.vmi.fusion.source = "tilelib"}
+      pto.yield(%c0) : (index) -> ()
+    } : index
+    return
+  }
+
   // Distinct constant offsets in a bound are distinct iteration domains.
   // LOOP-LABEL: func.func @different_bound_offsets
   // LOOP-COUNT-2: scf.for

@@ -669,6 +669,11 @@ def check_provider_helper() -> None:
         == {"precisionType": ("default",)},
         "texp must declare its supported context attrs on the candidate",
     )
+    expect(
+        vmi_texp_block64.metadata.is_post_update
+        and vmi_tmuls.metadata.is_post_update,
+        "full contiguous texp/tmuls candidates should request late post-update lowering",
+    )
 
     raw_tile_spec = {
         "kind": "tile",

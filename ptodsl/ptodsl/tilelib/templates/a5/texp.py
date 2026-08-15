@@ -38,6 +38,7 @@ from ._vmi_common import (  # noqa: E402
     dtypes=(("f32", "f32"),),
     context_constraints={"precisionType": ("default",)},
     min_row_bytes=128,
+    is_post_update=True,
 )
 def vmi_texp_block64(src: pto.Tile, dst: pto.Tile):
     emit_elementwise_vmi(dst, (src,), _vmi_exp)

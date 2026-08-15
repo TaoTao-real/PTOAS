@@ -1074,6 +1074,9 @@ struct VPTOSoftPostUpdatePass
   using pto::impl::VPTOSoftPostUpdateBase<
       VPTOSoftPostUpdatePass>::VPTOSoftPostUpdateBase;
 
+  explicit VPTOSoftPostUpdatePass(bool onlyPreferredCandidates = false)
+      : onlyPreferredCandidates(onlyPreferredCandidates) {}
+
   void runOnOperation() override {
     ModuleOp module = getOperation();
     OpBuilder builder(&getContext());
@@ -1084,6 +1087,8 @@ struct VPTOSoftPostUpdatePass
   }
 
 private:
+  bool onlyPreferredCandidates = false;
+
   void processVecScope(pto::VecScopeOp vecscope, OpBuilder &builder) {
     // Collect scf.for ops inside this vecscope.  Operation::walk defaults to
     // post-order, so nested loops already come before the loops enclosing
@@ -1100,6 +1105,12 @@ private:
   }
 
   void processForOp(scf::ForOp forOp, OpBuilder &builder) {
+    if (onlyPreferredCandidates) {
+      auto preferred =
+          forOp->getAttrOfType<BoolAttr>("pto.tilelib.postupdate");
+      if (!preferred || !preferred.getValue())
+        return;
+    }
     SmallVector<PostUpdateRewrite> rewrites;
     // Shared across all candidates in this loop so equal strides map to one
     // Value, which is what lets same-address ops share an iter_arg.
@@ -1194,4 +1205,9 @@ private:
 
 std::unique_ptr<Pass> mlir::pto::createVPTOSoftPostUpdatePass() {
   return std::make_unique<VPTOSoftPostUpdatePass>();
+}
+
+std::unique_ptr<Pass>
+mlir::pto::createVPTOSoftPostUpdatePass(bool onlyPreferredCandidates) {
+  return std::make_unique<VPTOSoftPostUpdatePass>(onlyPreferredCandidates);
 }

@@ -98,6 +98,8 @@ std::unique_ptr<Pass> createPTOInsertVecScopeMemBarPass();
 std::unique_ptr<Pass> createPTOInsertVecScopeMemBarAllPass();
 std::unique_ptr<Pass> createVPTOExpandWrapperOpsPass();
 std::unique_ptr<Pass> createVPTOSoftPostUpdatePass();
+std::unique_ptr<Pass>
+createVPTOSoftPostUpdatePass(bool onlyPreferredCandidates);
 std::unique_ptr<Pass> createPTOVPTOPtrBoundaryPass();
 std::unique_ptr<Pass>
 createPTOLowLevelLoopFusionPass(const PTOLowLevelLoopFusionOptions &options = {});

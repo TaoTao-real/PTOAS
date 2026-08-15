@@ -34,6 +34,8 @@ constexpr llvm::StringLiteral kCandidatesAttr = "candidates";
 constexpr llvm::StringLiteral kSelectedCandidateAttr =
     "pto.tilelib.selected_candidate";
 constexpr llvm::StringLiteral kTileLibImplAttr = "pto.tilelib.impl";
+constexpr llvm::StringLiteral kTileLibPostUpdateAttr =
+    "pto.tilelib.postupdate";
 constexpr llvm::StringLiteral kVmiFusionBoundaryAttr =
     "pto.vmi.fusion.boundary";
 constexpr llvm::StringLiteral kVmiFusionBoundaryReasonAttr =
@@ -198,11 +200,17 @@ static void recordSelection(Operation *op, DictionaryAttr candidate, bool isVMI,
   op->setAttr(kSelectedCandidateAttr, candidate);
   op->setAttr(kTileLibImplAttr,
               StringAttr::get(op->getContext(), isVMI ? "vmi" : "ptodsl"));
+  Builder builder(op->getContext());
+  op->removeAttr(kTileLibPostUpdateAttr);
+  if (isVMI) {
+    if (auto postUpdate = candidate.getAs<IntegerAttr>("postupdate");
+        postUpdate && postUpdate.getInt() != 0)
+      op->setAttr(kTileLibPostUpdateAttr, builder.getBoolAttr(true));
+  }
   op->removeAttr(kVmiFusionBoundaryAttr);
   op->removeAttr(kVmiFusionBoundaryReasonAttr);
   clearResourceAttrs(op);
 
-  Builder builder(op->getContext());
   if (estimate) {
     op->setAttr(kVmiResourceEstimateExactAttr,
                 builder.getBoolAttr(estimate->isExact));

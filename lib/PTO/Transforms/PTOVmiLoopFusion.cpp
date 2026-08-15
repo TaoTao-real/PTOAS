@@ -954,6 +954,14 @@ static scf::ForOp buildFusedLoop(OpBuilder &builder,
   fused->setAttr("pto.tilelib.impl", builder.getStringAttr("vmi"));
   fused->setAttr("pto.vmi.fusion.source", builder.getStringAttr("tilelib"));
   fused->setAttr("pto.vmi.fusion.principal_loop", builder.getUnitAttr());
+  if (llvm::all_of(members, [](const Member &member) {
+        auto preferred = member.loop->getAttrOfType<BoolAttr>(
+            "pto.tilelib.postupdate");
+        return preferred && preferred.getValue();
+      }))
+    fused->setAttr("pto.tilelib.postupdate", builder.getBoolAttr(true));
+  else
+    fused->removeAttr("pto.tilelib.postupdate");
 
   // Map each member's results to the corresponding slice of the fused loop's
   // results so external (top-level) users can be rewired.
