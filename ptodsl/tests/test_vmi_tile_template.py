@@ -653,6 +653,39 @@ def check_local_broadcast_candidates() -> dict[str, tuple[str, str]]:
     return lowering_cases
 
 
+def check_qwen_row_expand_chunk_streaming() -> tuple[str, str]:
+    rows, cols = 8, 256
+    wide = TileSpec((rows, cols), f32)
+    compact = TileSpec((rows, 1), f32, b_layout="col_major")
+    artifact = vmi_trowexpandmul.specialize(
+        src=wide, row_values=compact, dst=wide
+    )
+    artifact.verify()
+    text = artifact.mlir_text()
+    expect(text.count("scf.for") == 1, "Qwen row expand should contain one loop")
+    expect(
+        "arith.constant 2048 : index" in text,
+        "Qwen row expand should stream the complete tile in one flat domain",
+    )
+    expect(
+        "arith.constant 64 : index" in text,
+        "Qwen row expand should advance by one native f32 chunk",
+    )
+    expect(
+        "arith.floordivsi" in text,
+        "Qwen row expand should derive the compact-state row from the flat offset",
+    )
+    expect(
+        "!pto.vmi.vreg<64xf32>" in text,
+        "Qwen row expand should keep only native-width values live",
+    )
+    expect(
+        "!pto.vmi.vreg<256xf32>" not in text,
+        "Qwen row expand should not materialize an entire 256-lane row",
+    )
+    return text, "pto.vmul"
+
+
 def check_provider_helper() -> None:
     registered_tadd = VMI_TILELIB_REGISTRY.lookup("tadd", "a5")
     expect(
@@ -1720,6 +1753,12 @@ def main() -> None:
                 'pto.vlds' in lowered and 'dist = "BRC_B32"' in lowered,
                 f"{name} should lower compact state access to native broadcast load",
             )
+    qwen_row_expand, expected_op = check_qwen_row_expand_chunk_streaming()
+    check_vmi_to_vpto_lowering(
+        "vmi_trowexpandmul_qwen_chunk_streaming",
+        qwen_row_expand,
+        expected_op,
+    )
     for name, (text, expected_op, expected_loop_count) in (
         check_row_reduce_candidates().items()
     ):

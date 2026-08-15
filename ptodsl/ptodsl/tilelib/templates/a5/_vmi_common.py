@@ -36,6 +36,7 @@ from ptodsl._tile_template_tracing import (
     i32,
     for_,
     index_add,
+    index_floordiv,
     index_mul,
     tile_template as _trace_tile_template,
 )
@@ -2113,8 +2114,6 @@ def emit_row_expand_binary_vmi(
             "row-expand compact state must be a col-major [rows, 1] tile"
         )
     src_physical_cols = row_tensor._spec.shape[1]
-    dst_physical_cols = output._spec.shape[1]
-    io_lanes = ((cols + f32.lanes - 1) // f32.lanes) * f32.lanes
 
     _prepare_tile_access(row_tensor, compact_row_state, output)
     if sinkhorn_grouped_form:
@@ -2155,25 +2154,32 @@ def emit_row_expand_binary_vmi(
             _vstore_linear(result, output, zero, mask)
         return
 
-    full_mask = _create_mask_lanes(cols, io_lanes, f32, trace=row_tensor._trace)
+    # Full static rows share the same contiguous native-chunk domain as
+    # elementwise candidates. Keeping only one source, broadcast, and result
+    # chunk live avoids materializing an entire multi-VL row before stores and
+    # lets a following elementwise chain use an identical principal loop.
+    chunk_lanes = f32.lanes
+    full_mask = _create_mask_lanes(
+        chunk_lanes, chunk_lanes, f32, trace=row_tensor._trace
+    )
     state_ptr = compact_row_state._trace.ensure_tile_ptr(compact_row_state)
-    with for_(0, rows, step=1) as row:
-        # Match PTO-ISA TRowExpandBinOps: load compact state[row] with the
-        # scalar-broadcast distribution, then consume it in the same row loop.
+    total_lanes = rows * src_physical_cols
+    with for_(0, total_lanes, step=chunk_lanes) as offset:
+        row = index_floordiv(offset, src_physical_cols)
+        # Match PTO-ISA TRowExpandBinOps while retaining the flat chunk domain:
+        # broadcast compact state[row], then consume the current native chunk.
         broadcast = _wrap_vreg(
             _vmi_builder.vload(
                 state_ptr.value,
                 row.value,
-                size=io_lanes,
+                size=chunk_lanes,
                 dist_mode="brc",
             ),
             f32,
         )
-        src_offset = index_mul(row, src_physical_cols)
-        dst_offset = index_mul(row, dst_physical_cols)
-        value = _vload_linear(row_tensor, src_offset, lanes=io_lanes)
+        value = _vload_linear(row_tensor, offset, lanes=chunk_lanes)
         result = operations[operation](value, broadcast, full_mask)
-        _vstore_linear(result, output, dst_offset, full_mask)
+        _vstore_linear(result, output, offset, full_mask)
 
 
 def emit_row_expand_sub_vmi(

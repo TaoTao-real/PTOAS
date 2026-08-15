@@ -1086,6 +1086,12 @@ def index_mul(lhs, rhs) -> _Value:
     )
 
 
+def index_floordiv(lhs, rhs) -> _Value:
+    return require_active_runtime(
+        "index_floordiv", expected_type=_TraceBuilder
+    ).index_binary("floordiv", lhs, rhs)
+
+
 def make_mask(dtype: ScalarType, remained) -> tuple[_MaskValue, _Value]:
     trace = require_active_runtime("make_mask", expected_type=_TraceBuilder)
     remained_val = trace._coerce_value(remained)
