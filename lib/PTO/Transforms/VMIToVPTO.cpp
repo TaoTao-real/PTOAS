@@ -623,6 +623,15 @@ FailureOr<Value> combineEquivalentMaskedParts(
   return combined;
 }
 
+bool shouldCombineReductionPartsBeforeReducing(size_t physicalArity) {
+  // Combining one or two chunks first saves reduction instructions.  For
+  // wider logical vectors it creates a serial chain of full-width vector
+  // operations before the reduction.  Reduce each chunk first in that case,
+  // then combine the compact lane-zero results, matching the A5 PTO-ISA row
+  // reduction strategy.
+  return physicalArity <= 2;
+}
+
 FailureOr<std::pair<Value, Value>>
 createRuntimePrefixMask(Location loc, MaskType maskType, Value activeLanes,
                         PatternRewriter &rewriter) {
@@ -9354,23 +9363,25 @@ struct OneToNVMIReduceAddIOpPattern
       return rewriter.notifyMatchFailure(
           op, "failed to create reduce_addi first-lane mask");
 
-    FailureOr<Value> combined = combineEquivalentMaskedParts<VaddOp>(
-        op.getLoc(), sourceParts, *effectiveMasks, resultType, rewriter);
-    if (succeeded(combined)) {
-      Value reduced =
-          rewriter
-              .create<VcaddOp>(op.getLoc(), resultType, *combined,
-                               effectiveMasks->front())
-              .getResult();
-      Value result =
-          rewriter
-              .create<VaddOp>(op.getLoc(), resultType, reduced,
-                              initParts.front(), *firstLaneMask)
-              .getResult();
-      replaceOpWithFlatConvertedValues(
-          rewriter, op, SmallVector<Value>{result},
-          *this->getTypeConverter());
-      return success();
+    if (shouldCombineReductionPartsBeforeReducing(sourceParts.size())) {
+      FailureOr<Value> combined = combineEquivalentMaskedParts<VaddOp>(
+          op.getLoc(), sourceParts, *effectiveMasks, resultType, rewriter);
+      if (succeeded(combined)) {
+        Value reduced =
+            rewriter
+                .create<VcaddOp>(op.getLoc(), resultType, *combined,
+                                 effectiveMasks->front())
+                .getResult();
+        Value result =
+            rewriter
+                .create<VaddOp>(op.getLoc(), resultType, reduced,
+                                initParts.front(), *firstLaneMask)
+                .getResult();
+        replaceOpWithFlatConvertedValues(
+            rewriter, op, SmallVector<Value>{result},
+            *this->getTypeConverter());
+        return success();
+      }
     }
 
     Value accumulator = initParts.front();
@@ -9446,23 +9457,25 @@ struct OneToNVMIReduceAddFOpPattern
       return rewriter.notifyMatchFailure(
           op, "failed to create reduce_addf first-lane mask");
 
-    FailureOr<Value> combined = combineEquivalentMaskedParts<VaddOp>(
-        op.getLoc(), sourceParts, *effectiveMasks, resultType, rewriter);
-    if (succeeded(combined)) {
-      Value reduced =
-          rewriter
-              .create<VcaddOp>(op.getLoc(), resultType, *combined,
-                               effectiveMasks->front())
-              .getResult();
-      Value result =
-          rewriter
-              .create<VaddOp>(op.getLoc(), resultType, reduced,
-                              initParts.front(), *firstLaneMask)
-              .getResult();
-      replaceOpWithFlatConvertedValues(
-          rewriter, op, SmallVector<Value>{result},
-          *this->getTypeConverter());
-      return success();
+    if (shouldCombineReductionPartsBeforeReducing(sourceParts.size())) {
+      FailureOr<Value> combined = combineEquivalentMaskedParts<VaddOp>(
+          op.getLoc(), sourceParts, *effectiveMasks, resultType, rewriter);
+      if (succeeded(combined)) {
+        Value reduced =
+            rewriter
+                .create<VcaddOp>(op.getLoc(), resultType, *combined,
+                                 effectiveMasks->front())
+                .getResult();
+        Value result =
+            rewriter
+                .create<VaddOp>(op.getLoc(), resultType, reduced,
+                                initParts.front(), *firstLaneMask)
+                .getResult();
+        replaceOpWithFlatConvertedValues(
+            rewriter, op, SmallVector<Value>{result},
+            *this->getTypeConverter());
+        return success();
+      }
     }
 
     Value accumulator = initParts.front();
@@ -10533,22 +10546,25 @@ struct OneToNVMIReduceMinMaxOpPattern : OpConversionPattern<SourceOp> {
       return rewriter.notifyMatchFailure(
           op, "failed to create min/max reduction first-lane mask");
 
-    FailureOr<Value> combined = combineEquivalentMaskedParts<CombineOp>(
-        op.getLoc(), sourceParts, *effectiveMasks, resultType, rewriter);
-    if (succeeded(combined)) {
-      Value reduced =
-          rewriter
-              .create<ChunkReduceOp>(op.getLoc(), resultType, *combined,
-                                     effectiveMasks->front())
-              .getResult();
-      Value result =
-          rewriter
-              .create<CombineOp>(op.getLoc(), resultType, reduced,
-                                 initParts.front(), *firstLaneMask)
-              .getResult();
-      replaceOpWithFlatConvertedValues(
-          rewriter, op, SmallVector<Value>{result}, *this->getTypeConverter());
-      return success();
+    if (shouldCombineReductionPartsBeforeReducing(sourceParts.size())) {
+      FailureOr<Value> combined = combineEquivalentMaskedParts<CombineOp>(
+          op.getLoc(), sourceParts, *effectiveMasks, resultType, rewriter);
+      if (succeeded(combined)) {
+        Value reduced =
+            rewriter
+                .create<ChunkReduceOp>(op.getLoc(), resultType, *combined,
+                                       effectiveMasks->front())
+                .getResult();
+        Value result =
+            rewriter
+                .create<CombineOp>(op.getLoc(), resultType, reduced,
+                                   initParts.front(), *firstLaneMask)
+                .getResult();
+        replaceOpWithFlatConvertedValues(rewriter, op,
+                                         SmallVector<Value>{result},
+                                         *this->getTypeConverter());
+        return success();
+      }
     }
 
     Value accumulator = initParts.front();
