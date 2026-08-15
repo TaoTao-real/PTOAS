@@ -36,7 +36,6 @@ from ._vmi_common import (  # noqa: E402
     context_constraints={"precisionType": ("default",)},
     constraints=(row_expand_binary_vmi_constraint,),
     min_row_bytes=128,
-    resource_chunk_streaming=True,
 )
 def vmi_trowexpanddiv(src: pto.Tile, row_values: pto.Tile, dst: pto.Tile):
     emit_row_expand_binary_vmi(src, row_values, dst, "div")

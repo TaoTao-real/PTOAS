@@ -46,12 +46,8 @@ module {
 
 // EXPAND: call {{.*}}__vmi_trowexpandmul
 // EXPAND-SAME: pto.tilelib.impl = "vmi"
-// EXPAND-SAME: pto.vmi.resource.estimated_peak_vector_bytes = 768 : i64
-// EXPAND-SAME: pto.vmi.resource.estimated_peak_vector_chunks = 3 : i64
 // EXPAND: call {{.*}}__vmi_trowexpanddiv
 // EXPAND-SAME: pto.tilelib.impl = "vmi"
-// EXPAND-SAME: pto.vmi.resource.estimated_peak_vector_bytes = 768 : i64
-// EXPAND-SAME: pto.vmi.resource.estimated_peak_vector_chunks = 3 : i64
 // EXPAND: call {{.*}}__vmi_tcolexpand
 // EXPAND-SAME: pto.tilelib.impl = "vmi"
 // EXPAND: call {{.*}}__template_trowexpandmul
@@ -61,14 +57,11 @@ module {
 
 // INLINE-LABEL: func.func @local_broadcast_candidates
 // INLINE: scf.for
-// INLINE: arith.floordivsi
-// INLINE: pto.vmi.vload {{.*}} {dist_mode = "brc"} {{.*}} -> !pto.vmi.vreg<64xf32>
+// INLINE: pto.vmi.vload {{.*}} {dist_mode = "brc"} {{.*}} -> !pto.vmi.vreg<512xf32>
 // INLINE: pto.vmi.vmul
 // INLINE: scf.for
-// INLINE: arith.floordivsi
-// INLINE: pto.vmi.vload {{.*}} {dist_mode = "brc"} {{.*}} -> !pto.vmi.vreg<64xf32>
+// INLINE: pto.vmi.vload {{.*}} {dist_mode = "brc"} {{.*}} -> !pto.vmi.vreg<512xf32>
 // INLINE: pto.vmi.vdiv
-// INLINE-NOT: !pto.vmi.vreg<512xf32>
 // INLINE: pto.vmi.vload
 // INLINE: scf.for
 // INLINE: pto.vmi.vstore
