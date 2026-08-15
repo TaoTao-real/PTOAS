@@ -2732,8 +2732,7 @@ static void appendVMISemanticPipeline(OpPassManager &pm,
                                       bool enableLoopFusion,
                                       bool enableLoadStoreElision);
 
-static void prepareVPTOForEmission(PassManager &pm,
-                                   bool enableCandidatePostUpdate) {
+static void prepareVPTOForEmission(PassManager &pm) {
   auto &kernelModulePM = pm.nest<ModuleOp>();
   // VPTO LLVM emission lowers pto.barrier to the backend barrier intrinsic.
   // A5 does not support a standalone PIPE_V barrier; vector barriers are either
@@ -2765,9 +2764,6 @@ static void prepareVPTOForEmission(PassManager &pm,
   kernelModulePM.addPass(createCSEPass());
   if (enableSoftPostUpdate)
     kernelModulePM.addPass(pto::createVPTOSoftPostUpdatePass());
-  else if (enableCandidatePostUpdate)
-    kernelModulePM.addPass(
-        pto::createVPTOSoftPostUpdatePass(/*onlyPreferredCandidates=*/true));
   kernelModulePM.addPass(createLoopInvariantCodeMotionPass());
   kernelModulePM.addNestedPass<func::FuncOp>(
       pto::createPTONarrowVPTOLoopCountersPass());
@@ -2924,7 +2920,7 @@ static LogicalResult runVPTOBackendPipeline(OwningOpRef<ModuleOp> &module,
     appendVMISemanticPipeline(kernelModulePM, useVMIFusionPipeline,
                               enableVMILoopFusion,
                               enableVMILoadStoreElision);
-  prepareVPTOForEmission(pm, enableVMI || containsVMI);
+  prepareVPTOForEmission(pm);
   if (failed(applyConfiguredPassManagerCLOptions(
           pm, "VPTO unified emission pipeline")))
     return failure();

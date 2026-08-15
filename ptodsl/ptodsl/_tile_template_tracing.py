@@ -876,7 +876,6 @@ class TileTemplate:
     resource_scope: str | None = None
     resource_vector_values: int | None = None
     resource_chunk_streaming: bool = False
-    is_post_update: bool = False
 
     @property
     def param_names(self) -> tuple[str, ...]:
@@ -903,7 +902,7 @@ class TileTemplate:
                 fusible=self.single_logical_row_loop,
                 loop_depth=1 if self.single_logical_row_loop else 0,
                 id=self.candidate_id,
-                is_post_update=self.is_post_update,
+                is_post_update=False,
                 iteration_axis="row",
                 op_engine="vector",
                 op_class="other",
@@ -1018,7 +1017,6 @@ def tile_template(
     resource_scope: str | None = None,
     resource_vector_values: int | None = None,
     resource_chunk_streaming: bool = False,
-    is_post_update: bool = False,
 ):
     if target != "a5":
         raise ValueError("tile-template tracing currently only supports target='a5'")
@@ -1049,7 +1047,6 @@ def tile_template(
             resource_scope=resource_scope,
             resource_vector_values=resource_vector_values,
             resource_chunk_streaming=resource_chunk_streaming,
-            is_post_update=is_post_update,
         )
 
     return decorator

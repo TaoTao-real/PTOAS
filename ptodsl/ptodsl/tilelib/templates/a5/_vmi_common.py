@@ -975,7 +975,6 @@ def canonical_vmi_template(
     resource_scope: str = "row",
     resource_vector_values: int | None = None,
     resource_chunk_streaming: bool = False,
-    is_post_update: bool = False,
 ):
     """Register one canonical VMI implementation in this provider module."""
 
@@ -1014,7 +1013,6 @@ def canonical_vmi_template(
                 else _default_resource_vector_values(op)
             ),
             resource_chunk_streaming=resource_chunk_streaming,
-            is_post_update=is_post_update,
         )(fn)
         _tilelib_registry.register(descriptor)
         VMI_TILELIB_REGISTRY.register(descriptor)
