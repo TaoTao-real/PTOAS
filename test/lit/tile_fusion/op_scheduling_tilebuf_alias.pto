@@ -1,0 +1,164 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+
+// OpScheduling must treat independently-created tile handles as aliases when
+// they name overlapping physical UB storage.  This is a pre-memory-planning
+// regression: the handles deliberately have different SSA identities.
+//
+// RUN: pto-test-opt %s --pass-pipeline='builtin.module(func.func(pto-op-scheduling))' | FileCheck %s
+
+module {
+  func.func @same_address(
+      %a: !pto.tile_buf<vec, 32x32xf32>,
+      %b: !pto.tile_buf<vec, 32x32xf32>) {
+    %c0 = arith.constant 0 : i64
+    %c8k = arith.constant 8192 : i64
+    %producer = pto.alloc_tile addr = %c0 : !pto.tile_buf<vec, 32x32xf32>
+    %alias = pto.alloc_tile addr = %c0 : !pto.tile_buf<vec, 32x32xf32>
+    %group_out = pto.alloc_tile addr = %c8k : !pto.tile_buf<vec, 32x32xf32>
+
+    pto.tadd ins(%a, %b : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>)
+             outs(%group_out : !pto.tile_buf<vec, 32x32xf32>)
+             {pto.fusion.group_id = 0 : i64, pto.fusion.order = 0 : i64}
+    pto.tadd ins(%a, %b : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>)
+             outs(%producer : !pto.tile_buf<vec, 32x32xf32>)
+    pto.tadd ins(%alias, %b : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>)
+             outs(%alias : !pto.tile_buf<vec, 32x32xf32>)
+             {pto.fusion.group_id = 0 : i64, pto.fusion.order = 1 : i64}
+    return
+  }
+
+  func.func @partial_overlap(
+      %a: !pto.tile_buf<vec, 32x32xf32>,
+      %b: !pto.tile_buf<vec, 16x16xf32>) {
+    %c0 = arith.constant 0 : i64
+    %c4000 = arith.constant 4000 : i64
+    %c8k = arith.constant 8192 : i64
+    %producer = pto.alloc_tile addr = %c0 : !pto.tile_buf<vec, 32x32xf32>
+    %alias = pto.alloc_tile addr = %c4000 : !pto.tile_buf<vec, 16x16xf32>
+    %group_out = pto.alloc_tile addr = %c8k : !pto.tile_buf<vec, 16x16xf32>
+
+    pto.tadd ins(%b, %b : !pto.tile_buf<vec, 16x16xf32>, !pto.tile_buf<vec, 16x16xf32>)
+             outs(%group_out : !pto.tile_buf<vec, 16x16xf32>)
+             {pto.fusion.group_id = 0 : i64, pto.fusion.order = 0 : i64}
+    pto.tadd ins(%a, %a : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>)
+             outs(%producer : !pto.tile_buf<vec, 32x32xf32>)
+    pto.tadd ins(%alias, %b : !pto.tile_buf<vec, 16x16xf32>, !pto.tile_buf<vec, 16x16xf32>)
+             outs(%alias : !pto.tile_buf<vec, 16x16xf32>)
+             {pto.fusion.group_id = 0 : i64, pto.fusion.order = 1 : i64}
+    return
+  }
+
+  func.func @different_type(
+      %a: !pto.tile_buf<vec, 32x32xf32>,
+      %b: !pto.tile_buf<vec, 32x32xbf16>) {
+    %c0 = arith.constant 0 : i64
+    %c8k = arith.constant 8192 : i64
+    %producer = pto.alloc_tile addr = %c0 : !pto.tile_buf<vec, 32x32xf32>
+    %alias = pto.alloc_tile addr = %c0 : !pto.tile_buf<vec, 32x32xbf16>
+    %group_out = pto.alloc_tile addr = %c8k : !pto.tile_buf<vec, 32x32xbf16>
+
+    pto.tmov ins(%b : !pto.tile_buf<vec, 32x32xbf16>)
+             outs(%group_out : !pto.tile_buf<vec, 32x32xbf16>)
+             {pto.fusion.group_id = 0 : i64, pto.fusion.order = 0 : i64}
+    pto.tadd ins(%a, %a : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>)
+             outs(%producer : !pto.tile_buf<vec, 32x32xf32>)
+    pto.tmov ins(%alias : !pto.tile_buf<vec, 32x32xbf16>)
+             outs(%alias : !pto.tile_buf<vec, 32x32xbf16>)
+             {pto.fusion.group_id = 0 : i64, pto.fusion.order = 1 : i64}
+    return
+  }
+
+  func.func @disjoint(
+      %a: !pto.tile_buf<vec, 32x32xf32>,
+      %b: !pto.tile_buf<vec, 32x32xf32>) {
+    %c0 = arith.constant 0 : i64
+    %c4k = arith.constant 4096 : i64
+    %c8k = arith.constant 8192 : i64
+    %producer = pto.alloc_tile addr = %c0 : !pto.tile_buf<vec, 32x32xf32>
+    %other = pto.alloc_tile addr = %c4k : !pto.tile_buf<vec, 32x32xf32>
+    %group_out = pto.alloc_tile addr = %c8k : !pto.tile_buf<vec, 32x32xf32>
+
+    pto.tadd ins(%a, %b : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>)
+             outs(%group_out : !pto.tile_buf<vec, 32x32xf32>)
+             {pto.fusion.group_id = 0 : i64, pto.fusion.order = 0 : i64}
+    pto.tadd ins(%a, %a : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>)
+             outs(%producer : !pto.tile_buf<vec, 32x32xf32>)
+    pto.tadd ins(%other, %b : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>)
+             outs(%other : !pto.tile_buf<vec, 32x32xf32>)
+             {pto.fusion.group_id = 0 : i64, pto.fusion.order = 1 : i64}
+    return
+  }
+
+  func.func @dynamic_address(
+      %addr: i64,
+      %a: !pto.tile_buf<vec, 32x32xf32>,
+      %b: !pto.tile_buf<vec, 32x32xf32>) {
+    %c0 = arith.constant 0 : i64
+    %c8k = arith.constant 8192 : i64
+    %producer = pto.alloc_tile addr = %addr : !pto.tile_buf<vec, 32x32xf32>
+    %alias = pto.alloc_tile addr = %c0 : !pto.tile_buf<vec, 32x32xf32>
+    %group_out = pto.alloc_tile addr = %c8k : !pto.tile_buf<vec, 32x32xf32>
+
+    pto.tadd ins(%a, %b : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>)
+             outs(%group_out : !pto.tile_buf<vec, 32x32xf32>)
+             {pto.fusion.group_id = 0 : i64, pto.fusion.order = 0 : i64}
+    pto.tadd ins(%a, %b : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>)
+             outs(%producer : !pto.tile_buf<vec, 32x32xf32>)
+    pto.tadd ins(%alias, %b : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>)
+             outs(%alias : !pto.tile_buf<vec, 32x32xf32>)
+             {pto.fusion.group_id = 0 : i64, pto.fusion.order = 1 : i64}
+    return
+  }
+
+  func.func @logical_view_alias(
+      %a: !pto.tile_buf<vec, 32x32xf32>,
+      %b: !pto.tile_buf<vec, 32x32xf32>) {
+    %storage = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
+    %view = pto.treshape %storage : !pto.tile_buf<vec, 32x32xf32> -> !pto.tile_buf<vec, 32x32xf32>
+    %group_out = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
+
+    pto.tadd ins(%a, %b : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>)
+             outs(%group_out : !pto.tile_buf<vec, 32x32xf32>)
+             {pto.fusion.group_id = 0 : i64, pto.fusion.order = 0 : i64}
+    pto.tadd ins(%a, %b : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>)
+             outs(%storage : !pto.tile_buf<vec, 32x32xf32>)
+    pto.tadd ins(%view, %b : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>)
+             outs(%view : !pto.tile_buf<vec, 32x32xf32>)
+             {pto.fusion.group_id = 0 : i64, pto.fusion.order = 1 : i64}
+    return
+  }
+}
+
+// CHECK-LABEL: func.func @same_address(
+// CHECK: %[[SAME_PRODUCER:[0-9]+]] = pto.alloc_tile
+// CHECK: %[[SAME_ALIAS:[0-9]+]] = pto.alloc_tile
+// CHECK: pto.tadd{{.*}}outs(%[[SAME_PRODUCER]]
+// CHECK: pto.tadd ins(%[[SAME_ALIAS]],
+// CHECK-LABEL: func.func @partial_overlap(
+// CHECK: %[[OVERLAP_PRODUCER:[0-9]+]] = pto.alloc_tile
+// CHECK: %[[OVERLAP_ALIAS:[0-9]+]] = pto.alloc_tile
+// CHECK: pto.tadd{{.*}}outs(%[[OVERLAP_PRODUCER]]
+// CHECK: pto.tadd ins(%[[OVERLAP_ALIAS]],
+// CHECK-LABEL: func.func @different_type(
+// CHECK: %[[TYPE_PRODUCER:[0-9]+]] = pto.alloc_tile
+// CHECK: %[[TYPE_ALIAS:[0-9]+]] = pto.alloc_tile
+// CHECK: pto.tadd{{.*}}outs(%[[TYPE_PRODUCER]]
+// CHECK: pto.tmov ins(%[[TYPE_ALIAS]]
+// CHECK-LABEL: func.func @disjoint(
+// CHECK: %[[DISJOINT_PRODUCER:[0-9]+]] = pto.alloc_tile
+// CHECK: %[[DISJOINT_OTHER:[0-9]+]] = pto.alloc_tile
+// CHECK: pto.tadd ins(%[[DISJOINT_OTHER]],
+// CHECK: pto.tadd{{.*}}outs(%[[DISJOINT_PRODUCER]]
+// CHECK-LABEL: func.func @dynamic_address(
+// CHECK: %[[DYNAMIC_PRODUCER:[0-9]+]] = pto.alloc_tile
+// CHECK: %[[DYNAMIC_ALIAS:[0-9]+]] = pto.alloc_tile
+// CHECK: pto.tadd{{.*}}outs(%[[DYNAMIC_PRODUCER]]
+// CHECK: pto.tadd ins(%[[DYNAMIC_ALIAS]],
+// CHECK-LABEL: func.func @logical_view_alias(
+// CHECK: %[[LOGICAL_STORAGE:[0-9]+]] = pto.alloc_tile
+// CHECK: %[[LOGICAL_VIEW:[0-9]+]] = pto.treshape %[[LOGICAL_STORAGE]]
+// CHECK: pto.tadd{{.*}}outs(%[[LOGICAL_STORAGE]]
+// CHECK: pto.tadd ins(%[[LOGICAL_VIEW]],

@@ -14,6 +14,7 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
@@ -22,6 +23,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <algorithm>
 #include <optional>
 
 namespace mlir {
@@ -79,6 +81,124 @@ static bool sharesAnyValue(ArrayRef<Value> lhs, ArrayRef<Value> rhs) {
   return false;
 }
 
+// OpScheduling runs before memory planning, but alloc_tile already carries
+// the physical UB slot in the DSv4/PTODSL IR.  Comparing only tile-handle SSA
+// values is unsound: two handles can denote the same slot (and may even have
+// different tile types).  Keep the distinction between a logical allocation
+// without an address and an explicitly addressed allocation: the former is a
+// fresh compiler allocation, while the latter needs byte-range reasoning.
+struct TileStorageRange {
+  enum class Kind { LogicalAllocation, Static, DynamicAddress };
+  Kind kind = Kind::LogicalAllocation;
+  Operation *allocation = nullptr;
+  int64_t address = 0;
+  std::optional<int64_t> bytes;
+};
+
+static std::optional<int64_t> getConstantI64(Value value) {
+  APInt constant;
+  if (!value || !matchPattern(value, m_ConstantInt(&constant)) ||
+      constant.getBitWidth() > 64)
+    return std::nullopt;
+  return constant.getSExtValue();
+}
+
+static std::optional<int64_t> getTileStorageBytes(pto::TileBufType type) {
+  if (!type ||
+      llvm::any_of(type.getShape(), [](int64_t dim) { return dim < 0; }))
+    return std::nullopt;
+
+  Type elementType = type.getElementType();
+  if (!elementType.isIntOrFloat())
+    return std::nullopt;
+  const int64_t bitWidth = elementType.getIntOrFloatBitWidth();
+  const int64_t elementBytes = std::max<int64_t>(1, (bitWidth + 7) / 8);
+  int64_t elements = 1;
+  for (int64_t dim : type.getShape()) {
+    if (__builtin_mul_overflow(elements, dim, &elements))
+      return std::nullopt;
+  }
+  int64_t bytes = 0;
+  if (__builtin_mul_overflow(elements, elementBytes, &bytes))
+    return std::nullopt;
+  return bytes;
+}
+
+static std::optional<TileStorageRange>
+resolveTileStorageRange(Value value, unsigned depth = 0) {
+  if (!value || depth > 8)
+    return std::nullopt;
+
+  Operation *def = value.getDefiningOp();
+  if (!def)
+    return std::nullopt;
+
+  if (auto alloc = dyn_cast<pto::AllocTileOp>(def)) {
+    TileStorageRange range;
+    range.allocation = alloc.getOperation();
+    if (!alloc.getAddr())
+      return range;
+    range.bytes = getTileStorageBytes(alloc.getResult().getType());
+    if (auto address = getConstantI64(alloc.getAddr())) {
+      range.kind = TileStorageRange::Kind::Static;
+      range.address = *address;
+    } else {
+      range.kind = TileStorageRange::Kind::DynamicAddress;
+    }
+    return range;
+  }
+
+  // Views and metadata-only casts preserve the underlying tile storage.  A
+  // whole-source range is intentionally used for subviews here; exact
+  // offsets belong to the later memory-location analysis and this pass only
+  // needs a sound obstruction to reordering.
+  if (auto view = dyn_cast<ViewLikeOpInterface>(def)) {
+    Value source = view.getViewSource();
+    if (source && isa<pto::TileBufType>(source.getType()))
+      return resolveTileStorageRange(source, depth + 1);
+  }
+  if (auto bitcast = dyn_cast<pto::BitcastOp>(def))
+    return resolveTileStorageRange(bitcast.getSrc(), depth + 1);
+  return std::nullopt;
+}
+
+static bool mayAliasTileStorage(Value lhs, Value rhs) {
+  if (!lhs || !rhs || lhs == rhs)
+    return lhs == rhs;
+
+  auto lhsRange = resolveTileStorageRange(lhs);
+  auto rhsRange = resolveTileStorageRange(rhs);
+  if (!lhsRange || !rhsRange)
+    return false; // No physical allocation is known; retain SSA reasoning.
+
+  if (lhsRange->allocation == rhsRange->allocation)
+    return true;
+  if (lhsRange->kind == TileStorageRange::Kind::LogicalAllocation ||
+      rhsRange->kind == TileStorageRange::Kind::LogicalAllocation)
+    return false;
+  if (lhsRange->kind == TileStorageRange::Kind::DynamicAddress ||
+      rhsRange->kind == TileStorageRange::Kind::DynamicAddress)
+    return true;
+  if (!lhsRange->bytes || !rhsRange->bytes || *lhsRange->bytes < 0 ||
+      *rhsRange->bytes < 0)
+    return true;
+
+  int64_t lhsEnd = 0;
+  int64_t rhsEnd = 0;
+  if (__builtin_add_overflow(lhsRange->address, *lhsRange->bytes, &lhsEnd) ||
+      __builtin_add_overflow(rhsRange->address, *rhsRange->bytes, &rhsEnd))
+    return true;
+  return lhsRange->address < rhsEnd && rhsRange->address < lhsEnd;
+}
+
+static bool sharesTileStorage(ArrayRef<Value> lhs, ArrayRef<Value> rhs) {
+  for (Value lhsValue : lhs)
+    for (Value rhsValue : rhs)
+      if (mayAliasTileStorage(lhsValue, rhsValue))
+        return true;
+  return false;
+}
+
 static SchedulingBarrierKind classifySchedulingBarrier(Operation *op) {
   if (op->hasTrait<OpTrait::IsTerminator>() || !op->getRegions().empty())
     return SchedulingBarrierKind::HardBoundary;
@@ -126,7 +246,10 @@ static bool hasTileDependency(Operation *opA, Operation *opB) {
 
   return sharesAnyValue(a.tileOutputs, b.tileInputs) ||
          sharesAnyValue(b.tileOutputs, a.tileInputs) ||
-         sharesAnyValue(a.tileOutputs, b.tileOutputs);
+         sharesAnyValue(a.tileOutputs, b.tileOutputs) ||
+         sharesTileStorage(a.tileOutputs, b.tileInputs) ||
+         sharesTileStorage(b.tileOutputs, a.tileInputs) ||
+         sharesTileStorage(a.tileOutputs, b.tileOutputs);
 }
 
 static bool crossesOperandDefinition(Operation *movingOp, Operation *candidate) {
