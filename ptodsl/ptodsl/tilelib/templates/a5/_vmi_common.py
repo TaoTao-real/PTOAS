@@ -905,6 +905,136 @@ def convert_vmi_constraint(
     )
 
 
+def one_row_chunk_streaming_vmi_constraint(**metadata) -> bool:
+    """Accept full contiguous one-row tiles made of native f32 chunks."""
+
+    operands = []
+    for name, shape in metadata.items():
+        if not name.endswith("_shape") or name.endswith("_valid_shape"):
+            continue
+        operand = name[:-6]
+        valid_shape = metadata.get(f"{operand}_valid_shape")
+        config = metadata.get(f"{operand}_config")
+        if not isinstance(shape, (tuple, list)) or not isinstance(
+            valid_shape, (tuple, list)
+        ):
+            return False
+        operands.append((tuple(shape), tuple(valid_shape), config))
+
+    if not operands:
+        return False
+    shape = operands[0][0]
+    return (
+        len(shape) == 2
+        and shape[0] == 1
+        and isinstance(shape[1], int)
+        and shape[1] > f32.lanes
+        and shape[1] % f32.lanes == 0
+        and all(
+            operand_shape == shape
+            and valid_shape == operand_shape
+            and config is not None
+            and config.b_layout == "row_major"
+            and config.s_layout == "none_box"
+            for operand_shape, valid_shape, config in operands
+        )
+    )
+
+
+def _is_single_compact_row_state_metadata(shape, valid_shape, config) -> bool:
+    if (
+        valid_shape != (1, 1)
+        or config is None
+        or config.s_layout != "none_box"
+    ):
+        return False
+    return (shape == (1, 8) and config.b_layout == "row_major") or (
+        shape == (8, 1) and config.b_layout == "col_major"
+    )
+
+
+def _is_single_compact_row_state_spec(spec) -> bool:
+    """Check the compact-state contract on a traced TileSpec."""
+
+    return spec.effective_valid_shape == (1, 1) and (
+        (spec.shape == (1, 8) and spec.b_layout == "row_major")
+        or (spec.shape == (8, 1) and spec.b_layout == "col_major")
+    )
+
+
+def one_row_reduce_streaming_vmi_constraint(
+    src_shape=(),
+    src_valid_shape=(),
+    workspace_shape=(),
+    workspace_valid_shape=(),
+    dst_shape=(),
+    dst_valid_shape=(),
+    src_dtype=None,
+    workspace_dtype=None,
+    dst_dtype=None,
+    src_config=None,
+    workspace_config=None,
+    dst_config=None,
+    **_,
+):
+    """Accept one full row reduced into a 32-byte aligned scalar tile."""
+
+    return (
+        src_dtype == workspace_dtype == dst_dtype == "f32"
+        and len(src_shape) == len(src_valid_shape) == 2
+        and src_shape == src_valid_shape
+        and src_shape[0] == 1
+        and isinstance(src_shape[1], int)
+        and src_shape[1] > f32.lanes
+        and src_shape[1] % f32.lanes == 0
+        and workspace_shape == src_shape
+        and workspace_valid_shape == workspace_shape
+        and _is_single_compact_row_state_metadata(
+            dst_shape, dst_valid_shape, dst_config
+        )
+        and src_config is not None
+        and src_config.b_layout == "row_major"
+        and src_config.s_layout == "none_box"
+        and workspace_config is not None
+        and workspace_config.b_layout == "row_major"
+        and workspace_config.s_layout == "none_box"
+        and _has_null_pad(dst_config.pad_value)
+    )
+
+
+def one_row_expand_streaming_vmi_constraint(
+    src_shape=(),
+    src_valid_shape=(),
+    src_config=None,
+    row_values_shape=(),
+    row_values_valid_shape=(),
+    row_values_config=None,
+    dst_shape=(),
+    dst_valid_shape=(),
+    dst_config=None,
+    **_,
+):
+    """Accept a full one-row stream and one aligned compact scalar."""
+
+    return (
+        len(src_shape) == len(src_valid_shape) == 2
+        and src_shape == src_valid_shape == dst_shape == dst_valid_shape
+        and src_shape[0] == 1
+        and isinstance(src_shape[1], int)
+        and src_shape[1] > f32.lanes
+        and src_shape[1] % f32.lanes == 0
+        and _is_single_compact_row_state_metadata(
+            row_values_shape, row_values_valid_shape, row_values_config
+        )
+        and src_config is not None
+        and src_config.b_layout == "row_major"
+        and src_config.s_layout == "none_box"
+        and dst_config is not None
+        and dst_config.b_layout == "row_major"
+        and dst_config.s_layout == "none_box"
+    )
+
+
 # Reduce kind -> (merge op, identity element). The identity mirrors pto-isa
 # `TColReduceOps.hpp` `InstrOp::InitVal` / a5 `Padding<T>::Min/Max`:
 #   max -> vmax, init -inf (Padding<T>::Min)
@@ -2048,6 +2178,101 @@ def emit_row_reduce_streaming_vmi(
             stride=row_stride.value,
             group=1,
         )
+
+
+def emit_one_row_reduce_streaming_vmi(
+    src: _TileProxy,
+    workspace: _TileProxy,
+    dst: _TileProxy,
+    *,
+    kind: str,
+) -> None:
+    """Reduce one multi-VL row with a single physical-vector accumulator."""
+
+    if kind not in {"sum", "max"}:
+        raise ValueError(f"unsupported one-row reduction kind {kind!r}")
+    if src.element_type != f32 or workspace.element_type != f32 or dst.element_type != f32:
+        raise ValueError("one-row streaming reduction supports only f32")
+    if (
+        src._spec.shape != src._spec.effective_valid_shape
+        or src._spec.shape[0] != 1
+        or src._spec.shape[1] <= f32.lanes
+        or src._spec.shape[1] % f32.lanes != 0
+        or workspace._spec.shape != src._spec.shape
+        or workspace._spec.effective_valid_shape != workspace._spec.shape
+        or not _is_single_compact_row_state_spec(dst._spec)
+    ):
+        raise ValueError("invalid one-row streaming reduction tile contract")
+
+    _prepare_tile_access(src, dst)
+    full_mask = _create_mask_lanes(f32.lanes, f32.lanes, f32, trace=src._trace)
+    identity = 0.0 if kind == "sum" else float("-inf")
+    accumulator = _vconstant(identity, f32, lanes=f32.lanes)
+    loop_cm = for_(
+        0,
+        src._spec.shape[1],
+        step=f32.lanes,
+        state={"accumulator": accumulator},
+    )
+    with loop_cm as loop:
+        value = _vload_linear(src, loop.iv, lanes=f32.lanes)
+        if kind == "sum":
+            next_accumulator = _vadd(loop.state.accumulator, value, full_mask)
+        else:
+            next_accumulator = _vmax(loop.state.accumulator, value, full_mask)
+        loop.yield_state(accumulator=next_accumulator)
+
+    final_accumulator = loop.results[0]
+    if kind == "sum":
+        reduced = _vreduce_add(final_accumulator, full_mask)
+    else:
+        reduced = _vreduce_max(final_accumulator, full_mask)
+    scalar_mask = _create_mask_lanes(1, 1, f32, trace=src._trace)
+    _vstore_linear(reduced, dst, 0, scalar_mask)
+
+
+def emit_one_row_expand_binary_streaming_vmi(
+    row_tensor: _TileProxy,
+    compact_row_state: _TileProxy,
+    output: _TileProxy,
+    operation: str,
+) -> None:
+    """Apply one compact scalar to each native chunk of one full row."""
+
+    operations = {"sub": _vsub, "mul": _vmul, "div": _vdiv}
+    if operation not in operations:
+        raise ValueError(f"unsupported one-row expand operation {operation!r}")
+    if (
+        row_tensor.element_type != f32
+        or compact_row_state.element_type != f32
+        or output.element_type != f32
+        or row_tensor._spec.shape != row_tensor._spec.effective_valid_shape
+        or output._spec.shape != row_tensor._spec.shape
+        or output._spec.effective_valid_shape != output._spec.shape
+        or row_tensor._spec.shape[0] != 1
+        or row_tensor._spec.shape[1] <= f32.lanes
+        or row_tensor._spec.shape[1] % f32.lanes != 0
+        or not _is_single_compact_row_state_spec(compact_row_state._spec)
+    ):
+        raise ValueError("invalid one-row expand streaming tile contract")
+
+    _prepare_tile_access(row_tensor, compact_row_state, output)
+    full_mask = _create_mask_lanes(f32.lanes, f32.lanes, f32, trace=row_tensor._trace)
+    state_ptr = compact_row_state._trace.ensure_tile_ptr(compact_row_state)
+    zero = compact_row_state._trace.index_const(0)
+    broadcast = _wrap_vreg(
+        _vmi_builder.vload(
+            state_ptr.value,
+            zero.value,
+            size=f32.lanes,
+            dist_mode="brc",
+        ),
+        f32,
+    )
+    with for_(0, row_tensor._spec.shape[1], step=f32.lanes) as offset:
+        value = _vload_linear(row_tensor, offset, lanes=f32.lanes)
+        result = operations[operation](value, broadcast, full_mask)
+        _vstore_linear(result, output, offset, full_mask)
 
 
 def emit_row_expand_binary_vmi(

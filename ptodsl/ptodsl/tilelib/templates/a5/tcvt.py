@@ -1087,6 +1087,7 @@ from ._vmi_common import (  # noqa: E402
     canonical_vmi_template,
     convert_vmi_constraint,
     emit_convert_vmi,
+    one_row_chunk_streaming_vmi_constraint,
 )
 
 
@@ -1111,4 +1112,31 @@ from ._vmi_common import (  # noqa: E402
     min_row_bytes=128,
 )
 def vmi_tcvt(src: pto.Tile, dst: pto.Tile):
+    emit_convert_vmi(src, dst)
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="tcvt",
+    name="vmi_tcvt_one_row_streaming",
+    dtypes=(
+        ("bf16", "f32"),
+        ("f16", "f32"),
+        ("i32", "f32"),
+        ("f32", "bf16"),
+        ("f32", "f16"),
+        ("f32", "i32"),
+        ("i32", "f16"),
+    ),
+    context_constraints={
+        "round_mode": ("RINT", "ROUND", "TRUNC"),
+        "sat_mode": ("DEFAULT", "ON", "OFF"),
+    },
+    constraints=(convert_vmi_constraint, one_row_chunk_streaming_vmi_constraint),
+    min_row_bytes=128,
+    priority=101,
+    candidate_id=1001,
+    resource_chunk_streaming=True,
+)
+def vmi_tcvt_one_row_streaming(src: pto.Tile, dst: pto.Tile):
     emit_convert_vmi(src, dst)

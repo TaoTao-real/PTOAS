@@ -16,8 +16,10 @@ template_trowsum = register_rowsum()
 from ._vmi_common import (  # noqa: E402
     Tile,
     canonical_vmi_template,
+    emit_one_row_reduce_streaming_vmi,
     emit_row_reduce_vmi,
     emit_row_reduce_streaming_vmi,
+    one_row_reduce_streaming_vmi_constraint,
     row_reduce_vmi_constraint,
     row_reduce_streaming_vmi_constraint,
     sinkhorn_row_reduce_streaming_vmi_constraint,
@@ -72,3 +74,25 @@ def vmi_trowsum_row(src: Tile, workspace: Tile, dst: Tile):
 )
 def vmi_trowsum_sinkhorn_row(src: Tile, workspace: Tile, dst: Tile):
     emit_row_reduce_streaming_vmi(src, workspace, dst, kind="sum")
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="trowsum",
+    name="vmi_trowsum_one_row_streaming",
+    requires_full_physical_row=False,
+    dtypes=(("f32", "f32", "f32"),),
+    constraints=(one_row_reduce_streaming_vmi_constraint,),
+    tags=(
+        "row_streaming",
+        "aligned_compact_result",
+        "supports_partial_valid_shape",
+    ),
+    priority=103,
+    candidate_id=1003,
+    resource_scope="row",
+    resource_vector_values=3,
+    resource_chunk_streaming=True,
+)
+def vmi_trowsum_one_row_streaming(src: Tile, workspace: Tile, dst: Tile):
+    emit_one_row_reduce_streaming_vmi(src, workspace, dst, kind="sum")

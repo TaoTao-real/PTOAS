@@ -22,7 +22,9 @@ template_trowexpanddiv = register_row_expand_binary(
 
 from ._vmi_common import (  # noqa: E402
     canonical_vmi_template,
+    emit_one_row_expand_binary_streaming_vmi,
     emit_row_expand_binary_vmi,
+    one_row_expand_streaming_vmi_constraint,
     row_expand_binary_vmi_constraint,
     sinkhorn_row_expand_vmi_constraint,
 )
@@ -55,3 +57,24 @@ def vmi_trowexpanddiv_sinkhorn_row_loop(
     src: pto.Tile, row_values: pto.Tile, dst: pto.Tile
 ):
     emit_row_expand_binary_vmi(src, row_values, dst, "div")
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="trowexpanddiv",
+    name="vmi_trowexpanddiv_one_row_streaming",
+    dtypes=(("f32", "f32", "f32"),),
+    context_constraints={"precisionType": ("default",)},
+    constraints=(one_row_expand_streaming_vmi_constraint,),
+    requires_full_physical_row=False,
+    tags=("row_streaming", "supports_partial_valid_shape"),
+    priority=103,
+    candidate_id=1003,
+    resource_scope="row",
+    resource_vector_values=3,
+    resource_chunk_streaming=True,
+)
+def vmi_trowexpanddiv_one_row_streaming(
+    src: pto.Tile, row_values: pto.Tile, dst: pto.Tile
+):
+    emit_one_row_expand_binary_streaming_vmi(src, row_values, dst, "div")
