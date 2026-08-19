@@ -1049,6 +1049,45 @@ static bool hasStaticCompactRowReduceShape(Operation *tileOp) {
           dst.blayout == static_cast<int32_t>(pto::BLayout::ColMajor));
 }
 
+static bool hasStaticCompactElementwiseShape(Operation *tileOp) {
+  StringRef opName = getTileOpName(tileOp);
+  if (!llvm::StringSwitch<bool>(opName)
+           .Cases("tadd", "tadds", "tmuls", "tsqrt", true)
+           .Default(false))
+    return false;
+
+  std::optional<SmallVector<int64_t, 2>> commonShape;
+  std::optional<SmallVector<int64_t, 2>> commonValidShape;
+  for (Value operand : tileOp->getOperands()) {
+    auto info = buildOperandTypeInfo(operand);
+    if (!info)
+      return false;
+    if (info->kind == OperandKind::Scalar)
+      continue;
+    if (info->kind != OperandKind::Tile || info->dtype != "f32" ||
+        info->blayout != static_cast<int32_t>(pto::BLayout::RowMajor) ||
+        info->tileShape.size() != 2 || info->tileValidShape.size() != 2)
+      return false;
+    if (!commonShape) {
+      commonShape = info->tileShape;
+      commonValidShape = info->tileValidShape;
+    } else if (*commonShape != info->tileShape ||
+               *commonValidShape != info->tileValidShape) {
+      return false;
+    }
+  }
+
+  if (!commonShape || !commonValidShape)
+    return false;
+  const auto &shape = *commonShape;
+  const auto &valid = *commonValidShape;
+  return !ShapedType::isDynamic(shape[0]) &&
+         !ShapedType::isDynamic(shape[1]) &&
+         !ShapedType::isDynamic(valid[0]) &&
+         !ShapedType::isDynamic(valid[1]) && valid[0] == shape[0] &&
+         valid[1] > 0 && valid[1] <= shape[1] && valid[1] <= 64;
+}
+
 static bool isHardBoundaryFallbackOp(Operation *tileOp) {
   auto pipeOp = dyn_cast<pto::OpPipeInterface>(tileOp);
   if (!pipeOp || pipeOp.getPipe() != pto::PIPE::PIPE_V)
@@ -1082,7 +1121,8 @@ static CandidateSelection selectTemplateCandidate(Operation *tileOp,
   const bool hardBoundary = isHardBoundaryFallbackOp(tileOp);
   if (!hardBoundary && isVectorPipeTileOp(tileOp) &&
       (hasStaticFullTileValidShape(tileOp) ||
-       hasStaticCompactRowReduceShape(tileOp))) {
+       hasStaticCompactRowReduceShape(tileOp) ||
+       hasStaticCompactElementwiseShape(tileOp))) {
     for (DictionaryAttr candidate : parsedCandidates) {
       if (candidateHasTag(candidate, "vmi"))
         return CandidateSelection{candidate, /*selectedVMI=*/true,

@@ -22,6 +22,7 @@ template_tadds = register_scalar_binary(
 
 
 from ._vmi_common import (  # noqa: E402
+    _compact_elementwise_vmi_legal,
     _vadds as _vmi_vadds,
     canonical_vmi_template,
     emit_elementwise_vmi,
@@ -34,6 +35,7 @@ from ._vmi_common import (  # noqa: E402
     op="tadds",
     name="vmi_tadds",
     dtypes=(("f32", "f32", "f32"),),
+    constraints=(_compact_elementwise_vmi_legal,),
 )
 def vmi_tadds(src: pto.Tile, scalar: f32, dst: pto.Tile):
     emit_elementwise_vmi(

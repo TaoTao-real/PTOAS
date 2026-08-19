@@ -900,7 +900,15 @@ class TileTemplate:
         converted_specs = {
             name: _coerce_parameter_spec(
                 spec,
-                allow_valid_shape_mismatch=self.op in {"pto.trowsum", "pto.trowmax"},
+                allow_valid_shape_mismatch=self.op
+                in {
+                    "pto.tadd",
+                    "pto.tadds",
+                    "pto.tmuls",
+                    "pto.tsqrt",
+                    "pto.trowsum",
+                    "pto.trowmax",
+                },
             )
             for name, spec in parameter_specs.items()
         }

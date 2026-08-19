@@ -309,6 +309,63 @@ def check_provider_helper() -> None:
         ).mlir_text()
         expect(expected_op in text, f"{op_name} should lower to {expected_op}")
 
+    compact_elementwise = {
+        **raw_tile_spec,
+        "shape": [32, 8],
+        "valid_shape": [32, 1],
+    }
+    compact_tadd = instantiate_candidate(
+        target="a5",
+        op_name="pto.tadd",
+        operand_specs=[compact_elementwise] * 3,
+        provider_module="ptodsl.vmi_tilelib",
+        context_attrs={},
+    ).mlir_text()
+    expect(
+        compact_tadd.count("scf.for") == 1,
+        "compact tadd should preserve one logical row loop",
+    )
+    expect(
+        "!pto.vmi.vreg<1xf32>" in compact_tadd,
+        "compact tadd should use its one valid column as the logical width",
+    )
+    expect(
+        "arith.muli" in compact_tadd,
+        "compact tadd must retain the physical row stride",
+    )
+    for op_name, expected_op in {
+        "tadds": "pto.vmi.vadds",
+        "tmuls": "pto.vmi.vmuls",
+    }.items():
+        text = instantiate_candidate(
+            target="a5",
+            op_name=f"pto.{op_name}",
+            operand_specs=[compact_elementwise, scalar_spec, compact_elementwise],
+            provider_module="ptodsl.vmi_tilelib",
+            context_attrs={},
+        ).mlir_text()
+        expect(expected_op in text, f"compact {op_name} should lower to {expected_op}")
+    compact_sqrt = instantiate_candidate(
+        target="a5",
+        op_name="pto.tsqrt",
+        operand_specs=[compact_elementwise, compact_elementwise],
+        provider_module="ptodsl.vmi_tilelib",
+        context_attrs={"precisionType": "default"},
+    ).mlir_text()
+    expect("pto.vmi.vsqrt" in compact_sqrt, "compact tsqrt should lower to VMI")
+    partial_rows = {**compact_elementwise, "valid_shape": [31, 1]}
+    expect_raises(
+        lambda: instantiate_candidate(
+            target="a5",
+            op_name="pto.tadd",
+            operand_specs=[partial_rows] * 3,
+            provider_module="ptodsl.vmi_tilelib",
+            context_attrs={},
+        ),
+        LookupError,
+        "no legal PTODSL VMI candidate",
+    )
+
     tdivs = instantiate_candidate(
         target="a5",
         op_name="pto.tdivs",

@@ -536,6 +536,54 @@ def canonical_vmi_template(
     return decorator
 
 
+def _compact_elementwise_vmi_legal(**context) -> bool:
+    """Accept full-shape forms and static f32 column padding within one VL."""
+    tile_shapes = []
+    tile_valid_shapes = []
+    tile_configs = []
+    shape_keys = sorted(
+        key
+        for key, value in context.items()
+        if key.endswith("_shape")
+        and not key.endswith("_valid_shape")
+        and isinstance(value, tuple)
+        and len(value) == 2
+    )
+    for key in shape_keys:
+        prefix = key[: -len("_shape")]
+        if context.get(f"{prefix}_kind") != "tile":
+            continue
+        tile_shapes.append(context[key])
+        tile_valid_shapes.append(context.get(f"{prefix}_valid_shape"))
+        tile_configs.append(context.get(f"{prefix}_config"))
+
+    if not tile_shapes or any(shape != tile_shapes[0] for shape in tile_shapes):
+        return False
+    if any(valid != tile_valid_shapes[0] for valid in tile_valid_shapes):
+        return False
+    if any(
+        config is None
+        or config.b_layout != "row_major"
+        or config.s_layout != "none_box"
+        for config in tile_configs
+    ):
+        return False
+
+    shape = tile_shapes[0]
+    valid = tile_valid_shapes[0]
+    if valid == shape:
+        return True
+    rows, cols = shape
+    return (
+        all(dtype == "f32" for dtype in context.get("operand_dtypes", ()))
+        and isinstance(valid, tuple)
+        and len(valid) == 2
+        and valid[0] == rows
+        and 0 < valid[1] <= cols
+        and valid[1] <= f32.lanes
+    )
+
+
 def emit_elementwise_vmi(
     dst: _TileProxy,
     sources: Sequence[_TileProxy],
@@ -548,23 +596,38 @@ def emit_elementwise_vmi(
 
     if not sources:
         raise ValueError("emit_elementwise_vmi requires at least one source tile")
+    valid_shape = dst._spec.valid_shape or dst._spec.shape
     if logical_lanes is None:
-        logical_lanes = dst._spec.shape[1]
+        logical_lanes = valid_shape[1]
     _validate_elementwise_tiles(
         dst,
         sources,
         logical_lanes=logical_lanes,
         allowed_dtypes=allowed_dtypes,
     )
-    block_map = CanonicalBlockMap.from_tile(dst, logical_lanes=logical_lanes)
-
     _prepare_tile_access(*sources, dst)
-    mask = _create_mask(block_map, dst.element_type, trace=dst._trace)
-    with for_(0, block_map.logical_block_count, step=1) as logical_block:
-        coordinate = block_map.coordinate(logical_block)
-        values = tuple(_vload(source, coordinate) for source in sources)
+    if valid_shape == dst._spec.shape:
+        block_map = CanonicalBlockMap.from_tile(dst, logical_lanes=logical_lanes)
+        mask = _create_mask(block_map, dst.element_type, trace=dst._trace)
+        with for_(0, block_map.logical_block_count, step=1) as logical_block:
+            coordinate = block_map.coordinate(logical_block)
+            values = tuple(_vload(source, coordinate) for source in sources)
+            result = compute(values, mask)
+            _vstore(result, dst, coordinate, mask)
+        return
+
+    valid_rows, valid_cols = valid_shape
+    physical_cols = dst._spec.shape[1]
+    mask = _create_mask_lanes(
+        valid_cols, valid_cols, dst.element_type, trace=dst._trace
+    )
+    with for_(0, valid_rows, step=1) as row:
+        offset = index_mul(row, physical_cols)
+        values = tuple(
+            _vload_linear(source, offset, lanes=valid_cols) for source in sources
+        )
         result = compute(values, mask)
-        _vstore(result, dst, coordinate, mask)
+        _vstore_linear(result, dst, offset, mask)
 
 
 def _validate_elementwise_tiles(
@@ -583,6 +646,14 @@ def _validate_elementwise_tiles(
         )
     if dst._spec.b_layout != "row_major":
         raise ValueError("VMI elementwise candidates require row-major tiles")
+    dst_valid_shape = dst._spec.valid_shape or dst._spec.shape
+    if dst_valid_shape != dst._spec.shape:
+        if dst.element_type != f32:
+            raise ValueError("VMI compact elementwise candidates require f32")
+        if dst_valid_shape[0] != dst._spec.shape[0]:
+            raise ValueError("VMI elementwise candidates do not support partial rows")
+        if not 0 < dst_valid_shape[1] <= min(dst._spec.shape[1], f32.lanes):
+            raise ValueError("VMI compact elementwise valid columns are out of range")
     for source in sources:
         if not isinstance(source, _TileProxy):
             raise TypeError("elementwise VMI candidate sources must be traced Tiles")
@@ -598,6 +669,8 @@ def _validate_elementwise_tiles(
             )
         if source._spec.b_layout != dst._spec.b_layout:
             raise ValueError("elementwise VMI candidate layouts must match")
+        if (source._spec.valid_shape or source._spec.shape) != dst_valid_shape:
+            raise ValueError("VMI elementwise candidate valid shapes must match")
 
 
 def _add(values: Sequence[_VectorValue], mask: _MaskValue) -> _VectorValue:

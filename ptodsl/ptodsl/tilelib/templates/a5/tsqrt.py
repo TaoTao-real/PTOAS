@@ -119,6 +119,7 @@ def template_tsqrt_high_precision(src: pto.Tile, dst: pto.Tile):
 
 
 from ._vmi_common import (  # noqa: E402
+    _compact_elementwise_vmi_legal,
     _context_attr,
     canonical_vmi_template,
     emit_sqrt_high_precision_vmi,
@@ -132,6 +133,7 @@ from ._vmi_common import (  # noqa: E402
     name="vmi_tsqrt",
     dtypes=(("f16", "f16"), ("f32", "f32")),
     context_constraints={"precisionType": ("default", "high_precision")},
+    constraints=(_compact_elementwise_vmi_legal,),
 )
 def vmi_tsqrt(src: pto.Tile, dst: pto.Tile):
     if _context_attr(src, "precisionType", "default") == "high_precision":

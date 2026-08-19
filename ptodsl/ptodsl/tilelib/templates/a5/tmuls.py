@@ -22,6 +22,7 @@ template_tmuls = register_scalar_binary(
 
 
 from ._vmi_common import (  # noqa: E402
+    _compact_elementwise_vmi_legal,
     _vmuls as _vmi_vmuls,
     canonical_vmi_template,
     emit_elementwise_vmi,
@@ -34,6 +35,7 @@ from ._vmi_common import (  # noqa: E402
     op="tmuls",
     name="vmi_tmuls",
     dtypes=(("f32", "f32", "f32"),),
+    constraints=(_compact_elementwise_vmi_legal,),
 )
 def vmi_tmuls(src: pto.Tile, scale: f32, dst: pto.Tile):
     emit_elementwise_vmi(
