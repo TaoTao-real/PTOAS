@@ -1,10 +1,12 @@
 // Copyright (c) 2026 Huawei Technologies Co., Ltd.
-// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
-// CANN Open Software License Agreement Version 2.0 (the "License").
-// Please refer to the License for details. You may not use this file except in compliance with the License.
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
-// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
-// See LICENSE in the root of the software repository for the full text of the License.
+// This program is free software, you can redistribute it and/or modify it under
+// the terms and conditions of CANN Open Software License Agreement Version 2.0
+// (the "License"). Please refer to the License for details. You may not use
+// this file except in compliance with the License. THIS SOFTWARE IS PROVIDED ON
+// AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS
+// FOR A PARTICULAR PURPOSE. See LICENSE in the root of the software repository
+// for the full text of the License.
 
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
@@ -13,6 +15,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 
@@ -44,6 +47,7 @@ struct FusionRegionStoreContext {
   Block *parentBlock = nullptr;
   Operation *regionOp = nullptr;
   llvm::DenseSet<Value> yieldedValues;
+  SmallVector<Value, 8> externallyObservedAddresses;
 };
 
 static bool areEquivalentValues(Value lhs, Value rhs);
@@ -102,8 +106,36 @@ static bool areEquivalentValues(Value lhs, Value rhs) {
   return areEquivalentOperations(lhs.getDefiningOp(), rhs.getDefiningOp());
 }
 
+static bool isAllTruePatternMask(Value value) {
+  Operation *op = value ? value.getDefiningOp() : nullptr;
+  if (!op)
+    return false;
+  if (isa<pto::PsetB8Op, pto::PsetB16Op, pto::PsetB32Op, pto::PgeB8Op,
+          pto::PgeB16Op, pto::PgeB32Op>(op)) {
+    auto pattern = op->getAttrOfType<StringAttr>("pattern");
+    return pattern && pattern.getValue() == "PAT_ALL";
+  }
+
+  int64_t physicalLanes = 0;
+  if (isa<pto::PltB8Op>(op))
+    physicalLanes = 256;
+  else if (isa<pto::PltB16Op>(op))
+    physicalLanes = 128;
+  else if (isa<pto::PltB32Op>(op))
+    physicalLanes = 64;
+  else
+    return false;
+
+  APInt activeLanes;
+  return matchPattern(op->getOperand(0), m_ConstantInt(&activeLanes)) &&
+         activeLanes.getSExtValue() >= physicalLanes;
+}
+
 static bool areEquivalentMaskValues(Value lhs, Value rhs) {
-  return areEquivalentValues(lhs, rhs);
+  if (areEquivalentValues(lhs, rhs))
+    return true;
+  return lhs && rhs && lhs.getType() == rhs.getType() &&
+         isAllTruePatternMask(lhs) && isAllTruePatternMask(rhs);
 }
 
 static bool isPureNoRegionOp(Operation *op) {
@@ -116,8 +148,18 @@ static bool isSupportedLoopPreludeOp(Operation *op) {
   return isPureNoRegionOp(op);
 }
 
+static bool isAddressScaffoldOp(Operation *op) {
+  return isa<pto::PointerCastOp, pto::CastPtrOp, pto::AddPtrOp, pto::BindTileOp,
+             pto::TileBufAddrOp, pto::SubViewOp, memref::SubViewOp,
+             memref::CastOp, memref::ReshapeOp, memref::ReinterpretCastOp,
+             memref::CollapseShapeOp, memref::ExpandShapeOp,
+             memref::MemorySpaceCastOp, memref::TransposeOp>(op);
+}
+
 static bool isSupportedLeafOp(Operation *op) {
   if (isa<pto::VldsOp, pto::VstsOp>(op))
+    return true;
+  if (isAddressScaffoldOp(op))
     return true;
   return isPureNoRegionOp(op);
 }
@@ -200,7 +242,44 @@ static Value getCanonicalTrackedValue(Value value) {
   return value;
 }
 
-static bool normalizeFusionRegionYieldFrontier(pto::FusionRegionOp fusionRegion) {
+static Value getCanonicalBufferAddress(Value value) {
+  value = getCanonicalTrackedValue(value);
+  if (!value)
+    return {};
+
+  if (auto alloc = value.getDefiningOp<pto::AllocTileOp>())
+    return alloc.getAddr();
+  if (auto cast = value.getDefiningOp<pto::CastPtrOp>())
+    return getCanonicalBufferAddress(cast.getInput());
+  if (auto pointerCast = value.getDefiningOp<pto::PointerCastOp>()) {
+    if (pointerCast.getAddrs().size() == 1)
+      return getCanonicalTrackedValue(pointerCast.getAddrs().front());
+  }
+  return value;
+}
+
+static bool aliasesYieldedBuffer(Value buffer,
+                                 const llvm::DenseSet<Value> &yieldedValues) {
+  Value address = getCanonicalBufferAddress(buffer);
+  if (!address)
+    return false;
+  return llvm::any_of(yieldedValues, [&](Value yielded) {
+    Value yieldedAddress = getCanonicalBufferAddress(yielded);
+    return yieldedAddress && areEquivalentValues(address, yieldedAddress);
+  });
+}
+
+static bool aliasesAnyAddress(Value buffer, ArrayRef<Value> addresses) {
+  Value address = getCanonicalBufferAddress(buffer);
+  if (!address)
+    return false;
+  return llvm::any_of(addresses, [&](Value candidate) {
+    return candidate && areEquivalentValues(address, candidate);
+  });
+}
+
+static bool
+normalizeFusionRegionYieldFrontier(pto::FusionRegionOp fusionRegion) {
   Block &body = fusionRegion.getBody().front();
   auto yieldOp = dyn_cast<pto::YieldOp>(body.getTerminator());
   if (!yieldOp)
@@ -223,7 +302,8 @@ static bool normalizeFusionRegionYieldFrontier(pto::FusionRegionOp fusionRegion)
     if (regionResult.getType() != normalized.getType())
       regionResult.setType(normalized.getType());
 
-    if (originalResultType != normalized.getType() && !regionResult.use_empty()) {
+    if (originalResultType != normalized.getType() &&
+        !regionResult.use_empty()) {
       OpBuilder builder(fusionRegion);
       builder.setInsertionPointAfter(fusionRegion);
       auto rebound = builder.create<pto::BindTileOp>(
@@ -244,7 +324,8 @@ static Operation *getTopLevelAncestorInBlock(Operation *op, Block *block) {
   return nullptr;
 }
 
-static Region *getDirectRegionUnderAncestor(Operation *op, Operation *ancestor) {
+static Region *getDirectRegionUnderAncestor(Operation *op,
+                                            Operation *ancestor) {
   for (Operation *cur = op; cur; cur = cur->getParentOp()) {
     Operation *parent = cur->getParentOp();
     if (parent == ancestor)
@@ -257,7 +338,8 @@ static bool areMutuallyExclusiveByIfRegion(Operation *lhs, Operation *rhs) {
   if (!lhs || !rhs)
     return false;
 
-  for (Operation *ancestor = lhs; ancestor; ancestor = ancestor->getParentOp()) {
+  for (Operation *ancestor = lhs; ancestor;
+       ancestor = ancestor->getParentOp()) {
     auto ifOp = dyn_cast<scf::IfOp>(ancestor);
     if (!ifOp)
       continue;
@@ -270,6 +352,23 @@ static bool areMutuallyExclusiveByIfRegion(Operation *lhs, Operation *rhs) {
       return true;
   }
 
+  return false;
+}
+
+static bool isLexicallyAfter(Operation *anchor, Operation *candidate) {
+  if (!anchor || !candidate || anchor == candidate)
+    return false;
+  for (Operation *anchorAncestor = anchor; anchorAncestor;
+       anchorAncestor = anchorAncestor->getParentOp()) {
+    for (Operation *candidateAncestor = candidate; candidateAncestor;
+         candidateAncestor = candidateAncestor->getParentOp()) {
+      if (anchorAncestor == candidateAncestor)
+        continue;
+      if (anchorAncestor->getBlock() != candidateAncestor->getBlock())
+        continue;
+      return anchorAncestor->isBeforeInBlock(candidateAncestor);
+    }
+  }
   return false;
 }
 
@@ -289,6 +388,24 @@ buildFusionRegionStoreContext(pto::FusionRegionOp fusionRegion) {
     Value canonical = getCanonicalTrackedValue(yielded);
     if (canonical)
       context.yieldedValues.insert(canonical);
+  }
+
+  if (auto func = fusionRegion->getParentOfType<func::FuncOp>()) {
+    func.walk([&](pto::PointerCastOp pointerCast) {
+      if (fusionRegion->isProperAncestor(pointerCast) ||
+          !isLexicallyAfter(fusionRegion, pointerCast))
+        return;
+      for (Value address : pointerCast.getAddrs())
+        context.externallyObservedAddresses.push_back(
+            getCanonicalTrackedValue(address));
+    });
+    func.walk([&](pto::AllocTileOp alloc) {
+      if (fusionRegion->isProperAncestor(alloc) || !alloc.getAddr() ||
+          !isLexicallyAfter(fusionRegion, alloc))
+        return;
+      context.externallyObservedAddresses.push_back(
+          getCanonicalTrackedValue(alloc.getAddr()));
+    });
   }
 
   return context;
@@ -381,9 +498,11 @@ static Value inferVPTOLoadUserMask(pto::VldsOp load) {
 
 static int findTrackedStoreIndex(ArrayRef<TrackedStore> stores, Value base,
                                  ArrayRef<Value> indices, Value mask) {
+  Value canonicalBaseAddress = getCanonicalBufferAddress(base);
   for (int index = static_cast<int>(stores.size()) - 1; index >= 0; --index) {
     const TrackedStore &store = stores[index];
-    if (areEquivalentValues(store.base, base) &&
+    if (areEquivalentValues(getCanonicalBufferAddress(store.base),
+                            canonicalBaseAddress) &&
         areEquivalentValueRanges(store.indices, indices) &&
         areEquivalentMaskValues(store.mask, mask)) {
       return index;
@@ -398,8 +517,10 @@ static void pruneTrackedStoresForLoadBase(SmallVectorImpl<TrackedStore> &stores,
     stores.clear();
     return;
   }
+  Value canonicalBaseAddress = getCanonicalBufferAddress(base);
   llvm::erase_if(stores, [&](const TrackedStore &store) {
-    return areEquivalentValues(store.base, base);
+    return areEquivalentValues(getCanonicalBufferAddress(store.base),
+                               canonicalBaseAddress);
   });
 }
 
@@ -415,7 +536,14 @@ static bool shouldElideTailStore(
     return false;
   // Yielded frontier is still region-observable in v1, so its final
   // materializing store must be preserved even if there is no reload.
-  if (context.yieldedValues.contains(canonicalBase))
+  if (context.yieldedValues.contains(canonicalBase) ||
+      aliasesYieldedBuffer(canonicalBase, context.yieldedValues) ||
+      aliasesAnyAddress(canonicalBase, context.externallyObservedAddresses))
+    return false;
+
+  APInt staticAddress;
+  if (!matchPattern(getCanonicalBufferAddress(canonicalBase),
+                    m_ConstantInt(&staticAddress)))
     return false;
 
   for (OpOperand &use : canonicalBase.getUses()) {
@@ -521,7 +649,7 @@ static bool elideLoadStoreRoundTripsInLeafBody(
       continue;
     }
 
-    if (!isPureNoRegionOp(&op))
+    if (!isPureNoRegionOp(&op) && !isAddressScaffoldOp(&op))
       trackedStores.clear();
   }
 
@@ -591,14 +719,16 @@ struct PTOFusionLoadStoreElisionPass
     };
 
     func.walk([&](pto::VecScopeOp vecscope) {
-      if (auto fusionRegion = vecscope->getParentOfType<pto::FusionRegionOp>()) {
+      if (auto fusionRegion =
+              vecscope->getParentOfType<pto::FusionRegionOp>()) {
         if (isSupportedStraightLineBlock(vecscope.getBody().front()))
           runElisionForLeafBody(&vecscope.getBody().front(), vecscope,
                                 fusionRegion);
       }
     });
     func.walk([&](pto::StrictVecScopeOp vecscope) {
-      if (auto fusionRegion = vecscope->getParentOfType<pto::FusionRegionOp>()) {
+      if (auto fusionRegion =
+              vecscope->getParentOfType<pto::FusionRegionOp>()) {
         if (isSupportedStraightLineBlock(vecscope.getBody().front()))
           runElisionForLeafBody(&vecscope.getBody().front(), vecscope,
                                 fusionRegion);

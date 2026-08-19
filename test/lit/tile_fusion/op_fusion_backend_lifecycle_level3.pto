@@ -20,38 +20,39 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c32 = arith.constant 32 : index
-    %c1024 = arith.constant 1024 : index
+    %c64 = arith.constant 64 : index
+    %c2048 = arith.constant 2048 : index
 
     %dst_view = pto.make_tensor_view %dst_ptr,
-      shape = [%c1, %c1, %c1, %c32, %c32],
-      strides = [%c1024, %c1024, %c1024, %c32, %c1]
-      : !pto.tensor_view<1x1x1x32x32xf32>
+      shape = [%c1, %c1, %c1, %c32, %c64],
+      strides = [%c2048, %c2048, %c2048, %c64, %c1]
+      : !pto.tensor_view<1x1x1x32x64xf32>
     %dst_part = pto.partition_view %dst_view,
       offsets = [%c0, %c0, %c0, %c0, %c0],
-      sizes = [%c1, %c1, %c1, %c32, %c32]
-      : !pto.tensor_view<1x1x1x32x32xf32> -> !pto.partition_tensor_view<1x1x1x32x32xf32>
+      sizes = [%c1, %c1, %c1, %c32, %c64]
+      : !pto.tensor_view<1x1x1x32x64xf32> -> !pto.partition_tensor_view<1x1x1x32x64xf32>
 
     %c0_i64 = arith.constant 0 : i64
-    %c4096_i64 = arith.constant 4096 : i64
     %c8192_i64 = arith.constant 8192 : i64
-    %c12288_i64 = arith.constant 12288 : i64
     %c16384_i64 = arith.constant 16384 : i64
-    %c20480_i64 = arith.constant 20480 : i64
     %c24576_i64 = arith.constant 24576 : i64
+    %c32768_i64 = arith.constant 32768 : i64
+    %c40960_i64 = arith.constant 40960 : i64
+    %c49152_i64 = arith.constant 49152 : i64
 
-    %a = pto.alloc_tile addr = %c0_i64 : !pto.tile_buf<vec, 32x32xf32>
-    %b = pto.alloc_tile addr = %c4096_i64 : !pto.tile_buf<vec, 32x32xf32>
-    %c = pto.alloc_tile addr = %c8192_i64 : !pto.tile_buf<vec, 32x32xf32>
-    %d = pto.alloc_tile addr = %c12288_i64 : !pto.tile_buf<vec, 32x32xf32>
-    %tmp0 = pto.alloc_tile addr = %c16384_i64 : !pto.tile_buf<vec, 32x32xf32>
-    %tmp1 = pto.alloc_tile addr = %c20480_i64 : !pto.tile_buf<vec, 32x32xf32>
-    %out = pto.alloc_tile addr = %c24576_i64 : !pto.tile_buf<vec, 32x32xf32>
+    %a = pto.alloc_tile addr = %c0_i64 : !pto.tile_buf<vec, 32x64xf32>
+    %b = pto.alloc_tile addr = %c8192_i64 : !pto.tile_buf<vec, 32x64xf32>
+    %c = pto.alloc_tile addr = %c16384_i64 : !pto.tile_buf<vec, 32x64xf32>
+    %d = pto.alloc_tile addr = %c24576_i64 : !pto.tile_buf<vec, 32x64xf32>
+    %tmp0 = pto.alloc_tile addr = %c32768_i64 : !pto.tile_buf<vec, 32x64xf32>
+    %tmp1 = pto.alloc_tile addr = %c40960_i64 : !pto.tile_buf<vec, 32x64xf32>
+    %out = pto.alloc_tile addr = %c49152_i64 : !pto.tile_buf<vec, 32x64xf32>
 
-    pto.tadd ins(%a, %b : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%tmp0 : !pto.tile_buf<vec, 32x32xf32>)
-    pto.tadd ins(%c, %d : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%tmp1 : !pto.tile_buf<vec, 32x32xf32>)
-    pto.tadd ins(%tmp0, %tmp1 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%out : !pto.tile_buf<vec, 32x32xf32>)
-    pto.tstore ins(%out : !pto.tile_buf<vec, 32x32xf32>)
-               outs(%dst_part : !pto.partition_tensor_view<1x1x1x32x32xf32>)
+    pto.tadd ins(%a, %b : !pto.tile_buf<vec, 32x64xf32>, !pto.tile_buf<vec, 32x64xf32>) outs(%tmp0 : !pto.tile_buf<vec, 32x64xf32>)
+    pto.tadd ins(%c, %d : !pto.tile_buf<vec, 32x64xf32>, !pto.tile_buf<vec, 32x64xf32>) outs(%tmp1 : !pto.tile_buf<vec, 32x64xf32>)
+    pto.tadd ins(%tmp0, %tmp1 : !pto.tile_buf<vec, 32x64xf32>, !pto.tile_buf<vec, 32x64xf32>) outs(%out : !pto.tile_buf<vec, 32x64xf32>)
+    pto.tstore ins(%out : !pto.tile_buf<vec, 32x64xf32>)
+               outs(%dst_part : !pto.partition_tensor_view<1x1x1x32x64xf32>)
     return
   }
 }
@@ -73,56 +74,50 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 // LLF: pto.vmi.vadd
 // LLF: pto.vmi.vstore
 // LLF: }
-// LLF: pto.yield(%{{.*}}) : (!pto.tile_buf<vec, 32x32xf32>) -> ()
+// LLF: pto.yield(%{{.*}}) : (!pto.tile_buf<vec, 32x64xf32>) -> ()
 // LLF: pto.mte_ub_gm
 
 // PRED: // -----// IR Dump After PTOFusionPredicateElision (pto-fusion-predicate-elision) //----- //
 // PRED-LABEL: func.func @fusion_backend_lifecycle_level3(
 // PRED: %[[REGION:.*]] = pto.fusion_region {
 // PRED: scf.for
-// PRED: pto.vmi.vload
-// PRED: pto.vmi.vload
-// PRED: pto.vmi.vadd
-// PRED: pto.vmi.vstore
-// PRED: pto.vmi.vload
-// PRED: pto.vmi.vload
-// PRED: pto.vmi.vadd
-// PRED: pto.vmi.vstore
-// PRED: pto.vmi.vload
-// PRED: pto.vmi.vload
-// PRED: pto.vmi.vadd
-// PRED: pto.vmi.vstore
-// PRED: pto.yield(%{{.*}}) : (!pto.tile_buf<vec, 32x32xf32>) -> ()
+// PRED: pto.vlds
+// PRED: pto.vlds
+// PRED: pto.vadd
+// PRED: pto.vsts
+// PRED: pto.vlds
+// PRED: pto.vlds
+// PRED: pto.vadd
+// PRED: pto.vsts
+// PRED: pto.vlds
+// PRED: pto.vlds
+// PRED: pto.vadd
+// PRED: pto.vsts
+// PRED: pto.yield(%{{.*}}) : (!pto.tile_buf<vec, 32x64xf32>) -> ()
 // PRED: pto.mte_ub_gm
 
 // LS: // -----// IR Dump After PTOFusionLoadStoreElision (pto-fusion-load-store-elision) //----- //
 // LS-LABEL: func.func @fusion_backend_lifecycle_level3(
 // LS: %[[REGION:.*]] = pto.fusion_region {
-// LS: pto.vmi.vadd
-// LS: pto.vmi.vstore
-// LS: pto.vmi.vadd
-// LS: pto.vmi.vstore
-// LS: pto.vmi.vadd
-// LS: pto.vmi.vstore
-// LS: pto.yield(%{{.*}}) : (!pto.tile_buf<vec, 32x32xf32>) -> ()
+// LS: %[[A:.*]] = pto.vadd
+// LS-NOT: pto.vsts
+// LS: %[[B:.*]] = pto.vadd
+// LS-NOT: pto.vsts
+// LS: %[[OUT:.*]] = pto.vadd %[[A]], %[[B]],
+// LS: pto.vsts %[[OUT]],
+// LS: pto.yield(%{{.*}}) : (!pto.tile_buf<vec, 32x64xf32>) -> ()
 // LS: pto.mte_ub_gm
 
 // FLAT: // -----// IR Dump After PTOFlattenFusionRegion (pto-flatten-fusion-region) //----- //
 // FLAT-LABEL: func.func @fusion_backend_lifecycle_level3(
 // FLAT-NOT: pto.fusion_region
 // FLAT: scf.for %arg1 = %c0 to %c32 step %c1 {
-// FLAT: pto.vmi.vload
-// FLAT: pto.vmi.vload
-// FLAT: pto.vmi.vadd
-// FLAT: pto.vmi.vstore
-// FLAT: pto.vmi.vload
-// FLAT: pto.vmi.vload
-// FLAT: pto.vmi.vadd
-// FLAT: pto.vmi.vstore
-// FLAT: pto.vmi.vload
-// FLAT: pto.vmi.vload
-// FLAT: pto.vmi.vadd
-// FLAT: pto.vmi.vstore
+// FLAT: %[[FA:.*]] = pto.vadd
+// FLAT-NOT: pto.vsts
+// FLAT: %[[FB:.*]] = pto.vadd
+// FLAT-NOT: pto.vsts
+// FLAT: %[[FOUT:.*]] = pto.vadd %[[FA]], %[[FB]],
+// FLAT: pto.vsts %[[FOUT]],
 // FLAT: }
 // FLAT: pto.mte_ub_gm
 // FLAT: return

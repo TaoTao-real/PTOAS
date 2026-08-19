@@ -2761,13 +2761,6 @@ lowerPTOToVPTOBackend(PassManager &pm, ModuleOp module,
     kernelModulePM.addPass(pto::createPTOLowLevelLoopFusionPass());
     kernelModulePM.addPass(mlir::createCanonicalizerPass());
     kernelModulePM.addPass(mlir::createCSEPass());
-    kernelModulePM.addNestedPass<mlir::func::FuncOp>(
-        pto::createPTOFusionPredicateElisionPass());
-    kernelModulePM.addNestedPass<mlir::func::FuncOp>(
-        pto::createPTOFusionLoadStoreElisionPass());
-    kernelModulePM.addNestedPass<mlir::func::FuncOp>(
-        pto::createPTOFlattenFusionRegionPass());
-    kernelModulePM.addPass(mlir::createCSEPass());
   }
   kernelModulePM.addNestedPass<mlir::func::FuncOp>(
       pto::createFoldTileBufIntrinsicsPass("addr-only"));
@@ -2907,6 +2900,19 @@ static void appendVMISemanticPipeline(OpPassManager &pm) {
   pm.addPass(pto::createVMILegalizeArithSelectPass());
   pm.addPass(pto::createPTOValidateVMILayoutIRPass());
   pm.addPass(pto::createVMIToVPTOPass());
+  // Keep fusion regions alive until unified VMI memory operations have been
+  // lowered to their physical VPTO forms. PTOFusionLoadStoreElision reasons
+  // about vlds/vsts, physical masks, and final UB addresses; running it before
+  // VMIToVPTO makes candidate-internal round trips invisible to the pass.
+  if (enableOpFusion) {
+    pm.addNestedPass<func::FuncOp>(
+        pto::createPTOFusionPredicateElisionPass());
+    pm.addNestedPass<func::FuncOp>(
+        pto::createPTOFusionLoadStoreElisionPass());
+    pm.addNestedPass<func::FuncOp>(
+        pto::createPTOFlattenFusionRegionPass());
+    pm.addPass(createCSEPass());
+  }
 }
 
 int mlir::pto::compilePTOASModule(
