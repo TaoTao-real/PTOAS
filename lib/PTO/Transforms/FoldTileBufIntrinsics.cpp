@@ -201,6 +201,8 @@ static Value unwrapBridgingCasts(Value v) {
 
 static std::optional<TileHandleInfo> resolveTileHandle(Value tileBuf,
                                                        Operation *user) {
+  tileBuf = unwrapBridgingCasts(tileBuf);
+
   if (auto regionResult = dyn_cast<OpResult>(tileBuf)) {
     if (auto fusionRegion =
             dyn_cast<pto::FusionRegionOp>(regionResult.getOwner())) {
@@ -221,7 +223,6 @@ static std::optional<TileHandleInfo> resolveTileHandle(Value tileBuf,
     }
   }
 
-  tileBuf = unwrapBridgingCasts(tileBuf);
   if (auto alloc = tileBuf.getDefiningOp<pto::AllocTileOp>()) {
     auto tileTy = dyn_cast<pto::TileBufType>(alloc.getResult().getType());
     if (!tileTy) {
