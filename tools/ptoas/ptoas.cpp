@@ -2911,6 +2911,11 @@ static void appendVMISemanticPipeline(OpPassManager &pm) {
         pto::createPTOFusionLoadStoreElisionPass());
     pm.addNestedPass<func::FuncOp>(
         pto::createPTOFlattenFusionRegionPass());
+    // Fusion-local forwarding can make tile handles dead only after the
+    // region is flattened. Re-run handle cleanup so object emission never
+    // carries dead tile metadata into LLVM conversion.
+    pm.addNestedPass<func::FuncOp>(
+        pto::createFoldTileBufIntrinsicsPass("addr-only"));
     pm.addPass(createCSEPass());
   }
 }

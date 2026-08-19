@@ -35,4 +35,5 @@ module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
 
 // CHECK-COUNT-2: pto.vadd
 // CHECK-NOT: pto.vmi.
+// CHECK-NOT: pto.alloc_tile
 // CHECK-NOT: pto.tilelib.candidate = "template_tadd"
