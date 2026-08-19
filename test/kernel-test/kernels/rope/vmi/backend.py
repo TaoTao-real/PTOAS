@@ -10,6 +10,7 @@
 
 import os
 from pathlib import Path
+from typing import Optional
 
 from ptodsl import pto
 
@@ -104,32 +105,25 @@ def rope_vmi_f16(
                 pto.vmi.vstore(y_lo, y_ptr, row_off, half_mask)
                 pto.vmi.vstore(y_hi, y_ptr, x_hi_off, half_mask)
     else:
+        neg_one = pto.vmi.vbrc(pto.f16(-1.0), size=64)
         for s in range(0, s_count, 1):
             x_s_off = s * x_s_step
             cs_off = s * SIM_D
 
             cos = pto.vmi.vload(cos_ptr, cs_off, size=64)
             sin = pto.vmi.vload(sin_ptr, cs_off, size=64)
-            cos_even, cos_odd = pto.vmi.vdintlv(cos, cos, full_mask)
-            sin_even, sin_odd = pto.vmi.vdintlv(sin, sin, full_mask)
 
             for n in range(0, n_count, 1):
                 row_off = x_s_off + n * SIM_D
                 x = pto.vmi.vload(x_ptr, row_off, size=64)
                 x_even, x_odd = pto.vmi.vdintlv(x, x, full_mask)
-
-                y_even = pto.vmi.vsub(
-                    pto.vmi.vmul(x_even, cos_even, half_mask),
-                    pto.vmi.vmul(x_odd, sin_even, half_mask),
-                    half_mask,
+                neg_odd = pto.vmi.vmul(x_odd, neg_one, half_mask)
+                rot, _ = pto.vmi.vintlv(neg_odd, x_even, full_mask)
+                y = pto.vmi.vadd(
+                    pto.vmi.vmul(x, cos, full_mask),
+                    pto.vmi.vmul(rot, sin, full_mask),
+                    full_mask,
                 )
-                y_odd = pto.vmi.vadd(
-                    pto.vmi.vmul(x_odd, cos_odd, half_mask),
-                    pto.vmi.vmul(x_even, sin_odd, half_mask),
-                    half_mask,
-                )
-
-                y, _ = pto.vmi.vintlv(y_even, y_odd, full_mask)
                 pto.vmi.vstore(y, y_ptr, row_off, full_mask)
 
     pto.set_flag(pto.Pipe.V, pto.Pipe.MTE3, event_id=0)
@@ -205,41 +199,47 @@ def rope_vmi_bf16(
                     half_mask,
                 )
 
-                y_lo = pto.vmi.vcvt(y_lo_f32, pto.bf16)
-                y_hi = pto.vmi.vcvt(y_hi_f32, pto.bf16)
+                y_lo = pto.vmi.vcvt(
+                    y_lo_f32,
+                    pto.bf16,
+                    rounding="R",
+                    saturate="NOSAT",
+                )
+                y_hi = pto.vmi.vcvt(
+                    y_hi_f32,
+                    pto.bf16,
+                    rounding="R",
+                    saturate="NOSAT",
+                )
 
                 pto.vmi.vstore(y_lo, y_ptr, row_off, half_mask)
                 pto.vmi.vstore(y_hi, y_ptr, x_hi_off, half_mask)
     else:
+        neg_one = pto.vmi.vbrc(pto.f32(-1.0), size=64)
         for s in range(0, s_count, 1):
             x_s_off = s * x_s_step
             cs_off = s * SIM_D
 
             cos = pto.vmi.vcvt(pto.vmi.vload(cos_ptr, cs_off, size=64), pto.f32)
             sin = pto.vmi.vcvt(pto.vmi.vload(sin_ptr, cs_off, size=64), pto.f32)
-            cos_even, cos_odd = pto.vmi.vdintlv(cos, cos, half_mask)
-            sin_even, sin_odd = pto.vmi.vdintlv(sin, sin, half_mask)
 
             for n in range(0, n_count, 1):
                 row_off = x_s_off + n * SIM_D
                 x = pto.vmi.vcvt(pto.vmi.vload(x_ptr, row_off, size=64), pto.f32)
                 x_even, x_odd = pto.vmi.vdintlv(x, x, half_mask)
-
-                y_even_f32 = pto.vmi.vsub(
-                    pto.vmi.vmul(x_even, cos_even, half_mask),
-                    pto.vmi.vmul(x_odd, sin_even, half_mask),
-                    half_mask,
+                neg_odd = pto.vmi.vmul(x_odd, neg_one, half_mask)
+                rot, _ = pto.vmi.vintlv(neg_odd, x_even, half_mask)
+                y_f32 = pto.vmi.vadd(
+                    pto.vmi.vmul(x, cos, full_mask),
+                    pto.vmi.vmul(rot, sin, full_mask),
+                    full_mask,
                 )
-                y_odd_f32 = pto.vmi.vadd(
-                    pto.vmi.vmul(x_odd, cos_odd, half_mask),
-                    pto.vmi.vmul(x_even, sin_odd, half_mask),
-                    half_mask,
+                y = pto.vmi.vcvt(
+                    y_f32,
+                    pto.bf16,
+                    rounding="R",
+                    saturate="NOSAT",
                 )
-
-                y_even = pto.vmi.vcvt(y_even_f32, pto.bf16)
-                y_odd = pto.vmi.vcvt(y_odd_f32, pto.bf16)
-
-                y, _ = pto.vmi.vintlv(y_even, y_odd, half_mask)
                 pto.vmi.vstore(y, y_ptr, row_off, full_mask)
 
     pto.set_flag(pto.Pipe.V, pto.Pipe.MTE3, event_id=0)
@@ -318,32 +318,25 @@ def rope_vmi_f32(
                 pto.vmi.vstore(y_lo, y_ptr, row_off, half_mask)
                 pto.vmi.vstore(y_hi, y_ptr, x_hi_off, half_mask)
     else:
+        neg_one = pto.vmi.vbrc(pto.f32(-1.0), size=64)
         for s in range(0, s_count, 1):
             x_s_off = s * x_s_step
             cs_off = s * SIM_D
 
             cos = pto.vmi.vload(cos_ptr, cs_off, size=64)
             sin = pto.vmi.vload(sin_ptr, cs_off, size=64)
-            cos_even, cos_odd = pto.vmi.vdintlv(cos, cos, half_mask)
-            sin_even, sin_odd = pto.vmi.vdintlv(sin, sin, half_mask)
 
             for n in range(0, n_count, 1):
                 row_off = x_s_off + n * SIM_D
                 x = pto.vmi.vload(x_ptr, row_off, size=64)
                 x_even, x_odd = pto.vmi.vdintlv(x, x, half_mask)
-
-                y_even = pto.vmi.vsub(
-                    pto.vmi.vmul(x_even, cos_even, half_mask),
-                    pto.vmi.vmul(x_odd, sin_even, half_mask),
-                    half_mask,
+                neg_odd = pto.vmi.vmul(x_odd, neg_one, half_mask)
+                rot, _ = pto.vmi.vintlv(neg_odd, x_even, half_mask)
+                y = pto.vmi.vadd(
+                    pto.vmi.vmul(x, cos, full_mask),
+                    pto.vmi.vmul(rot, sin, full_mask),
+                    full_mask,
                 )
-                y_odd = pto.vmi.vadd(
-                    pto.vmi.vmul(x_odd, cos_odd, half_mask),
-                    pto.vmi.vmul(x_even, sin_odd, half_mask),
-                    half_mask,
-                )
-
-                y, _ = pto.vmi.vintlv(y_even, y_odd, half_mask)
                 pto.vmi.vstore(y, y_ptr, row_off, full_mask)
 
     pto.set_flag(pto.Pipe.V, pto.Pipe.MTE3, event_id=0)
@@ -427,7 +420,7 @@ class RopeVmiBackend:
         "f32": rope_f32,
     }
 
-    def is_supported(self, case: object, *, purpose: RunPurpose) -> tuple[bool, str | None]:
+    def is_supported(self, case: object, *, purpose: RunPurpose) -> tuple[bool, Optional[str]]:
         del purpose
         supported = case["dtype"] in {"f16", "bf16", "f32"} and case["mode"] in {"half", "interleave"}
         if supported:

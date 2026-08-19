@@ -10,6 +10,7 @@
 
 import os
 from pathlib import Path
+from typing import Optional
 
 from ptodsl import pto
 
@@ -104,48 +105,25 @@ def rope_mi_f16(
                 pto.vsts(y_lo, y_ptr, row_off, half_mask)
                 pto.vsts(y_hi, y_ptr, x_hi_off, half_mask)
     else:
+        neg_one = pto.vbr(pto.f16(-1.0))
         for s in range(0, s_count, 1):
             x_s_off = s * x_s_step
             cs_off = s * SIM_D
 
-            cos_even, cos_odd = pto.vldsx2(
-                cos_ptr,
-                cs_off,
-                pto.DeinterleaveDist.DINTLV_B16,
-            )
-            sin_even, sin_odd = pto.vldsx2(
-                sin_ptr,
-                cs_off,
-                pto.DeinterleaveDist.DINTLV_B16,
-            )
+            cos = pto.vlds(cos_ptr, cs_off)
+            sin = pto.vlds(sin_ptr, cs_off)
 
             for n in range(0, n_count, 1):
                 row_off = x_s_off + n * SIM_D
-                x_even, x_odd = pto.vldsx2(
-                    x_ptr,
-                    row_off,
-                    pto.DeinterleaveDist.DINTLV_B16,
-                )
-
-                y_even = pto.vsub(
-                    pto.vmul(x_even, cos_even, half_mask),
-                    pto.vmul(x_odd, sin_even, half_mask),
-                    half_mask,
-                )
-                y_odd = pto.vadd(
-                    pto.vmul(x_odd, cos_odd, half_mask),
-                    pto.vmul(x_even, sin_odd, half_mask),
-                    half_mask,
-                )
-
-                pto.vstsx2(
-                    y_even,
-                    y_odd,
-                    y_ptr,
-                    row_off,
-                    pto.InterleaveDist.INTLV_B16,
+                x = pto.vlds(x_ptr, row_off)
+                x_even, x_odd = pto.vdintlv(x, x)
+                rot, _ = pto.vintlv(pto.vmul(x_odd, neg_one, half_mask), x_even)
+                y = pto.vadd(
+                    pto.vmul(x, cos, interleave_mask),
+                    pto.vmul(rot, sin, interleave_mask),
                     interleave_mask,
                 )
+                pto.vsts(y, y_ptr, row_off, interleave_mask)
 
     pto.set_flag(pto.Pipe.V, pto.Pipe.MTE3, event_id=0)
     pto.wait_flag(pto.Pipe.V, pto.Pipe.MTE3, event_id=0)
@@ -222,20 +200,21 @@ def rope_mi_bf16(
                 )
 
                 pto.vsts(
-                    pto.vcvt(y_lo, pto.bf16, half_mask, rnd="R", sat="SAT", part="EVEN"),
+                    pto.vcvt(y_lo, pto.bf16, half_mask, rnd="R", sat="NOSAT", part="EVEN"),
                     y_ptr,
                     row_off,
                     half_mask,
                     dist=pto.VStoreDist.PK_B32,
                 )
                 pto.vsts(
-                    pto.vcvt(y_hi, pto.bf16, half_mask, rnd="R", sat="SAT", part="EVEN"),
+                    pto.vcvt(y_hi, pto.bf16, half_mask, rnd="R", sat="NOSAT", part="EVEN"),
                     y_ptr,
                     x_hi_off,
                     half_mask,
                     dist=pto.VStoreDist.PK_B32,
                 )
     else:
+        neg_one = pto.vbr(pto.f32(-1.0))
         for s in range(0, s_count, 1):
             x_s_off = s * x_s_step
             cs_off = s * SIM_D
@@ -247,7 +226,7 @@ def rope_mi_bf16(
                 row_off = x_s_off + n * SIM_D
                 x = pto.vcvt(pto.vlds(x_ptr, row_off, dist="UNPK_B16"), pto.f32, mask16_all, part="EVEN")
                 x_even, x_odd = pto.vdintlv(x, x)
-                rot, _ = pto.vintlv(pto.vneg(x_odd, half_mask), x_even)
+                rot, _ = pto.vintlv(pto.vmul(x_odd, neg_one, half_mask), x_even)
                 y = pto.vadd(
                     pto.vmul(x, cos, full_mask32),
                     pto.vmul(rot, sin, full_mask32),
@@ -255,7 +234,7 @@ def rope_mi_bf16(
                 )
 
                 pto.vsts(
-                    pto.vcvt(y, pto.bf16, full_mask32, rnd="R", sat="SAT", part="EVEN"),
+                    pto.vcvt(y, pto.bf16, full_mask32, rnd="R", sat="NOSAT", part="EVEN"),
                     y_ptr,
                     row_off,
                     full_mask32,
@@ -338,48 +317,25 @@ def rope_mi_f32(
                 pto.vsts(y_lo, y_ptr, row_off, half_mask)
                 pto.vsts(y_hi, y_ptr, x_hi_off, half_mask)
     else:
+        neg_one = pto.vbr(pto.f32(-1.0))
         for s in range(0, s_count, 1):
             x_s_off = s * x_s_step
             cs_off = s * SIM_D
 
-            cos_even, cos_odd = pto.vldsx2(
-                cos_ptr,
-                cs_off,
-                pto.DeinterleaveDist.DINTLV_B32,
-            )
-            sin_even, sin_odd = pto.vldsx2(
-                sin_ptr,
-                cs_off,
-                pto.DeinterleaveDist.DINTLV_B32,
-            )
+            cos = pto.vlds(cos_ptr, cs_off)
+            sin = pto.vlds(sin_ptr, cs_off)
 
             for n in range(0, n_count, 1):
                 row_off = x_s_off + n * SIM_D
-                x_even, x_odd = pto.vldsx2(
-                    x_ptr,
-                    row_off,
-                    pto.DeinterleaveDist.DINTLV_B32,
-                )
-
-                y_even = pto.vsub(
-                    pto.vmul(x_even, cos_even, half_mask),
-                    pto.vmul(x_odd, sin_even, half_mask),
-                    half_mask,
-                )
-                y_odd = pto.vadd(
-                    pto.vmul(x_odd, cos_odd, half_mask),
-                    pto.vmul(x_even, sin_odd, half_mask),
-                    half_mask,
-                )
-
-                pto.vstsx2(
-                    y_even,
-                    y_odd,
-                    y_ptr,
-                    row_off,
-                    pto.InterleaveDist.INTLV_B32,
+                x = pto.vlds(x_ptr, row_off)
+                x_even, x_odd = pto.vdintlv(x, x)
+                rot, _ = pto.vintlv(pto.vmul(x_odd, neg_one, half_mask), x_even)
+                y = pto.vadd(
+                    pto.vmul(x, cos, interleave_mask),
+                    pto.vmul(rot, sin, interleave_mask),
                     interleave_mask,
                 )
+                pto.vsts(y, y_ptr, row_off, interleave_mask)
 
     pto.set_flag(pto.Pipe.V, pto.Pipe.MTE3, event_id=0)
     pto.wait_flag(pto.Pipe.V, pto.Pipe.MTE3, event_id=0)
@@ -462,7 +418,7 @@ class RopeMiBackend:
         "f32": rope_f32,
     }
 
-    def is_supported(self, case: object, *, purpose: RunPurpose) -> tuple[bool, str | None]:
+    def is_supported(self, case: object, *, purpose: RunPurpose) -> tuple[bool, Optional[str]]:
         del purpose
         supported = case["dtype"] in {"f16", "bf16", "f32"} and case["mode"] in {"half", "interleave"}
         if supported:
