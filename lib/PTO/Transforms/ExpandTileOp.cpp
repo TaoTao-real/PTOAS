@@ -560,6 +560,19 @@ static bool getStaticIntFromValue(Value value, int64_t &out) {
 
 static bool resolveStaticTileValidShape(Value value,
                                         SmallVectorImpl<int64_t> &validShape) {
+  if (auto result = dyn_cast<OpResult>(value)) {
+    if (auto fusionRegion =
+            dyn_cast<pto::FusionRegionOp>(result.getOwner())) {
+      auto yield = dyn_cast<pto::YieldOp>(
+          fusionRegion.getBody().front().getTerminator());
+      unsigned resultIndex = result.getResultNumber();
+      if (!yield || resultIndex >= yield.getNumOperands())
+        return false;
+      return resolveStaticTileValidShape(yield.getOperand(resultIndex),
+                                         validShape);
+    }
+  }
+
   Value validRow;
   Value validCol;
   Operation *def = value.getDefiningOp();
