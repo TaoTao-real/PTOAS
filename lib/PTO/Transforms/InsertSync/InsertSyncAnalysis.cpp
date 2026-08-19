@@ -462,6 +462,24 @@ static bool isForwardDepDroppableBySlotAffine(const BaseMemInfo *a,
          SlotRelation::kDisjoint;
 }
 
+static bool canPruneLoopCarriedTStoreBarrier(
+    const CompoundInstanceElement *nowCompound,
+    const CompoundInstanceElement *frontCompound,
+    const std::optional<unsigned> &forEndIndex) {
+  if (!forEndIndex.has_value() || !nowCompound || !frontCompound)
+    return false;
+  if (nowCompound->kPipeValue != PipelineType::PIPE_MTE3 ||
+      frontCompound->kPipeValue != PipelineType::PIPE_MTE3)
+    return false;
+
+  // Consecutive tstores are ordered by the MTE3 command stream. A loop-carried
+  // same-pipe barrier only drains that stream before every command; it does not
+  // protect the source UB from another pipeline. Cross-pipe users and buffer
+  // reuse still receive their normal event synchronization.
+  return isa_and_nonnull<pto::TStoreOp>(nowCompound->elementOp) &&
+         isa_and_nonnull<pto::TStoreOp>(frontCompound->elementOp);
+}
+
 void InsertSyncAnalysis::MemAnalyze(
     CompoundInstanceElement *nowCompound, CompoundInstanceElement *frontCompound,
     SyncRecordList &syncRecordList,
@@ -472,6 +490,11 @@ void InsertSyncAnalysis::MemAnalyze(
 
   DepBaseMemInfoPairVec depVec;
   if (!IsMemInfoHasDependency(nowCompound, frontCompound, depVec)) {
+    return;
+  }
+
+  if (canPruneLoopCarriedTStoreBarrier(nowCompound, frontCompound,
+                                       forEndIndex)) {
     return;
   }
 
