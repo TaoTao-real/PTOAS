@@ -1,0 +1,51 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto --enable-tile-op-expand %s -o - 2>/dev/null | FileCheck %s
+
+// A compact col-major [rows, 1] row state must use the A5 broadcast-load
+// distribution.  A normal vector load from row * sizeof(f32) is unaligned for
+// every row except row zero.
+
+// CHECK-LABEL: func.func @trowexpandmul_compact_row_state
+// CHECK-NOT: pto.trowexpandmul ins
+// CHECK: pto.vlds {{.*}} {dist = "BRC_B32"}
+// CHECK-NOT: pto.vdup
+// CHECK: pto.vmul
+// CHECK: pto.vsts
+
+module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+  func.func @trowexpandmul_compact_row_state() {
+    %src = pto.alloc_tile
+      : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=128,
+                      v_row=8, v_col=128, blayout=row_major,
+                      slayout=none_box, fractal=512, pad=0>
+    %row_state = pto.alloc_tile
+      : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=1,
+                      v_row=8, v_col=1, blayout=col_major,
+                      slayout=none_box, fractal=512, pad=0>
+    %dst = pto.alloc_tile
+      : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=128,
+                      v_row=8, v_col=128, blayout=row_major,
+                      slayout=none_box, fractal=512, pad=0>
+
+    pto.trowexpandmul
+      ins(%src, %row_state
+          : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=128,
+                          v_row=8, v_col=128, blayout=row_major,
+                          slayout=none_box, fractal=512, pad=0>,
+            !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=1,
+                          v_row=8, v_col=1, blayout=col_major,
+                          slayout=none_box, fractal=512, pad=0>)
+      outs(%dst
+           : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=128,
+                           v_row=8, v_col=128, blayout=row_major,
+                           slayout=none_box, fractal=512, pad=0>)
+    return
+  }
+}

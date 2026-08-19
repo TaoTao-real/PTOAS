@@ -105,9 +105,14 @@ def _parse_parameter_spec(raw: dict, index: int):
             raise ValueError(
                 "initial PTODSL VMI provider does not support dynamic valid_shape"
             )
-        if tuple(int(dim) for dim in valid_shape) != parsed_shape:
+        valid_shape = tuple(int(dim) for dim in valid_shape)
+        if any(dim < 0 for dim in valid_shape):
             raise ValueError(
-                "initial PTODSL VMI provider requires valid_shape to equal physical shape"
+                "initial PTODSL VMI provider requires non-negative valid_shape"
+            )
+        if any(valid > physical for valid, physical in zip(valid_shape, parsed_shape)):
+            raise ValueError(
+                "initial PTODSL VMI provider requires valid_shape <= shape"
             )
 
     memory_space = raw.get("memory_space", "ub")
@@ -116,7 +121,13 @@ def _parse_parameter_spec(raw: dict, index: int):
             f"initial PTODSL VMI provider supports only UB tiles, got {memory_space!r}"
         )
     b_layout = _parse_tile_config(raw.get("config"), index)
-    return TileSpec(parsed_shape, dtype, memory_space="ub", b_layout=b_layout)
+    return TileSpec(
+        parsed_shape,
+        dtype,
+        memory_space="ub",
+        valid_shape=valid_shape,
+        b_layout=b_layout,
+    )
 
 
 def _parse_legality_parameter_spec(raw: dict, index: int):

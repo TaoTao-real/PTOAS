@@ -171,7 +171,13 @@ def _vload(tile: _TileProxy, coordinate: CanonicalBlockCoordinate) -> _VectorVal
     )
 
 
-def _vload_linear(tile: _TileProxy, offset, *, lanes: int) -> _VectorValue:
+def _vload_linear(
+    tile: _TileProxy,
+    offset,
+    *,
+    lanes: int,
+    dist_mode: str | None = None,
+) -> _VectorValue:
     if not isinstance(tile, _TileProxy):
         raise TypeError("_vload_linear expects a traced Tile argument")
     if not isinstance(lanes, int) or lanes <= 0:
@@ -179,7 +185,12 @@ def _vload_linear(tile: _TileProxy, offset, *, lanes: int) -> _VectorValue:
     ptr_value = tile._trace.ensure_tile_ptr(tile)
     offset_value = tile._trace._coerce_index(offset)
     return _wrap_vreg(
-        pto.vmi.vload(ptr_value.value, offset_value.value, size=lanes),
+        pto.vmi.vload(
+            ptr_value.value,
+            offset_value.value,
+            size=lanes,
+            dist_mode=dist_mode,
+        ),
         tile.element_type,
     )
 
@@ -1216,11 +1227,54 @@ def _validate_row_reduce_tiles(
     if workspace._spec.shape != src._spec.shape:
         raise ValueError("row-reduce workspace shape must match the source")
     rows, cols = src._spec.shape
-    if dst._spec.shape != (rows, 1) or dst._spec.b_layout != "col_major":
-        raise ValueError("row-reduce destination must be a col-major [rows, 1] tile")
+    src_valid = src._spec.valid_shape or src._spec.shape
+    workspace_valid = workspace._spec.valid_shape or workspace._spec.shape
+    dst_valid = dst._spec.valid_shape or dst._spec.shape
+    if src_valid != src._spec.shape or workspace_valid != workspace._spec.shape:
+        raise ValueError("row-reduce source and workspace must be statically full-shape")
+    if workspace_valid != src_valid:
+        raise ValueError("row-reduce workspace valid_shape must match source")
+    if dst_valid != (rows, 1):
+        raise ValueError("row-reduce destination valid_shape must be [rows, 1]")
+    if dst._spec.shape[0] != rows or dst._spec.shape[1] < 1:
+        raise ValueError("row-reduce destination physical rows must match source")
+    if dst._spec.b_layout not in {"row_major", "col_major"}:
+        raise ValueError("row-reduce destination must be row- or col-major")
     if cols != f32.lanes:
         raise ValueError("row-reduce source rows must contain exactly one f32 VL block")
     return CanonicalBlockMap.from_tile(src, logical_lanes=f32.lanes)
+
+
+def _row_reduce_vmi_legal(**context) -> bool:
+    """Selection-time legality for the static compact row-reduce form."""
+    shape = context.get("src_shape")
+    src_valid = context.get("src_valid_shape")
+    workspace_shape = context.get("workspace_shape")
+    workspace_valid = context.get("workspace_valid_shape")
+    dst_shape = context.get("dst_shape")
+    dst_valid = context.get("dst_valid_shape")
+    configs = [
+        context.get("src_config"),
+        context.get("workspace_config"),
+        context.get("dst_config"),
+    ]
+    shapes = (shape, src_valid, workspace_shape, workspace_valid, dst_shape, dst_valid)
+    if not all(isinstance(value, tuple) and len(value) == 2 for value in shapes):
+        return False
+    if shape != src_valid or workspace_shape != shape or workspace_valid != src_valid:
+        return False
+    rows, cols = shape
+    if cols != f32.lanes or dst_shape[0] != rows or dst_shape[1] < 1:
+        return False
+    if dst_valid != (rows, 1):
+        return False
+    if any(config is None or config.s_layout != "none_box" for config in configs):
+        return False
+    return (
+        configs[0].b_layout == "row_major"
+        and configs[1].b_layout == "row_major"
+        and configs[2].b_layout in {"row_major", "col_major"}
+    )
 
 
 def emit_row_reduce_vmi(
@@ -1247,7 +1301,10 @@ def emit_row_reduce_vmi(
             )
             reduced = reduce_op(_vload(src, coordinate), full_mask)
             accumulator = merge_op(accumulator, reduced, scalar_mask)
-        _vstore_linear(accumulator, dst, row, scalar_mask)
+        dst_offset = row
+        if dst._spec.b_layout == "row_major":
+            dst_offset = index_mul(row, dst._spec.shape[1])
+        _vstore_linear(accumulator, dst, dst_offset, scalar_mask)
 
 
 def emit_row_expand_sub_vmi(
@@ -1276,8 +1333,16 @@ def emit_row_expand_sub_vmi(
     _prepare_tile_access(src, row_values, dst)
     full_mask = _create_mask(block_map, f32, trace=src._trace)
     with for_(0, rows, step=1) as row:
-        row_scalar = _vload_linear(row_values, row, lanes=1)
-        broadcast = _vbrc(row_scalar, lanes=f32.lanes)
+        # The row state is a compact scalar-per-row tile.  Use the A5 BRC
+        # load form directly so the physical lowering reads one scalar at
+        # `row` and broadcasts it; a normal load of a one-element row would
+        # issue an unaligned wide VLD for row > 0.
+        broadcast = _vload_linear(
+            row_values,
+            row,
+            lanes=f32.lanes,
+            dist_mode="brc",
+        )
         row_block_base = index_mul(row, block_map.blocks_per_row)
         for block_in_row in range(block_map.blocks_per_row):
             coordinate = block_map.coordinate(

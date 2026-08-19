@@ -1004,6 +1004,51 @@ static bool hasStaticFullTileValidShape(Operation *tileOp) {
   return true;
 }
 
+// The first compact-row VMI reduction form permits physical padding only on
+// the one-value destination.  Keep this proof local to row reductions so the
+// generic full-shape gate remains conservative for every other candidate.
+static bool hasStaticCompactRowReduceShape(Operation *tileOp) {
+  StringRef opName = getTileOpName(tileOp);
+  if (!llvm::StringSwitch<bool>(opName)
+           .Cases("trowsum", "trowmax", true)
+           .Default(false))
+    return false;
+  if (tileOp->getNumOperands() != 3)
+    return false;
+
+  SmallVector<OperandTypeInfo, 3> infos;
+  for (Value operand : tileOp->getOperands()) {
+    auto info = buildOperandTypeInfo(operand);
+    if (!info || info->kind != OperandKind::Tile)
+      return false;
+    infos.push_back(*info);
+  }
+
+  const auto &src = infos[0];
+  const auto &tmp = infos[1];
+  const auto &dst = infos[2];
+  if (src.dtype != "f32" || tmp.dtype != "f32" || dst.dtype != "f32")
+    return false;
+  if (src.tileShape != src.tileValidShape ||
+      tmp.tileShape != tmp.tileValidShape ||
+      src.tileShape != tmp.tileShape)
+    return false;
+  if (src.tileShape.size() != 2 || src.tileShape[1] != 64)
+    return false;
+  if (dst.tileShape.size() != 2 || dst.tileValidShape.size() != 2 ||
+      dst.tileShape[0] != src.tileShape[0] ||
+      dst.tileValidShape[0] != src.tileShape[0] ||
+      dst.tileValidShape[1] != 1 || dst.tileShape[1] < 1)
+    return false;
+  // RowMajor and ColMajor both have a statically known row stride here; the
+  // Python emitter uses the corresponding physical offset for row-major and
+  // the compact one-point offset for col-major.
+  return src.blayout == static_cast<int32_t>(pto::BLayout::RowMajor) &&
+         tmp.blayout == static_cast<int32_t>(pto::BLayout::RowMajor) &&
+         (dst.blayout == static_cast<int32_t>(pto::BLayout::RowMajor) ||
+          dst.blayout == static_cast<int32_t>(pto::BLayout::ColMajor));
+}
+
 static bool isHardBoundaryFallbackOp(Operation *tileOp) {
   auto pipeOp = dyn_cast<pto::OpPipeInterface>(tileOp);
   if (!pipeOp || pipeOp.getPipe() != pto::PIPE::PIPE_V)
@@ -1036,7 +1081,8 @@ static CandidateSelection selectTemplateCandidate(Operation *tileOp,
 
   const bool hardBoundary = isHardBoundaryFallbackOp(tileOp);
   if (!hardBoundary && isVectorPipeTileOp(tileOp) &&
-      hasStaticFullTileValidShape(tileOp)) {
+      (hasStaticFullTileValidShape(tileOp) ||
+       hasStaticCompactRowReduceShape(tileOp))) {
     for (DictionaryAttr candidate : parsedCandidates) {
       if (candidateHasTag(candidate, "vmi"))
         return CandidateSelection{candidate, /*selectedVMI=*/true,

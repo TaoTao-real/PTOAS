@@ -96,6 +96,7 @@ class TileSpec:
     dtype: ScalarType
     memory_space: str = "ub"
     b_layout: str = "row_major"
+    valid_shape: tuple[int, int] | None = None
 
     def __post_init__(self):
         if len(self.shape) != 2:
@@ -106,13 +107,21 @@ class TileSpec:
             raise ValueError("TileSpec currently only supports ub tiles")
         if self.b_layout not in {"row_major", "col_major"}:
             raise ValueError("TileSpec.b_layout must be 'row_major' or 'col_major'")
+        if self.valid_shape is not None:
+            if len(self.valid_shape) != 2:
+                raise ValueError("TileSpec.valid_shape must be rank-2")
+            if any(not isinstance(dim, int) or dim < 0 for dim in self.valid_shape):
+                raise ValueError("TileSpec.valid_shape must contain non-negative integers")
+            if any(valid > physical for valid, physical in zip(self.valid_shape, self.shape)):
+                raise ValueError("TileSpec.valid_shape must not exceed shape")
 
     def mlir_type(self):
         rows, cols = self.shape
+        valid_rows, valid_cols = self.valid_shape or self.shape
         return _tile_buf_type(
             [rows, cols],
             _scalar_descriptor(self.dtype),
-            [rows, cols],
+            [valid_rows, valid_cols],
             blayout="RowMajor" if self.b_layout == "row_major" else "ColMajor",
             address_space=self.memory_space,
             slayout="NoneBox",
@@ -307,8 +316,8 @@ class _TileProxy:
     @property
     def valid_shape(self) -> tuple[_Value, _Value]:
         return (
-            self._trace.index_const(self._spec.shape[0]),
-            self._trace.index_const(self._spec.shape[1]),
+            self._trace.index_const((self._spec.valid_shape or self._spec.shape)[0]),
+            self._trace.index_const((self._spec.valid_shape or self._spec.shape)[1]),
         )
 
     @property
@@ -777,18 +786,20 @@ def _dtype_name(dtype) -> str:
     return getattr(dtype, "name", str(dtype))
 
 
-def _coerce_parameter_spec(spec):
+def _coerce_parameter_spec(spec, *, allow_valid_shape_mismatch: bool = False):
     if isinstance(spec, (TileSpec, ScalarType)):
         return spec
 
     if hasattr(spec, "shape") and hasattr(spec, "dtype"):
         shape = tuple(spec.shape)
         valid_shape = getattr(spec, "valid_shape", None)
-        if valid_shape is not None and tuple(valid_shape) != shape:
-            raise ValueError(
-                "VMI tile-template tracing currently requires valid_shape to "
-                "match the physical tile shape"
-            )
+        if valid_shape is not None:
+            valid_shape = tuple(valid_shape)
+            if valid_shape != shape and not allow_valid_shape_mismatch:
+                raise ValueError(
+                    "VMI tile-template tracing only permits valid_shape mismatch "
+                    "for explicitly supported compact-row candidates"
+                )
         dtype = _SCALAR_TYPES_BY_NAME.get(_dtype_name(spec.dtype))
         if dtype is None:
             raise ValueError(f"unsupported VMI tile-template dtype {spec.dtype!r}")
@@ -803,6 +814,7 @@ def _coerce_parameter_spec(spec):
             dtype=dtype,
             memory_space=getattr(spec, "memory_space", "ub"),
             b_layout=getattr(spec, "b_layout", "row_major"),
+            valid_shape=valid_shape,
         )
 
     if hasattr(spec, "dtype"):
@@ -886,7 +898,10 @@ class TileTemplate:
     ) -> "SpecializedTileTemplate":
         self.validate_context_attrs(context_attrs)
         converted_specs = {
-            name: _coerce_parameter_spec(spec)
+            name: _coerce_parameter_spec(
+                spec,
+                allow_valid_shape_mismatch=self.op in {"pto.trowsum", "pto.trowmax"},
+            )
             for name, spec in parameter_specs.items()
         }
         return SpecializedTileTemplate(self, converted_specs, context_attrs)

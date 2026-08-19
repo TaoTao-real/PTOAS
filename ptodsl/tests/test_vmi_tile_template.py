@@ -351,6 +351,53 @@ def check_provider_helper() -> None:
     expect(rowmax.count("pto.vmi.vcmax") == 1, "rowmax should reduce one VL per row")
     expect("!pto.vmi.vreg<1xf32>" in rowmax, "rowmax should produce 1-lane reductions")
 
+    compact_row_state = {
+        **raw_tile_spec,
+        "shape": [32, 8],
+        "valid_shape": [32, 1],
+        "config": {**raw_tile_spec["config"], "b_layout": "row_major"},
+    }
+    compact_rowmax = instantiate_candidate(
+        target="a5",
+        op_name="pto.trowmax",
+        operand_specs=[raw_tile_spec, raw_tile_spec, compact_row_state],
+        provider_module="ptodsl.vmi_tilelib",
+        context_attrs={},
+    ).mlir_text()
+    expect(
+        compact_rowmax.count("scf.for") == 1,
+        "compact rowmax should preserve one logical row loop",
+    )
+    expect(
+        "pto.vmi.vcmax" in compact_rowmax
+        and "pto.vmi.vstore" in compact_rowmax,
+        "compact rowmax should lower to VMI reduction and store",
+    )
+    expect(
+        "arith.muli" in compact_rowmax,
+        "row-major compact output must use its physical row stride",
+    )
+    compact_rowsum = instantiate_candidate(
+        target="a5",
+        op_name="pto.trowsum",
+        operand_specs=[raw_tile_spec, raw_tile_spec, compact_row_state],
+        provider_module="ptodsl.vmi_tilelib",
+        context_attrs={},
+    ).mlir_text()
+    expect("pto.vmi.vcadd" in compact_rowsum, "compact rowsum should lower to VMI")
+    invalid_compact = {**compact_row_state, "valid_shape": [31, 1]}
+    expect_raises(
+        lambda: instantiate_candidate(
+            target="a5",
+            op_name="pto.trowmax",
+            operand_specs=[raw_tile_spec, raw_tile_spec, invalid_compact],
+            provider_module="ptodsl.vmi_tilelib",
+            context_attrs={},
+        ),
+        LookupError,
+        "no legal PTODSL VMI candidate",
+    )
+
     row_expand = instantiate_candidate(
         target="a5",
         op_name="pto.trowexpandsub",
@@ -358,7 +405,14 @@ def check_provider_helper() -> None:
         provider_module="ptodsl.vmi_tilelib",
         context_attrs={},
     ).mlir_text()
-    expect("pto.vmi.vbrc" in row_expand, "row expand should broadcast one value per row")
+    expect(
+        'pto.vmi.vload' in row_expand and 'dist_mode = "brc"' in row_expand,
+        "row expand should use a direct broadcast load for compact row state",
+    )
+    expect(
+        "pto.vmi.vbrc" not in row_expand,
+        "row expand should not issue an unaligned wide load followed by vbrc",
+    )
 
     f16_tile_spec = {**raw_tile_spec, "dtype": "f16"}
     tcvt = instantiate_candidate(
