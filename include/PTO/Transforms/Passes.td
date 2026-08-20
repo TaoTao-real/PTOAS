@@ -590,6 +590,25 @@ def PTOPlanVMIAccumulatorPhases
   ];
 }
 
+def PTOVMIAccumulatorPromotion
+    : Pass<"pto-vmi-accumulator-promotion", "func::FuncOp"> {
+  let summary = "Promote proven one-VL RMSNorm accumulators to VMI vregs";
+  let description = [{
+    Consumes accepted tile-native accumulator phase provenance after TileLib
+    expansion and same-domain loop fusion. The pass revalidates the exact
+    low-level VMI load/store, mask, address, iteration, and escape contract,
+    then threads the FP32 one-VL accumulator through the chunk scf.for as a VMI
+    vreg. A failed proof leaves the original storage-based path unchanged.
+  }];
+  let constructor = "mlir::pto::createPTOVMIAccumulatorPromotionPass()";
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+    "mlir::func::FuncDialect",
+    "mlir::pto::PTODialect",
+    "mlir::scf::SCFDialect"
+  ];
+}
+
 def ExpandTileOp : Pass<"pto-expand-tile-op", "ModuleOp"> {
   let summary = "Expand tile ops using the selected TileLib implementation";
   let description = [{

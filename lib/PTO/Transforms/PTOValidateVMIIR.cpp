@@ -123,7 +123,8 @@ bool isVMISemanticOp(Operation *op) {
 bool isStructuralOp(Operation *op) {
   StringRef name = op->getName().getStringRef();
   return name == "builtin.module" || name.starts_with("func.") ||
-         name.starts_with("scf.") || name.starts_with("cf.");
+         name.starts_with("scf.") || name.starts_with("cf.") ||
+         name == "pto.fusion_region" || name == "pto.yield";
 }
 
 bool hasVMIType(Operation *op) {

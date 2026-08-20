@@ -63,6 +63,7 @@ add_mlir_dialect_library(PTOTransforms
   InsertTemplateAttributes.cpp
   ExpandTileOp.cpp
   TileFusion/PTOPlanVMIAccumulatorPhases.cpp
+  TileFusion/PTOVMIAccumulatorPromotion.cpp
   FoldTileBufIntrinsics.cpp
   LowerPTOToUBufOps.cpp
   PTOLowerToOpLibCalls.cpp

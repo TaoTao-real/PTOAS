@@ -11714,6 +11714,46 @@ struct OneToNSCFExecuteRegionOpPattern
   }
 };
 
+struct OneToNFusionRegionOpPattern
+    : OpConversionPattern<pto::FusionRegionOp> {
+  using OpConversionPattern<pto::FusionRegionOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(pto::FusionRegionOp op, OneToNOpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    FailureOr<SmallVector<Type>> maybeResultTypes =
+        getConvertedResultTypes(op, *this->getTypeConverter());
+    if (failed(maybeResultTypes))
+      return failure();
+    SmallVector<Type> resultTypes = std::move(*maybeResultTypes);
+    if (resultTypes == op->getResultTypes())
+      return failure();
+
+    auto newOp = rewriter.create<pto::FusionRegionOp>(op.getLoc(),
+                                                       TypeRange(resultTypes));
+    newOp->setAttrs(op->getAttrs());
+    rewriter.inlineRegionBefore(op.getBody(), newOp.getBody(),
+                                newOp.getBody().end());
+    replaceOpWithFlatConvertedValues(rewriter, op, newOp->getResults(),
+                                     *this->getTypeConverter());
+    return success();
+  }
+};
+
+struct OneToNYieldOpPattern : OpConversionPattern<pto::YieldOp> {
+  using OpConversionPattern<pto::YieldOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(pto::YieldOp op, OneToNOpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (isIdentityOneToNValueMapping(op.getValues(), adaptor.getValues()))
+      return failure();
+    rewriter.replaceOpWithNewOp<pto::YieldOp>(
+        op, flattenOneToNOperands(adaptor.getValues()));
+    return success();
+  }
+};
+
 struct OneToNSCFIndexSwitchOpPattern
     : OpConversionPattern<scf::IndexSwitchOp> {
   using OpConversionPattern<
@@ -11758,6 +11798,8 @@ void populateVMIConversionPatterns(
   patterns.add<OneToNCFBranchOpPattern, OneToNCFCondBranchOpPattern,
                OneToNCFSwitchOpPattern>(typeConverter, patterns.getContext());
   patterns.add<OneToNSCFExecuteRegionOpPattern, OneToNSCFIndexSwitchOpPattern>(
+      typeConverter, patterns.getContext());
+  patterns.add<OneToNFusionRegionOpPattern, OneToNYieldOpPattern>(
       typeConverter, patterns.getContext());
   patterns.add<OneToNVMIPackOpPattern, OneToNVMIUnpackOpPattern>(
       typeConverter, patterns.getContext());

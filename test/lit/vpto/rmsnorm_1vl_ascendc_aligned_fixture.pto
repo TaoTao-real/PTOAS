@@ -8,6 +8,7 @@
 
 // RUN: pto-test-opt %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_ascendc_aligned.pto | FileCheck %s --check-prefix=FLOW
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=ordinary --vmi-fusion-mode=off --emit-vpto %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_ascendc_aligned.pto -o /dev/null
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --emit-vpto %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_ascendc_aligned.pto -o - | FileCheck %s --check-prefix=PROMOTED
 // RUN: %python_executable %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_golden.py | FileCheck %s --check-prefix=GOLDEN
 
 // FLOW-LABEL: func.func @rms_norm_1vl_ascendc_aligned
@@ -29,6 +30,17 @@
 // FLOW-NEXT: pto.tcvt ins(%{{.*}} {rmode = #pto<round_mode RINT>{{.*}}} : !pto.tile_buf<vec, 1x64xf32>) outs(%{{.*}} : !pto.tile_buf<vec, 1x64xbf16>)
 // FLOW-NOT: pto.tcvt{{.*}}1x4096
 // FLOW: pto.tstore
+
+// PROMOTED-LABEL: func.func @rms_norm_1vl_ascendc_aligned
+// PROMOTED: %[[ACC:.*]] = scf.for {{.*}} iter_args(%[[ITER:.*]] = %{{.*}}) -> (!pto.vreg<64xf32>)
+// PROMOTED: %[[NEXT:.*]] = pto.vadd %[[ITER]],
+// PROMOTED: scf.yield %[[NEXT]] : !pto.vreg<64xf32>
+// PROMOTED: } {pto.vmi.accumulator.iterations = 64 : i64
+// PROMOTED-SAME: pto.vmi.accumulator.phase_status = "promoted"
+// PROMOTED-SAME: pto.vmi.accumulator.promoted
+// PROMOTED: pto.vcadd %[[ACC]],
+// PROMOTED-NOT: 41728
+// PROMOTED-NOT: pto.vmi.v
 
 // GOLDEN: x_sha256=4592fd5558963014cdeda9c7abe87ca56fc7d9460ea824e6e86391e99a41446f
 // GOLDEN: gamma_sha256=53aa7ef4ac5abbf117e37472b3f1f2c5050de6cefb3aa8dc34a4a77cf59c42ac

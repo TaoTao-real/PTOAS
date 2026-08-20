@@ -1,0 +1,86 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// CANN Open Software License Agreement Version 2.0
+
+// RUN: pto-test-opt --pto-vmi-accumulator-promotion %s | FileCheck %s
+// RUN: sed 's/%mask_lanes = arith.constant 64/%mask_lanes = arith.constant 32/' %s > %t.mask
+// RUN: pto-test-opt --pto-vmi-accumulator-promotion %t.mask | FileCheck %s --check-prefix=MASK
+// RUN: sed 's|// INJECT_SYNC|pto.set_flag[<PIPE_V>, <PIPE_V>, <EVENT_ID0>]|' %s > %t.sync
+// RUN: pto-test-opt --pto-vmi-accumulator-promotion %t.sync | FileCheck %s --check-prefix=SYNC
+// RUN: sed 's|// INJECT_ESCAPE|%escape_ptr = pto.tile_buf_addr %acc : !acc -> !pto.ptr<f32, ub> %escape = pto.vmi.vload %escape_ptr[%c0] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>|' %s > %t.escape
+// RUN: pto-test-opt --pto-vmi-accumulator-promotion %t.escape | FileCheck %s --check-prefix=ESCAPE
+// RUN: sed 's|// INJECT_ALIAS|%alias_addr = arith.constant 1056 : i64 %alias = pto.alloc_tile addr = %alias_addr : !acc|' %s > %t.alias
+// RUN: pto-test-opt --pto-vmi-accumulator-promotion %t.alias | FileCheck %s --check-prefix=ALIAS
+
+!acc = !pto.tile_buf<vec, 1x64xf32>
+
+module {
+  // CHECK-LABEL: func.func @promote
+  // CHECK: } {pto.fusion.group_id = 0 : i64}
+  // CHECK-NEXT: %[[INIT:.*]] = pto.vmi.vbrc
+  // CHECK: %[[LOOP:.*]] = scf.for {{.*}} iter_args(%[[ACC:.*]] = %[[INIT]]) -> (!pto.vmi.vreg<64xf32>) {
+  // CHECK: %[[REGION:.*]] = pto.fusion_region
+  // CHECK: %[[ADD:.*]] = pto.vmi.vadd %[[ACC]],
+  // CHECK: pto.yield(%[[ADD]])
+  // CHECK: scf.yield %[[REGION]] : !pto.vmi.vreg<64xf32>
+  // CHECK: } {pto.vmi.accumulator.iterations = 64 : i64
+  // CHECK-SAME: pto.vmi.accumulator.phase_status = "promoted"
+  // CHECK-SAME: pto.vmi.accumulator.promoted
+  // CHECK: pto.vmi.vcadd %[[LOOP]],
+  // CHECK-NOT: pto.vmi.vload
+  // CHECK-NOT: pto.vmi.vstore
+  // CHECK-NOT: pto.vmi.accumulator.promotion_reject_reason
+  // MASK-LABEL: func.func @promote
+  // MASK: pto.vmi.accumulator.promotion_reject_reason = "update_address_mask_or_value_contract_changed"
+  // MASK-NOT: pto.vmi.accumulator.promoted
+  // SYNC-LABEL: func.func @promote
+  // SYNC: pto.vmi.accumulator.promotion_reject_reason = "chunk_loop_contains_sync_or_call"
+  // SYNC-NOT: pto.vmi.accumulator.promoted
+  // ESCAPE-LABEL: func.func @promote
+  // ESCAPE: pto.vmi.accumulator.promotion_reject_reason = "accumulator_memory_access_count_changed"
+  // ESCAPE-NOT: pto.vmi.accumulator.promoted
+  // ALIAS-LABEL: func.func @promote
+  // ALIAS: pto.vmi.accumulator.promotion_reject_reason = "accumulator_partial_alias"
+  // ALIAS-NOT: pto.vmi.accumulator.promoted
+  func.func @promote() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c64 = arith.constant 64 : index
+    %c4096 = arith.constant 4096 : index
+    %addr = arith.constant 1024 : i64
+    %zero = arith.constant 0.0 : f32
+    %acc = pto.alloc_tile addr = %addr : !acc
+    // INJECT_ALIAS
+
+    "pto.fusion_region"() ({
+      %mask = pto.vmi.create_mask %c64 {pto.tilelib.candidate = "vmi_texpands", pto.tilelib.impl = "vmi"} : index -> !pto.vmi.mask<64xpred>
+      %ptr = pto.tile_buf_addr %acc {pto.tilelib.candidate = "vmi_texpands", pto.tilelib.impl = "vmi"} : !acc -> !pto.ptr<f32, ub>
+      %init = pto.vmi.vbrc %zero {pto.tilelib.candidate = "vmi_texpands", pto.tilelib.impl = "vmi"} : f32 -> !pto.vmi.vreg<64xf32>
+      pto.vmi.vstore %init, %ptr[%c0], %mask {pto.tilelib.candidate = "vmi_texpands", pto.tilelib.impl = "vmi"} : !pto.vmi.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.vmi.mask<64xpred>
+      pto.yield() : () -> ()
+    }) {pto.fusion.group_id = 0 : i64} : () -> ()
+
+    scf.for %col = %c0 to %c4096 step %c64 {
+      // INJECT_SYNC
+      "pto.fusion_region"() ({
+        %ptr = pto.tile_buf_addr %acc {pto.tilelib.candidate = "vmi_tadd_block64", pto.tilelib.impl = "vmi"} : !acc -> !pto.ptr<f32, ub>
+        %mask_lanes = arith.constant 64 : index
+        %mask = pto.vmi.create_mask %mask_lanes {pto.tilelib.candidate = "vmi_tadd_block64", pto.tilelib.impl = "vmi"} : index -> !pto.vmi.mask<64xpred>
+        %old = pto.vmi.vload %ptr[%c0] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+        %delta = pto.vmi.vbrc %zero : f32 -> !pto.vmi.vreg<64xf32>
+        %next = pto.vmi.vadd %old, %delta, %mask : !pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32>, !pto.vmi.mask<64xpred> -> !pto.vmi.vreg<64xf32>
+        pto.vmi.vstore %next, %ptr[%c0], %mask : !pto.vmi.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.vmi.mask<64xpred>
+        pto.yield() : () -> ()
+      }) {pto.fusion.group_id = 1 : i64} : () -> ()
+    } {pto.vmi.accumulator.iterations = 64 : i64, pto.vmi.accumulator.phase = "chunk_loop", pto.vmi.accumulator.phase_group = 0 : i64, pto.vmi.accumulator.phase_status = "accepted", pto.vmi.accumulator.storage_root = 1024 : i64}
+
+    "pto.fusion_region"() ({
+      %ptr = pto.tile_buf_addr %acc {pto.tilelib.candidate = "vmi_trowsum", pto.tilelib.impl = "vmi"} : !acc -> !pto.ptr<f32, ub>
+      %mask = pto.vmi.create_mask %c64 {pto.tilelib.candidate = "vmi_trowsum", pto.tilelib.impl = "vmi"} : index -> !pto.vmi.mask<64xpred>
+      %value = pto.vmi.vload %ptr[%c0] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+      %sum = pto.vmi.vcadd %value, %mask {reassoc} : !pto.vmi.vreg<64xf32>, !pto.vmi.mask<64xpred> -> !pto.vmi.vreg<1xf32>
+      pto.yield() : () -> ()
+    }) {pto.fusion.group_id = 2 : i64} : () -> ()
+    // INJECT_ESCAPE
+    return
+  }
+}

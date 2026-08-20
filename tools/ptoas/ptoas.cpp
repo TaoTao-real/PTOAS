@@ -2793,6 +2793,12 @@ lowerPTOToVPTOBackend(PassManager &pm, ModuleOp module,
     kernelModulePM.addPass(pto::createPTOLowLevelLoopFusionPass());
     kernelModulePM.addPass(mlir::createCanonicalizerPass());
     kernelModulePM.addPass(mlir::createCSEPass());
+    if (isVMIFullFusionEnabled(defaultFusionEnabled)) {
+      kernelModulePM.addNestedPass<mlir::func::FuncOp>(
+          pto::createPTOVMIAccumulatorPromotionPass());
+      kernelModulePM.addPass(mlir::createCanonicalizerPass());
+      kernelModulePM.addPass(mlir::createCSEPass());
+    }
   }
   kernelModulePM.addNestedPass<mlir::func::FuncOp>(
       pto::createFoldTileBufIntrinsicsPass("addr-only"));
