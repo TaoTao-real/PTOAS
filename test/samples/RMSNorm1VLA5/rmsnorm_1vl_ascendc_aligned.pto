@@ -1,0 +1,120 @@
+!bf16_row = !pto.tile_buf<vec, 1x4096xbf16>
+!bf16_vl = !pto.tile_buf<vec, 1x64xbf16>
+!f32_vl = !pto.tile_buf<vec, 1x64xf32>
+!f32_scalar = !pto.tile_buf<vec, 1x8xf32, valid=1x1>
+!f32_broadcast = !pto.tile_buf<vec, 8x1xf32, valid=1x1, blayout=col_major>
+
+module attributes {pto.target_arch = "a5"} {
+  // AscendC-aligned association: 64 FP32 lanes accumulate 64 chunks, followed
+  // by exactly one row reduction. Both conversion phases remain inside their
+  // 64-lane chunk loops; no 1x4096 FP32 conversion tile is materialized.
+  func.func @rms_norm_1vl_ascendc_aligned(
+      %x: !pto.ptr<bf16>, %y: !pto.ptr<bf16>, %gamma: !pto.ptr<bf16>,
+      %token_count: index, %block_idx: i32, %block_count: i32)
+      attributes {pto.entry, pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    %c64 = arith.constant 64 : index
+    %c2 = arith.constant 2 : index
+    %c4 = arith.constant 4 : index
+    %c4096 = arith.constant 4096 : index
+    %zero = arith.constant 0.0 : f32
+    %inv_width = arith.constant 2.44140625e-4 : f32
+    %epsilon = arith.constant 1.0e-6 : f32
+
+    %x_row_addr = arith.constant 16384 : i64
+    %y_row_addr = arith.constant 24576 : i64
+    %gamma_row_addr = arith.constant 32768 : i64
+    %x_f32_addr = arith.constant 40960 : i64
+    %gamma_f32_addr = arith.constant 41216 : i64
+    %square_addr = arith.constant 41472 : i64
+    %acc_addr = arith.constant 41728 : i64
+    %reduce_scratch_addr = arith.constant 41984 : i64
+    %sum_addr = arith.constant 42240 : i64
+    %normalized_addr = arith.constant 42272 : i64
+    %scaled_addr = arith.constant 42528 : i64
+
+    %x_view = pto.make_tensor_view %x, shape = [%token_count, %c4096], strides = [%c4096, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<?x?xbf16>
+    %y_view = pto.make_tensor_view %y, shape = [%token_count, %c4096], strides = [%c4096, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<?x?xbf16>
+    %gamma_view = pto.make_tensor_view %gamma, shape = [%c1, %c4096], strides = [%c4096, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<1x4096xbf16>
+
+    %gamma_row = pto.alloc_tile addr = %gamma_row_addr : !bf16_row
+    %gamma_part = pto.partition_view %gamma_view, offsets = [%c0, %c0], sizes = [%c1, %c4096] : !pto.tensor_view<1x4096xbf16> -> !pto.partition_tensor_view<1x4096xbf16>
+    pto.tload ins(%gamma_part : !pto.partition_tensor_view<1x4096xbf16>) outs(%gamma_row : !bf16_row)
+    pto.set_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
+    pto.wait_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
+
+    scf.for %row = %c0 to %c8 step %c1 {
+      pto.set_flag["PIPE_V", "PIPE_MTE2", "EVENT_ID0"]
+      pto.wait_flag["PIPE_V", "PIPE_MTE2", "EVENT_ID0"]
+      %x_row = pto.alloc_tile addr = %x_row_addr : !bf16_row
+      %x_part = pto.partition_view %x_view, offsets = [%row, %c0], sizes = [%c1, %c4096] : !pto.tensor_view<?x?xbf16> -> !pto.partition_tensor_view<1x4096xbf16>
+      pto.tload ins(%x_part : !pto.partition_tensor_view<1x4096xbf16>) outs(%x_row : !bf16_row)
+      pto.set_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
+      pto.wait_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
+
+      %acc_init = pto.alloc_tile addr = %acc_addr : !f32_vl
+      %acc_work = pto.alloc_tile addr = %acc_addr : !f32_vl
+      %acc_next = pto.alloc_tile addr = %acc_addr : !f32_vl
+      pto.texpands ins(%zero : f32) outs(%acc_init : !f32_vl)
+
+      // Reduction phase: 64 iterations, lane-wise FP32 association.
+      scf.for %col = %c0 to %c4096 step %c64 {
+        %bf16_offset_idx = arith.muli %col, %c2 : index
+        %bf16_offset = arith.index_cast %bf16_offset_idx : index to i64
+        %x_chunk_addr = arith.addi %x_row_addr, %bf16_offset : i64
+        %x_chunk = pto.alloc_tile addr = %x_chunk_addr : !bf16_vl
+        %x_f32 = pto.alloc_tile addr = %x_f32_addr : !f32_vl
+        %square = pto.alloc_tile addr = %square_addr : !f32_vl
+        pto.tcvt ins(%x_chunk : !bf16_vl) outs(%x_f32 : !f32_vl)
+        pto.tmul ins(%x_f32, %x_f32 : !f32_vl, !f32_vl) outs(%square : !f32_vl)
+        pto.tadd ins(%acc_work, %square : !f32_vl, !f32_vl) outs(%acc_next : !f32_vl)
+        scf.yield
+      }
+
+      %reduce_scratch = pto.alloc_tile addr = %reduce_scratch_addr : !f32_vl
+      %sum = pto.alloc_tile addr = %sum_addr : !f32_scalar
+      pto.trowsum ins(%acc_next, %reduce_scratch : !f32_vl, !f32_vl) outs(%sum : !f32_scalar)
+      %mean = pto.alloc_tile addr = %sum_addr : !f32_scalar
+      pto.tmuls ins(%sum, %inv_width : !f32_scalar, f32) outs(%mean : !f32_scalar)
+      %mean_eps = pto.alloc_tile addr = %sum_addr : !f32_scalar
+      pto.tadds ins(%mean, %epsilon : !f32_scalar, f32) outs(%mean_eps : !f32_scalar)
+      %rms = pto.alloc_tile addr = %sum_addr : !f32_scalar
+      pto.tsqrt ins(%mean_eps : !f32_scalar) outs(%rms : !f32_scalar)
+      %rms_broadcast = pto.alloc_tile addr = %sum_addr : !f32_broadcast
+
+      // Apply phase: convert x and gamma, divide, multiply, then narrow with
+      // RINT into the final BF16 row at the same 64-lane chunk offset.
+      scf.for %col = %c0 to %c4096 step %c64 {
+        %bf16_offset_idx = arith.muli %col, %c2 : index
+        %bf16_offset = arith.index_cast %bf16_offset_idx : index to i64
+        %x_chunk_addr = arith.addi %x_row_addr, %bf16_offset : i64
+        %gamma_chunk_addr = arith.addi %gamma_row_addr, %bf16_offset : i64
+        %y_chunk_addr = arith.addi %y_row_addr, %bf16_offset : i64
+        %x_chunk = pto.alloc_tile addr = %x_chunk_addr : !bf16_vl
+        %gamma_chunk = pto.alloc_tile addr = %gamma_chunk_addr : !bf16_vl
+        %y_chunk = pto.alloc_tile addr = %y_chunk_addr : !bf16_vl
+        %x_f32 = pto.alloc_tile addr = %x_f32_addr : !f32_vl
+        %gamma_f32 = pto.alloc_tile addr = %gamma_f32_addr : !f32_vl
+        %normalized = pto.alloc_tile addr = %normalized_addr : !f32_vl
+        %scaled = pto.alloc_tile addr = %scaled_addr : !f32_vl
+        pto.tcvt ins(%x_chunk : !bf16_vl) outs(%x_f32 : !f32_vl)
+        pto.tcvt ins(%gamma_chunk : !bf16_vl) outs(%gamma_f32 : !f32_vl)
+        pto.trowexpanddiv ins(%x_f32, %rms_broadcast : !f32_vl, !f32_broadcast) outs(%normalized : !f32_vl)
+        pto.tmul ins(%normalized, %gamma_f32 : !f32_vl, !f32_vl) outs(%scaled : !f32_vl)
+        pto.tcvt ins(%scaled {rmode = #pto<round_mode RINT>} : !f32_vl) outs(%y_chunk : !bf16_vl)
+        scf.yield
+      }
+
+      pto.set_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
+      pto.wait_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
+      %y_row = pto.alloc_tile addr = %y_row_addr : !bf16_row
+      %y_part = pto.partition_view %y_view, offsets = [%row, %c0], sizes = [%c1, %c4096] : !pto.tensor_view<?x?xbf16> -> !pto.partition_tensor_view<1x4096xbf16>
+      pto.tstore ins(%y_row : !bf16_row) outs(%y_part : !pto.partition_tensor_view<1x4096xbf16>)
+      pto.set_flag["PIPE_MTE3", "PIPE_V", "EVENT_ID0"]
+      pto.wait_flag["PIPE_MTE3", "PIPE_V", "EVENT_ID0"]
+    }
+    return
+  }
+}

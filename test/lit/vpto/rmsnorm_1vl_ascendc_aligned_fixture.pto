@@ -1,0 +1,35 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software; you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root directory of the software repository for the full text of the License.
+
+// RUN: pto-test-opt %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_ascendc_aligned.pto | FileCheck %s --check-prefix=FLOW
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=ordinary --vmi-fusion-mode=off --emit-vpto %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_ascendc_aligned.pto -o /dev/null
+// RUN: %python_executable %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_golden.py | FileCheck %s --check-prefix=GOLDEN
+
+// FLOW-LABEL: func.func @rms_norm_1vl_ascendc_aligned
+// FLOW: scf.for %{{.*}} = %c0 to %c8 step %c1
+// FLOW: pto.texpands
+// FLOW: scf.for %{{.*}} = %c0 to %c4096 step %c64
+// FLOW: pto.tcvt ins(%{{.*}} : !pto.tile_buf<vec, 1x64xbf16>) outs(%{{.*}} : !pto.tile_buf<vec, 1x64xf32>)
+// FLOW-NEXT: pto.tmul
+// FLOW-NEXT: pto.tadd
+// FLOW-COUNT-1: pto.trowsum
+// FLOW: pto.tmuls
+// FLOW: pto.tadds
+// FLOW: pto.tsqrt
+// FLOW: scf.for %{{.*}} = %c0 to %c4096 step %c64
+// FLOW: pto.tcvt ins(%{{.*}} : !pto.tile_buf<vec, 1x64xbf16>) outs(%{{.*}} : !pto.tile_buf<vec, 1x64xf32>)
+// FLOW: pto.tcvt ins(%{{.*}} : !pto.tile_buf<vec, 1x64xbf16>) outs(%{{.*}} : !pto.tile_buf<vec, 1x64xf32>)
+// FLOW: pto.trowexpanddiv
+// FLOW-NEXT: pto.tmul
+// FLOW-NEXT: pto.tcvt ins(%{{.*}} {rmode = #pto<round_mode RINT>{{.*}}} : !pto.tile_buf<vec, 1x64xf32>) outs(%{{.*}} : !pto.tile_buf<vec, 1x64xbf16>)
+// FLOW-NOT: pto.tcvt{{.*}}1x4096
+// FLOW: pto.tstore
+
+// GOLDEN: x_sha256=4592fd5558963014cdeda9c7abe87ca56fc7d9460ea824e6e86391e99a41446f
+// GOLDEN: gamma_sha256=53aa7ef4ac5abbf117e37472b3f1f2c5050de6cefb3aa8dc34a4a77cf59c42ac
+// GOLDEN: output_sha256=7fb035c328fe81ad603c304efaeeb886de339ee25256d5e70304c8fea5ff0228
