@@ -13,11 +13,15 @@
 #endif
 
 // f32 kernels
+extern "C" __global__ AICORE void TROWEXPANDDIV_f32_1x64_vmi_ieee(__gm__ float *src0, __gm__ float *src1, __gm__ float *dst);
 extern "C" __global__ AICORE void TROWEXPANDDIV_f32_40x64(__gm__ float *src0, __gm__ float *src1, __gm__ float *dst);
 extern "C" __global__ AICORE void TROWEXPANDDIV_f32_16x256(__gm__ float *src0, __gm__ float *src1, __gm__ float *dst);
 extern "C" __global__ AICORE void TROWEXPANDDIV_f32_16x128_noeq(__gm__ float *src0, __gm__ float *src1, __gm__ float *dst);
 extern "C" __global__ AICORE void TROWEXPANDDIV_f32_40x32_hp(__gm__ float *src0, __gm__ float *src1, __gm__ float *dst);
 
+void LaunchTROWEXPANDDIV_f32_1x64_vmi_ieee(float *src0, float *src1, float *dst, void *stream) {
+    TROWEXPANDDIV_f32_1x64_vmi_ieee<<<1, nullptr, stream>>>((__gm__ float *)src0, (__gm__ float *)src1, (__gm__ float *)dst);
+}
 void LaunchTROWEXPANDDIV_f32_40x64(float *src0, float *src1, float *dst, void *stream) {
     TROWEXPANDDIV_f32_40x64<<<1, nullptr, stream>>>((__gm__ float *)src0, (__gm__ float *)src1, (__gm__ float *)dst);
 }

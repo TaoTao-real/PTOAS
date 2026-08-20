@@ -44,6 +44,7 @@ from ptodsl.vmi_tilelib import (
     vmi_tcvt,
     vmi_texpands,
     vmi_texp_block64,
+    vmi_trowexpanddiv,
 )
 from ptodsl.vmi_tilelib_helper import instantiate_candidate
 
@@ -851,6 +852,87 @@ def check_texpands_candidate() -> None:
         )
 
 
+def check_trowexpanddiv_candidate() -> None:
+    """RMSNorm's compact scalar broadcast is the only initial VMI form."""
+    tile_spec = {
+        "kind": "tile",
+        "dtype": "f32",
+        "shape": [1, 64],
+        "valid_shape": [1, 64],
+        "memory_space": "ub",
+        "config": {
+            "b_layout": "row_major",
+            "s_layout": "none_box",
+            "s_fractal_size": 512,
+            "pad_value": "0x0",
+        },
+    }
+    denominator_spec = {
+        **tile_spec,
+        "shape": [8, 1],
+        "valid_shape": [1, 1],
+        "config": {**tile_spec["config"], "b_layout": "col_major"},
+    }
+    text = instantiate_candidate(
+        target="a5",
+        op_name="pto.trowexpanddiv",
+        operand_specs=[tile_spec, denominator_spec, tile_spec],
+        provider_module="ptodsl.vmi_tilelib",
+        context_attrs={"precisionType": "default"},
+    ).mlir_text()
+    expect(vmi_trowexpanddiv.name == "vmi_trowexpanddiv", "candidate must be exported")
+    expect(text.count("pto.vmi.vload") == 2, "candidate must load numerator and scalar")
+    expect('dist_mode = "brc"' in text, "denominator must use one-scalar BRC load")
+    expect(text.count("pto.vmi.vdiv") == 1, "candidate must issue one default divide")
+    expect(text.count("pto.vmi.vstore") == 1, "standalone candidate must retain store")
+    expect("scf.for" not in text, "one-VL candidate needs no physical chunk loop")
+
+    invalid_specs = [
+        {**tile_spec, "shape": [1, 128], "valid_shape": [1, 128]},
+        {**tile_spec, "valid_shape": [1, 63]},
+        {
+            **denominator_spec,
+            "config": {**denominator_spec["config"], "b_layout": "row_major"},
+        },
+        {**denominator_spec, "valid_shape": [2, 1]},
+    ]
+    for invalid_spec in invalid_specs[:2]:
+        expect_raises(
+            lambda spec=invalid_spec: instantiate_candidate(
+                target="a5",
+                op_name="pto.trowexpanddiv",
+                operand_specs=[spec, denominator_spec, spec],
+                provider_module="ptodsl.vmi_tilelib",
+                context_attrs={"precisionType": "default"},
+            ),
+            LookupError,
+            "no legal PTODSL VMI candidate",
+        )
+    for invalid_denominator in invalid_specs[2:]:
+        expect_raises(
+            lambda spec=invalid_denominator: instantiate_candidate(
+                target="a5",
+                op_name="pto.trowexpanddiv",
+                operand_specs=[tile_spec, spec, tile_spec],
+                provider_module="ptodsl.vmi_tilelib",
+                context_attrs={"precisionType": "default"},
+            ),
+            LookupError,
+            "no legal PTODSL VMI candidate",
+        )
+    expect_raises(
+        lambda: instantiate_candidate(
+            target="a5",
+            op_name="pto.trowexpanddiv",
+            operand_specs=[tile_spec, denominator_spec, tile_spec],
+            provider_module="ptodsl.vmi_tilelib",
+            context_attrs={"precisionType": "high_precision"},
+        ),
+        LookupError,
+        "no legal PTODSL VMI candidate",
+    )
+
+
 def check_col_reduce_vmi_to_vpto_lowering() -> None:
     """The vreg-carrying ColReduce loop must survive VMI->VPTO lowering as a
     real physical ``scf.for iter_args(%acc = ...) -> !pto.vreg<...>`` (the seed
@@ -946,6 +1028,7 @@ def main() -> None:
     check_col_expand_candidate()
     check_tcvt_bf16_candidate()
     check_texpands_candidate()
+    check_trowexpanddiv_candidate()
     check_col_reduce_vmi_to_vpto_lowering()
     print("ptodsl_vmi_tile_template: PASS")
 

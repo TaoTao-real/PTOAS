@@ -908,6 +908,7 @@ class TileTemplate:
                     "pto.tsqrt",
                     "pto.trowsum",
                     "pto.trowmax",
+                    "pto.trowexpanddiv",
                 },
             )
             for name, spec in parameter_specs.items()

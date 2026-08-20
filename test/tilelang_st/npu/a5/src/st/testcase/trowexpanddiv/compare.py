@@ -46,6 +46,17 @@ def main():
         output = np.fromfile(os.path.join(case_dir, "output.bin"), dtype=dtype).reshape(dst_shape)
 
         ok = result_cmp(golden[:vr, :vc], output[:vr, :vc], case["eps"])
+        if ok and case.get("check_special_signs"):
+            expected = golden[:vr, :vc]
+            actual = output[:vr, :vc]
+            zero_mask = expected == 0
+            inf_mask = np.isinf(expected)
+            nan_mask = np.isnan(expected)
+            ok = (
+                np.array_equal(np.signbit(expected[zero_mask]), np.signbit(actual[zero_mask]))
+                and np.array_equal(np.signbit(expected[inf_mask]), np.signbit(actual[inf_mask]))
+                and np.array_equal(nan_mask, np.isnan(actual))
+            )
         if ok:
             print(style_pass(f"[INFO] {case['name']}: compare passed"))
         else:

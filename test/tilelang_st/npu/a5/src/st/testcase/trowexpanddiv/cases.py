@@ -22,6 +22,20 @@ trowexpanddiv: dst = src0 / broadcast(src1) across columns.
 import numpy as np
 
 CASES = [
+    {
+        "name": "f32_1x64_vmi_ieee",
+        "dtype": np.float32,
+        "src0_shape": (1, 64),
+        "src0_valid_shape": (1, 64),
+        "src1_shape": (8, 1),
+        "src1_valid_shape": (1, 1),
+        "dst_shape": (1, 64),
+        "dst_valid_shape": (1, 64),
+        "eps": 1e-6,
+        "high_precision": False,
+        "input_pattern": "ieee_boundaries",
+        "check_special_signs": True,
+    },
     # launchTRowExpandDiv<float, 40, 64, 40, 1, true, false>
     {
         "name": "f32_40x64",

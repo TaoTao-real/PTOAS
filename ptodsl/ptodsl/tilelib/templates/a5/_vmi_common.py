@@ -644,6 +644,57 @@ def _single_vl_scalar_fill_vmi_legal(**context) -> bool:
     )
 
 
+def _single_vl_row_expand_div_vmi_legal(**context) -> bool:
+    """Accept only the compact scalar-broadcast form used by RMSNorm.
+
+    The denominator may have padding in its physical row dimension, but its
+    valid domain is exactly one f32 scalar.  Requiring a known col-major
+    ``[N, 1]`` tile makes the BRC load's single-scalar read provable at
+    candidate-selection time; row-major scalar packs and unknown layouts stay
+    on the ordinary PTODSL path.
+    """
+    src_shape = context.get("src_shape")
+    row_values_shape = context.get("row_values_shape")
+    dst_shape = context.get("dst_shape")
+    src_valid = context.get("src_valid_shape")
+    row_values_valid = context.get("row_values_valid_shape")
+    dst_valid = context.get("dst_valid_shape")
+    src_config = context.get("src_config")
+    row_values_config = context.get("row_values_config")
+    dst_config = context.get("dst_config")
+    return (
+        tuple(context.get("operand_kinds", ())) == ("tile", "tile", "tile")
+        and tuple(context.get("operand_dtypes", ()))
+        == ("f32", "f32", "f32")
+        and src_shape == (1, f32.lanes)
+        and dst_shape == src_shape
+        and src_valid == src_shape
+        and dst_valid == dst_shape
+        and isinstance(row_values_shape, tuple)
+        and len(row_values_shape) == 2
+        and row_values_shape[0] >= 1
+        and row_values_shape[1] == 1
+        and row_values_valid == (1, 1)
+        and all(
+            context.get(key) in {"ub", "vec"}
+            for key in (
+                "src_memory_space",
+                "row_values_memory_space",
+                "dst_memory_space",
+            )
+        )
+        and src_config is not None
+        and src_config.b_layout == "row_major"
+        and src_config.s_layout == "none_box"
+        and row_values_config is not None
+        and row_values_config.b_layout == "col_major"
+        and row_values_config.s_layout == "none_box"
+        and dst_config is not None
+        and dst_config.b_layout == "row_major"
+        and dst_config.s_layout == "none_box"
+    )
+
+
 def emit_elementwise_vmi(
     dst: _TileProxy,
     sources: Sequence[_TileProxy],
@@ -1486,6 +1537,49 @@ def emit_row_expand_sub_vmi(
             _vstore(result, dst, coordinate, full_mask)
 
 
+def emit_row_expand_div_vmi(
+    src: _TileProxy, row_values: _TileProxy, dst: _TileProxy
+) -> None:
+    """Divide one full f32 VL by one proven compact broadcast scalar."""
+    if any(tile.element_type != f32 for tile in (src, row_values, dst)):
+        raise ValueError("trowexpanddiv VMI candidate requires f32 tiles")
+    if src._spec.shape != (1, f32.lanes) or dst._spec.shape != src._spec.shape:
+        raise ValueError("trowexpanddiv VMI candidate requires 1x64 source/dst")
+    if any(
+        (tile._spec.valid_shape or tile._spec.shape) != tile._spec.shape
+        for tile in (src, dst)
+    ):
+        raise ValueError("trowexpanddiv VMI source/dst must be full-valid")
+    if any(
+        tile._spec.b_layout != "row_major"
+        for tile in (src, dst)
+    ):
+        raise ValueError("trowexpanddiv VMI source/dst must be row-major none-box")
+    row_values_shape = row_values._spec.shape
+    row_values_valid = row_values._spec.valid_shape or row_values_shape
+    if (
+        len(row_values_shape) != 2
+        or row_values_shape[0] < 1
+        or row_values_shape[1] != 1
+        or row_values_valid != (1, 1)
+        or row_values._spec.b_layout != "col_major"
+    ):
+        raise ValueError(
+            "trowexpanddiv VMI denominator must be a col-major none-box "
+            "[N, 1] tile with valid_shape [1, 1]"
+        )
+
+    block_map = CanonicalBlockMap.from_tile(src, logical_lanes=f32.lanes)
+    coordinate = block_map.coordinate(0)
+    full_mask = _create_mask(block_map, f32, trace=src._trace)
+    _prepare_tile_access(src, row_values, dst)
+    numerator = _vload(src, coordinate)
+    denominator = _vload_linear(
+        row_values, 0, lanes=f32.lanes, dist_mode="brc"
+    )
+    _vstore(_vdiv(numerator, denominator, full_mask), dst, coordinate, full_mask)
+
+
 def _validate_col_reduce_tiles(
     src: _TileProxy, dst: _TileProxy
 ) -> CanonicalBlockMap:
@@ -1730,11 +1824,13 @@ __all__ = [
     "emit_convert_vmi",
     "emit_scalar_fill_vmi",
     "emit_recip_vmi",
+    "emit_row_expand_div_vmi",
     "emit_row_expand_sub_vmi",
     "emit_row_reduce_vmi",
     "emit_rsqrt_vmi",
     "emit_sqrt_high_precision_vmi",
     "emit_sqrt_vmi",
+    "_single_vl_row_expand_div_vmi_legal",
     "_single_vl_scalar_fill_vmi_legal",
     "f32",
 ]

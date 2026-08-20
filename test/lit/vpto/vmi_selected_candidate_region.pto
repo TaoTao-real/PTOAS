@@ -32,6 +32,15 @@
 // CHECK-NOT: pto.fusion_region
 // CHECK: return
 
+// CHECK-LABEL: func.func @selected_trowexpanddiv_joins_vmi_chain
+// CHECK: pto.fusion_region
+// CHECK: pto.tmul
+// CHECK: pto.trowexpanddiv
+// CHECK: pto.tmul
+// CHECK: pto.yield
+// CHECK-NOT: pto.fusion_region
+// CHECK: return
+
 module {
   func.func @fallback_splits_selected_vmi() {
     %a = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
@@ -53,6 +62,19 @@ module {
     %out = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
     pto.tmul ins(%a, %b : !pto.tile_buf<vec, 1x64xf32>, !pto.tile_buf<vec, 1x64xf32>) outs(%mid : !pto.tile_buf<vec, 1x64xf32>) {pto.tilelib.candidate = "vmi_tmul", pto.tilelib.impl = "vmi"}
     pto.tadd ins(%mid, %a : !pto.tile_buf<vec, 1x64xf32>, !pto.tile_buf<vec, 1x64xf32>) outs(%out : !pto.tile_buf<vec, 1x64xf32>) {pto.tilelib.candidate = "vmi_tadd_block64", pto.tilelib.impl = "vmi"}
+    return
+  }
+
+  func.func @selected_trowexpanddiv_joins_vmi_chain() {
+    %a = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    %b = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    %scale = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=1, v_row=1, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>
+    %mid = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    %div = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    %out = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    pto.tmul ins(%a, %b : !pto.tile_buf<vec, 1x64xf32>, !pto.tile_buf<vec, 1x64xf32>) outs(%mid : !pto.tile_buf<vec, 1x64xf32>) {pto.tilelib.candidate = "vmi_tmul", pto.tilelib.impl = "vmi"}
+    pto.trowexpanddiv ins(%mid, %scale : !pto.tile_buf<vec, 1x64xf32>, !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=1, v_row=1, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>) outs(%div : !pto.tile_buf<vec, 1x64xf32>) {pto.tilelib.candidate = "vmi_trowexpanddiv", pto.tilelib.impl = "vmi"}
+    pto.tmul ins(%div, %b : !pto.tile_buf<vec, 1x64xf32>, !pto.tile_buf<vec, 1x64xf32>) outs(%out : !pto.tile_buf<vec, 1x64xf32>) {pto.tilelib.candidate = "vmi_tmul", pto.tilelib.impl = "vmi"}
     return
   }
 }

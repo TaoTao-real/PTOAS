@@ -39,6 +39,7 @@ from .tilelib.templates.a5.tmuls import vmi_tmuls
 from .tilelib.templates.a5.trecip import vmi_trecip
 from .tilelib.templates.a5.trsqrt import vmi_trsqrt, vmi_trsqrt_with_tmp
 from .tilelib.templates.a5.trowexpandsub import vmi_trowexpandsub
+from .tilelib.templates.a5.trowexpanddiv import vmi_trowexpanddiv
 from .tilelib.templates.a5.trowmax import vmi_trowmax
 from .tilelib.templates.a5.trowsum import vmi_trowsum
 from .tilelib.templates.a5.tsqrt import vmi_tsqrt
@@ -73,6 +74,7 @@ __all__ = [
     "vmi_trsqrt",
     "vmi_trsqrt_with_tmp",
     "vmi_trowexpandsub",
+    "vmi_trowexpanddiv",
     "vmi_trowmax",
     "vmi_trowsum",
     "vmi_tsqrt",

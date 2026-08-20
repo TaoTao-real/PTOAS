@@ -37,8 +37,25 @@ for case in CASES:
     dst_shape = case["dst_shape"]
     dst_valid_shape = case["dst_valid_shape"]
 
-    input1 = np.random.randint(1, 10, size=src0_shape).astype(dtype)
-    input2 = np.random.randint(1, 10, size=src1_shape).astype(dtype)
+    if case.get("input_pattern") == "ieee_boundaries":
+        boundary_values = np.array(
+            [
+                0.0,
+                -0.0,
+                np.inf,
+                -np.inf,
+                np.nan,
+                1.0,
+                -1.0,
+                np.finfo(np.float32).max,
+            ],
+            dtype=dtype,
+        )
+        input1 = np.resize(boundary_values, src0_shape).astype(dtype, copy=False)
+        input2 = np.full(src1_shape, 2.0, dtype=dtype)
+    else:
+        input1 = np.random.randint(1, 10, size=src0_shape).astype(dtype)
+        input2 = np.random.randint(1, 10, size=src1_shape).astype(dtype)
 
     golden = np.zeros(dst_shape, dtype=dtype)
     dst_vr, dst_vc = dst_valid_shape

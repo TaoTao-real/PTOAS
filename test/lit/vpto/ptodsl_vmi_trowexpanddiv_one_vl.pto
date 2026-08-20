@@ -1,0 +1,54 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// CANN Open Software License Agreement Version 2.0
+
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=off --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-select-tilelib-candidate 2>&1 | FileCheck %s --check-prefix=SELECT
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=off --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-inline-libcall 2>&1 | FileCheck %s --check-prefix=INLINE
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=off --emit-vpto %s -o - | FileCheck %s --check-prefix=FINAL
+
+// SELECT-LABEL: func.func @trowexpanddiv_one_vl_selection
+// SELECT: pto.trowexpanddiv
+// SELECT-SAME: pto.tilelib.candidate = "vmi_trowexpanddiv"
+// SELECT-SAME: pto.tilelib.impl = "vmi"
+// SELECT: pto.trowexpanddiv
+// SELECT-SAME: precisionType = #pto<div_precision high_precision>
+// SELECT-SAME: pto.tilelib.candidate = "template_trowexpanddiv_high_precision"
+// SELECT-SAME: pto.tilelib.impl = "ptodsl"
+// SELECT: pto.trowexpanddiv
+// SELECT-SAME: pto.tilelib.candidate = "template_trowexpanddiv"
+// SELECT-SAME: pto.tilelib.impl = "ptodsl"
+// SELECT: pto.trowexpanddiv
+// SELECT-SAME: pto.tilelib.candidate = "template_trowexpanddiv"
+// SELECT-SAME: pto.tilelib.impl = "ptodsl"
+// SELECT: pto.trowexpanddiv
+// SELECT-SAME: pto.tilelib.candidate = "template_trowexpanddiv"
+// SELECT-SAME: pto.tilelib.impl = "ptodsl"
+
+// INLINE-LABEL: func.func @trowexpanddiv_one_vl_selection
+// INLINE: %[[NUM:.+]] = pto.vmi.vload
+// INLINE: %[[DEN:.+]] = pto.vmi.vload {{.*}}dist_mode = "brc"
+// INLINE: %[[DIV:.+]] = pto.vmi.vdiv %[[NUM]], %[[DEN]], %{{.*}}
+// INLINE: pto.vmi.vstore %[[DIV]]
+
+// FINAL-LABEL: func.func @trowexpanddiv_one_vl_selection
+// FINAL: %[[DEN:.+]] = pto.vlds {{.*}} {dist = "BRC_B32"}
+// FINAL: pto.vdiv {{.*}}, %[[DEN]],
+// FINAL-NOT: pto.vmi.
+
+module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+  func.func @trowexpanddiv_one_vl_selection() {
+    %src = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    %den = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=1, v_row=1, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>
+    %row_major_den = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=8, v_row=1, v_col=1, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %dst = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    %tmp = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    %tail = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32, valid=1x32>
+    %wide = pto.alloc_tile : !pto.tile_buf<vec, 1x128xf32>
+
+    pto.trowexpanddiv ins(%src, %den : !pto.tile_buf<vec, 1x64xf32>, !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=1, v_row=1, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>) outs(%dst : !pto.tile_buf<vec, 1x64xf32>)
+    pto.trowexpanddiv ins(%src, %den, %tmp : !pto.tile_buf<vec, 1x64xf32>, !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=1, v_row=1, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<vec, 1x64xf32>) outs(%dst : !pto.tile_buf<vec, 1x64xf32>) {precisionType = #pto<div_precision high_precision>}
+    pto.trowexpanddiv ins(%src, %row_major_den : !pto.tile_buf<vec, 1x64xf32>, !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=8, v_row=1, v_col=1, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%dst : !pto.tile_buf<vec, 1x64xf32>)
+    pto.trowexpanddiv ins(%tail, %den : !pto.tile_buf<vec, 1x64xf32, valid=1x32>, !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=1, v_row=1, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>) outs(%tail : !pto.tile_buf<vec, 1x64xf32, valid=1x32>)
+    pto.trowexpanddiv ins(%wide, %den : !pto.tile_buf<vec, 1x128xf32>, !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=1, v_row=1, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>) outs(%wide : !pto.tile_buf<vec, 1x128xf32>)
+    return
+  }
+}

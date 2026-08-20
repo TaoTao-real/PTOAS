@@ -1123,6 +1123,42 @@ static bool hasStaticCompactElementwiseShape(Operation *tileOp) {
          valid[1] > 0 && valid[1] <= shape[1] && valid[1] <= 64;
 }
 
+// RMSNorm divides one full f32 VL by one compact scalar produced by the
+// preceding reduction/scalar chain.  The denominator may have physical row
+// padding, but the col-major [N, 1], valid [1, 1] form proves that the VMI BRC
+// load observes exactly one scalar.  Keep this separate from the generic
+// full-shape gate so no other padded broadcast form is admitted accidentally.
+static bool hasStaticCompactRowExpandDivShape(Operation *tileOp) {
+  if (getTileOpName(tileOp) != "trowexpanddiv" ||
+      tileOp->getNumOperands() != 3)
+    return false;
+
+  SmallVector<OperandTypeInfo, 3> infos;
+  for (Value operand : tileOp->getOperands()) {
+    auto info = buildOperandTypeInfo(operand);
+    if (!info || info->kind != OperandKind::Tile || info->dtype != "f32" ||
+        info->tileShape.size() != 2 || info->tileValidShape.size() != 2 ||
+        info->tileMemorySpace != "ub" ||
+        info->slayout != static_cast<int32_t>(pto::SLayout::NoneBox))
+      return false;
+    infos.push_back(*info);
+  }
+
+  const auto &src = infos[0];
+  const auto &rowValues = infos[1];
+  const auto &dst = infos[2];
+  return src.tileShape == SmallVector<int64_t, 2>{1, 64} &&
+         src.tileValidShape == src.tileShape &&
+         src.blayout == static_cast<int32_t>(pto::BLayout::RowMajor) &&
+         dst.tileShape == src.tileShape &&
+         dst.tileValidShape == dst.tileShape &&
+         dst.blayout == static_cast<int32_t>(pto::BLayout::RowMajor) &&
+         !ShapedType::isDynamic(rowValues.tileShape[0]) &&
+         rowValues.tileShape[0] >= 1 && rowValues.tileShape[1] == 1 &&
+         rowValues.tileValidShape == SmallVector<int64_t, 2>{1, 1} &&
+         rowValues.blayout == static_cast<int32_t>(pto::BLayout::ColMajor);
+}
+
 static bool isHardBoundaryFallbackOp(Operation *tileOp) {
   auto pipeOp = dyn_cast<pto::OpPipeInterface>(tileOp);
   if (!pipeOp || pipeOp.getPipe() != pto::PIPE::PIPE_V)
@@ -1158,7 +1194,8 @@ static CandidateSelection selectTemplateCandidate(Operation *tileOp,
   if (preferVMI && !hardBoundary && isVectorPipeTileOp(tileOp) &&
       (hasStaticFullTileValidShape(tileOp) ||
        hasStaticCompactRowReduceShape(tileOp) ||
-       hasStaticCompactElementwiseShape(tileOp))) {
+       hasStaticCompactElementwiseShape(tileOp) ||
+       hasStaticCompactRowExpandDivShape(tileOp))) {
     for (DictionaryAttr candidate : parsedCandidates) {
       if (candidateHasTag(candidate, "vmi"))
         return CandidateSelection{candidate, /*selectedVMI=*/true,
