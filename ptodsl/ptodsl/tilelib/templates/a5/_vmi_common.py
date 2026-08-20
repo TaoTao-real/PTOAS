@@ -584,6 +584,42 @@ def _compact_elementwise_vmi_legal(**context) -> bool:
     )
 
 
+def _single_vl_convert_vmi_legal(**context) -> bool:
+    """Restrict VMI tcvt to one static f32 VL per logical row.
+
+    ``emit_convert_vmi`` deliberately uses one VMI load/convert/store per
+    logical block.  A wide row must remain on the ordinary PTODSL path, which
+    owns the physical chunk loop; selecting this candidate for a 4096-element
+    row would fail later in ``CanonicalBlockMap`` instead of falling back.
+    """
+    src_shape = context.get("src_shape")
+    dst_shape = context.get("dst_shape")
+    src_valid = context.get("src_valid_shape")
+    dst_valid = context.get("dst_valid_shape")
+    src_config = context.get("src_config")
+    dst_config = context.get("dst_config")
+    if not all(
+        isinstance(value, tuple) and len(value) == 2
+        for value in (src_shape, dst_shape, src_valid, dst_valid)
+    ):
+        return False
+    if src_shape != dst_shape or src_valid != src_shape or dst_valid != dst_shape:
+        return False
+    if src_shape[1] != f32.lanes:
+        return False
+    if any(
+        config is None
+        or config.b_layout != "row_major"
+        or config.s_layout != "none_box"
+        for config in (src_config, dst_config)
+    ):
+        return False
+    return tuple(context.get("operand_dtypes", ())) in {
+        ("f32", "f16"),
+        ("f32", "bf16"),
+    }
+
+
 def emit_elementwise_vmi(
     dst: _TileProxy,
     sources: Sequence[_TileProxy],

@@ -1039,6 +1039,7 @@ def template_tcvt_bf16_to_fp4(src: pto.Tile, dst: pto.Tile):
 from ._vmi_common import (  # noqa: E402
     canonical_vmi_template,
     emit_convert_vmi,
+    _single_vl_convert_vmi_legal,
 )
 
 
@@ -1048,6 +1049,7 @@ from ._vmi_common import (  # noqa: E402
     name="vmi_tcvt",
     dtypes=(("f32", "f16"), ("f32", "bf16")),
     context_constraints={"round_mode": ("RINT",)},
+    constraints=(_single_vl_convert_vmi_legal,),
 )
 def vmi_tcvt(src: pto.Tile, dst: pto.Tile):
     emit_convert_vmi(src, dst)
