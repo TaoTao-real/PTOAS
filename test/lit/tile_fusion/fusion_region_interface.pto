@@ -9,7 +9,7 @@
 // Guards fusion_region interface construction: escaping values become explicit
 // results while external inputs stay implicit captures.
 //
-// RUN: { ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level2 --enable-op-fusion --emit-pto-ir %s --mlir-print-ir-after=pto-fusion-region-gen -o /dev/null 2>&1 || true; } | FileCheck %s
+// RUN: { env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level2 --enable-op-fusion --ptodsl-python-exe=%python_executable --emit-pto-ir %s --mlir-print-ir-after=pto-fusion-region-gen -o /dev/null 2>&1 || true; } | FileCheck %s
 
 module {
   func.func @fusion_region_interface(
@@ -54,14 +54,15 @@ module {
 
 // CHECK: // -----// IR Dump After PTOFusionRegionGen (pto-fusion-region-gen) //----- //
 // CHECK-LABEL: func.func @fusion_region_interface(
-// CHECK: %[[REGION:.*]]:2 = pto.fusion_region {
 // CHECK: %[[TMP0:[0-9]+]] = pto.alloc_tile
 // CHECK: %[[TMP1:[0-9]+]] = pto.alloc_tile
+// CHECK: pto.trowexpandmul{{.*}}outs(%[[TMP0]]{{.*}}pto.tilelib.impl = "ptodsl"
+// CHECK: pto.trowexpandmul{{.*}}outs(%[[TMP1]]{{.*}}pto.tilelib.impl = "ptodsl"
+// CHECK: %[[REGION:[0-9]+]] = pto.fusion_region {
 // CHECK: %[[SUM:[0-9]+]] = pto.alloc_tile
-// CHECK: pto.trowexpandmul ins(%{{.*}}, %{{.*}} : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x1xf32>) outs(%[[TMP0]] : !pto.tile_buf<vec, 32x32xf32>)
-// CHECK: pto.trowexpandmul ins(%{{.*}}, %{{.*}} : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x1xf32>) outs(%[[TMP1]] : !pto.tile_buf<vec, 32x32xf32>)
 // CHECK: pto.tadd ins(%[[TMP0]], %[[TMP1]] : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%[[SUM]] : !pto.tile_buf<vec, 32x32xf32>)
-// CHECK: pto.yield(%[[TMP0]], %[[SUM]]) : (!pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) -> ()
-// CHECK: } {pto.fusion.group_id = 0 : i64} : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>
-// CHECK: pto.tstore ins(%[[REGION]]#0 : !pto.tile_buf<vec, 32x32xf32>)
-// CHECK: pto.tstore ins(%[[REGION]]#1 : !pto.tile_buf<vec, 32x32xf32>)
+// CHECK-SAME: pto.tilelib.impl = "vmi"
+// CHECK: pto.yield(%[[SUM]]) : (!pto.tile_buf<vec, 32x32xf32>) -> ()
+// CHECK: } {pto.fusion.group_id = 0 : i64} : !pto.tile_buf<vec, 32x32xf32>
+// CHECK: pto.tstore ins(%[[TMP0]] : !pto.tile_buf<vec, 32x32xf32>)
+// CHECK: pto.tstore ins(%[[REGION]] : !pto.tile_buf<vec, 32x32xf32>)

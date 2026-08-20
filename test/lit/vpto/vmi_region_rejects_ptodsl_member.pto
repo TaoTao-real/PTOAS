@@ -1,0 +1,24 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software; you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root directory of the software repository for the full text of the License.
+
+// FusionRegionGen must reject corrupted VMI planning metadata before moving
+// any PTODSL TileOp into a region.
+
+// RUN: not pto-test-opt %s --pass-pipeline='builtin.module(func.func(pto-fusion-region-gen))' 2>&1 | FileCheck %s
+
+// CHECK: error: selected-VMI-only fusion group 7 contains op 'pto.tadd' with candidate 'template_tadd' and pto.tilelib.impl 'ptodsl'
+
+module {
+  func.func @reject_ptodsl_member() {
+    %a = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    %b = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    %out = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    pto.tadd ins(%a, %b : !pto.tile_buf<vec, 1x64xf32>, !pto.tile_buf<vec, 1x64xf32>) outs(%out : !pto.tile_buf<vec, 1x64xf32>) {pto.fusion.group_id = 7 : i64, pto.fusion.order = 0 : i64, pto.tilelib.candidate = "template_tadd", pto.tilelib.impl = "ptodsl"}
+    return
+  }
+}

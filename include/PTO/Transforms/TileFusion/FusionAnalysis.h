@@ -90,6 +90,7 @@ struct FusionComputeNode {
   unsigned blockOrder = 0;
   Operation *op = nullptr;
   FusionOpSemantics semantics;
+  bool selectedVMI = false;
   unsigned iterationDomainClass = 0;
   SmallVector<unsigned, 4> incomingEdges;
   SmallVector<unsigned, 4> outgoingEdges;

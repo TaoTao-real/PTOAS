@@ -9,7 +9,7 @@
 // Guards fusion_region frontier analysis so overwritten region-local temporaries
 // are not added to pto.yield.
 //
-// RUN: { ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level2 --enable-op-fusion --emit-pto-ir %s --mlir-print-ir-after=pto-fusion-region-gen -o /dev/null 2>&1 || true; } | FileCheck %s
+// RUN: { env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level2 --enable-op-fusion --ptodsl-python-exe=%python_executable --emit-pto-ir %s --mlir-print-ir-after=pto-fusion-region-gen -o /dev/null 2>&1 || true; } | FileCheck %s
 
 module {
   func.func @fusion_region_internal_dead_omission(
@@ -50,11 +50,14 @@ module {
 
 // CHECK: // -----// IR Dump After PTOFusionRegionGen (pto-fusion-region-gen) //----- //
 // CHECK-LABEL: func.func @fusion_region_internal_dead_omission(
-// CHECK: %[[REGION:[0-9]+]] = pto.fusion_region {
 // CHECK: %[[TMP:[0-9]+]] = pto.alloc_tile
+// CHECK: pto.trowexpandmul{{.*}}outs(%[[TMP]]{{.*}}pto.tilelib.impl = "ptodsl"
+// CHECK: %[[REGION:[0-9]+]] = pto.fusion_region {
 // CHECK: %[[SUM:[0-9]+]] = pto.alloc_tile
-// CHECK: pto.trowexpandmul ins(%{{.*}}, %{{.*}} : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x1xf32>) outs(%[[TMP]] : !pto.tile_buf<vec, 32x32xf32>)
 // CHECK: pto.tadd ins(%[[TMP]], %{{.*}} : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%[[SUM]] : !pto.tile_buf<vec, 32x32xf32>)
+// CHECK-SAME: pto.tilelib.impl = "vmi"
+// CHECK: pto.tmul{{.*}}outs(%[[TMP]] : !pto.tile_buf<vec, 32x32xf32>)
+// CHECK-SAME: pto.tilelib.impl = "vmi"
 // CHECK-NOT: pto.yield(%[[TMP]])
 // CHECK: pto.yield(%[[SUM]]) : (!pto.tile_buf<vec, 32x32xf32>) -> ()
 // CHECK: } {pto.fusion.group_id = 0 : i64} : !pto.tile_buf<vec, 32x32xf32>

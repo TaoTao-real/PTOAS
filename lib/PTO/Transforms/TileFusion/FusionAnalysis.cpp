@@ -1053,6 +1053,8 @@ static FailureOr<FusionBlockAnalysis> analyzeBlockDFG(Block &block) {
     node.blockOrder = blockOrder;
     node.op = &op;
     node.semantics = *semanticsOr;
+    if (auto impl = op.getAttrOfType<StringAttr>("pto.tilelib.impl"))
+      node.selectedVMI = impl.getValue() == "vmi";
     computeNodeByOp[&op] = node.id;
 
     for (auto [outputIdx, output] : llvm::enumerate(node.semantics.tileOutputs)) {

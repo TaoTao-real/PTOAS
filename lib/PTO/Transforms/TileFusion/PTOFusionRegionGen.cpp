@@ -36,6 +36,9 @@ namespace {
 static constexpr llvm::StringLiteral kFusionGroupIdAttr =
     "pto.fusion.group_id";
 static constexpr llvm::StringLiteral kFusionOrderAttr = "pto.fusion.order";
+static constexpr llvm::StringLiteral kTileLibImplAttr = "pto.tilelib.impl";
+static constexpr llvm::StringLiteral kTileLibCandidateAttr =
+    "pto.tilelib.candidate";
 
 struct GroupSpanMember {
   Operation *op = nullptr;
@@ -357,6 +360,28 @@ encapsulateGroupSpan(const GroupSpan &span,
                      const PreFusionAnalysisIndex *analysisIndex) {
   if (span.members.empty())
     return success();
+
+  const bool hasTileLibSelection = llvm::any_of(
+      span.members, [](const GroupSpanMember &member) {
+        return member.op->hasAttr(kTileLibImplAttr) ||
+               member.op->hasAttr(kTileLibCandidateAttr);
+      });
+  if (hasTileLibSelection) {
+    for (const GroupSpanMember &member : span.members) {
+      auto impl = member.op->getAttrOfType<StringAttr>(kTileLibImplAttr);
+      auto candidate =
+          member.op->getAttrOfType<StringAttr>(kTileLibCandidateAttr);
+      if (impl && impl.getValue() == "vmi" && candidate)
+        continue;
+      member.op->emitError("selected-VMI-only fusion group ")
+          << span.groupId << " contains op '"
+          << member.op->getName().getStringRef() << "' with candidate '"
+          << (candidate ? candidate.getValue() : StringRef("<missing>"))
+          << "' and pto.tilelib.impl '"
+          << (impl ? impl.getValue() : StringRef("<missing>")) << "'";
+      return failure();
+    }
+  }
 
   GroupSpanInterface iface = buildGroupSpanInterface(span, analysisIndex);
 

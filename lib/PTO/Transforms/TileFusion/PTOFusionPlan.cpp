@@ -14,6 +14,7 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/DenseSet.h"
@@ -517,13 +518,12 @@ public:
   }
 };
 
-// VMI F3-adjacency strategy: every plannable compute node (already filtered
-// into computeNodes by PreFusionAnalysis via getFusionOpSemantics' whitelist)
-// is wrapped into a fusion group. This engine's ONLY group-break rule is F3
-// adjacency: if a non-plannable op (tload/tstore DMA, wait_flag/mem_bar sync,
-// any op outside the compute whitelist) sits between two plannable nodes in
-// block order, it closes the current group so the merge never crosses a
-// sync/DMA boundary. Adjacent plannable nodes always join the same group.
+// VMI F3-adjacency strategy: only compute nodes whose TileLib decision is
+// pto.tilelib.impl = "vmi" may be wrapped into a fusion group. Candidate
+// selection runs before this pass and is the sole source of truth. A PTODSL
+// fallback is therefore a boundary even when its TileOp name belongs to the
+// compute-semantics whitelist. DMA, synchronization, control flow, calls, and
+// unknown operations retain their existing F3 boundary behavior.
 //
 // This layer does NOT do UB-overlap (MustAlias/NoAlias/partial-alias)
 // checking, unlike the deleted PTOPlanVmiFusionRegion pass. At this
@@ -539,34 +539,21 @@ public:
 // not a fusion mandate: same group does not force the inner scf.for ops to
 // fuse.
 //
-// Unlike the Conservative* engines this one ignores iteration-domain class,
-// direct dependency, and cost. Single-node groups are kept (not dropped) so
-// every plannable compute TileOp gets a fusion_region.
+// Unlike the Conservative* engines this one does not require direct dependency
+// or a positive cost score, but it still requires one iteration-domain class.
+// Single-node groups are kept (not dropped) so every selected VMI TileOp gets a
+// fusion_region without crossing a phase/domain boundary.
 class VMIUBDisjointStrategyEngine final : public StrategyEngine {
 public:
   SmallVector<PlannedFusionGroup, 8>
   planBlock(const PlanningContext &ctx,
             const CostModel &costModel) const override {
     const pto::FusionBlockAnalysis &block = ctx.blockAnalysis;
-    if (block.computeNodes.empty())
+    if (llvm::none_of(block.computeNodes,
+                      [](const pto::FusionComputeNode &node) {
+                        return node.selectedVMI;
+                      }))
       return {};
-
-    // Map node id -> whether the op immediately preceding it in block order
-    // is NOT a plannable compute node (i.e. a DMA/sync/unknown op sits between
-    // it and the previous plannable node). Such a node closes the open group.
-    DenseMap<unsigned, bool> precededByNonPlannable;
-    Operation *prevOp = nullptr;
-    DenseMap<Operation *, unsigned> nodeIdByOp;
-    for (const pto::FusionComputeNode &n : block.computeNodes)
-      nodeIdByOp[n.op] = n.id;
-    for (Operation &op : *block.block) {
-      auto it = nodeIdByOp.find(&op);
-      if (it != nodeIdByOp.end()) {
-        precededByNonPlannable[it->second] =
-            prevOp != nullptr && !nodeIdByOp.count(prevOp);
-      }
-      prevOp = &op;
-    }
 
     SmallVector<PlannedFusionGroup, 8> groups;
     SmallVector<const pto::FusionComputeNode *, 8> curMembers;
@@ -579,16 +566,41 @@ public:
       curMembers.clear();
     };
 
+    auto hasVMIPlanningBoundaryBetween = [](Operation *earlier,
+                                            Operation *later) {
+      for (Operation *cursor = earlier->getNextNode();
+           cursor && cursor != later; cursor = cursor->getNextNode()) {
+        if (isa<pto::AllocTileOp>(cursor))
+          continue;
+        StringRef opName = cursor->getName().getStringRef();
+        if (!opName.starts_with("pto.") && cursor->getRegions().empty() &&
+            !isa<CallOpInterface>(cursor) && isMemoryEffectFree(cursor))
+          continue;
+        return true;
+      }
+      return false;
+    };
+
+    const pto::FusionComputeNode *previousSelected = nullptr;
     for (const pto::FusionComputeNode &node : block.computeNodes) {
-      // F3 boundary: a non-plannable op sits between the previous plannable
-      // node and this one — close the open group so the merge does not cross
-      // a sync/DMA boundary. See the class doc comment for why no UB-overlap
-      // check applies at this layer (it is deferred to PTOVmiLoopFusion).
-      auto precIt = precededByNonPlannable.find(node.id);
-      if (precIt != precededByNonPlannable.end() && precIt->second)
+      if (!node.selectedVMI) {
+        flushCurrent();
+        previousSelected = nullptr;
+        continue;
+      }
+
+      // Keep ordinary region fusion within one proven iteration domain. Pure
+      // scalar/address arithmetic and alloc_tile definitions may be scheduled
+      // with the group, but a PTODSL TileOp, DMA/sync/unknown PTO op, call, or
+      // nested control-flow operation closes it.
+      if (previousSelected &&
+          (previousSelected->iterationDomainClass !=
+               node.iterationDomainClass ||
+           hasVMIPlanningBoundaryBetween(previousSelected->op, node.op)))
         flushCurrent();
 
       curMembers.push_back(&node);
+      previousSelected = &node;
     }
     flushCurrent();
     return groups;
@@ -640,11 +652,12 @@ struct FusionPlanPass : public pto::impl::FusionPlanBase<FusionPlanPass> {
     // other string (including typos) fails the pass instead of silently
     // falling back, so a misconfigured --fusion-strategy cannot quietly change
     // compilation behavior. The legacy a5 path uses ConservativeDAGGreedy; the
-    // VMI path uses VMIUBDisjoint, which groups plannable compute nodes by
-    // F3 adjacency (a non-plannable op between two plannable nodes closes the
-    // group) and keeps single-node groups so every compute TileOp gets a
-    // fusion_region. It does NOT judge UB disjointness, DFG dependency,
-    // iteration-domain class, or cost here — the resulting fusion_region is a
+    // VMI path uses VMIUBDisjoint, which groups selected VMI compute nodes by
+    // F3 adjacency (a PTODSL fallback or other non-plannable op between two
+    // selected VMI nodes closes the group) and keeps single-node groups so
+    // every selected VMI TileOp gets a fusion_region. It requires one
+    // iteration-domain class but does NOT judge UB disjointness, DFG
+    // dependency, or cost here — the resulting fusion_region is a
     // *container* for downstream VMI analysis, not a proof that its inner
     // scf.for loops can be fused (that is PTOVmiLoopFusion's job).
     std::unique_ptr<StrategyEngine> strategyEngine;

@@ -42,8 +42,8 @@ module {
     %a = pto.alloc_tile : !pto.tile_buf<vec, 64x64xf32>
     %b = pto.alloc_tile : !pto.tile_buf<vec, 64x64xf32>
     %c = pto.alloc_tile : !pto.tile_buf<vec, 64x64xf32>
-    pto.tadd ins(%a, %b : !pto.tile_buf<vec, 64x64xf32>, !pto.tile_buf<vec, 64x64xf32>) outs(%c : !pto.tile_buf<vec, 64x64xf32>)
-    pto.tadd ins(%c, %a : !pto.tile_buf<vec, 64x64xf32>, !pto.tile_buf<vec, 64x64xf32>) outs(%c : !pto.tile_buf<vec, 64x64xf32>)
+    pto.tadd ins(%a, %b : !pto.tile_buf<vec, 64x64xf32>, !pto.tile_buf<vec, 64x64xf32>) outs(%c : !pto.tile_buf<vec, 64x64xf32>) {pto.tilelib.candidate = "vmi_tadd_block64", pto.tilelib.impl = "vmi"}
+    pto.tadd ins(%c, %a : !pto.tile_buf<vec, 64x64xf32>, !pto.tile_buf<vec, 64x64xf32>) outs(%c : !pto.tile_buf<vec, 64x64xf32>) {pto.tilelib.candidate = "vmi_tadd_block64", pto.tilelib.impl = "vmi"}
     return
   }
 
@@ -63,9 +63,9 @@ module {
     %b = pto.alloc_tile : !pto.tile_buf<vec, 64x64xf32>
     %c = pto.alloc_tile : !pto.tile_buf<vec, 64x64xf32>
     %d = pto.alloc_tile : !pto.tile_buf<vec, 64x64xf32>
-    pto.tadd ins(%a, %b : !pto.tile_buf<vec, 64x64xf32>, !pto.tile_buf<vec, 64x64xf32>) outs(%c : !pto.tile_buf<vec, 64x64xf32>)
+    pto.tadd ins(%a, %b : !pto.tile_buf<vec, 64x64xf32>, !pto.tile_buf<vec, 64x64xf32>) outs(%c : !pto.tile_buf<vec, 64x64xf32>) {pto.tilelib.candidate = "vmi_tadd_block64", pto.tilelib.impl = "vmi"}
     pto.tmov ins(%c : !pto.tile_buf<vec, 64x64xf32>) outs(%d : !pto.tile_buf<vec, 64x64xf32>)
-    pto.tadd ins(%d, %a : !pto.tile_buf<vec, 64x64xf32>, !pto.tile_buf<vec, 64x64xf32>) outs(%c : !pto.tile_buf<vec, 64x64xf32>)
+    pto.tadd ins(%d, %a : !pto.tile_buf<vec, 64x64xf32>, !pto.tile_buf<vec, 64x64xf32>) outs(%c : !pto.tile_buf<vec, 64x64xf32>) {pto.tilelib.candidate = "vmi_tadd_block64", pto.tilelib.impl = "vmi"}
     return
   }
 }

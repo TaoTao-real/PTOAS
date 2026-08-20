@@ -9,7 +9,7 @@
 // Guards level3 fusion_region formation before ExpandTileOp while preserving
 // manual alloc_tile addresses.
 //
-// RUN: { ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level3 --enable-op-fusion --emit-vpto %s --mlir-print-ir-after=pto-fusion-region-gen -o /dev/null 2>&1 || true; } | FileCheck %s
+// RUN: { env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level3 --enable-op-fusion --ptodsl-python-exe=%python_executable --emit-vpto %s --mlir-print-ir-after=pto-fusion-region-gen -o /dev/null 2>&1 || true; } | FileCheck %s
 
 module {
   func.func @fusion_region_pipeline_level3(
@@ -58,19 +58,28 @@ module {
 
 // CHECK: // -----// IR Dump After PTOFusionRegionGen (pto-fusion-region-gen) //----- //
 // CHECK-LABEL: func.func @fusion_region_pipeline_level3(
-// CHECK: pto.alloc_tile addr = %c12288_i64
-// CHECK: pto.alloc_tile addr = %c16384_i64
-// CHECK: pto.fusion_region {
-// CHECK-NOT: pto.pointer_cast
 // CHECK: pto.alloc_tile addr = %c0_i64
 // CHECK: pto.alloc_tile addr = %c4096_i64
-// CHECK: pto.alloc_tile addr = %c8192_i64
 // CHECK: pto.trowexpandmul
-// CHECK-NEXT: pto.trowexpandmul
-// CHECK-NEXT: pto.tadd ins(%{{.*}}, %{{.*}} : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%[[OUT:[0-9]+]] : !pto.tile_buf<vec, 32x32xf32>)
-// CHECK-NEXT: pto.yield(%[[OUT]]) : (!pto.tile_buf<vec, 32x32xf32>) -> ()
-// CHECK: } {pto.fusion.group_id = 0 : i64} : !pto.tile_buf<vec, 32x32xf32>
-// CHECK: pto.tadd ins(%{{.*}}, %{{.*}}
-// CHECK-NEXT: pto.tmul ins(%{{.*}}, %{{.*}}
+// CHECK-SAME: pto.tilelib.impl = "ptodsl"
+// CHECK: pto.fusion_region {
+// CHECK-NOT: pto.pointer_cast
+// CHECK: pto.alloc_tile addr = %c12288_i64
+// CHECK: pto.tadd
+// CHECK-SAME: pto.tilelib.impl = "vmi"
+// CHECK: } {pto.fusion.group_id = 0 : i64} :
+// CHECK: pto.trowexpandmul
+// CHECK-SAME: pto.tilelib.impl = "ptodsl"
+// CHECK: pto.fusion_region {
+// CHECK: pto.alloc_tile addr = %c16384_i64
+// CHECK: pto.tmul
+// CHECK-SAME: pto.tilelib.impl = "vmi"
+// CHECK: } {pto.fusion.group_id = 1 : i64} :
+// CHECK: %[[REGION:[0-9]+]] = pto.fusion_region {
+// CHECK: pto.alloc_tile addr = %c8192_i64
+// CHECK: pto.tadd{{.*}}outs(%[[OUT:[0-9]+]] : !pto.tile_buf<vec, 32x32xf32>)
+// CHECK-SAME: pto.tilelib.impl = "vmi"
+// CHECK: pto.yield(%[[OUT]]) : (!pto.tile_buf<vec, 32x32xf32>) -> ()
+// CHECK: } {pto.fusion.group_id = 2 : i64} : !pto.tile_buf<vec, 32x32xf32>
 // CHECK: pto.tstore ins(%{{.*}} : !pto.tile_buf<vec, 32x32xf32>)
 // CHECK: return

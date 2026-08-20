@@ -1,0 +1,58 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software; you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root directory of the software repository for the full text of the License.
+
+// A PTODSL fallback is a local VMI-fusion boundary even when its TileOp name
+// belongs to FusionOpSemantics' compute whitelist. Only selected VMI members
+// may receive VMI group metadata and enter a fusion_region.
+
+// RUN: pto-test-opt %s --pass-pipeline='builtin.module(func.func(pto-pre-fusion-analysis,pto-fusion-plan{fusion-strategy=vmi-ub-disjoint},pto-op-scheduling,pto-fusion-region-gen))' | FileCheck %s
+
+// CHECK-LABEL: func.func @fallback_splits_selected_vmi
+// CHECK: pto.fusion_region
+// CHECK: pto.tmul
+// CHECK: pto.yield
+// CHECK: pto.trowexpanddiv
+// CHECK-SAME: pto.tilelib.impl = "ptodsl"
+// CHECK: pto.fusion_region
+// CHECK: pto.tmul
+// CHECK: pto.yield
+// CHECK-NOT: pto.fusion_region
+// CHECK: return
+
+// CHECK-LABEL: func.func @all_selected_vmi_stays_one_region
+// CHECK: pto.fusion_region
+// CHECK: pto.tmul
+// CHECK: pto.tadd
+// CHECK: pto.yield
+// CHECK-NOT: pto.fusion_region
+// CHECK: return
+
+module {
+  func.func @fallback_splits_selected_vmi() {
+    %a = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    %b = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    %scale = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=8, v_row=1, v_col=1, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %mid = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    %div = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    %out = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    pto.tmul ins(%a, %b : !pto.tile_buf<vec, 1x64xf32>, !pto.tile_buf<vec, 1x64xf32>) outs(%mid : !pto.tile_buf<vec, 1x64xf32>) {pto.tilelib.candidate = "vmi_tmul", pto.tilelib.impl = "vmi"}
+    pto.trowexpanddiv ins(%mid, %scale : !pto.tile_buf<vec, 1x64xf32>, !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=8, v_row=1, v_col=1, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%div : !pto.tile_buf<vec, 1x64xf32>) {pto.tilelib.candidate = "template_trowexpanddiv", pto.tilelib.impl = "ptodsl", pto.vmi.fusion.boundary = "local"}
+    pto.tmul ins(%div, %b : !pto.tile_buf<vec, 1x64xf32>, !pto.tile_buf<vec, 1x64xf32>) outs(%out : !pto.tile_buf<vec, 1x64xf32>) {pto.tilelib.candidate = "vmi_tmul", pto.tilelib.impl = "vmi"}
+    return
+  }
+
+  func.func @all_selected_vmi_stays_one_region() {
+    %a = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    %b = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    %mid = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    %out = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    pto.tmul ins(%a, %b : !pto.tile_buf<vec, 1x64xf32>, !pto.tile_buf<vec, 1x64xf32>) outs(%mid : !pto.tile_buf<vec, 1x64xf32>) {pto.tilelib.candidate = "vmi_tmul", pto.tilelib.impl = "vmi"}
+    pto.tadd ins(%mid, %a : !pto.tile_buf<vec, 1x64xf32>, !pto.tile_buf<vec, 1x64xf32>) outs(%out : !pto.tile_buf<vec, 1x64xf32>) {pto.tilelib.candidate = "vmi_tadd_block64", pto.tilelib.impl = "vmi"}
+    return
+  }
+}

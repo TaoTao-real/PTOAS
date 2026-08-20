@@ -9,7 +9,7 @@
 // Guards PTOFusionRegionGen wrapping of one scheduled fusion span into one
 // pto.fusion_region whose escaping result becomes an explicit yield.
 //
-// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level2 --enable-op-fusion --emit-pto-ir %s --mlir-print-ir-after=pto-fusion-region-gen -o /dev/null 2>&1 | FileCheck %s
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level2 --enable-op-fusion --ptodsl-python-exe=%python_executable --emit-pto-ir %s --mlir-print-ir-after=pto-fusion-region-gen -o /dev/null 2>&1 | FileCheck %s
 
 module {
   func.func @fusion_region_basic(
@@ -50,13 +50,24 @@ module {
 
 // CHECK: // -----// IR Dump After PTOFusionRegionGen (pto-fusion-region-gen) //----- //
 // CHECK-LABEL: func.func @fusion_region_basic(
-// CHECK: pto.fusion_region {
 // CHECK: pto.trowexpandmul
-// CHECK-NEXT: pto.trowexpandmul
-// CHECK-NEXT: pto.tadd
-// CHECK-NEXT: pto.yield(%{{.*}}) : (!pto.tile_buf<vec, 32x32xf32>) -> ()
-// CHECK: } {pto.fusion.group_id = 0 : i64} : !pto.tile_buf<vec, 32x32xf32>
-// CHECK-NOT: pto.fusion_region
-// CHECK: pto.tadd ins(%{{.*}}, %{{.*}}
-// CHECK-NEXT: pto.tmul ins(%{{.*}}, %{{.*}}
-// CHECK: pto.tstore ins(%{{.*}} : !pto.tile_buf<vec, 32x32xf32>)
+// CHECK-SAME: pto.tilelib.impl = "ptodsl"
+// CHECK: pto.fusion_region {
+// CHECK-NOT: pto.trowexpandmul
+// CHECK: pto.tadd
+// CHECK-SAME: pto.tilelib.impl = "vmi"
+// CHECK: pto.yield() : () -> ()
+// CHECK: } {pto.fusion.group_id = 0 : i64} :
+// CHECK: pto.trowexpandmul
+// CHECK-SAME: pto.tilelib.impl = "ptodsl"
+// CHECK: pto.fusion_region {
+// CHECK-NOT: pto.trowexpandmul
+// CHECK: pto.tmul
+// CHECK-SAME: pto.tilelib.impl = "vmi"
+// CHECK: } {pto.fusion.group_id = 1 : i64} :
+// CHECK: %[[REGION:[0-9]+]] = pto.fusion_region {
+// CHECK: pto.tadd
+// CHECK-SAME: pto.tilelib.impl = "vmi"
+// CHECK: pto.yield(%{{.*}}) : (!pto.tile_buf<vec, 32x32xf32>) -> ()
+// CHECK: } {pto.fusion.group_id = 2 : i64} : !pto.tile_buf<vec, 32x32xf32>
+// CHECK: pto.tstore ins(%[[REGION]] : !pto.tile_buf<vec, 32x32xf32>)

@@ -289,8 +289,8 @@ def FusionPlan : Pass<"pto-fusion-plan", "func::FuncOp"> {
            "plannable compute nodes by F3 adjacency only (a non-plannable op "
            "between two plannable nodes closes the group) and keeps "
            "single-node groups so every compute TileOp gets a "
-           "fusion_region. It does NOT judge UB disjointness, DFG dependency, "
-           "iteration-domain class, or cost here: the resulting "
+           "fusion_region. It requires one iteration-domain class but does "
+           "NOT judge UB disjointness, DFG dependency, or cost here: the resulting "
            "fusion_region is a *container* for downstream VMI analysis, not a "
            "proof that its inner scf.for loops can be fused.">
   ];

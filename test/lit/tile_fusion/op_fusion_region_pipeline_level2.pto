@@ -9,9 +9,9 @@
 // Guards level2 fusion_region formation on tile-native IR and its later
 // preservation through the level2 pipeline, with and without insert-sync.
 //
-// RUN: { ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level2 --enable-op-fusion --emit-vpto %s --mlir-print-ir-after=pto-fusion-region-gen -o /dev/null 2>&1 || true; } | FileCheck %s --check-prefix=FORM
-// RUN: { ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level2 --enable-op-fusion --emit-vpto %s --mlir-print-ir-after=pto-view-to-memref -o /dev/null 2>&1 || true; } | FileCheck %s --check-prefix=LEVEL2-PLAIN
-// RUN: { ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level2 --enable-op-fusion --enable-insert-sync --emit-vpto %s --mlir-print-ir-after=pto-insert-sync -o /dev/null 2>&1 || true; } | FileCheck %s --check-prefix=LEVEL2-SYNC
+// RUN: { env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level2 --enable-op-fusion --ptodsl-python-exe=%python_executable --emit-vpto %s --mlir-print-ir-after=pto-fusion-region-gen -o /dev/null 2>&1 || true; } | FileCheck %s --check-prefix=FORM
+// RUN: { env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level2 --enable-op-fusion --ptodsl-python-exe=%python_executable --emit-vpto %s --mlir-print-ir-after=pto-view-to-memref -o /dev/null 2>&1 || true; } | FileCheck %s --check-prefix=LEVEL2-PLAIN
+// RUN: { env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level2 --enable-op-fusion --ptodsl-python-exe=%python_executable --enable-insert-sync --emit-vpto %s --mlir-print-ir-after=pto-insert-sync -o /dev/null 2>&1 || true; } | FileCheck %s --check-prefix=LEVEL2-SYNC
 
 module {
   func.func @fusion_region_pipeline_level2(
@@ -52,40 +52,52 @@ module {
 
 // FORM: // -----// IR Dump After PTOFusionRegionGen (pto-fusion-region-gen) //----- //
 // FORM-LABEL: func.func @fusion_region_pipeline_level2(
-// FORM: pto.fusion_region {
-// FORM: pto.alloc_tile
-// FORM: pto.alloc_tile
 // FORM: pto.trowexpandmul
-// FORM-NEXT: pto.trowexpandmul
-// FORM-NEXT: pto.tadd
-// FORM-NEXT: pto.yield(
-// FORM: } {pto.fusion.group_id = 0 : i64} : !pto.tile_buf<vec, 32x32xf32>
-// FORM: pto.tadd ins(%{{.*}}, %{{.*}}
-// FORM-NEXT: pto.tmul ins(%{{.*}}, %{{.*}}
+// FORM-SAME: pto.tilelib.impl = "ptodsl"
+// FORM: pto.fusion_region {
+// FORM: pto.tadd
+// FORM-SAME: pto.tilelib.impl = "vmi"
+// FORM: } {pto.fusion.group_id = 0 : i64} :
+// FORM: pto.trowexpandmul
+// FORM-SAME: pto.tilelib.impl = "ptodsl"
+// FORM: pto.fusion_region {
+// FORM: pto.tmul
+// FORM-SAME: pto.tilelib.impl = "vmi"
+// FORM: } {pto.fusion.group_id = 1 : i64} :
+// FORM: pto.fusion_region {
+// FORM: pto.tadd
+// FORM-SAME: pto.tilelib.impl = "vmi"
+// FORM: } {pto.fusion.group_id = 2 : i64} : !pto.tile_buf<vec, 32x32xf32>
 // FORM: pto.tstore ins(%{{.*}} : !pto.tile_buf<vec, 32x32xf32>)
 //
 // LEVEL2-PLAIN-LABEL: func.func @fusion_region_pipeline_level2(
-// LEVEL2-PLAIN: pto.fusion_region {
 // LEVEL2-PLAIN: pto.trowexpandmul
-// LEVEL2-PLAIN-NEXT: pto.trowexpandmul
-// LEVEL2-PLAIN-NEXT: pto.tadd
-// LEVEL2-PLAIN-NEXT: pto.yield(
-// LEVEL2-PLAIN: } {pto.fusion.group_id = 0 : i64} : memref<32x32xf32
-// LEVEL2-PLAIN: pto.tadd ins(
-// LEVEL2-PLAIN-NEXT: pto.tmul ins(
+// LEVEL2-PLAIN: pto.fusion_region {
+// LEVEL2-PLAIN: pto.tadd
+// LEVEL2-PLAIN: } {pto.fusion.group_id = 0 : i64} :
+// LEVEL2-PLAIN: pto.trowexpandmul
+// LEVEL2-PLAIN: pto.fusion_region {
+// LEVEL2-PLAIN: pto.tmul
+// LEVEL2-PLAIN: } {pto.fusion.group_id = 1 : i64} :
+// LEVEL2-PLAIN: pto.fusion_region {
+// LEVEL2-PLAIN: pto.tadd
+// LEVEL2-PLAIN: } {pto.fusion.group_id = 2 : i64} : memref<32x32xf32
 // LEVEL2-PLAIN: pto.tstore ins(
 // LEVEL2-PLAIN-NOT: pto.barrier
 // LEVEL2-PLAIN: return
 //
 // LEVEL2-SYNC-LABEL: func.func @fusion_region_pipeline_level2(
-// LEVEL2-SYNC: pto.fusion_region {
 // LEVEL2-SYNC: pto.trowexpandmul
-// LEVEL2-SYNC-NEXT: pto.trowexpandmul
-// LEVEL2-SYNC-NEXT: pto.tadd
-// LEVEL2-SYNC: pto.yield(
-// LEVEL2-SYNC: } {pto.fusion.group_id = 0 : i64} : memref<32x32xf32
-// LEVEL2-SYNC: pto.tadd ins(
-// LEVEL2-SYNC-NEXT: pto.tmul ins(
+// LEVEL2-SYNC: pto.fusion_region {
+// LEVEL2-SYNC: pto.tadd
+// LEVEL2-SYNC: } {pto.fusion.group_id = 0 : i64} :
+// LEVEL2-SYNC: pto.trowexpandmul
+// LEVEL2-SYNC: pto.fusion_region {
+// LEVEL2-SYNC: pto.tmul
+// LEVEL2-SYNC: } {pto.fusion.group_id = 1 : i64} :
+// LEVEL2-SYNC: pto.fusion_region {
+// LEVEL2-SYNC: pto.tadd
+// LEVEL2-SYNC: } {pto.fusion.group_id = 2 : i64} : memref<32x32xf32
 // LEVEL2-SYNC: pto.tstore ins(
 // LEVEL2-SYNC: pto.barrier <PIPE_ALL> {pto.auto_sync_tail_barrier}
 // LEVEL2-SYNC: return

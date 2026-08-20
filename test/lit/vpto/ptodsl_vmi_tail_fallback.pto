@@ -7,6 +7,7 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --enable-op-fusion=false --tile-lib-backend=ptodsl --ptodsl-python-exe=%python_executable --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-expand-tile-op --mlir-print-ir-after=pto-inline-libcall 2>&1 | FileCheck %s --check-prefix=PIPE --implicit-check-not=__pto_ptodsl_vmi
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl --ptodsl-python-exe=%python_executable --vmi-fusion-mode=region --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-fusion-region-gen 2>&1 | FileCheck %s --check-prefix=REGION --implicit-check-not=pto.fusion_region
 
 module {
   func.func @ptodsl_vmi_tail_fallback() {
@@ -45,5 +46,9 @@ module {
 // PIPE: IR Dump After PTOInlineLibCall
 // PIPE: func.func @ptodsl_vmi_tail_fallback
 // PIPE: pto.vadd
+
+// REGION: IR Dump After PTOFusionRegionGen
+// REGION: pto.tadd
+// REGION-SAME: pto.tilelib.impl = "ptodsl"
 // PIPE: func.func @ptodsl_vmi_static_type_tail_fallback
 // PIPE: pto.vadd
