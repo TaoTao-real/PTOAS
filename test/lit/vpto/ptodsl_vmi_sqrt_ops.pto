@@ -41,19 +41,20 @@ module {
 }
 
 // EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_tsqrt
-// EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_tsqrt
-// EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_tsqrt
+// EXPAND: call {{.*}}__template_tsqrt_high_precision
+// EXPAND: call {{.*}}__template_tsqrt_high_precision
 // EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_trsqrt
 // EXPAND: call {{.*}}__pto_ptodsl_vmi_a5_trsqrt
 
 // INLINE-LABEL: func.func @ptodsl_vmi_sqrt_ops
 // INLINE-DAG: pto.vmi.vsqrt
+// INLINE-DAG: pto.vsqrt
 // INLINE-DAG: pto.vmi.vdiv
-// INLINE-DAG: pto.vmi.vmula
-// INLINE-DAG: pto.vmi.vinterpret_cast
-// INLINE-DAG: pto.vmi.vor
-// INLINE-DAG: pto.vmi.vsel
-// INLINE-DAG: pto.vmi.vcmps
+// INLINE-DAG: pto.vmula
+// INLINE-DAG: pto.vbitcast
+// INLINE-DAG: pto.vor
+// INLINE-DAG: pto.vsel
+// INLINE-DAG: pto.vcmps
 
 // FINAL-LABEL: func.func @ptodsl_vmi_sqrt_ops
 // FINAL: pto.vecscope

@@ -1,0 +1,48 @@
+// RUN: pto-test-opt %s --pass-pipeline='builtin.module(func.func(pto-pre-fusion-analysis,pto-fusion-plan{fusion-strategy=vmi-ub-disjoint},pto-op-scheduling,pto-fusion-region-gen))' | FileCheck %s
+
+// CHECK-LABEL: func.func @selected_tsqrt_scalar_chain
+// CHECK: pto.fusion_region
+// CHECK: pto.tmuls
+// CHECK-SAME: pto.tilelib.candidate = "vmi_tmuls"
+// CHECK-SAME: pto.tilelib.impl = "vmi"
+// CHECK: pto.tadds
+// CHECK-SAME: pto.tilelib.candidate = "vmi_tadds"
+// CHECK-SAME: pto.tilelib.impl = "vmi"
+// CHECK: pto.tsqrt
+// CHECK-SAME: pto.tilelib.candidate = "vmi_tsqrt"
+// CHECK-SAME: pto.tilelib.impl = "vmi"
+// CHECK: } {pto.fusion.group_id
+// CHECK: pto.tsqrt
+// CHECK-SAME: precisionType = #pto<sqrt_precision high_precision>
+// CHECK-SAME: pto.tilelib.candidate = "template_tsqrt_high_precision"
+// CHECK-SAME: pto.tilelib.impl = "ptodsl"
+// CHECK-NOT: pto.fusion_region
+
+module {
+  func.func @selected_tsqrt_scalar_chain(
+      %src: !pto.tile_buf<vec, 1x8xf32, valid=1x1>,
+      %scaled: !pto.tile_buf<vec, 1x8xf32, valid=1x1>,
+      %shifted: !pto.tile_buf<vec, 1x8xf32, valid=1x1>,
+      %root: !pto.tile_buf<vec, 1x8xf32, valid=1x1>,
+      %high_root: !pto.tile_buf<vec, 1x8xf32, valid=1x1>) {
+    %scale = arith.constant 2.000000e+00 : f32
+    %shift = arith.constant 1.000000e+00 : f32
+    pto.tmuls ins(%src, %scale : !pto.tile_buf<vec, 1x8xf32, valid=1x1>, f32)
+        outs(%scaled : !pto.tile_buf<vec, 1x8xf32, valid=1x1>)
+        {pto.tilelib.candidate = "vmi_tmuls", pto.tilelib.impl = "vmi"}
+    pto.tadds ins(%scaled, %shift : !pto.tile_buf<vec, 1x8xf32, valid=1x1>, f32)
+        outs(%shifted : !pto.tile_buf<vec, 1x8xf32, valid=1x1>)
+        {pto.tilelib.candidate = "vmi_tadds", pto.tilelib.impl = "vmi"}
+    pto.tsqrt ins(%shifted : !pto.tile_buf<vec, 1x8xf32, valid=1x1>)
+        outs(%root : !pto.tile_buf<vec, 1x8xf32, valid=1x1>)
+        {pto.tilelib.candidate = "vmi_tsqrt", pto.tilelib.impl = "vmi"}
+    pto.tsqrt ins(%root : !pto.tile_buf<vec, 1x8xf32, valid=1x1>)
+        outs(%high_root : !pto.tile_buf<vec, 1x8xf32, valid=1x1>)
+        {precisionType = #pto<sqrt_precision high_precision>,
+         pto.tilelib.candidate = "template_tsqrt_high_precision",
+         pto.tilelib.impl = "ptodsl",
+         pto.vmi.fusion.boundary = "local",
+         pto.vmi.fusion.boundary_reason = "selected implementation is not VMI"}
+    return
+  }
+}
