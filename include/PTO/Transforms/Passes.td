@@ -571,6 +571,25 @@ def SelectTileLibCandidate
   ];
 }
 
+def PTOPlanVMIAccumulatorPhases
+    : Pass<"pto-plan-vmi-accumulator-phases", "func::FuncOp"> {
+  let summary = "Plan proven one-VL VMI accumulator phase groups";
+  let description = [{
+    Recognizes the conservative RMSNorm accumulator contract on tile-native
+    PTO IR after TileLib candidate selection. The pass only annotates proven
+    init, chunk-loop, update, and final-reduction phases; it does not rewrite
+    control flow or remove storage. Rejected candidates retain their original
+    semantics and receive a stable rejection reason for diagnostics and tests.
+  }];
+  let constructor = "mlir::pto::createPTOPlanVMIAccumulatorPhasesPass()";
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+    "mlir::func::FuncDialect",
+    "mlir::pto::PTODialect",
+    "mlir::scf::SCFDialect"
+  ];
+}
+
 def ExpandTileOp : Pass<"pto-expand-tile-op", "ModuleOp"> {
   let summary = "Expand tile ops using the selected TileLib implementation";
   let description = [{

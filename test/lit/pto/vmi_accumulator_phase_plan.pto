@@ -1,0 +1,237 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// CANN Open Software License Agreement Version 2.0
+
+// RUN: pto-test-opt --pto-plan-vmi-accumulator-phases %s | FileCheck %s
+
+!acc = !pto.tile_buf<vec, 1x64xf32>
+!tail = !pto.tile_buf<vec, 1x64xf32, valid=1x32>
+!scalar = !pto.tile_buf<vec, 1x8xf32, valid=1x1>
+
+module {
+  // CHECK-LABEL: func.func @accepted
+  // CHECK: pto.texpands
+  // CHECK-SAME: pto.vmi.accumulator.phase = "init"
+  // CHECK-SAME: pto.vmi.accumulator.phase_group = 0 : i64
+  // CHECK: scf.for
+  // CHECK: pto.tadd
+  // CHECK-SAME: pto.vmi.accumulator.phase = "update"
+  // CHECK: pto.vmi.accumulator.iterations = 64 : i64
+  // CHECK-SAME: pto.vmi.accumulator.phase = "chunk_loop"
+  // CHECK: pto.trowsum
+  // CHECK-SAME: pto.vmi.accumulator.phase = "reduction"
+  // CHECK-SAME: pto.vmi.accumulator.storage_root = 1024 : i64
+  func.func @accepted() {
+    %c0 = arith.constant 0 : index
+    %c64 = arith.constant 64 : index
+    %c4096 = arith.constant 4096 : index
+    %zero = arith.constant 0.0 : f32
+    %acc_addr = arith.constant 1024 : i64
+    %input_addr = arith.constant 2048 : i64
+    %square_addr = arith.constant 3072 : i64
+    %scratch_addr = arith.constant 4096 : i64
+    %sum_addr = arith.constant 5120 : i64
+    %init = pto.alloc_tile addr = %acc_addr : !acc
+    %work = pto.alloc_tile addr = %acc_addr : !acc
+    %next = pto.alloc_tile addr = %acc_addr : !acc
+    pto.texpands ins(%zero : f32) outs(%init : !acc) {
+      pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_texpands"
+    }
+    scf.for %col = %c0 to %c4096 step %c64 {
+      %input = pto.alloc_tile addr = %input_addr : !acc
+      %square = pto.alloc_tile addr = %square_addr : !acc
+      pto.tmul ins(%input, %input : !acc, !acc) outs(%square : !acc) {
+        pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tmul"
+      }
+      pto.tadd ins(%work, %square : !acc, !acc) outs(%next : !acc) {
+        pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tadd_block64"
+      }
+    }
+    %scratch = pto.alloc_tile addr = %scratch_addr : !acc
+    %sum = pto.alloc_tile addr = %sum_addr : !scalar
+    pto.trowsum ins(%next, %scratch : !acc, !acc) outs(%sum : !scalar) {
+      pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_trowsum"
+    }
+    return
+  }
+
+  // CHECK-LABEL: func.func @dynamic_step
+  // CHECK: pto.vmi.accumulator.phase_reject_reason = "chunk_iteration_not_static_0_4096_64"
+  // CHECK-NOT: pto.vmi.accumulator.phase_group
+  func.func @dynamic_step(%step: index) {
+    %c0 = arith.constant 0 : index
+    %c4096 = arith.constant 4096 : index
+    %zero = arith.constant 0.0 : f32
+    %acc_addr = arith.constant 1024 : i64
+    %input_addr = arith.constant 2048 : i64
+    %square_addr = arith.constant 3072 : i64
+    %scratch_addr = arith.constant 4096 : i64
+    %sum_addr = arith.constant 5120 : i64
+    %init = pto.alloc_tile addr = %acc_addr : !acc
+    %work = pto.alloc_tile addr = %acc_addr : !acc
+    %next = pto.alloc_tile addr = %acc_addr : !acc
+    pto.texpands ins(%zero : f32) outs(%init : !acc) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_texpands"}
+    scf.for %col = %c0 to %c4096 step %step {
+      %input = pto.alloc_tile addr = %input_addr : !acc
+      %square = pto.alloc_tile addr = %square_addr : !acc
+      pto.tmul ins(%input, %input : !acc, !acc) outs(%square : !acc) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tmul"}
+      pto.tadd ins(%work, %square : !acc, !acc) outs(%next : !acc) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tadd_block64"}
+    }
+    %scratch = pto.alloc_tile addr = %scratch_addr : !acc
+    %sum = pto.alloc_tile addr = %sum_addr : !scalar
+    pto.trowsum ins(%next, %scratch : !acc, !acc) outs(%sum : !scalar) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_trowsum"}
+    return
+  }
+
+  // CHECK-LABEL: func.func @different_address
+  // CHECK: pto.vmi.accumulator.phase_reject_reason = "accumulator_update_storage_root_mismatch"
+  // CHECK-NOT: pto.vmi.accumulator.phase_group
+  func.func @different_address() {
+    %c0 = arith.constant 0 : index
+    %c64 = arith.constant 64 : index
+    %c4096 = arith.constant 4096 : index
+    %zero = arith.constant 0.0 : f32
+    %acc_addr = arith.constant 1024 : i64
+    %next_addr = arith.constant 1280 : i64
+    %input_addr = arith.constant 2048 : i64
+    %square_addr = arith.constant 3072 : i64
+    %scratch_addr = arith.constant 4096 : i64
+    %sum_addr = arith.constant 5120 : i64
+    %init = pto.alloc_tile addr = %acc_addr : !acc
+    %work = pto.alloc_tile addr = %acc_addr : !acc
+    %next = pto.alloc_tile addr = %next_addr : !acc
+    pto.texpands ins(%zero : f32) outs(%init : !acc) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_texpands"}
+    scf.for %col = %c0 to %c4096 step %c64 {
+      %input = pto.alloc_tile addr = %input_addr : !acc
+      %square = pto.alloc_tile addr = %square_addr : !acc
+      pto.tmul ins(%input, %input : !acc, !acc) outs(%square : !acc) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tmul"}
+      pto.tadd ins(%work, %square : !acc, !acc) outs(%next : !acc) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tadd_block64"}
+    }
+    %scratch = pto.alloc_tile addr = %scratch_addr : !acc
+    %sum = pto.alloc_tile addr = %sum_addr : !scalar
+    pto.trowsum ins(%next, %scratch : !acc, !acc) outs(%sum : !scalar) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_trowsum"}
+    return
+  }
+
+  // CHECK-LABEL: func.func @sync_in_loop
+  // CHECK: pto.vmi.accumulator.phase_reject_reason = "chunk_loop_contains_sync_dma_call_or_fallback"
+  // CHECK-NOT: pto.vmi.accumulator.phase_group
+  func.func @sync_in_loop() {
+    %c0 = arith.constant 0 : index
+    %c64 = arith.constant 64 : index
+    %c4096 = arith.constant 4096 : index
+    %zero = arith.constant 0.0 : f32
+    %acc_addr = arith.constant 1024 : i64
+    %input_addr = arith.constant 2048 : i64
+    %square_addr = arith.constant 3072 : i64
+    %scratch_addr = arith.constant 4096 : i64
+    %sum_addr = arith.constant 5120 : i64
+    %init = pto.alloc_tile addr = %acc_addr : !acc
+    %work = pto.alloc_tile addr = %acc_addr : !acc
+    %next = pto.alloc_tile addr = %acc_addr : !acc
+    pto.texpands ins(%zero : f32) outs(%init : !acc) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_texpands"}
+    scf.for %col = %c0 to %c4096 step %c64 {
+      %input = pto.alloc_tile addr = %input_addr : !acc
+      %square = pto.alloc_tile addr = %square_addr : !acc
+      pto.tmul ins(%input, %input : !acc, !acc) outs(%square : !acc) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tmul"}
+      pto.set_flag[<PIPE_V>, <PIPE_V>, <EVENT_ID0>]
+      pto.tadd ins(%work, %square : !acc, !acc) outs(%next : !acc) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tadd_block64"}
+    }
+    %scratch = pto.alloc_tile addr = %scratch_addr : !acc
+    %sum = pto.alloc_tile addr = %sum_addr : !scalar
+    pto.trowsum ins(%next, %scratch : !acc, !acc) outs(%sum : !scalar) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_trowsum"}
+    return
+  }
+
+  // CHECK-LABEL: func.func @external_use
+  // CHECK: pto.vmi.accumulator.phase_reject_reason = "accumulator_external_or_unmodeled_use"
+  // CHECK-NOT: pto.vmi.accumulator.phase_group
+  func.func @external_use() {
+    %c0 = arith.constant 0 : index
+    %c64 = arith.constant 64 : index
+    %c4096 = arith.constant 4096 : index
+    %zero = arith.constant 0.0 : f32
+    %acc_addr = arith.constant 1024 : i64
+    %input_addr = arith.constant 2048 : i64
+    %square_addr = arith.constant 3072 : i64
+    %scratch_addr = arith.constant 4096 : i64
+    %sum_addr = arith.constant 5120 : i64
+    %extra_addr = arith.constant 6144 : i64
+    %init = pto.alloc_tile addr = %acc_addr : !acc
+    %work = pto.alloc_tile addr = %acc_addr : !acc
+    %next = pto.alloc_tile addr = %acc_addr : !acc
+    pto.texpands ins(%zero : f32) outs(%init : !acc) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_texpands"}
+    scf.for %col = %c0 to %c4096 step %c64 {
+      %input = pto.alloc_tile addr = %input_addr : !acc
+      %square = pto.alloc_tile addr = %square_addr : !acc
+      pto.tmul ins(%input, %input : !acc, !acc) outs(%square : !acc) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tmul"}
+      pto.tadd ins(%work, %square : !acc, !acc) outs(%next : !acc) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tadd_block64"}
+    }
+    %scratch = pto.alloc_tile addr = %scratch_addr : !acc
+    %sum = pto.alloc_tile addr = %sum_addr : !scalar
+    %extra = pto.alloc_tile addr = %extra_addr : !acc
+    pto.trowsum ins(%next, %scratch : !acc, !acc) outs(%sum : !scalar) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_trowsum"}
+    pto.tmul ins(%next, %next : !acc, !acc) outs(%extra : !acc) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tmul"}
+    return
+  }
+
+  // CHECK-LABEL: func.func @mask_alias
+  // CHECK: pto.vmi.accumulator.phase_reject_reason = "accumulator_alias_byte_range_or_mask_mismatch"
+  // CHECK-NOT: pto.vmi.accumulator.phase_group
+  func.func @mask_alias() {
+    %c0 = arith.constant 0 : index
+    %c64 = arith.constant 64 : index
+    %c4096 = arith.constant 4096 : index
+    %zero = arith.constant 0.0 : f32
+    %acc_addr = arith.constant 1024 : i64
+    %input_addr = arith.constant 2048 : i64
+    %square_addr = arith.constant 3072 : i64
+    %scratch_addr = arith.constant 4096 : i64
+    %sum_addr = arith.constant 5120 : i64
+    %init = pto.alloc_tile addr = %acc_addr : !acc
+    %work = pto.alloc_tile addr = %acc_addr : !acc
+    %next = pto.alloc_tile addr = %acc_addr : !acc
+    %tail_alias = pto.alloc_tile addr = %acc_addr : !tail
+    pto.texpands ins(%zero : f32) outs(%init : !acc) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_texpands"}
+    scf.for %col = %c0 to %c4096 step %c64 {
+      %input = pto.alloc_tile addr = %input_addr : !acc
+      %square = pto.alloc_tile addr = %square_addr : !acc
+      pto.tmul ins(%input, %input : !acc, !acc) outs(%square : !acc) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tmul"}
+      pto.tadd ins(%work, %square : !acc, !acc) outs(%next : !acc) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tadd_block64"}
+    }
+    %scratch = pto.alloc_tile addr = %scratch_addr : !acc
+    %sum = pto.alloc_tile addr = %sum_addr : !scalar
+    pto.trowsum ins(%next, %scratch : !acc, !acc) outs(%sum : !scalar) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_trowsum"}
+    return
+  }
+
+  // CHECK-LABEL: func.func @partial_alias
+  // CHECK: pto.vmi.accumulator.phase_reject_reason = "accumulator_partial_alias"
+  // CHECK-NOT: pto.vmi.accumulator.phase_group
+  func.func @partial_alias() {
+    %c0 = arith.constant 0 : index
+    %c64 = arith.constant 64 : index
+    %c4096 = arith.constant 4096 : index
+    %zero = arith.constant 0.0 : f32
+    %acc_addr = arith.constant 1024 : i64
+    %overlap_addr = arith.constant 1056 : i64
+    %input_addr = arith.constant 2048 : i64
+    %square_addr = arith.constant 3072 : i64
+    %scratch_addr = arith.constant 4096 : i64
+    %sum_addr = arith.constant 5120 : i64
+    %init = pto.alloc_tile addr = %acc_addr : !acc
+    %work = pto.alloc_tile addr = %acc_addr : !acc
+    %next = pto.alloc_tile addr = %acc_addr : !acc
+    %overlap = pto.alloc_tile addr = %overlap_addr : !acc
+    pto.texpands ins(%zero : f32) outs(%init : !acc) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_texpands"}
+    scf.for %col = %c0 to %c4096 step %c64 {
+      %input = pto.alloc_tile addr = %input_addr : !acc
+      %square = pto.alloc_tile addr = %square_addr : !acc
+      pto.tmul ins(%input, %input : !acc, !acc) outs(%square : !acc) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tmul"}
+      pto.tadd ins(%work, %square : !acc, !acc) outs(%next : !acc) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tadd_block64"}
+    }
+    %scratch = pto.alloc_tile addr = %scratch_addr : !acc
+    %sum = pto.alloc_tile addr = %sum_addr : !scalar
+    pto.trowsum ins(%next, %scratch : !acc, !acc) outs(%sum : !scalar) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_trowsum"}
+    return
+  }
+}
