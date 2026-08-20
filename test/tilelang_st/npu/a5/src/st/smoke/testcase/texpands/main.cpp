@@ -22,6 +22,7 @@
 using namespace PtoTestCommon;
 
 // Kernel launch wrappers (defined in launch.cpp)
+void LaunchTEXPANDS_f32_1x64_scalar0(float *dst, void *stream);
 void LaunchTEXPANDS_f32_16x64_scalar5(float *dst, void *stream);
 void LaunchTEXPANDS_f32_32x32_scalar3(float *dst, void *stream);
 void LaunchTEXPANDS_f32_16x64_partial(float *dst, void *stream);
@@ -50,6 +51,9 @@ void wrapLaunch(void *dst, void *stream, void (*fn)(T *, void *)) {
 
 static const TestCase kCases[] = {
     // ========== float32 cases ==========
+{"f32_1x64_scalar0", DataType::F32,
+     [](void *dst, void *stream) { wrapLaunch<float>(dst, stream, LaunchTEXPANDS_f32_1x64_scalar0); },
+     1, 64, 1, 64, sizeof(float)},
 {"f32_16x64_scalar5", DataType::F32,
      [](void *dst, void *stream) { wrapLaunch<float>(dst, stream, LaunchTEXPANDS_f32_16x64_scalar5); },
      16, 64, 16, 64, sizeof(float)},

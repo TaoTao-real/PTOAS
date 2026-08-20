@@ -27,6 +27,14 @@ CASES = [
     # ========== float32 cases ==========
     # Full valid shape cases
     {
+        "name": "f32_1x64_scalar0",
+        "dtype": np.float32,
+        "shape": (1, 64),
+        "valid_shape": (1, 64),
+        "scalar": 0.0,
+        "eps": 0.0,
+    },
+    {
         "name": "f32_16x64_scalar5",
         "dtype": np.float32,
         "shape": (16, 64),
@@ -123,7 +131,7 @@ CASES = [
     },
 ]
 
-_SMOKE_CASE_NAMES = ['f32_16x64_scalar5', 'f32_16x64_partial']
+_SMOKE_CASE_NAMES = ['f32_1x64_scalar0', 'f32_16x64_scalar5', 'f32_16x64_partial']
 _SMOKE_CASE_NAME_SET = set(_SMOKE_CASE_NAMES)
 _missing = [name for name in _SMOKE_CASE_NAMES if name not in {case["name"] for case in CASES}]
 if _missing:

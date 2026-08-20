@@ -14,8 +14,13 @@
 
 // ========== float32 kernels ==========
 
+extern "C" __global__ AICORE void TEXPANDS_f32_1x64_scalar0(__gm__ float *dst);
 extern "C" __global__ AICORE void TEXPANDS_f32_16x64_scalar5(__gm__ float *dst);
 extern "C" __global__ AICORE void TEXPANDS_f32_16x64_partial(__gm__ float *dst);
+
+void LaunchTEXPANDS_f32_1x64_scalar0(float *dst, void *stream) {
+    TEXPANDS_f32_1x64_scalar0<<<1, nullptr, stream>>>((__gm__ float *)dst);
+}
 
 void LaunchTEXPANDS_f32_16x64_scalar5(float *dst, void *stream) {
     TEXPANDS_f32_16x64_scalar5<<<1, nullptr, stream>>>((__gm__ float *)dst);

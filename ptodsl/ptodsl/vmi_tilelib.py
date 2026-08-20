@@ -29,6 +29,7 @@ from .tilelib.templates.a5.tcolexpandsub import vmi_tcolexpandsub
 from .tilelib.templates.a5.tdiv import vmi_tdiv
 from .tilelib.templates.a5.tdivs import vmi_tdivs, vmi_tdivs_scalar_tile
 from .tilelib.templates.a5.texp import vmi_texp_block64
+from .tilelib.templates.a5.texpand import vmi_texpands
 from .tilelib.templates.a5.tmax import vmi_tmax
 from .tilelib.templates.a5.tmaxs import vmi_tmaxs
 from .tilelib.templates.a5.tmins import vmi_tmins
@@ -61,6 +62,7 @@ __all__ = [
     "vmi_tdivs",
     "vmi_tdivs_scalar_tile",
     "vmi_texp_block64",
+    "vmi_texpands",
     "vmi_tmax",
     "vmi_tmaxs",
     "vmi_tmins",

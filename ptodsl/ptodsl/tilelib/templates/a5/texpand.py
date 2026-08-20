@@ -7,6 +7,8 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 """PTODSL TileLib template for pto.texpands."""
 
+from ptodsl import pto
+
 from ._elementwise import register_scalar_fill
 
 
@@ -22,3 +24,22 @@ template_texpands = register_scalar_fill(
         ("f32", "f32"),
     ],
 )
+
+
+from ._vmi_common import (  # noqa: E402
+    _single_vl_scalar_fill_vmi_legal,
+    canonical_vmi_template,
+    emit_scalar_fill_vmi,
+    f32,
+)
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="texpands",
+    name="vmi_texpands",
+    dtypes=(("f32", "f32"),),
+    constraints=(_single_vl_scalar_fill_vmi_legal,),
+)
+def vmi_texpands(scalar: f32, dst: pto.Tile):
+    emit_scalar_fill_vmi(scalar, dst)

@@ -42,6 +42,7 @@ from ptodsl.vmi_tilelib import (
     vmi_tcolsum,
     vmi_tcolexpandsub,
     vmi_tcvt,
+    vmi_texpands,
     vmi_texp_block64,
 )
 from ptodsl.vmi_tilelib_helper import instantiate_candidate
@@ -235,7 +236,6 @@ def check_provider_helper() -> None:
         LookupError,
         "no legal PTODSL VMI candidate",
     )
-
     exp_artifact = instantiate_candidate(
         target="a5",
         op_name="pto.texp",
@@ -797,6 +797,60 @@ def check_tcvt_bf16_candidate() -> None:
     )
 
 
+def check_texpands_candidate() -> None:
+    scalar_spec = {"kind": "scalar", "dtype": "f32", "value": 0.0}
+    dst_spec = {
+        "kind": "tile",
+        "dtype": "f32",
+        "shape": [1, 64],
+        "valid_shape": [1, 64],
+        "memory_space": "ub",
+        "config": {
+            "b_layout": "row_major",
+            "s_layout": "none_box",
+            "s_fractal_size": 512,
+            "pad_value": "0x0",
+        },
+    }
+    text = instantiate_candidate(
+        target="a5",
+        op_name="pto.texpands",
+        operand_specs=[scalar_spec, dst_spec],
+        provider_module="ptodsl.vmi_tilelib",
+        context_attrs={},
+    ).mlir_text()
+    expect("pto.vmi.vbrc" in text, "texpands should broadcast its scalar in VMI")
+    expect("!pto.vmi.vreg<64xf32>" in text, "texpands should create one f32 VL")
+    expect(text.count("pto.vmi.vstore") == 1, "standalone texpands must retain its store")
+    expect("scf.for" not in text, "one-VL texpands should not require a loop")
+
+    for invalid_spec in (
+        {**dst_spec, "shape": [2, 64], "valid_shape": [2, 64]},
+        {**dst_spec, "valid_shape": [1, 32]},
+        {**dst_spec, "dtype": "f16"},
+        {
+            **dst_spec,
+            "config": {**dst_spec["config"], "b_layout": "col_major"},
+        },
+    ):
+        invalid_scalar = (
+            {**scalar_spec, "dtype": invalid_spec["dtype"]}
+            if invalid_spec["dtype"] != "f32"
+            else scalar_spec
+        )
+        expect_raises(
+            lambda spec=invalid_spec, scalar=invalid_scalar: instantiate_candidate(
+                target="a5",
+                op_name="pto.texpands",
+                operand_specs=[scalar, spec],
+                provider_module="ptodsl.vmi_tilelib",
+                context_attrs={},
+            ),
+            LookupError,
+            "no legal PTODSL VMI candidate",
+        )
+
+
 def check_col_reduce_vmi_to_vpto_lowering() -> None:
     """The vreg-carrying ColReduce loop must survive VMI->VPTO lowering as a
     real physical ``scf.for iter_args(%acc = ...) -> !pto.vreg<...>`` (the seed
@@ -891,6 +945,7 @@ def main() -> None:
     check_col_reduce_candidate()
     check_col_expand_candidate()
     check_tcvt_bf16_candidate()
+    check_texpands_candidate()
     check_col_reduce_vmi_to_vpto_lowering()
     print("ptodsl_vmi_tile_template: PASS")
 

@@ -13,6 +13,31 @@
 module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
   // ========== float32 cases ==========
 
+  // RMSNorm accumulator initialization: exactly one f32 VL, scalar=0.0.
+  func.func @TEXPANDS_f32_1x64_scalar0(%dst_ptr: !pto.ptr<f32>) attributes {pto.kernel} {
+    %c0  = arith.constant 0  : index
+    %c1  = arith.constant 1  : index
+    %c64 = arith.constant 64 : index
+    %scalar = arith.constant 0.0 : f32
+
+    %dst_view = pto.make_tensor_view %dst_ptr,
+      shape = [%c1, %c1, %c1, %c1, %c64],
+      strides = [%c64, %c64, %c64, %c64, %c1]
+      : !pto.tensor_view<1x1x1x1x64xf32>
+
+    %dst_part = pto.partition_view %dst_view,
+      offsets = [%c0, %c0, %c0, %c0, %c0],
+      sizes = [%c1, %c1, %c1, %c1, %c64]
+      : !pto.tensor_view<1x1x1x1x64xf32> -> !pto.partition_tensor_view<1x1x1x1x64xf32>
+
+    %dst = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    pto.texpands ins(%scalar : f32)
+                 outs(%dst : !pto.tile_buf<vec, 1x64xf32>)
+    pto.tstore ins(%dst : !pto.tile_buf<vec, 1x64xf32>)
+               outs(%dst_part : !pto.partition_tensor_view<1x1x1x1x64xf32>)
+    return
+  }
+
   // Case: f32 16x64, scalar=5.0 (full valid shape)
   func.func @TEXPANDS_f32_16x64_scalar5(%dst_ptr: !pto.ptr<f32>) attributes {pto.kernel} {
     %c0    = arith.constant 0    : index

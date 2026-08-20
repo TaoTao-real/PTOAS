@@ -627,6 +627,23 @@ def _single_vl_convert_vmi_legal(**context) -> bool:
     )
 
 
+def _single_vl_scalar_fill_vmi_legal(**context) -> bool:
+    """Accept only the static f32 accumulator initialization used by RMSNorm."""
+    dst_shape = context.get("dst_shape")
+    dst_valid = context.get("dst_valid_shape")
+    dst_config = context.get("dst_config")
+    return (
+        tuple(context.get("operand_kinds", ())) == ("scalar", "tile")
+        and tuple(context.get("operand_dtypes", ())) == ("f32", "f32")
+        and dst_shape == (1, f32.lanes)
+        and dst_valid == dst_shape
+        and context.get("dst_memory_space") in {"ub", "vec"}
+        and dst_config is not None
+        and dst_config.b_layout == "row_major"
+        and dst_config.s_layout == "none_box"
+    )
+
+
 def emit_elementwise_vmi(
     dst: _TileProxy,
     sources: Sequence[_TileProxy],
@@ -1665,6 +1682,25 @@ def emit_convert_vmi(src: _TileProxy, dst: _TileProxy) -> None:
         _vstore(converted, dst, coordinate, dst_mask)
 
 
+def emit_scalar_fill_vmi(scalar: _Value, dst: _TileProxy) -> None:
+    """Broadcast one f32 scalar and materialize the standalone one-VL tile."""
+    if dst.element_type != f32:
+        raise ValueError("texpands VMI candidate requires an f32 destination")
+    if dst._spec.shape != (1, f32.lanes):
+        raise ValueError("texpands VMI candidate requires a 1x64 destination")
+    if (dst._spec.valid_shape or dst._spec.shape) != dst._spec.shape:
+        raise ValueError("texpands VMI candidate requires a full-valid destination")
+    if dst._spec.b_layout != "row_major":
+        raise ValueError("texpands VMI candidate requires row-major layout")
+
+    block_map = CanonicalBlockMap.from_tile(dst, logical_lanes=f32.lanes)
+    coordinate = block_map.coordinate(0)
+    mask = _create_mask(block_map, f32, trace=dst._trace)
+    _prepare_tile_access(dst)
+    value = _vbrc_scalar(scalar, dtype=f32)
+    _vstore(value, dst, coordinate, mask)
+
+
 __all__ = [
     "FLOAT_DTYPES",
     "Tile",
@@ -1692,11 +1728,13 @@ __all__ = [
     "emit_col_expand_binary_vmi",
     "emit_col_reduce_vmi",
     "emit_convert_vmi",
+    "emit_scalar_fill_vmi",
     "emit_recip_vmi",
     "emit_row_expand_sub_vmi",
     "emit_row_reduce_vmi",
     "emit_rsqrt_vmi",
     "emit_sqrt_high_precision_vmi",
     "emit_sqrt_vmi",
+    "_single_vl_scalar_fill_vmi_legal",
     "f32",
 ]
