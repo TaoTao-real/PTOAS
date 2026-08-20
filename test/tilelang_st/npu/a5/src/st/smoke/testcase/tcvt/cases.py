@@ -122,6 +122,16 @@ CASES = [
         "round_mode": "RINT",
         "eps": 1e-6,
     },
+    {
+        "name": "bf16_to_f32_1x64",
+        "dtype": np.float32,
+        "src_dtype": bfloat16,
+        "dst_dtype": np.float32,
+        "shape": (1, 64),
+        "valid_shape": (1, 64),
+        "input_pattern": "bf16_widen_edges",
+        "eps": 0.0,
+    },
     # f32 → bf16, i16, i32, i64, f32
     *_make_cases(np.float32, bfloat16),
     *_make_cases(np.float32, np.int16),
@@ -166,7 +176,13 @@ CASES = [
     *_make_cases(np.int64, np.int32),
 ]
 
-_SMOKE_CASE_NAMES = ['f32_to_f16_1x128', 'f16_to_f32_1x129', 'bf16_to_i32_1x128', 'ui8_to_ui16_1x128']
+_SMOKE_CASE_NAMES = [
+    'f32_to_f16_1x128',
+    'f16_to_f32_1x129',
+    'bf16_to_f32_1x64',
+    'bf16_to_i32_1x128',
+    'ui8_to_ui16_1x128',
+]
 _SMOKE_CASE_NAME_SET = set(_SMOKE_CASE_NAMES)
 _missing = [name for name in _SMOKE_CASE_NAMES if name not in {case["name"] for case in CASES}]
 if _missing:

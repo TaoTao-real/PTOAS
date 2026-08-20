@@ -43,6 +43,7 @@ void LaunchTCVT_f16_to_f32_1x128(void *src, void *dst, void *stream);
 void LaunchTCVT_f16_to_f32_4x32(void *src, void *dst, void *stream);
 void LaunchTCVT_f16_to_f32_4x65(void *src, void *dst, void *stream);
 void LaunchTCVT_f16_to_f32_1x129(void *src, void *dst, void *stream);
+void LaunchTCVT_bf16_to_f32_1x64(void *src, void *dst, void *stream);
 void LaunchTCVT_f16_to_i32_2x64(void *src, void *dst, void *stream);
 void LaunchTCVT_f16_to_i32_2x128(void *src, void *dst, void *stream);
 void LaunchTCVT_f16_to_i32_4x200(void *src, void *dst, void *stream);
@@ -156,6 +157,7 @@ struct TestCase {
 static const TestCase kCases[] = {
 {"f32_to_f16_1x128", LaunchTCVT_f32_to_f16_1x128, 1, 128, 1, 128, sizeof(float), sizeof(uint16_t)},
 {"f16_to_f32_1x129", LaunchTCVT_f16_to_f32_1x129, 1, 256, 1, 256, sizeof(uint16_t), sizeof(float)},
+{"bf16_to_f32_1x64", LaunchTCVT_bf16_to_f32_1x64, 1, 64, 1, 64, sizeof(uint16_t), sizeof(float)},
 {"bf16_to_i32_1x128", LaunchTCVT_bf16_to_i32_1x128, 1, 128, 1, 128, sizeof(uint16_t), sizeof(int32_t)},
 {"ui8_to_ui16_1x128", LaunchTCVT_ui8_to_ui16_1x128, 1, 128, 1, 128, sizeof(uint8_t), sizeof(uint16_t)},
 };

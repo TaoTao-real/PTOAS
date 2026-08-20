@@ -485,6 +485,8 @@ void PTOIRTranslator::RecursionIR(Region *region) {
       return WalkResult::skip();
     } else if (auto yieldOp = dyn_cast<scf::YieldOp>(op)) {
       UpdateYieldOpInfo(yieldOp);
+    } else if (auto yieldOp = dyn_cast<pto::YieldOp>(op)) {
+      UpdateFusionYieldOpInfo(yieldOp);
     } else if (getSyncMacroModel(op)) {
       UpdateMacroOpInfo(op);
     } else if (auto callOp = dyn_cast<func::CallOp>(op)) {
@@ -1007,6 +1009,18 @@ void PTOIRTranslator::UpdateYieldOpInfo(scf::YieldOp yieldOp) {
        llvm::zip(yieldOp->getOpOperands(), parentOp->getResults())) {
     UpdateAliasBufferInfo(resultVal, yieldVal.get());
   }
+}
+
+void PTOIRTranslator::UpdateFusionYieldOpInfo(pto::YieldOp yieldOp) {
+  auto fusionRegion = dyn_cast_or_null<pto::FusionRegionOp>(yieldOp->getParentOp());
+  if (!fusionRegion)
+    return;
+
+  assert(fusionRegion.getNumResults() == yieldOp.getNumOperands() &&
+         "fusion region verifier must keep results and yields aligned");
+  for (auto [yieldedValue, regionResult] :
+       llvm::zip(yieldOp.getValues(), fusionRegion.getOutputs()))
+    UpdateAliasBufferInfo(regionResult, yieldedValue);
 }
 
 // ============================================================================

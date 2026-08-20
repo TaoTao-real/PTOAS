@@ -53,6 +53,33 @@ def make_input(src_dtype, shape):
     return _make_input_inner(src_dtype, shape).astype(normalize_dtype(src_dtype)).reshape(shape)
 
 
+def make_bf16_widen_edge_input(shape):
+    """Exact BF16 values covering zero, signs, subnormals, and extremes."""
+    bf16_bits = np.array(
+        [
+            0x0000,
+            0x8000,
+            0x0001,
+            0x8001,
+            0x007F,
+            0x807F,
+            0x0080,
+            0x8080,
+            0x3F80,
+            0xBF80,
+            0x4000,
+            0xC000,
+            0x7F7F,
+            0xFF7F,
+            0x7F80,
+            0xFF80,
+        ],
+        dtype=np.uint16,
+    )
+    total = int(np.prod(shape))
+    return np.resize(bf16_bits, total).view(ml_dtypes.bfloat16).reshape(shape)
+
+
 def round_half_away_from_zero(values):
     return np.copysign(np.floor(np.abs(values) + 0.5), values)
 
@@ -152,8 +179,18 @@ def generate_golden(case):
     shape = case["shape"]
     round_mode = case.get("round_mode")
 
-    input_arr = make_input(src_dtype, shape)
-    converted = convert(input_arr, src_dtype_norm, dst_dtype_norm, round_mode)
+    if case.get("input_pattern") == "bf16_widen_edges":
+        input_arr = make_bf16_widen_edge_input(shape)
+    else:
+        input_arr = make_input(src_dtype, shape)
+    if case.get("input_pattern") == "bf16_widen_edges":
+        # Widening is exact: preserve signed zero, subnormals, and infinities.
+        # The generic float helper clamps to the finite destination range for
+        # narrowing conversions, which is deliberately not the BF16->FP32
+        # contract exercised by this case.
+        converted = input_arr.astype(dst_dtype_norm)
+    else:
+        converted = convert(input_arr, src_dtype_norm, dst_dtype_norm, round_mode)
     golden = apply_valid_shape(converted, case["valid_shape"], dst_dtype_norm)
 
     return input_arr, golden

@@ -585,7 +585,7 @@ def _compact_elementwise_vmi_legal(**context) -> bool:
 
 
 def _single_vl_convert_vmi_legal(**context) -> bool:
-    """Restrict VMI tcvt to one static f32 VL per logical row.
+    """Restrict VMI tcvt to one static f32-width VL per logical row.
 
     ``emit_convert_vmi`` deliberately uses one VMI load/convert/store per
     logical block.  A wide row must remain on the ordinary PTODSL path, which
@@ -614,10 +614,17 @@ def _single_vl_convert_vmi_legal(**context) -> bool:
         for config in (src_config, dst_config)
     ):
         return False
-    return tuple(context.get("operand_dtypes", ())) in {
+    dtype_pair = tuple(context.get("operand_dtypes", ()))
+    if dtype_pair not in {
+        ("bf16", "f32"),
         ("f32", "f16"),
         ("f32", "bf16"),
-    }
+    }:
+        return False
+    return (
+        context.get("round_mode") == "RINT"
+        and context.get("saturation_mode") == "OFF"
+    )
 
 
 def emit_elementwise_vmi(
@@ -1634,10 +1641,14 @@ def emit_col_expand_binary_vmi(
 
 
 def emit_convert_vmi(src: _TileProxy, dst: _TileProxy) -> None:
-    if src.element_type != f32:
-        raise ValueError("tcvt VMI candidate currently supports f32 source")
-    if dst.element_type not in (f16, bf16):
-        raise ValueError("tcvt VMI candidate currently supports f32 -> f16/bf16")
+    if (src.element_type, dst.element_type) not in {
+        (bf16, f32),
+        (f32, f16),
+        (f32, bf16),
+    }:
+        raise ValueError(
+            "tcvt VMI candidate supports bf16 -> f32 and f32 -> f16/bf16"
+        )
     if src._spec.shape != dst._spec.shape:
         raise ValueError("tcvt source and destination shapes must match")
     if src._spec.b_layout != "row_major" or dst._spec.b_layout != "row_major":

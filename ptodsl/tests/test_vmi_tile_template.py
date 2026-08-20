@@ -477,7 +477,7 @@ def check_provider_helper() -> None:
         op_name="pto.tcvt",
         operand_specs=[raw_tile_spec, f16_tile_spec],
         provider_module="ptodsl.vmi_tilelib",
-        context_attrs={"round_mode": "RINT"},
+        context_attrs={"round_mode": "RINT", "saturation_mode": "OFF"},
     ).mlir_text()
     expect("pto.vmi.vcvt" in tcvt, "tcvt should lower to VMI conversion")
 
@@ -697,7 +697,7 @@ def check_col_expand_candidate() -> None:
 
 
 def check_tcvt_bf16_candidate() -> None:
-    """tcvt covers both f32->f16 and f32->bf16 cast on the canonical path."""
+    """tcvt covers one-VL bf16 widening and f32 narrowing."""
     raw_tile_spec = {
         "kind": "tile",
         "dtype": "f32",
@@ -713,12 +713,14 @@ def check_tcvt_bf16_candidate() -> None:
     }
     f16_dst_spec = {**raw_tile_spec, "dtype": "f16"}
     bf16_dst_spec = {**raw_tile_spec, "dtype": "bf16"}
+    bf16_src_spec = {**raw_tile_spec, "dtype": "bf16"}
+    context_attrs = {"round_mode": "RINT", "saturation_mode": "OFF"}
     f16_text = instantiate_candidate(
         target="a5",
         op_name="pto.tcvt",
         operand_specs=[raw_tile_spec, f16_dst_spec],
         provider_module="ptodsl.vmi_tilelib",
-        context_attrs={"round_mode": "RINT"},
+        context_attrs=context_attrs,
     ).mlir_text()
     expect("pto.vmi.vcvt" in f16_text, "tcvt f32->f16 should lower to VMI conversion")
     expect("vreg<64xf16>" in f16_text, "tcvt f32->f16 should target the f16 vreg type")
@@ -728,10 +730,71 @@ def check_tcvt_bf16_candidate() -> None:
         op_name="pto.tcvt",
         operand_specs=[raw_tile_spec, bf16_dst_spec],
         provider_module="ptodsl.vmi_tilelib",
-        context_attrs={"round_mode": "RINT"},
+        context_attrs=context_attrs,
     ).mlir_text()
     expect("pto.vmi.vcvt" in bf16_text, "tcvt f32->bf16 should lower to VMI conversion")
     expect("vreg<64xbf16>" in bf16_text, "tcvt f32->bf16 should target the bf16 vreg type")
+
+    widening_text = instantiate_candidate(
+        target="a5",
+        op_name="pto.tcvt",
+        operand_specs=[bf16_src_spec, raw_tile_spec],
+        provider_module="ptodsl.vmi_tilelib",
+        context_attrs=context_attrs,
+    ).mlir_text()
+    widening_line = next(
+        line for line in widening_text.splitlines() if "pto.vmi.vcvt" in line
+    )
+    expect("vreg<64xbf16>" in widening_line, "bf16 widening should read 64 logical lanes")
+    expect("vreg<64xf32>" in widening_line, "bf16 widening should produce one f32 VL")
+    expect("rounding" not in widening_line, "bf16 widening must not carry rounding")
+    expect("saturate" not in widening_line, "bf16 widening must not carry saturation")
+
+    wide_bf16 = {
+        **bf16_src_spec,
+        "shape": [32, 128],
+        "valid_shape": [32, 128],
+    }
+    wide_f32 = {
+        **raw_tile_spec,
+        "shape": [32, 128],
+        "valid_shape": [32, 128],
+    }
+    expect_raises(
+        lambda: instantiate_candidate(
+            target="a5",
+            op_name="pto.tcvt",
+            operand_specs=[wide_bf16, wide_f32],
+            provider_module="ptodsl.vmi_tilelib",
+            context_attrs=context_attrs,
+        ),
+        LookupError,
+        "no legal PTODSL VMI candidate",
+    )
+    tail_bf16 = {**bf16_src_spec, "valid_shape": [32, 32]}
+    tail_f32 = {**raw_tile_spec, "valid_shape": [32, 32]}
+    expect_raises(
+        lambda: instantiate_candidate(
+            target="a5",
+            op_name="pto.tcvt",
+            operand_specs=[tail_bf16, tail_f32],
+            provider_module="ptodsl.vmi_tilelib",
+            context_attrs=context_attrs,
+        ),
+        LookupError,
+        "no legal PTODSL VMI candidate",
+    )
+    expect_raises(
+        lambda: instantiate_candidate(
+            target="a5",
+            op_name="pto.tcvt",
+            operand_specs=[bf16_src_spec, raw_tile_spec],
+            provider_module="ptodsl.vmi_tilelib",
+            context_attrs={"round_mode": "RINT", "saturation_mode": "ON"},
+        ),
+        LookupError,
+        "no legal PTODSL VMI candidate",
+    )
 
 
 def check_col_reduce_vmi_to_vpto_lowering() -> None:
@@ -798,6 +861,7 @@ def check_vmi_to_vpto_lowering(name: str, mlir_text: str, expected_op: str) -> N
                 "--pto-arch=a5",
                 "--pto-backend=vpto",
                 "--enable-vmi",
+                "--vmi-fusion-mode=off",
                 "--emit-vpto",
                 str(input_path),
                 "-o",

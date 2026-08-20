@@ -15,7 +15,7 @@
 //   - round_mode must reach the template so different rmode values materialize
 //     different vcvt attrs
 //
-// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto --enable-tile-op-expand %s -o - 2>/dev/null | FileCheck %s
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=ordinary --vmi-fusion-mode=off --emit-vpto --enable-tile-op-expand %s -o - 2>/dev/null | FileCheck %s
 
 // CHECK-LABEL: func.func @TCVT_f32_to_f16
 // CHECK-NOT: pto.tcvt ins

@@ -10,24 +10,16 @@
 // tile sequence
 //   tmuls -> trowmax -> trowexpandsub -> texp
 // with a runtime valid_col (%arg5) and a row reduction (trowmax) in the middle.
-// The whole chain must be lowered into a single pto.fusion_region under the
-// low-level loop fusion pass, exercising the ShapeConstraintSolver across the
-// dynamic dimension shared by all four ops, the reduce-op shape rule, and the
-// epilogue fusion of two adjacent elementwise ops (trowexpandsub + texp) into
-// one inner col loop.
+// None of these dynamic/tail instances selects a VMI candidate.  Under the
+// selected-VMI-only contract they must remain ordinary PTODSL expansions and
+// must not be wrapped in a pto.fusion_region.
 //
 // Key structural assertions:
-//  * one fusion_region with group_id = 0 carrying both the row-max and the
-//    exp tiles out via pto.yield;
-//  * inner col loops inside the region, distinguished by their iter_args
-//    arity:
-//      - (index)              -> tmuls            (pure elementwise, mask only)
-//      - (vreg<64xf32>, index)-> trowmax          (reduce accumulator across cols)
-//      - (index)              -> trowexpandsub    (row scalar broadcast)
-//      - (index)              -> texp             (elementwise exp)
-//  * the low-level ops vmuls/vcmax/vdup/vsub/vexp all live inside the region.
+//  * no fusion_region is formed;
+//  * every compute instance records a PTODSL selection and local boundary;
+//  * ordinary lowering still emits vmuls/vcmax/vdup/vsub/vexp.
 //
-// RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level3 --enable-op-fusion --enable-shape-inference --emit-vpto %s --mlir-print-ir-after=pto-low-level-loop-fusion -o /dev/null 2>&1 | FileCheck %s
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level3 --ptodsl-python-exe=%python_executable --enable-op-fusion --enable-shape-inference --emit-vpto %s --mlir-print-ir-after=pto-low-level-loop-fusion -o /dev/null 2>&1 | FileCheck %s
 
 module attributes { pto.kernel_kind = #pto.kernel_kind<vector>,pto.target_arch = "a5"} {
   func.func @kernel_softmax_prepare_unaligned(%arg0: !pto.ptr<f32>, %arg1: !pto.ptr<bf16>, %arg2: !pto.ptr<f32>, %arg3: !pto.ptr<f32>, %arg4: f32, %arg5: index, %arg6: index) attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
@@ -73,26 +65,20 @@ module attributes { pto.kernel_kind = #pto.kernel_kind<vector>,pto.target_arch =
 }
 
 // CHECK-LABEL: func.func @kernel_softmax_prepare_unaligned(
-// The whole tmuls->trowmax->trowexpandsub->texp chain must land in one region.
-// CHECK: pto.fusion_region {
-// Elementwise tmuls col loop: mask-only accumulator.
-// CHECK: scf.for {{.*}} iter_args({{.*}}) -> (index) {
+// CHECK-NOT: pto.fusion_region
+// CHECK: pto.tilelib.candidate = "template_tmuls"
+// CHECK-SAME: pto.tilelib.impl = "ptodsl"
+// CHECK-SAME: pto.vmi.fusion.boundary = "local"
 // CHECK: pto.vmuls
-// CHECK: }
-// Row-reduce trowmax col loop: carries the reduction vreg across col segments.
-// CHECK: scf.for {{.*}} iter_args({{.*}}, {{.*}}) -> (!pto.vreg<64xf32>, index) {
+// CHECK: pto.tilelib.candidate = "template_trowmax"
+// CHECK-SAME: pto.tilelib.impl = "ptodsl"
 // CHECK: pto.vcmax
 // CHECK: pto.vmax
-// CHECK: scf.yield {{.*}} : !pto.vreg<64xf32>, index
-// CHECK: }
-// Epilogue stages stay visible for later fusion-ready analysis.
-// CHECK: scf.for {{.*}} iter_args({{.*}}) -> (index) {
-// CHECK: pto.vdup
+// CHECK: pto.tilelib.candidate = "template_trowexpandsub"
+// CHECK-SAME: pto.tilelib.impl = "ptodsl"
+// CHECK: {dist = "BRC_B32"}
 // CHECK: pto.vsub
-// CHECK: }
-// CHECK: scf.for {{.*}} iter_args({{.*}}) -> (index) {
+// CHECK: pto.tilelib.candidate = "template_texp"
+// CHECK-SAME: pto.tilelib.impl = "ptodsl"
 // CHECK: pto.vexp
-// CHECK: }
-// Region exits, yielding both the row-max and the exp tiles, tagged group 0.
-// CHECK: pto.yield
-// CHECK: } {pto.fusion.group_id = 0
+// CHECK-NOT: pto.fusion_region

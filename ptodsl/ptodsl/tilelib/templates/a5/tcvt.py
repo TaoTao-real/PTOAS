@@ -1047,8 +1047,11 @@ from ._vmi_common import (  # noqa: E402
     target="a5",
     op="tcvt",
     name="vmi_tcvt",
-    dtypes=(("f32", "f16"), ("f32", "bf16")),
-    context_constraints={"round_mode": ("RINT",)},
+    dtypes=(("bf16", "f32"), ("f32", "f16"), ("f32", "bf16")),
+    context_constraints={
+        "round_mode": ("RINT",),
+        "saturation_mode": ("OFF",),
+    },
     constraints=(_single_vl_convert_vmi_legal,),
 )
 def vmi_tcvt(src: pto.Tile, dst: pto.Tile):
