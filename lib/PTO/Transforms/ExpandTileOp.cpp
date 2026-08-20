@@ -74,6 +74,8 @@ namespace mlir {
 namespace pto {
   namespace func = ::mlir::func;
 
+  #define GEN_PASS_DEF_SELECTTILELIBCANDIDATE
+  #include "PTO/Transforms/Passes.h.inc"
   #define GEN_PASS_DEF_EXPANDTILEOP
   #include "PTO/Transforms/Passes.h.inc"
 } // namespace pto
@@ -992,6 +994,14 @@ struct CandidateSelection {
   StringRef boundaryReason;
 };
 
+struct SelectTileLibCandidatePass
+    : public mlir::pto::impl::SelectTileLibCandidateBase<
+          SelectTileLibCandidatePass> {
+  using SelectTileLibCandidateBase::SelectTileLibCandidateBase;
+
+  void runOnOperation() override;
+};
+
 static bool isVectorPipeTileOp(Operation *tileOp) {
   auto pipeOp = dyn_cast<pto::OpPipeInterface>(tileOp);
   return pipeOp && pipeOp.getPipe() == pto::PIPE::PIPE_V;
@@ -1119,7 +1129,8 @@ static bool isHardBoundaryFallbackOp(Operation *tileOp) {
 }
 
 static CandidateSelection selectTemplateCandidate(Operation *tileOp,
-                                                  ArrayAttr candidates) {
+                                                   ArrayAttr candidates,
+                                                   bool preferVMI = true) {
   SmallVector<DictionaryAttr, 4> parsedCandidates;
   parsedCandidates.reserve(candidates.size());
   for (Attribute attr : candidates) {
@@ -1132,7 +1143,7 @@ static CandidateSelection selectTemplateCandidate(Operation *tileOp,
   }
 
   const bool hardBoundary = isHardBoundaryFallbackOp(tileOp);
-  if (!hardBoundary && isVectorPipeTileOp(tileOp) &&
+  if (preferVMI && !hardBoundary && isVectorPipeTileOp(tileOp) &&
       (hasStaticFullTileValidShape(tileOp) ||
        hasStaticCompactRowReduceShape(tileOp) ||
        hasStaticCompactElementwiseShape(tileOp))) {
@@ -1158,6 +1169,63 @@ static CandidateSelection selectTemplateCandidate(Operation *tileOp,
 
   tileOp->emitError("ExpandTileOp: no legal PTODSL TileLib candidate selected");
   return {};
+}
+
+void SelectTileLibCandidatePass::runOnOperation() {
+  ModuleOp mod = getOperation();
+  if (candidatePolicy != "prefer-vmi" && candidatePolicy != "ordinary") {
+    mod.emitError("SelectTileLibCandidate received unsupported candidate-policy '")
+        << candidatePolicy << "'; expected 'prefer-vmi' or 'ordinary'";
+    signalPassFailure();
+    return;
+  }
+
+  bool failedSelection = false;
+  mod.walk([&](Operation *tileOp) {
+    auto candidates = tileOp->getAttrOfType<ArrayAttr>(kCandidatesAttr);
+    if (!candidates)
+      return;
+    if (candidates.empty()) {
+      tileOp->emitError("SelectTileLibCandidate requires at least one candidate");
+      failedSelection = true;
+      return;
+    }
+
+    CandidateSelection selected = selectTemplateCandidate(
+        tileOp, candidates, candidatePolicy == "prefer-vmi");
+    if (!selected.candidate) {
+      failedSelection = true;
+      return;
+    }
+    auto selectedName = selected.candidate.getAs<StringAttr>("name");
+    if (!selectedName) {
+      tileOp->emitError("selected candidate requires a string name");
+      failedSelection = true;
+      return;
+    }
+
+    tileOp->removeAttr(kVmiFusionBoundaryAttr);
+    tileOp->removeAttr(kVmiFusionBoundaryReasonAttr);
+    tileOp->setAttr(kTileLibImplAttr,
+                    StringAttr::get(&getContext(),
+                                    selected.selectedVMI ? "vmi" : "ptodsl"));
+    tileOp->setAttr(kTileLibCandidateAttr, selectedName);
+    tileOp->setAttr(kVmiFusionSourceAttr,
+                    StringAttr::get(&getContext(), "tilelib"));
+    StringRef opName = tileOp->getName().getStringRef();
+    opName.consume_front("pto.");
+    tileOp->setAttr(kVmiFusionTileOpAttr,
+                    StringAttr::get(&getContext(), opName));
+    if (selected.boundaryKind) {
+      tileOp->setAttr(kVmiFusionBoundaryAttr,
+                      StringAttr::get(&getContext(), *selected.boundaryKind));
+      tileOp->setAttr(kVmiFusionBoundaryReasonAttr,
+                      StringAttr::get(&getContext(), selected.boundaryReason));
+    }
+  });
+
+  if (failedSelection)
+    signalPassFailure();
 }
 
 static void annotateTileLibSelection(Operation *op, MLIRContext *ctx,
@@ -1425,22 +1493,48 @@ func::FuncOp ExpandState::invokeTileLib(const SpecKey &key,
         return nullptr;
       }
 
-      auto selected = selectTemplateCandidate(tileOp, candidates);
-      if (!selected.candidate) {
+      auto selectedName =
+          tileOp->getAttrOfType<StringAttr>(kTileLibCandidateAttr);
+      auto selectedImpl = tileOp->getAttrOfType<StringAttr>(kTileLibImplAttr);
+      if (!selectedName || !selectedImpl) {
         tileOp->emitError(
-            "ExpandTileOp failed to select a template candidate");
+            "ExpandTileOp requires preselected TileLib candidate metadata");
         return nullptr;
       }
-      auto selectedName = selected.candidate.getAs<StringAttr>("name");
-      if (!selectedName) {
+
+      DictionaryAttr selectedCandidate;
+      for (Attribute attr : candidates) {
+        auto candidate = dyn_cast<DictionaryAttr>(attr);
+        if (candidate && candidate.getAs<StringAttr>("name") == selectedName) {
+          selectedCandidate = candidate;
+          break;
+        }
+      }
+      if (!selectedCandidate) {
+        tileOp->emitError("ExpandTileOp preselected candidate '")
+            << selectedName.getValue()
+            << "' is absent from candidates metadata";
+        return nullptr;
+      }
+      selectedVMI = selectedImpl.getValue() == "vmi";
+      if (selectedImpl.getValue() != "vmi" &&
+          selectedImpl.getValue() != "ptodsl") {
+        tileOp->emitError("ExpandTileOp has invalid pto.tilelib.impl '")
+            << selectedImpl.getValue() << "'";
+        return nullptr;
+      }
+      if (candidateHasTag(selectedCandidate, "vmi") != selectedVMI) {
         tileOp->emitError(
-            "ExpandTileOp selected candidate requires a string name");
+            "ExpandTileOp candidate/implementation selection mismatch");
         return nullptr;
       }
       candidateId = selectedName.getValue().str();
-      selectedVMI = selected.selectedVMI;
-      boundaryKind = selected.boundaryKind;
-      boundaryReason = selected.boundaryReason;
+      if (auto boundary =
+              tileOp->getAttrOfType<StringAttr>(kVmiFusionBoundaryAttr))
+        boundaryKind = boundary.getValue();
+      if (auto reason = tileOp->getAttrOfType<StringAttr>(
+              kVmiFusionBoundaryReasonAttr))
+        boundaryReason = reason.getValue();
     }
 
     func::FuncOp daemonResult = invokeTileLibDaemon(
@@ -1753,6 +1847,15 @@ void ExpandTileOpPass::runOnOperation() {
 
 namespace mlir {
 namespace pto {
+
+std::unique_ptr<Pass> createSelectTileLibCandidatePass() {
+  return std::make_unique<SelectTileLibCandidatePass>();
+}
+
+std::unique_ptr<Pass> createSelectTileLibCandidatePass(
+    const SelectTileLibCandidateOptions &options) {
+  return std::make_unique<SelectTileLibCandidatePass>(options);
+}
 
 std::unique_ptr<Pass> createExpandTileOpPass() {
   return std::make_unique<ExpandTileOpPass>();

@@ -452,6 +452,16 @@ static llvm::cl::opt<bool> enableVMI(
     llvm::cl::desc("Enable VMI semantic lowering in the VPTO backend"),
     llvm::cl::init(true));
 
+static llvm::cl::opt<std::string> tileLibCandidatePolicy(
+    "tilelib-candidate-policy",
+    llvm::cl::desc("Internal TileLib candidate policy: prefer-vmi or ordinary"),
+    llvm::cl::Hidden, llvm::cl::init("prefer-vmi"));
+
+static llvm::cl::opt<std::string> vmiFusionMode(
+    "vmi-fusion-mode",
+    llvm::cl::desc("Internal VMI fusion staging: auto, off, region, loop, or full"),
+    llvm::cl::Hidden, llvm::cl::init("auto"));
+
 static llvm::cl::opt<std::string> daemonSocketPath(
     "daemon-socket-path",
     llvm::cl::desc("Path to Unix domain socket for daemon RPC "
@@ -568,6 +578,26 @@ static llvm::cl::opt<llvm::cl::boolOrDefault> enableOpFusion(
                    "enabled on A5, disabled on A3. EmitC uses last-use "
                    "annotation; VPTO uses fusion-region lifecycle."),
     llvm::cl::init(llvm::cl::BOU_UNSET));
+
+static bool isExplicitVMIFusionModeValid() {
+  return vmiFusionMode == "auto" || vmiFusionMode == "off" ||
+         vmiFusionMode == "region" || vmiFusionMode == "loop" ||
+         vmiFusionMode == "full";
+}
+
+static bool isVMIRegionEnabled(bool defaultEnabled) {
+  return vmiFusionMode == "auto" ? defaultEnabled : vmiFusionMode != "off";
+}
+
+static bool isVMILoopFusionEnabled(bool defaultEnabled) {
+  return vmiFusionMode == "auto"
+             ? defaultEnabled
+             : vmiFusionMode == "loop" || vmiFusionMode == "full";
+}
+
+static bool isVMIFullFusionEnabled(bool defaultEnabled) {
+  return vmiFusionMode == "auto" ? defaultEnabled : vmiFusionMode == "full";
+}
 
 static llvm::cl::opt<bool> enableShapeInference(
     "enable-shape-inference",
@@ -2740,8 +2770,10 @@ lowerPTOToVPTOBackend(PassManager &pm, ModuleOp module,
   auto moduleArchAttr =
       module->getAttrOfType<mlir::StringAttr>("pto.target_arch");
   const bool isA2A3 = moduleArchAttr && isA2A3Arch(moduleArchAttr.getValue());
+  const bool defaultFusionEnabled = enableOpFusion != llvm::cl::BOU_FALSE;
   const bool enableA5VPTOPostLoweringFusionLifecycle =
-      enableOpFusion && moduleArchAttr && moduleArchAttr.getValue() == "a5";
+      isVMILoopFusionEnabled(defaultFusionEnabled) && moduleArchAttr &&
+      moduleArchAttr.getValue() == "a5";
 
   kernelModulePM.addNestedPass<mlir::func::FuncOp>(
       pto::createLowerPTOToUBufOpsPass());
@@ -2904,11 +2936,14 @@ static void appendVMISemanticPipeline(OpPassManager &pm) {
   // lowered to their physical VPTO forms. PTOFusionLoadStoreElision reasons
   // about vlds/vsts, physical masks, and final UB addresses; running it before
   // VMIToVPTO makes candidate-internal round trips invisible to the pass.
-  if (enableOpFusion) {
-    pm.addNestedPass<func::FuncOp>(
-        pto::createPTOFusionPredicateElisionPass());
-    pm.addNestedPass<func::FuncOp>(
-        pto::createPTOFusionLoadStoreElisionPass());
+  const bool defaultFusionEnabled = enableOpFusion != llvm::cl::BOU_FALSE;
+  if (isVMIRegionEnabled(defaultFusionEnabled)) {
+    if (isVMIFullFusionEnabled(defaultFusionEnabled)) {
+      pm.addNestedPass<func::FuncOp>(
+          pto::createPTOFusionPredicateElisionPass());
+      pm.addNestedPass<func::FuncOp>(
+          pto::createPTOFusionLoadStoreElisionPass());
+    }
     pm.addNestedPass<func::FuncOp>(
         pto::createPTOFlattenFusionRegionPass());
     // Fusion-local forwarding can make tile handles dead only after the
@@ -2943,6 +2978,18 @@ int mlir::pto::compilePTOASModule(
        !ptoSeamIRFile.empty())) {
     llvm::errs() << "Error: VPTO-specific flags require "
                     "--pto-backend=vpto or pto.backend = \"vpto\".\n";
+    return 1;
+  }
+  if (!isExplicitVMIFusionModeValid()) {
+    llvm::errs() << "Error: invalid --vmi-fusion-mode='" << vmiFusionMode
+                 << "'. Expected auto, off, region, loop, or full.\n";
+    return 1;
+  }
+  if (tileLibCandidatePolicy != "prefer-vmi" &&
+      tileLibCandidatePolicy != "ordinary") {
+    llvm::errs() << "Error: invalid --tilelib-candidate-policy='"
+                 << tileLibCandidatePolicy
+                 << "'. Expected prefer-vmi or ordinary.\n";
     return 1;
   }
   PTOBuildLevel effectiveLevel = defaultBuildLevel();
@@ -2985,7 +3032,9 @@ int mlir::pto::compilePTOASModule(
   const bool enableA5EmitCFusionPath =
       enableA5FusionPath && effectiveBackend == PTOBackend::EmitC;
   const bool enableA5VPTOFusionPath =
-      enableA5FusionPath && effectiveBackend == PTOBackend::VPTO;
+      arch == "a5" && effectiveLevel != PTOBuildLevel::Level1 &&
+      effectiveBackend == PTOBackend::VPTO &&
+      isVMIRegionEnabled(opFusionEnabled);
 
   bool invalidAutoSyncTailHint = false;
   module->walk([&](mlir::func::FuncOp func) {
@@ -3159,6 +3208,9 @@ int mlir::pto::compilePTOASModule(
         buildInsertTemplateAttributesOptions(*expandOptions);
     pm.addPass(
         pto::createInsertTemplateAttributesPass(insertOptions));
+    pto::SelectTileLibCandidateOptions selectOptions;
+    selectOptions.candidatePolicy = tileLibCandidatePolicy;
+    pm.addPass(pto::createSelectTileLibCandidatePass(selectOptions));
   }
 
   // Keep frontend fusion on tile-native PTO IR and annotate last_use directly

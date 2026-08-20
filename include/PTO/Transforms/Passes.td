@@ -549,15 +549,35 @@ def InsertTemplateAttributes
   ];
 }
 
+def SelectTileLibCandidate
+    : Pass<"pto-select-tilelib-candidate", "ModuleOp"> {
+  let summary = "Select one TileLib implementation before fusion planning";
+  let description = [{
+    Consumes the legal candidate metadata attached by
+    InsertTemplateAttributes, selects one implementation for each TileOp, and
+    records the decision with pto.tilelib.impl, pto.tilelib.candidate, and VMI
+    fusion-boundary attributes. ExpandTileOp consumes this decision and must
+    not independently reselect a candidate.
+  }];
+  let constructor = "mlir::pto::createSelectTileLibCandidatePass()";
+  let dependentDialects = [
+    "mlir::pto::PTODialect",
+    "mlir::func::FuncDialect"
+  ];
+  let options = [
+    Option<"candidatePolicy", "candidate-policy", "std::string",
+           /*default=*/"\"prefer-vmi\"",
+           "Candidate policy: prefer-vmi or ordinary">
+  ];
+}
+
 def ExpandTileOp : Pass<"pto-expand-tile-op", "ModuleOp"> {
   let summary = "Expand tile ops using the selected TileLib implementation";
   let description = [{
     Expands tile-level operations (pto.tadd, pto.tsub, etc.) by invoking the
-    selected Python TileLib backend. The unified PTODSL backend may contain
-    both ordinary PTODSL templates and VMI candidates; as a candidate-selection
-    policy, it prefers a canonical logical VMI candidate when one is legal for
-    the TileOp, otherwise it delegates to the ordinary PTODSL TileLib
-    implementation and marks that fallback as a VMI fusion boundary.
+    selected Python TileLib backend. The unified PTODSL backend consumes the
+    candidate decision recorded by SelectTileLibCandidate and rejects missing
+    or inconsistent selection metadata instead of independently reselecting.
 
     Each tile op is replaced by a func.call to the generated template function,
     with tile_buf operands passed directly (no type bridging).

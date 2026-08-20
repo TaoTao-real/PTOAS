@@ -8,16 +8,18 @@
 
 // InsertTemplateAttributes records a compact, ordered candidate list before
 // fusion. The unified PTODSL backend exposes both ordinary PTODSL templates and
-// legal VMI candidates to the compiler. ExpandTileOp prefers the VMI candidate
-// for full-shape PIPE_V TileOps.
+// legal VMI candidates to the compiler. SelectTileLibCandidate runs before
+// fusion and records the decision that ExpandTileOp later consumes.
 //
 // Running without --enable-op-fusion proves metadata insertion is not gated
 // by fusion. Printing before FusionPlan proves its position when fusion is on.
 //
-// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --emit-pto-ir --mlir-print-ir-after=pto-insert-template-attributes %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=META
-// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level2 --enable-op-fusion --emit-pto-ir --mlir-print-ir-before=pto-fusion-plan %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=PREFUSION
-// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto --mlir-print-ir-after=pto-expand-tile-op %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=SELECT
-// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto %s -o - 2>/dev/null | FileCheck %s --check-prefix=EXPAND
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --ptodsl-python-exe=%python_executable --emit-pto-ir --mlir-print-ir-after=pto-insert-template-attributes %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=META
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --ptodsl-python-exe=%python_executable --emit-pto-ir --mlir-print-ir-after=pto-select-tilelib-candidate %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=PRESELECT
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --ptodsl-python-exe=%python_executable --emit-pto-ir --tilelib-candidate-policy=ordinary --mlir-print-ir-after=pto-select-tilelib-candidate %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=ORDINARY
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --ptodsl-python-exe=%python_executable --pto-level=level2 --enable-op-fusion --emit-pto-ir --mlir-print-ir-before=pto-fusion-plan %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=PREFUSION
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --ptodsl-python-exe=%python_executable --emit-vpto --mlir-print-ir-after=pto-expand-tile-op %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=SELECT
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --ptodsl-python-exe=%python_executable --emit-vpto %s -o - 2>/dev/null | FileCheck %s --check-prefix=EXPAND
 
 // META: pto.tadd
 // META-SAME: candidates = [
@@ -33,9 +35,22 @@
 // META-SAME: tags = ["vmi", "fusion_eligible", "single_logical_row_loop"]
 // META-SAME: tail = 0 : i64}]
 
+// PRESELECT: IR Dump After SelectTileLibCandidate
+// PRESELECT: pto.tadd
+// PRESELECT-SAME: pto.tilelib.candidate = "vmi_tadd_block64"
+// PRESELECT-SAME: pto.tilelib.impl = "vmi"
+
+// ORDINARY: IR Dump After SelectTileLibCandidate
+// ORDINARY: pto.tadd
+// ORDINARY-SAME: pto.tilelib.candidate = "template_tadd"
+// ORDINARY-SAME: pto.tilelib.impl = "ptodsl"
+// ORDINARY-SAME: pto.vmi.fusion.boundary = "local"
+
 // PREFUSION: IR Dump Before FusionPlan
 // PREFUSION: pto.tadd
 // PREFUSION-SAME: candidates = [
+// PREFUSION-SAME: pto.tilelib.candidate = "vmi_tadd_block64"
+// PREFUSION-SAME: pto.tilelib.impl = "vmi"
 
 // SELECT: call @{{.*}}__vmi_tadd_block64
 // SELECT-SAME: pto.tilelib.candidate = "vmi_tadd_block64"
