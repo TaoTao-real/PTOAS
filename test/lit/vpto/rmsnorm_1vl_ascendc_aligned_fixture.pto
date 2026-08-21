@@ -8,6 +8,7 @@
 
 // RUN: pto-test-opt %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_ascendc_aligned.pto | FileCheck %s --check-prefix=FLOW
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=ordinary --vmi-fusion-mode=off --emit-vpto %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_ascendc_aligned.pto -o /dev/null
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --emit-vpto %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_ascendc_aligned.pto -o /dev/null --mlir-print-ir-after=pto-plan-vmi-scalar-phases 2>&1 | FileCheck %s --check-prefix=SCALAR-PLAN
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --emit-vpto %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_ascendc_aligned.pto -o - | FileCheck %s --check-prefix=PROMOTED
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --enable-vecscope-mem-bar --emit-vpto %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_ascendc_aligned.pto -o - | %python_executable %S/Inputs/rmsnorm_vf_traffic_gate.py --stage compact-scalar | FileCheck %s --check-prefix=TRAFFIC
 // RUN: %python_executable %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_golden.py | FileCheck %s --check-prefix=GOLDEN
@@ -42,6 +43,27 @@
 // PROMOTED: pto.vcadd %[[ACC]],
 // PROMOTED-NOT: 41728
 // PROMOTED-NOT: pto.vmi.v
+
+// SCALAR-PLAN-LABEL: func.func @rms_norm_1vl_ascendc_aligned
+// SCALAR-PLAN: pto.trowsum
+// SCALAR-PLAN-SAME: pto.vmi.scalar.phase = "reduction"
+// SCALAR-PLAN-SAME: pto.vmi.scalar.phase_group = 0 : i64
+// SCALAR-PLAN-SAME: pto.vmi.scalar.phase_status = "accepted"
+// SCALAR-PLAN-SAME: pto.vmi.scalar.storage_root = 42240 : i64
+// SCALAR-PLAN: pto.tmuls
+// SCALAR-PLAN-SAME: pto.vmi.scalar.phase = "scale"
+// SCALAR-PLAN: pto.tadds
+// SCALAR-PLAN-SAME: pto.vmi.scalar.phase = "shift"
+// SCALAR-PLAN: pto.tsqrt
+// SCALAR-PLAN-SAME: pto.vmi.scalar.phase = "sqrt"
+// SCALAR-PLAN: pto.alloc_tile
+// SCALAR-PLAN-SAME: pto.vmi.scalar.phase = "divisor"
+// SCALAR-PLAN: scf.for
+// SCALAR-PLAN: pto.trowexpanddiv
+// SCALAR-PLAN-SAME: pto.vmi.scalar.phase = "divide"
+// SCALAR-PLAN: pto.vmi.scalar.apply_iterations = 64 : i64
+// SCALAR-PLAN-SAME: pto.vmi.scalar.phase = "apply_loop"
+// SCALAR-PLAN-NOT: pto.vmi.scalar.phase_reject_reason
 
 // TRAFFIC: stage=compact-scalar
 // TRAFFIC-NEXT: static_total_vld_vst_membar=5/4/4

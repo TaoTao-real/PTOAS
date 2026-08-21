@@ -590,6 +590,25 @@ def PTOPlanVMIAccumulatorPhases
   ];
 }
 
+def PTOPlanVMIScalarPhases
+    : Pass<"pto-plan-vmi-scalar-phases", "func::FuncOp"> {
+  let summary = "Plan proven RMSNorm post-reduction scalar phase groups";
+  let description = [{
+    Recognizes the exact selected-VMI RMSNorm chain from an accepted one-VL
+    accumulator reduction through tmuls, tadds, default-precision tsqrt, a
+    compact scalar divisor alias, and the static 64-lane apply loop. The pass
+    only records stable phase provenance or a conservative rejection reason;
+    it does not rewrite control flow, values, or storage.
+  }];
+  let constructor = "mlir::pto::createPTOPlanVMIScalarPhasesPass()";
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+    "mlir::func::FuncDialect",
+    "mlir::pto::PTODialect",
+    "mlir::scf::SCFDialect"
+  ];
+}
+
 def PTOVMIAccumulatorPromotion
     : Pass<"pto-vmi-accumulator-promotion", "func::FuncOp"> {
   let summary = "Promote proven one-VL RMSNorm accumulators to VMI vregs";

@@ -1,0 +1,137 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// CANN Open Software License Agreement Version 2.0
+
+// RUN: pto-test-opt --pto-plan-vmi-scalar-phases %s | FileCheck %s --check-prefix=ACCEPT
+// RUN: sed 's/step %c64/step %%step/' %s | pto-test-opt --pto-plan-vmi-scalar-phases | FileCheck %s --check-prefix=REJECT-STEP
+// RUN: sed 's|// INJECT_SYNC|pto.set_flag[<PIPE_V>, <PIPE_V>, <EVENT_ID0>]|' %s | pto-test-opt --pto-plan-vmi-scalar-phases | FileCheck %s --check-prefix=REJECT-SYNC
+// RUN: sed 's/vmi_trowexpanddiv/template_trowexpanddiv/' %s | pto-test-opt --pto-plan-vmi-scalar-phases | FileCheck %s --check-prefix=REJECT-FALLBACK
+// RUN: sed 's/round_mode RINT/round_mode ROUND/' %s | pto-test-opt --pto-plan-vmi-scalar-phases | FileCheck %s --check-prefix=REJECT-ROUND
+// RUN: sed 's|// SQRT_ATTR|precisionType = #pto<sqrt_precision high_precision>,|' %s | pto-test-opt --pto-plan-vmi-scalar-phases | FileCheck %s --check-prefix=REJECT-PRECISION
+// RUN: sed 's|// INJECT_ALIAS|%%partial_addr = arith.constant 4064 : i64 %%partial = pto.alloc_tile addr = %%partial_addr : !acc|' %s | pto-test-opt --pto-plan-vmi-scalar-phases | FileCheck %s --check-prefix=REJECT-ALIAS
+// RUN: sed 's|// INJECT_ESCAPE|%%escape = pto.tile_buf_addr %%divisor : !divisor -> !pto.ptr<f32, ub>|' %s | pto-test-opt --pto-plan-vmi-scalar-phases | FileCheck %s --check-prefix=REJECT-ESCAPE
+
+!acc = !pto.tile_buf<vec, 1x64xf32>
+!scalar = !pto.tile_buf<vec, 1x8xf32, valid=1x1>
+!divisor = !pto.tile_buf<vec, 8x1xf32, valid=1x1, blayout=col_major>
+!bf16 = !pto.tile_buf<vec, 1x64xbf16>
+
+module {
+  // ACCEPT-LABEL: func.func @scalar_phase
+  // ACCEPT: pto.trowsum
+  // ACCEPT-SAME: pto.vmi.scalar.phase = "reduction"
+  // ACCEPT-SAME: pto.vmi.scalar.phase_group = 0 : i64
+  // ACCEPT-SAME: pto.vmi.scalar.phase_status = "accepted"
+  // ACCEPT-SAME: pto.vmi.scalar.storage_root = 4096 : i64
+  // ACCEPT: pto.tmuls
+  // ACCEPT-SAME: pto.vmi.scalar.phase = "scale"
+  // ACCEPT: pto.tadds
+  // ACCEPT-SAME: pto.vmi.scalar.phase = "shift"
+  // ACCEPT: pto.tsqrt
+  // ACCEPT-SAME: pto.vmi.scalar.phase = "sqrt"
+  // ACCEPT: pto.alloc_tile
+  // ACCEPT-SAME: pto.vmi.scalar.phase = "divisor"
+  // ACCEPT: scf.for
+  // ACCEPT: pto.trowexpanddiv
+  // ACCEPT-SAME: pto.vmi.scalar.phase = "divide"
+  // ACCEPT: pto.vmi.scalar.apply_iterations = 64 : i64
+  // ACCEPT-SAME: pto.vmi.scalar.phase = "apply_loop"
+  // ACCEPT-NOT: pto.vmi.scalar.phase_reject_reason
+
+  // REJECT-STEP-LABEL: func.func @scalar_phase
+  // REJECT-STEP: pto.vmi.scalar.phase_reject_reason = "apply_iteration_not_static_0_4096_64"
+  // REJECT-STEP-NOT: pto.vmi.scalar.phase_group
+
+  // REJECT-SYNC-LABEL: func.func @scalar_phase
+  // REJECT-SYNC: pto.vmi.scalar.phase_reject_reason = "apply_loop_contains_sync_or_call"
+  // REJECT-SYNC-NOT: pto.vmi.scalar.phase_group
+
+  // REJECT-FALLBACK-LABEL: func.func @scalar_phase
+  // REJECT-FALLBACK: pto.vmi.scalar.phase_reject_reason = "apply_tileop_not_selected_vmi"
+  // REJECT-FALLBACK-NOT: pto.vmi.scalar.phase_group
+
+  // REJECT-ROUND-LABEL: func.func @scalar_phase
+  // REJECT-ROUND: pto.vmi.scalar.phase_reject_reason = "divide_dtype_precision_or_rounding_contract_changed"
+  // REJECT-ROUND-NOT: pto.vmi.scalar.phase_group
+
+  // REJECT-PRECISION-LABEL: func.func @scalar_phase
+  // REJECT-PRECISION: pto.vmi.scalar.phase_reject_reason = "sqrt_not_selected_default_vmi_tsqrt"
+  // REJECT-PRECISION-NOT: pto.vmi.scalar.phase_group
+
+  // REJECT-ALIAS-LABEL: func.func @scalar_phase
+  // REJECT-ALIAS: pto.vmi.scalar.phase_reject_reason = "scalar_partial_alias"
+  // REJECT-ALIAS-NOT: pto.vmi.scalar.phase_group
+
+  // REJECT-ESCAPE-LABEL: func.func @scalar_phase
+  // REJECT-ESCAPE: pto.vmi.scalar.phase_reject_reason = "scalar_or_divisor_external_use"
+  // REJECT-ESCAPE-NOT: pto.vmi.scalar.phase_group
+  func.func @scalar_phase(%step: index) {
+    %c0 = arith.constant 0 : index
+    %c64 = arith.constant 64 : index
+    %c4096 = arith.constant 4096 : index
+    %inv_width = arith.constant 2.44140625e-4 : f32
+    %epsilon = arith.constant 1.0e-6 : f32
+    %acc_addr = arith.constant 1024 : i64
+    %scratch_addr = arith.constant 2048 : i64
+    %scalar_addr = arith.constant 4096 : i64
+    %x_addr = arith.constant 8192 : i64
+    %gamma_addr = arith.constant 8448 : i64
+    %x_f32_addr = arith.constant 8704 : i64
+    %gamma_f32_addr = arith.constant 8960 : i64
+    %normalized_addr = arith.constant 9216 : i64
+    %scaled_addr = arith.constant 9472 : i64
+    %output_addr = arith.constant 9728 : i64
+
+    %acc = pto.alloc_tile addr = %acc_addr : !acc
+    %scratch = pto.alloc_tile addr = %scratch_addr : !acc
+    %sum = pto.alloc_tile addr = %scalar_addr : !scalar
+    pto.trowsum ins(%acc, %scratch : !acc, !acc) outs(%sum : !scalar) {
+      pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_trowsum",
+      pto.vmi.accumulator.phase = "reduction",
+      pto.vmi.accumulator.phase_status = "accepted"
+    }
+    %mean = pto.alloc_tile addr = %scalar_addr : !scalar
+    pto.tmuls ins(%sum, %inv_width : !scalar, f32) outs(%mean : !scalar) {
+      pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tmuls"
+    }
+    %mean_eps = pto.alloc_tile addr = %scalar_addr : !scalar
+    pto.tadds ins(%mean, %epsilon : !scalar, f32) outs(%mean_eps : !scalar) {
+      pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tadds"
+    }
+    %rms = pto.alloc_tile addr = %scalar_addr : !scalar
+    pto.tsqrt ins(%mean_eps : !scalar) outs(%rms : !scalar) {
+      // SQRT_ATTR
+      pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tsqrt"
+    }
+    %divisor = pto.alloc_tile addr = %scalar_addr : !divisor
+    // INJECT_ALIAS
+    // INJECT_ESCAPE
+
+    scf.for %col = %c0 to %c4096 step %c64 {
+      %x = pto.alloc_tile addr = %x_addr : !bf16
+      %gamma = pto.alloc_tile addr = %gamma_addr : !bf16
+      %x_f32 = pto.alloc_tile addr = %x_f32_addr : !acc
+      %gamma_f32 = pto.alloc_tile addr = %gamma_f32_addr : !acc
+      %normalized = pto.alloc_tile addr = %normalized_addr : !acc
+      %scaled = pto.alloc_tile addr = %scaled_addr : !acc
+      %output = pto.alloc_tile addr = %output_addr : !bf16
+      pto.tcvt ins(%x {
+        pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tcvt"
+      } : !bf16) outs(%x_f32 : !acc)
+      pto.tcvt ins(%gamma {
+        pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tcvt"
+      } : !bf16) outs(%gamma_f32 : !acc)
+      // INJECT_SYNC
+      pto.trowexpanddiv ins(%x_f32, %divisor : !acc, !divisor) outs(%normalized : !acc) {
+        pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_trowexpanddiv"
+      }
+      pto.tmul ins(%normalized, %gamma_f32 : !acc, !acc) outs(%scaled : !acc) {
+        pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tmul"
+      }
+      pto.tcvt ins(%scaled {
+        pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tcvt",
+        rmode = #pto<round_mode RINT>
+      } : !acc) outs(%output : !bf16)
+    }
+    return
+  }
+}

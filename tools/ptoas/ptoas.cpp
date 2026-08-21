@@ -3227,9 +3227,12 @@ int mlir::pto::compilePTOASModule(
     selectOptions.candidatePolicy = tileLibCandidatePolicy;
     pm.addPass(pto::createSelectTileLibCandidatePass(selectOptions));
     if (enableA5VPTOFusionPath &&
-        isVMIFullFusionEnabled(opFusionEnabled))
+        isVMIFullFusionEnabled(opFusionEnabled)) {
       pm.addNestedPass<mlir::func::FuncOp>(
           pto::createPTOPlanVMIAccumulatorPhasesPass());
+      pm.addNestedPass<mlir::func::FuncOp>(
+          pto::createPTOPlanVMIScalarPhasesPass());
+    }
   }
 
   // Keep frontend fusion on tile-native PTO IR and annotate last_use directly
