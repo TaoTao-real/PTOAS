@@ -283,6 +283,17 @@ static MemoryRootKind resolveRoot(Value ptr, AffineByteExpr &byteOffset,
         rootOut = ptr;
         return MemoryRootKind::Absolute;
       }
+      // A single PointerCast operand is an absolute byte address. Preserve an
+      // exact affine IV expression as an absolute root plus byte offset so
+      // loop-carried dependence analysis can prove adjacent ranges disjoint.
+      // Unknown symbols and non-affine arithmetic remain symbolic.
+      AffineByteExpr affineAddress = extractAffineElement(address, ivs);
+      if (affineAddress.exact) {
+        byteOffset.combine(affineAddress);
+        absoluteBase = 0;
+        rootOut = ptr;
+        return MemoryRootKind::Absolute;
+      }
       rootOut = address;
       return MemoryRootKind::Symbolic;
     }
@@ -296,6 +307,13 @@ static MemoryRootKind resolveRoot(Value ptr, AffineByteExpr &byteOffset,
       APInt v;
       if (matchPattern(input, m_ConstantInt(&v))) {
         absoluteBase = uint64_t(v.getZExtValue());
+        rootOut = ptr;
+        return MemoryRootKind::Absolute;
+      }
+      AffineByteExpr affineAddress = extractAffineElement(input, ivs);
+      if (affineAddress.exact) {
+        byteOffset.combine(affineAddress);
+        absoluteBase = 0;
         rootOut = ptr;
         return MemoryRootKind::Absolute;
       }
@@ -332,11 +350,11 @@ static MemoryRootKind resolveRoot(Value ptr, AffineByteExpr &byteOffset,
                        ivs, allowIterArgInit);
   }
   if (auto cast = ptr.getDefiningOp<memref::CastOp>())
-    return resolveRoot(cast.getSource(), byteOffset, rootOut, absoluteBase,
-                       ivs, allowIterArgInit);
+    return resolveRoot(cast.getSource(), byteOffset, rootOut, absoluteBase, ivs,
+                       allowIterArgInit);
   if (auto bind = ptr.getDefiningOp<pto::BindTileOp>())
-    return resolveRoot(bind.getSource(), byteOffset, rootOut, absoluteBase,
-                       ivs, allowIterArgInit);
+    return resolveRoot(bind.getSource(), byteOffset, rootOut, absoluteBase, ivs,
+                       allowIterArgInit);
   if (auto tileAddr = ptr.getDefiningOp<pto::TileBufAddrOp>())
     return resolveRoot(tileAddr.getSrc(), byteOffset, rootOut, absoluteBase,
                        ivs, allowIterArgInit);
@@ -365,9 +383,10 @@ static MemoryRootKind resolveRoot(Value ptr, AffineByteExpr &byteOffset,
   // to encode the open upper bound.
   if (allowIterArgInit) {
     if (auto blockArg = dyn_cast<BlockArgument>(ptr)) {
-      if (auto forOp = blockArg.getOwner()
-                           ? dyn_cast<scf::ForOp>(blockArg.getOwner()->getParentOp())
-                           : scf::ForOp()) {
+      if (auto forOp =
+              blockArg.getOwner()
+                  ? dyn_cast<scf::ForOp>(blockArg.getOwner()->getParentOp())
+                  : scf::ForOp()) {
         Block::BlockArgListType iterArgs = forOp.getRegionIterArgs();
         for (auto [idx, arg] : llvm::enumerate(iterArgs)) {
           if (arg == ptr) {
@@ -456,6 +475,29 @@ static std::optional<uint64_t> vstsStoredElementCount(pto::VstsOp op) {
   return count;
 }
 
+// Return the number of contiguous source elements read by `vlds`.  An unpack
+// distribution can widen the register representation without increasing the
+// source-memory payload.  In particular, A5 UNPK_B16 loads 64 b16 source
+// elements into a 128-lane b16 register representation whose even lanes are
+// consumed by the following conversion.  Counting the result-vreg width here
+// would therefore double the memory footprint and create false loop-carried
+// VST_VLD hazards at exactly adjacent buffer boundaries.
+//
+// Keep this deliberately limited to the installed A5 semantic that has been
+// traced and verified.  Other unpack distributions remain conservative until
+// their physical source payload is proven independently.
+static std::optional<uint64_t> vldsLoadedElementCount(pto::VldsOp op) {
+  auto count = vregElementCount(op.getResult().getType());
+  if (!count)
+    return std::nullopt;
+  auto dist = op.getDist();
+  Type sourceElement = getPointeeElementType(op.getSource().getType());
+  if (dist && *dist == "UNPK_B16" && *count == 128 && sourceElement &&
+      (sourceElement.isF16() || sourceElement.isBF16()))
+    return (*count + 1) / 2;
+  return count;
+}
+
 } // namespace
 
 FailureOr<VecMemoryAccessDescriptor>
@@ -487,7 +529,7 @@ vecscopemembar::buildAccessDescriptor(Operation *op, ArrayRef<Value> ivs) {
     desc.kind = VecScopeAccessKind::Load;
     fillContiguous(desc, vlds.getSource(), vlds.getOffset(),
                    elementByteSize(vlds.getSource().getType()),
-                   vregElementCount(vlds.getResult().getType()), ivs);
+                   vldsLoadedElementCount(vlds), ivs);
     return desc;
   }
   if (auto vsts = dyn_cast<pto::VstsOp>(op)) {
@@ -647,10 +689,10 @@ vecscopemembar::aliasSameIteration(const VecScopeMemoryFootprint &producer,
     // Both absolute with closed ranges: compare intervals.
     if (producer.rootKind == MemoryRootKind::Absolute &&
         consumer.rootKind == MemoryRootKind::Absolute) {
-      if (producer.absoluteBase && consumer.absoluteBase &&
-          producer.byteSize && consumer.byteSize &&
-          producer.byteOffset.exact && consumer.byteOffset.exact &&
-          producer.byteOffset.isConstant() && consumer.byteOffset.isConstant()) {
+      if (producer.absoluteBase && consumer.absoluteBase && producer.byteSize &&
+          consumer.byteSize && producer.byteOffset.exact &&
+          consumer.byteOffset.exact && producer.byteOffset.isConstant() &&
+          consumer.byteOffset.isConstant()) {
         WideInt producerStart =
             static_cast<WideInt>(*producer.absoluteBase) +
             static_cast<WideInt>(producer.byteOffset.constant);
@@ -670,22 +712,23 @@ vecscopemembar::aliasSameIteration(const VecScopeMemoryFootprint &producer,
       // upper bound is unknown.
       if (producer.absoluteBase && consumer.absoluteBase &&
           producer.byteOffset.exact && consumer.byteOffset.exact &&
-          producer.byteOffset.isConstant() && consumer.byteOffset.isConstant()) {
-        WideInt prodStart =
-            static_cast<WideInt>(*producer.absoluteBase) +
-            static_cast<WideInt>(producer.byteOffset.constant);
-        WideInt consStart =
-            static_cast<WideInt>(*consumer.absoluteBase) +
-            static_cast<WideInt>(consumer.byteOffset.constant);
+          producer.byteOffset.isConstant() &&
+          consumer.byteOffset.isConstant()) {
+        WideInt prodStart = static_cast<WideInt>(*producer.absoluteBase) +
+                            static_cast<WideInt>(producer.byteOffset.constant);
+        WideInt consStart = static_cast<WideInt>(*consumer.absoluteBase) +
+                            static_cast<WideInt>(consumer.byteOffset.constant);
         if (prodStart >= 0 && consStart >= 0) {
           // Producer open-ended (e.g. vsstb): consumer [consStart, consStart+s)
           // ends at or before prodStart.
-          if (producer.forcesMayAlias && !producer.byteSize && consumer.byteSize &&
+          if (producer.forcesMayAlias && !producer.byteSize &&
+              consumer.byteSize &&
               consStart + static_cast<WideInt>(*consumer.byteSize) <= prodStart)
             return VecScopeAliasResult::NoAlias;
           // Consumer open-ended: producer [prodStart, prodStart+s) ends at or
           // before consStart.
-          if (consumer.forcesMayAlias && !consumer.byteSize && producer.byteSize &&
+          if (consumer.forcesMayAlias && !consumer.byteSize &&
+              producer.byteSize &&
               prodStart + static_cast<WideInt>(*producer.byteSize) <= consStart)
             return VecScopeAliasResult::NoAlias;
         }

@@ -1,0 +1,76 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// CANN Open Software License Agreement Version 2.0
+
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto --enable-vecscope-mem-bar %s -o - 2>/dev/null | FileCheck %s
+
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+  // UNPK_B16 reads 64 BF16 source elements (128 bytes), although its result is
+  // represented as vreg<128xbf16>.  Across all loop iterations the input range
+  // ends exactly where the output range begins, so no VST_VLD barrier is needed.
+  // CHECK-LABEL: func.func @unpk_b16_adjacent_ranges
+  // CHECK: scf.for
+  // CHECK: pto.vlds
+  // CHECK: pto.vsts
+  // CHECK-NOT: pto.mem_bar
+  // CHECK: return
+  func.func @unpk_b16_adjacent_ranges() {
+    %c0 = arith.constant 0 : index
+    %c64 = arith.constant 64 : index
+    %c4096 = arith.constant 4096 : index
+    %c2 = arith.constant 2 : index
+    %input_base = arith.constant 16384 : i64
+    %output_base = arith.constant 24576 : i64
+    pto.vecscope {
+      %mask = pto.pge_b32 "PAT_ALL" : !pto.mask<b32>
+      scf.for %iv = %c0 to %c4096 step %c64 {
+        %scaled = arith.muli %iv, %c2 : index
+        %scaled_i64 = arith.index_cast %scaled : index to i64
+        %input_address = arith.addi %scaled_i64, %input_base : i64
+        %input_tile = pto.pointer_cast(%input_address) : memref<1x64xbf16, #pto.address_space<vec>>
+        %input_ptr = pto.castptr %input_tile : memref<1x64xbf16, #pto.address_space<vec>> -> !pto.ptr<bf16, ub>
+        %loaded = pto.vlds %input_ptr[%c0] {dist = "UNPK_B16"}
+            : !pto.ptr<bf16, ub> -> !pto.vreg<128xbf16>
+        %output_address = arith.addi %scaled_i64, %output_base : i64
+        %output_tile = pto.pointer_cast(%output_address) : memref<1x64xbf16, #pto.address_space<vec>>
+        %output_ptr = pto.castptr %output_tile : memref<1x64xbf16, #pto.address_space<vec>> -> !pto.ptr<bf16, ub>
+        pto.vsts %loaded, %output_ptr[%c0], %mask {dist = "PK_B32"}
+            : !pto.vreg<128xbf16>, !pto.ptr<bf16, ub>, !pto.mask<b32>
+      }
+    }
+    return
+  }
+
+  // Moving the output range back by one BF16 element creates a real 2-byte
+  // overlap with the final UNPK_B16 load and must retain the carried barrier.
+  // CHECK-LABEL: func.func @unpk_b16_overlapping_ranges
+  // CHECK: scf.for
+  // CHECK: pto.vlds
+  // CHECK: pto.vsts
+  // CHECK-NEXT: pto.mem_bar "VST_VLD"
+  func.func @unpk_b16_overlapping_ranges() {
+    %c0 = arith.constant 0 : index
+    %c64 = arith.constant 64 : index
+    %c4096 = arith.constant 4096 : index
+    %c2 = arith.constant 2 : index
+    %input_base = arith.constant 16384 : i64
+    %output_base = arith.constant 24574 : i64
+    pto.vecscope {
+      %mask = pto.pge_b32 "PAT_ALL" : !pto.mask<b32>
+      scf.for %iv = %c0 to %c4096 step %c64 {
+        %scaled = arith.muli %iv, %c2 : index
+        %scaled_i64 = arith.index_cast %scaled : index to i64
+        %input_address = arith.addi %scaled_i64, %input_base : i64
+        %input_tile = pto.pointer_cast(%input_address) : memref<1x64xbf16, #pto.address_space<vec>>
+        %input_ptr = pto.castptr %input_tile : memref<1x64xbf16, #pto.address_space<vec>> -> !pto.ptr<bf16, ub>
+        %loaded = pto.vlds %input_ptr[%c0] {dist = "UNPK_B16"}
+            : !pto.ptr<bf16, ub> -> !pto.vreg<128xbf16>
+        %output_address = arith.addi %scaled_i64, %output_base : i64
+        %output_tile = pto.pointer_cast(%output_address) : memref<1x64xbf16, #pto.address_space<vec>>
+        %output_ptr = pto.castptr %output_tile : memref<1x64xbf16, #pto.address_space<vec>> -> !pto.ptr<bf16, ub>
+        pto.vsts %loaded, %output_ptr[%c0], %mask {dist = "PK_B32"}
+            : !pto.vreg<128xbf16>, !pto.ptr<bf16, ub>, !pto.mask<b32>
+      }
+    }
+    return
+  }
+}

@@ -1,0 +1,80 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// CANN Open Software License Agreement Version 2.0
+
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto --enable-vecscope-mem-bar %s -o - 2>/dev/null | FileCheck %s
+
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+  // CHECK-LABEL: func.func @affine_absolute_disjoint
+  // CHECK: scf.for
+  // CHECK: pto.vsts
+  // CHECK-NOT: pto.mem_bar
+  // CHECK: return
+  func.func @affine_absolute_disjoint(%value: !pto.vreg<128xbf16>) {
+    %c0 = arith.constant 0 : index
+    %c64 = arith.constant 64 : index
+    %c4096 = arith.constant 4096 : index
+    %c2 = arith.constant 2 : index
+    %base = arith.constant 24576 : i64
+    pto.vecscope {
+      %mask = pto.pge_b32 "PAT_ALL" : !pto.mask<b32>
+      scf.for %iv = %c0 to %c4096 step %c64 {
+        %scaled = arith.muli %iv, %c2 : index
+        %scaled_i64 = arith.index_cast %scaled : index to i64
+        %address = arith.addi %scaled_i64, %base : i64
+        %tile = pto.pointer_cast(%address) : memref<1x64xbf16, #pto.address_space<vec>>
+        %ptr = pto.castptr %tile : memref<1x64xbf16, #pto.address_space<vec>> -> !pto.ptr<bf16, ub>
+        pto.vsts %value, %ptr[%c0], %mask {dist = "PK_B32"}
+            : !pto.vreg<128xbf16>, !pto.ptr<bf16, ub>, !pto.mask<b32>
+      }
+    }
+    return
+  }
+
+  // CHECK-LABEL: func.func @affine_absolute_overlapping
+  // CHECK: scf.for
+  // CHECK: pto.vsts
+  // CHECK-NEXT: pto.mem_bar "VST_VST"
+  func.func @affine_absolute_overlapping(%value: !pto.vreg<128xbf16>) {
+    %c0 = arith.constant 0 : index
+    %c64 = arith.constant 64 : index
+    %c4096 = arith.constant 4096 : index
+    %base = arith.constant 24576 : i64
+    pto.vecscope {
+      %mask = pto.pge_b32 "PAT_ALL" : !pto.mask<b32>
+      scf.for %iv = %c0 to %c4096 step %c64 {
+        %iv_i64 = arith.index_cast %iv : index to i64
+        %address = arith.addi %iv_i64, %base : i64
+        %tile = pto.pointer_cast(%address) : memref<1x64xbf16, #pto.address_space<vec>>
+        %ptr = pto.castptr %tile : memref<1x64xbf16, #pto.address_space<vec>> -> !pto.ptr<bf16, ub>
+        pto.vsts %value, %ptr[%c0], %mask {dist = "PK_B32"}
+            : !pto.vreg<128xbf16>, !pto.ptr<bf16, ub>, !pto.mask<b32>
+      }
+    }
+    return
+  }
+
+  // CHECK-LABEL: func.func @unknown_symbol_keeps_barrier
+  // CHECK: scf.for
+  // CHECK: pto.vsts
+  // CHECK-NEXT: pto.mem_bar "VST_VST"
+  func.func @unknown_symbol_keeps_barrier(
+      %dynamic_base: i64, %value: !pto.vreg<128xbf16>) {
+    %c0 = arith.constant 0 : index
+    %c64 = arith.constant 64 : index
+    %c4096 = arith.constant 4096 : index
+    %c2 = arith.constant 2 : index
+    pto.vecscope {
+      %mask = pto.pge_b32 "PAT_ALL" : !pto.mask<b32>
+      scf.for %iv = %c0 to %c4096 step %c64 {
+        %scaled = arith.muli %iv, %c2 : index
+        %scaled_i64 = arith.index_cast %scaled : index to i64
+        %address = arith.addi %scaled_i64, %dynamic_base : i64
+        %tile = pto.pointer_cast(%address) : memref<1x64xbf16, #pto.address_space<vec>>
+        %ptr = pto.castptr %tile : memref<1x64xbf16, #pto.address_space<vec>> -> !pto.ptr<bf16, ub>
+        pto.vsts %value, %ptr[%c0], %mask {dist = "PK_B32"}
+            : !pto.vreg<128xbf16>, !pto.ptr<bf16, ub>, !pto.mask<b32>
+      }
+    }
+    return
+  }
+}
