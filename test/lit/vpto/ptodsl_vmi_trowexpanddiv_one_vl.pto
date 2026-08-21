@@ -14,8 +14,8 @@
 // SELECT-SAME: pto.tilelib.candidate = "template_trowexpanddiv_high_precision"
 // SELECT-SAME: pto.tilelib.impl = "ptodsl"
 // SELECT: pto.trowexpanddiv
-// SELECT-SAME: pto.tilelib.candidate = "template_trowexpanddiv"
-// SELECT-SAME: pto.tilelib.impl = "ptodsl"
+// SELECT-SAME: pto.tilelib.candidate = "vmi_trowexpanddiv"
+// SELECT-SAME: pto.tilelib.impl = "vmi"
 // SELECT: pto.trowexpanddiv
 // SELECT-SAME: pto.tilelib.candidate = "template_trowexpanddiv"
 // SELECT-SAME: pto.tilelib.impl = "ptodsl"
@@ -37,6 +37,8 @@
 // FINAL-NOT: pto.vmi.vdiv
 
 // SELECT-LABEL: func.func @trowexpanddiv_multirow_selection
+// SELECT: pto.trowexpanddiv
+// SELECT-SAME: pto.tilelib.candidate = "vmi_trowexpanddiv"
 // SELECT: pto.trowexpanddiv
 // SELECT-SAME: pto.tilelib.candidate = "vmi_trowexpanddiv"
 // SELECT: pto.trowexpanddiv
@@ -83,9 +85,11 @@ module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
     %dst8 = pto.alloc_tile : !pto.tile_buf<vec, 8x64xf32>
     %src64 = pto.alloc_tile : !pto.tile_buf<vec, 64x64xf32>
     %den64 = pto.alloc_tile : !pto.tile_buf<vec, 512x1xf32, valid=64x1, blayout=col_major>
+    %den64_aligned = pto.alloc_tile : !pto.tile_buf<vec, 64x8xf32, valid=64x1>
     %dst64 = pto.alloc_tile : !pto.tile_buf<vec, 64x64xf32>
     pto.trowexpanddiv ins(%src8, %den8 : !pto.tile_buf<vec, 8x64xf32>, !pto.tile_buf<vec, 8x1xf32, blayout=col_major>) outs(%dst8 : !pto.tile_buf<vec, 8x64xf32>)
     pto.trowexpanddiv ins(%src64, %den64 : !pto.tile_buf<vec, 64x64xf32>, !pto.tile_buf<vec, 512x1xf32, valid=64x1, blayout=col_major>) outs(%dst64 : !pto.tile_buf<vec, 64x64xf32>)
+    pto.trowexpanddiv ins(%src64, %den64_aligned : !pto.tile_buf<vec, 64x64xf32>, !pto.tile_buf<vec, 64x8xf32, valid=64x1>) outs(%dst64 : !pto.tile_buf<vec, 64x64xf32>)
     return
   }
 }

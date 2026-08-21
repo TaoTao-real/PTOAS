@@ -49,11 +49,12 @@ gamma broadcast.
 Generated binaries, pass dumps, assembly, input `.bin` files, and profiles are
 experiment evidence and must stay outside the source tree.
 
-The compact row state intentionally uses a padded physical representation:
-col-major `512x1 valid 64x1`, reinterpreted as row-major
-`64x8 valid 64x1` for scalar elementwise ops.  This is the minimum A5-legal
-row-major storage (32 bytes per physical row) and preserves one VL1 iteration
-per logical row.  The fixture-introduction baseline exposed `trowsum` and
+The compact row state intentionally uses row-major
+`64x8 valid 64x1`, the minimum A5-legal storage with one 32-byte physical row
+per logical scalar.  This keeps both the `trowsum` result VST and the later
+broadcast VLD aligned on every row; a col-major `512x1` view would advance
+successive row scalars by only four bytes and is not producer-safe.  The
+fixture-introduction baseline exposed `trowsum` and
 `trowexpanddiv` as the two PTODSL compute fallbacks.  The compiler now accepts
 both exact forms: padded one-VL row reduction and `N x 64 / N x 1` default-
 precision divide.  Dynamic, tail, high-precision, non-f32, and unproven layout

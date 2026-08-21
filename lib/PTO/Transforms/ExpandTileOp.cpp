@@ -1078,13 +1078,16 @@ static bool hasStaticCompactRowReduceShape(Operation *tileOp) {
       tmp.blayout != static_cast<int32_t>(pto::BLayout::RowMajor))
     return false;
 
-  // Row-major state keeps one physical row per logical row.  Col-major state
-  // may carry leading physical padding (for example [512, 1], valid [64, 1])
-  // while the valid rows stay compact at linear offsets [0, N).
+  // Row-major state keeps one 32-byte physical row per logical scalar. A
+  // multi-row col-major state advances adjacent scalar destinations by four
+  // bytes, which violates A5 vector-store base alignment. Keep the legacy
+  // col-major candidate only for the single-row case.
   if (dst.blayout == static_cast<int32_t>(pto::BLayout::RowMajor))
-    return dst.tileShape[0] == src.tileShape[0] && dst.tileShape[1] >= 1;
+    return dst.tileShape[0] == src.tileShape[0] && dst.tileShape[1] >= 1 &&
+           (dst.tileShape[1] * 4) % 32 == 0;
   if (dst.blayout == static_cast<int32_t>(pto::BLayout::ColMajor))
-    return dst.tileShape[0] >= src.tileShape[0] && dst.tileShape[1] == 1;
+    return src.tileShape[0] == 1 && dst.tileShape[0] >= 1 &&
+           dst.tileShape[1] == 1;
   return false;
 }
 
@@ -1128,10 +1131,12 @@ static bool hasStaticCompactElementwiseShape(Operation *tileOp) {
 }
 
 // RMSNorm divides each full f32 VL row by one compact scalar produced by the
-// preceding reduction/scalar chain.  The denominator may have physical row
-// padding, but col-major [P, 1], valid [N, 1] proves that each VMI BRC load
-// observes exactly one row scalar.  Keep this separate from the generic
-// full-shape gate so no other padded broadcast form is admitted accidentally.
+// preceding reduction/scalar chain.  Accept either the legacy col-major
+// [P, 1] form or a row-major [N, P], valid [N, 1] form whose physical row is
+// 32-byte aligned.  The latter is required when a vector reduction stores one
+// scalar per row: row-major padding keeps every VST/BRC-load base aligned.
+// Keep this separate from the generic full-shape gate so no other padded
+// broadcast form is admitted accidentally.
 static bool hasStaticCompactRowExpandDivShape(Operation *tileOp) {
   if (getTileOpName(tileOp) != "trowexpanddiv" ||
       tileOp->getNumOperands() != 3)
@@ -1158,11 +1163,17 @@ static bool hasStaticCompactRowExpandDivShape(Operation *tileOp) {
       dst.blayout != static_cast<int32_t>(pto::BLayout::RowMajor))
     return false;
   const int64_t rows = src.tileShape[0];
-  return !ShapedType::isDynamic(rows) &&
-         !ShapedType::isDynamic(rowValues.tileShape[0]) &&
-         rowValues.tileShape[0] >= rows && rowValues.tileShape[1] == 1 &&
-         rowValues.tileValidShape == SmallVector<int64_t, 2>{rows, 1} &&
-         rowValues.blayout == static_cast<int32_t>(pto::BLayout::ColMajor);
+  if (ShapedType::isDynamic(rows) ||
+      ShapedType::isDynamic(rowValues.tileShape[0]) ||
+      ShapedType::isDynamic(rowValues.tileShape[1]) ||
+      rowValues.tileValidShape != SmallVector<int64_t, 2>{rows, 1})
+    return false;
+  if (rowValues.blayout == static_cast<int32_t>(pto::BLayout::ColMajor))
+    return rowValues.tileShape[0] >= rows && rowValues.tileShape[1] == 1;
+  if (rowValues.blayout == static_cast<int32_t>(pto::BLayout::RowMajor))
+    return rowValues.tileShape[0] == rows && rowValues.tileShape[1] >= 1 &&
+           (rowValues.tileShape[1] * 4) % 32 == 0;
+  return false;
 }
 
 static bool isHardBoundaryFallbackOp(Operation *tileOp) {

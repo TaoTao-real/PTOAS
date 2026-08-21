@@ -52,6 +52,25 @@ struct StageInfo {
 
 static bool areEquivalentValues(Value lhs, Value rhs);
 
+static bool isFusionProvenanceAttr(StringRef name) {
+  return name.starts_with("pto.tilelib.") ||
+         name.starts_with("pto.vmi.fusion.");
+}
+
+static bool haveEquivalentSemanticAttrs(Operation *lhs, Operation *rhs) {
+  auto compareOneWay = [](Operation *from, Operation *to) {
+    for (NamedAttribute attr : from->getAttrs()) {
+      StringRef name = attr.getName().strref();
+      if (isFusionProvenanceAttr(name))
+        continue;
+      if (to->getAttr(name) != attr.getValue())
+        return false;
+    }
+    return true;
+  };
+  return compareOneWay(lhs, rhs) && compareOneWay(rhs, lhs);
+}
+
 static Value mapValueOrSelf(Value value, IRMapping &mapping) {
   return mapping.lookupOrDefault(value);
 }
@@ -60,7 +79,7 @@ static bool sameForHeader(scf::ForOp lhs, scf::ForOp rhs) {
   return areEquivalentValues(lhs.getLowerBound(), rhs.getLowerBound()) &&
          areEquivalentValues(lhs.getUpperBound(), rhs.getUpperBound()) &&
          areEquivalentValues(lhs.getStep(), rhs.getStep()) &&
-         lhs->getAttrs() == rhs->getAttrs();
+         haveEquivalentSemanticAttrs(lhs, rhs);
 }
 
 static bool isPureNoRegionOp(Operation *op) {
@@ -77,6 +96,20 @@ static bool isSupportedPreludeOp(Operation *op) {
 
 static bool isSupportedLeafOp(Operation *op) { return op->getNumRegions() == 0; }
 
+static bool isReadOnlyMemoryOp(Operation *op) {
+  if (op->getNumRegions() != 0)
+    return false;
+  auto effectsOp = dyn_cast<MemoryEffectOpInterface>(op);
+  if (!effectsOp)
+    return false;
+  SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>, 4> effects;
+  effectsOp.getEffects(effects);
+  return !effects.empty() && llvm::all_of(effects, [](const auto &effect) {
+           return isa<MemoryEffects::Read>(effect.getEffect()) &&
+                  effect.getValue();
+         });
+}
+
 static bool isInterstageSetupOp(Operation *op) {
   if (isPureNoRegionOp(op))
     return true;
@@ -84,7 +117,7 @@ static bool isInterstageSetupOp(Operation *op) {
   // Tile-native buffers lower to backend memrefs through pto.pointer_cast
   // between adjacent stage loops. Treat these address materializations as
   // stage-boundary-transparent so loop-run collection can keep walking.
-  return isa<pto::PointerCastOp>(op);
+  return isa<pto::PointerCastOp>(op) || isReadOnlyMemoryOp(op);
 }
 
 static bool areEquivalentOperations(Operation *lhs, Operation *rhs) {
@@ -98,7 +131,7 @@ static bool areEquivalentOperations(Operation *lhs, Operation *rhs) {
     return false;
   if (lhs->getNumOperands() != rhs->getNumOperands())
     return false;
-  if (lhs->getAttrDictionary() != rhs->getAttrDictionary())
+  if (!haveEquivalentSemanticAttrs(lhs, rhs))
     return false;
   if (!llvm::equal(lhs->getResultTypes(), rhs->getResultTypes()))
     return false;
@@ -311,6 +344,13 @@ static bool arePreludeReordersLegal(ArrayRef<StageInfo> stages,
   for (size_t stageIndex = 1; stageIndex < stages.size(); ++stageIndex) {
     ArrayRef<StageInfo> priorStages(stages.data(), stageIndex);
 
+    // Loop-invariant read-only side inputs (for example the RMSNorm gamma
+    // vector load) are setup ops between stages. They move before the fused
+    // loop, so prove that they do not alias any prior-stage memory effect.
+    for (Operation *op : stages[stageIndex].setupOps)
+      if (!canMoveAcrossStages(op, priorStages, debugOS))
+        return false;
+
     // Prelude ops of the current stage are moved before all prior-stage
     // leaf and epilogue ops in the fused loop.  Check they don't alias.
     for (const LoopLevelInfo &level : stages[stageIndex].levels) {
@@ -470,7 +510,33 @@ static scf::ForOp buildFusedLoopNestAtLevel(OpBuilder &builder,
       mapValueOrSelf(firstLoop.getLowerBound(), mappings.front()),
       mapValueOrSelf(firstLoop.getUpperBound(), mappings.front()),
       mapValueOrSelf(firstLoop.getStep(), mappings.front()), fusedInitArgs);
-  fusedLoop->setAttrs(firstLoop->getAttrs());
+  NamedAttrList fusedAttrs;
+  for (NamedAttribute attr : firstLoop->getAttrs())
+    if (!isFusionProvenanceAttr(attr.getName().strref()))
+      fusedAttrs.append(attr);
+  fusedLoop->setAttrs(fusedAttrs.getDictionary(builder.getContext()));
+
+  SmallVector<Attribute, 8> candidateMembers;
+  auto appendCandidate = [&](StringAttr candidate) {
+    if (!candidate)
+      return;
+    candidateMembers.push_back(candidate);
+  };
+  for (const StageInfo &stage : stages) {
+    Operation *loop = stage.levels[levelIndex].loop;
+    if (auto members =
+            loop->getAttrOfType<ArrayAttr>("pto.vmi.fusion.members"))
+      for (Attribute member : members)
+        appendCandidate(dyn_cast<StringAttr>(member));
+    appendCandidate(
+        loop->getAttrOfType<StringAttr>("pto.tilelib.candidate"));
+  }
+  if (!candidateMembers.empty()) {
+    fusedLoop->setAttr("pto.vmi.fusion.kind",
+                       builder.getStringAttr("loop_pipeline"));
+    fusedLoop->setAttr("pto.vmi.fusion.members",
+                       builder.getArrayAttr(candidateMembers));
+  }
 
   unsigned iterArgOffset = 0;
   for (auto [stageIndex, stage] : llvm::enumerate(stages)) {

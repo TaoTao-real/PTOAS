@@ -2,8 +2,7 @@
 !bf16_gamma = !pto.tile_buf<vec, 1x64xbf16>
 !f32_rows = !pto.tile_buf<vec, 64x64xf32>
 !f32_gamma = !pto.tile_buf<vec, 1x64xf32>
-!f32_row_state_col = !pto.tile_buf<vec, 512x1xf32, valid=64x1, blayout=col_major>
-!f32_row_state_row = !pto.tile_buf<vec, 64x8xf32, valid=64x1>
+!f32_row_state = !pto.tile_buf<vec, 64x8xf32, valid=64x1>
 
 module attributes {pto.target_arch = "a5"} {
   func.func @rmsnorm_row_vf_n64(
@@ -48,22 +47,20 @@ module attributes {pto.target_arch = "a5"} {
     %x_f32 = pto.alloc_tile addr = %x_f32_addr : !f32_rows
     %square = pto.alloc_tile addr = %square_addr : !f32_rows
     %reduce_scratch = pto.alloc_tile addr = %reduce_scratch_addr : !f32_rows
-    %sum = pto.alloc_tile addr = %row_state_addr : !f32_row_state_col
-    %mean = pto.alloc_tile addr = %row_state_addr : !f32_row_state_row
-    %mean_eps = pto.alloc_tile addr = %row_state_addr : !f32_row_state_row
-    %rms = pto.alloc_tile addr = %row_state_addr : !f32_row_state_row
+    %sum = pto.alloc_tile addr = %row_state_addr : !f32_row_state
+    %mean = pto.alloc_tile addr = %row_state_addr : !f32_row_state
+    %mean_eps = pto.alloc_tile addr = %row_state_addr : !f32_row_state
+    %rms = pto.alloc_tile addr = %row_state_addr : !f32_row_state
     %normalized = pto.alloc_tile addr = %normalized_addr : !f32_rows
     %scaled = pto.alloc_tile addr = %scaled_addr : !f32_rows
 
     pto.tcvt ins(%x_bf16 : !bf16_rows) outs(%x_f32 : !f32_rows)
     pto.tmul ins(%x_f32, %x_f32 : !f32_rows, !f32_rows) outs(%square : !f32_rows)
-    pto.trowsum ins(%square, %reduce_scratch : !f32_rows, !f32_rows) outs(%sum : !f32_row_state_col)
-    %sum_row = pto.treshape %sum : !f32_row_state_col -> !f32_row_state_row
-    pto.tmuls ins(%sum_row, %inv_width : !f32_row_state_row, f32) outs(%mean : !f32_row_state_row)
-    pto.tadds ins(%mean, %epsilon : !f32_row_state_row, f32) outs(%mean_eps : !f32_row_state_row)
-    pto.tsqrt ins(%mean_eps : !f32_row_state_row) outs(%rms : !f32_row_state_row)
-    %rms_col = pto.treshape %rms : !f32_row_state_row -> !f32_row_state_col
-    pto.trowexpanddiv ins(%x_f32, %rms_col : !f32_rows, !f32_row_state_col) outs(%normalized : !f32_rows)
+    pto.trowsum ins(%square, %reduce_scratch : !f32_rows, !f32_rows) outs(%sum : !f32_row_state)
+    pto.tmuls ins(%sum, %inv_width : !f32_row_state, f32) outs(%mean : !f32_row_state)
+    pto.tadds ins(%mean, %epsilon : !f32_row_state, f32) outs(%mean_eps : !f32_row_state)
+    pto.tsqrt ins(%mean_eps : !f32_row_state) outs(%rms : !f32_row_state)
+    pto.trowexpanddiv ins(%x_f32, %rms : !f32_rows, !f32_row_state) outs(%normalized : !f32_rows)
     pto.tcolexpandmul ins(%normalized, %gamma_f32 : !f32_rows, !f32_gamma) outs(%scaled : !f32_rows)
     pto.tcvt ins(%scaled {rmode = #pto<round_mode RINT>} : !f32_rows) outs(%y_bf16 : !bf16_rows)
 

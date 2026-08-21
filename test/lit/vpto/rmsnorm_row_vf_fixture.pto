@@ -5,6 +5,7 @@
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --tile-lib-backend=ptodsl --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=ordinary --vmi-fusion-mode=off --emit-vpto %S/../../samples/RMSNormRowVFA5/rmsnorm_row_vf.pto -o /dev/null
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --tile-lib-backend=ptodsl --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=off --emit-vpto %S/../../samples/RMSNormRowVFA5/rmsnorm_row_vf.pto -o /dev/null --mlir-print-ir-after=pto-select-tilelib-candidate 2>&1 | FileCheck %s --check-prefix=BASELINE
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --tile-lib-backend=ptodsl --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=region --emit-vpto %S/../../samples/RMSNormRowVFA5/rmsnorm_row_vf.pto -o /dev/null --mlir-print-ir-after=pto-fusion-region-gen 2>&1 | FileCheck %s --check-prefix=REGION
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --tile-lib-backend=ptodsl --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=loop --emit-vpto %S/../../samples/RMSNormRowVFA5/rmsnorm_row_vf.pto -o /dev/null --mlir-print-ir-after=pto-low-level-loop-fusion 2>&1 | FileCheck %s --check-prefix=LOOP
 // RUN: %python_executable %S/../../samples/RMSNormRowVFA5/rmsnorm_row_vf_golden.py | FileCheck %s --check-prefix=GOLDEN
 
 // FLOW-LABEL: func.func @rmsnorm_row_vf_n64
@@ -13,12 +14,10 @@
 // FLOW: pto.tcvt ins(%{{.*}} : !pto.tile_buf<vec, 64x64xbf16>) outs(%{{.*}} : !pto.tile_buf<vec, 64x64xf32>)
 // FLOW-NEXT: pto.tmul
 // FLOW-NEXT: pto.trowsum
-// FLOW: pto.treshape
-// FLOW: pto.tmuls
+// FLOW-NEXT: pto.tmuls
 // FLOW-NEXT: pto.tadds
 // FLOW-NEXT: pto.tsqrt
-// FLOW: pto.treshape
-// FLOW: pto.trowexpanddiv
+// FLOW-NEXT: pto.trowexpanddiv
 // FLOW-NEXT: pto.tcolexpandmul
 // FLOW-NEXT: pto.tcvt ins(%{{.*}} {rmode = #pto<round_mode RINT>{{.*}}} : !pto.tile_buf<vec, 64x64xf32>) outs(%{{.*}} : !pto.tile_buf<vec, 64x64xbf16>)
 // FLOW-COUNT-1: pto.tstore
@@ -46,11 +45,9 @@
 // REGION-SAME: pto.tilelib.impl = "vmi"
 // REGION: pto.trowsum
 // REGION-SAME: pto.tilelib.impl = "vmi"
-// REGION: pto.treshape
 // REGION: pto.tmuls
 // REGION: pto.tadds
 // REGION: pto.tsqrt
-// REGION: pto.treshape
 // REGION: pto.trowexpanddiv
 // REGION-SAME: pto.tilelib.impl = "vmi"
 // REGION: pto.tcolexpandmul
@@ -60,6 +57,34 @@
 // REGION-NOT: pto.tilelib.impl = "ptodsl"
 // REGION: pto.yield
 // REGION: } {pto.fusion.group_id = 1 : i64}
+
+// The gamma conversion remains a separate one-row preheader region. The main
+// N=64 region has exactly one row loop even though its stages carry different
+// candidate provenance. The loop-invariant gamma vload is hoisted before that
+// loop without deleting it, so C/B load-store traffic remains attributable.
+// LOOP-LABEL: func.func @rmsnorm_row_vf_n64
+// LOOP: pto.fusion_region {
+// LOOP: scf.for
+// LOOP: pto.vmi.vcvt
+// LOOP: } {pto.tilelib.candidate = "vmi_tcvt"
+// LOOP: } {pto.fusion.group_id = 0 : i64}
+// LOOP: pto.fusion_region {
+// LOOP: pto.vmi.vload
+// LOOP: scf.for
+// LOOP: pto.vmi.vcvt
+// LOOP: pto.vmi.vmul
+// LOOP: pto.vmi.vcadd
+// LOOP: pto.vmi.vmuls
+// LOOP: pto.vmi.vadds
+// LOOP: pto.vmi.vsqrt
+// LOOP: pto.vmi.vdiv
+// LOOP: pto.vmi.vmul
+// LOOP: pto.vmi.vcvt
+// LOOP: } {pto.vmi.fusion.kind = "loop_pipeline"
+// LOOP-SAME: pto.vmi.fusion.members = ["vmi_tcvt", "vmi_tmul", "vmi_trowsum", "vmi_tmuls", "vmi_tadds", "vmi_tsqrt", "vmi_trowexpanddiv", "vmi_tcolexpandmul", "vmi_tcvt"]
+// LOOP-NOT: scf.for
+// LOOP: pto.yield
+// LOOP: } {pto.fusion.group_id = 1 : i64}
 // BASELINE: pto.tmul
 // BASELINE-SAME: pto.tilelib.impl = "vmi"
 // BASELINE: pto.trowsum

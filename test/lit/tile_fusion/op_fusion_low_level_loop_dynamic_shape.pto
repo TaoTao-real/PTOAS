@@ -6,10 +6,9 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// Guards PTOLowLevelLoopFusion on dynamically shaped fusion stages. Adjacent
-// stages use separately materialized but structurally equivalent dynamic
-// valid_row/valid_col expressions, so the low-level pass must prove the loop
-// headers equivalent instead of relying on every tile sharing the same SSA value.
+// Guards PTOLowLevelLoopFusion on dynamically shaped stages. Dynamic valid
+// shapes conservatively select PTODSL fallbacks, so selected-VMI-only region
+// planning must keep these loops outside every fusion region.
 //
 // RUN: ptoas --pto-backend=vpto --pto-arch=a5 --pto-level=level3 --enable-op-fusion --enable-shape-inference --emit-vpto %s --mlir-print-ir-after=pto-low-level-loop-fusion -o /dev/null 2>&1 | FileCheck %s
 
@@ -138,82 +137,24 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
   }
 }
 
+// Dynamic/tail shapes select PTODSL fallbacks, which are local boundaries
+// under the selected-VMI-only contract. The low-level pass must leave their
+// loops unchanged and must not manufacture a fusion region around them.
 // CHECK: // -----// IR Dump After PTOLowLevelLoopFusion (pto-low-level-loop-fusion) //----- //
 // CHECK-LABEL: func.func @fusion_low_level_loop_dynamic_shape(
-// CHECK-SAME: %[[VROW:arg[0-9]+]]: index
-// CHECK-SAME: %[[VCOL:arg[0-9]+]]: index
-// CHECK: %[[ROW_BOUND:.*]] = arith.minsi %[[VROW]],
-// CHECK-NEXT: %[[COL_BOUND:.*]] = arith.minsi %[[VCOL]],
-// CHECK: %[[REGION:.*]] = pto.fusion_region {
-// CHECK: scf.for {{.*}} to %[[ROW_BOUND]] step
-// CHECK: %{{.*}}:3 = scf.for {{.*}} to %[[COL_BOUND]] step {{.*}} iter_args
-// CHECK-SAME: -> (index, index, index) {
-// CHECK: %[[ADD0:.*]] = pto.vadd
-// CHECK: %{{.*}} = arith.subi
-// CHECK: %[[STORE0:.*]] = memref.subview
-// CHECK: pto.vsts %[[ADD0]], %[[STORE0]]
-// CHECK: %[[ADD1:.*]] = pto.vadd
-// CHECK: %{{.*}} = arith.subi
-// CHECK: %[[STORE1:.*]] = memref.subview
-// CHECK: pto.vsts %[[ADD1]], %[[STORE1]]
-// CHECK: %[[ADD2:.*]] = pto.vadd
-// CHECK: %{{.*}} = arith.subi
-// CHECK: %[[STORE2:.*]] = memref.subview
-// CHECK: pto.vsts %[[ADD2]], %[[STORE2]]
-// CHECK: }
-// CHECK: pto.yield(%{{.*}}) : (!pto.tile_buf<vec, 32x32xf32, valid=?x?>) -> ()
-// CHECK: pto.mte_ub_gm
+// CHECK: pto.tilelib.impl = "ptodsl"
+// CHECK: scf.for
+// CHECK-NOT: pto.fusion_region
+// CHECK: return
 
 // CHECK-LABEL: func.func @fusion_low_level_loop_computed_dynamic_shape(
-// CHECK-SAME: %[[VROW2:arg[0-9]+]]: index
-// CHECK-SAME: %[[VCOL2:arg[0-9]+]]: index
-// CHECK: %[[ROW_CMP:.*]] = arith.cmpi ule, %[[VROW2]],
-// CHECK-NEXT: %[[COL_CMP:.*]] = arith.cmpi ule, %[[VCOL2]],
-// CHECK-NEXT: %[[TILE_ROW:.*]] = arith.select %[[ROW_CMP]], %[[VROW2]],
-// CHECK-NEXT: %[[TILE_COL:.*]] = arith.select %[[COL_CMP]], %[[VCOL2]],
-// CHECK: %[[REGION2:.*]] = pto.fusion_region {
-// CHECK: scf.for {{.*}} to %[[TILE_ROW]] step
-// CHECK: %{{.*}}:2 = scf.for {{.*}} to %[[TILE_COL]] step {{.*}} iter_args
-// CHECK-SAME: -> (index, index) {
-// CHECK: %[[CADD0:.*]] = pto.vadd
-// CHECK: %{{.*}} = arith.subi
-// CHECK: %[[CSTORE0:.*]] = memref.subview
-// CHECK: pto.vsts %[[CADD0]], %[[CSTORE0]]
-// CHECK: %[[CADD1:.*]] = pto.vadd
-// CHECK: %{{.*}} = arith.subi
-// CHECK: %[[CSTORE1:.*]] = memref.subview
-// CHECK: pto.vsts %[[CADD1]], %[[CSTORE1]]
-// CHECK: }
-// CHECK: pto.yield(%{{.*}}) : (!pto.tile_buf<vec, 32x32xf32, valid=?x?>) -> ()
-// CHECK: pto.mte_ub_gm
+// CHECK: pto.tilelib.impl = "ptodsl"
+// CHECK: scf.for
+// CHECK-NOT: pto.fusion_region
+// CHECK: return
 
 // CHECK-LABEL: func.func @fusion_low_level_loop_dynamic_tadd_tmul_trowsum(
-// CHECK-SAME: %[[RROW:arg[0-9]+]]: index
-// CHECK-SAME: %[[RCOL:arg[0-9]+]]: index
-// CHECK: %[[RROW_BOUND:.*]] = arith.minsi %[[RROW]],
-// CHECK-NEXT: %[[RCOL_BOUND:.*]] = arith.minsi %[[RCOL]],
-// CHECK: pto.fusion_region {
-// Elementwise and reduce stages remain grouped in one region. This test keeps
-// the fusion-ready structural property without requiring this PR to merge the
-// fallback TileLib bodies into one physical low-level loop.
-// CHECK: scf.for {{.*}} to %[[RROW_BOUND]] step
-// CHECK: %[[RADD:.*]] = pto.vadd
-// CHECK: %{{.*}} = arith.subi
-// CHECK: %[[RADD_STORE:.*]] = memref.subview
-// CHECK: pto.vsts %[[RADD]], %[[RADD_STORE]]
-// CHECK: %[[RMUL:.*]] = pto.vmul
-// CHECK: %{{.*}} = arith.subi
-// CHECK: %[[RMUL_STORE:.*]] = memref.subview
-// CHECK: pto.vsts %[[RMUL]], %[[RMUL_STORE]]
-// Reduce computation inside the same col loop.
-// CHECK: scf.for {{.*}} to %[[RCOL_BOUND]] step {{.*}} iter_args
-// CHECK-SAME: -> (!pto.vreg<64xf32>, index) {
-// CHECK: pto.vcadd
-// CHECK: %{{.*}} = pto.vadd
-// CHECK: scf.yield {{.*}} : !pto.vreg<64xf32>, index
-// CHECK: }
-// Epilogue: row-reduction result store after inner loop.
-// CHECK: pto.vsts
-// CHECK: pto.yield() : () -> ()
-// CHECK: }
+// CHECK: pto.tilelib.impl = "ptodsl"
+// CHECK: scf.for
+// CHECK-NOT: pto.fusion_region
 // CHECK: return

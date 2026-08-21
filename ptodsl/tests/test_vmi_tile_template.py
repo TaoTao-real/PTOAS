@@ -398,16 +398,17 @@ def check_provider_helper() -> None:
         "valid_shape": [32, 1],
         "config": {**raw_tile_spec["config"], "b_layout": "col_major"},
     }
-    rowmax = instantiate_candidate(
-        target="a5",
-        op_name="pto.trowmax",
-        operand_specs=[raw_tile_spec, raw_tile_spec, reduced_tile_spec],
-        provider_module="ptodsl.vmi_tilelib",
-        context_attrs={},
-    ).mlir_text()
-    expect(rowmax.count("scf.for") == 1, "rowmax should emit only one runtime loop")
-    expect(rowmax.count("pto.vmi.vcmax") == 1, "rowmax should reduce one VL per row")
-    expect("!pto.vmi.vreg<1xf32>" in rowmax, "rowmax should produce 1-lane reductions")
+    expect_raises(
+        lambda: instantiate_candidate(
+            target="a5",
+            op_name="pto.trowmax",
+            operand_specs=[raw_tile_spec, raw_tile_spec, reduced_tile_spec],
+            provider_module="ptodsl.vmi_tilelib",
+            context_attrs={},
+        ),
+        LookupError,
+        "custom constraints are not satisfied",
+    )
 
     compact_row_state = {
         **raw_tile_spec,
@@ -449,21 +450,16 @@ def check_provider_helper() -> None:
         "valid_shape": [32, 1],
         "config": {**raw_tile_spec["config"], "b_layout": "col_major"},
     }
-    padded_rowsum = instantiate_candidate(
-        target="a5",
-        op_name="pto.trowsum",
-        operand_specs=[raw_tile_spec, raw_tile_spec, padded_col_row_state],
-        provider_module="ptodsl.vmi_tilelib",
-        context_attrs={},
-    ).mlir_text()
-    expect(
-        padded_rowsum.count("scf.for") == 1
-        and "pto.vmi.vcadd" in padded_rowsum,
-        "padded col-major rowsum should preserve one logical row loop",
-    )
-    expect(
-        padded_rowsum.count("pto.vmi.vstore") == 1,
-        "padded col-major rowsum must retain its standalone compact store",
+    expect_raises(
+        lambda: instantiate_candidate(
+            target="a5",
+            op_name="pto.trowsum",
+            operand_specs=[raw_tile_spec, raw_tile_spec, padded_col_row_state],
+            provider_module="ptodsl.vmi_tilelib",
+            context_attrs={},
+        ),
+        LookupError,
+        "custom constraints are not satisfied",
     )
     for invalid_padded in (
         {
@@ -928,6 +924,23 @@ def check_trowexpanddiv_candidate() -> None:
     expect(text.count("pto.vmi.vstore") == 1, "standalone candidate must retain store")
     expect(text.count("scf.for") == 1, "candidate must preserve one logical row loop")
 
+    aligned_row_denominator = {
+        **tile_spec,
+        "shape": [1, 8],
+        "valid_shape": [1, 1],
+    }
+    aligned_text = instantiate_candidate(
+        target="a5",
+        op_name="pto.trowexpanddiv",
+        operand_specs=[tile_spec, aligned_row_denominator, tile_spec],
+        provider_module="ptodsl.vmi_tilelib",
+        context_attrs={"precisionType": "default"},
+    ).mlir_text()
+    expect(
+        'dist_mode = "brc"' in aligned_text and "arith.muli" in aligned_text,
+        "row-major denominator must use its aligned physical row stride",
+    )
+
     for rows in (8, 64):
         row_tile_spec = {
             **tile_spec,
@@ -953,12 +966,31 @@ def check_trowexpanddiv_candidate() -> None:
             and row_text.count("pto.vmi.vstore") == 1,
             f"N={rows} row loop must contain one load/div/store instruction body",
         )
+        row_major_denominator = {
+            **row_tile_spec,
+            "shape": [rows, 8],
+            "valid_shape": [rows, 1],
+        }
+        row_major_text = instantiate_candidate(
+            target="a5",
+            op_name="pto.trowexpanddiv",
+            operand_specs=[row_tile_spec, row_major_denominator, row_tile_spec],
+            provider_module="ptodsl.vmi_tilelib",
+            context_attrs={"precisionType": "default"},
+        ).mlir_text()
+        expect(
+            "arith.muli" in row_major_text
+            and 'dist_mode = "brc"' in row_major_text,
+            f"N={rows} aligned row-major denominator must select VMI",
+        )
 
     invalid_specs = [
         {**tile_spec, "shape": [1, 128], "valid_shape": [1, 128]},
         {**tile_spec, "valid_shape": [1, 63]},
         {
             **denominator_spec,
+            "shape": [1, 1],
+            "valid_shape": [1, 1],
             "config": {**denominator_spec["config"], "b_layout": "row_major"},
         },
         {**denominator_spec, "valid_shape": [2, 1]},

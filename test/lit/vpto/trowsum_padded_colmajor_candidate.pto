@@ -7,21 +7,20 @@
 
 // SELECT-LABEL: func.func @padded_colmajor_rowsum
 // SELECT: pto.trowsum
-// SELECT-SAME: pto.tilelib.candidate = "vmi_trowsum"
-// SELECT-SAME: pto.tilelib.impl = "vmi"
+// SELECT-SAME: pto.tilelib.candidate = "template_trowsum"
+// SELECT-SAME: pto.tilelib.impl = "ptodsl"
 // SELECT: pto.trowsum
 // SELECT-SAME: pto.tilelib.candidate = "template_trowsum"
 // SELECT-SAME: pto.tilelib.impl = "ptodsl"
 
 // INLINE-LABEL: func.func @padded_colmajor_rowsum
 // INLINE: scf.for
-// INLINE: pto.vmi.vcadd
-// INLINE: pto.vmi.vstore
+// INLINE-NOT: pto.vmi.vcadd
+// INLINE-NOT: pto.vmi.vstore
 
 // FINAL-LABEL: func.func @padded_colmajor_rowsum
 // FINAL: scf.for
 // FINAL: pto.vcadd
-// FINAL: pto.vsts
 // FINAL-NOT: pto.vmi.vcadd
 // FINAL-NOT: pto.vmi.vstore
 

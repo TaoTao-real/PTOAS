@@ -647,12 +647,11 @@ def _single_vl_scalar_fill_vmi_legal(**context) -> bool:
 def _single_vl_row_expand_div_vmi_legal(**context) -> bool:
     """Accept the static one-VL-per-row scalar-broadcast form used by RMSNorm.
 
-    The denominator may have padding in its physical row dimension, but its
-    valid domain is exactly one f32 scalar.  Requiring a known col-major
-    ``[P, 1]`` tile with valid shape ``[N, 1]`` makes each row's BRC load
-    provable at
-    candidate-selection time; row-major scalar packs and unknown layouts stay
-    on the ordinary PTODSL path.
+    The denominator's valid domain is exactly one f32 scalar per row.  It may
+    use the legacy col-major ``[P, 1]`` representation or a row-major
+    ``[N, P]`` representation with a 32-byte physical row.  The row-major form
+    is the producer-safe RMSNorm layout: both the reduction VST and the later
+    BRC load use aligned per-row UB addresses.
     """
     src_shape = context.get("src_shape")
     row_values_shape = context.get("row_values_shape")
@@ -663,7 +662,7 @@ def _single_vl_row_expand_div_vmi_legal(**context) -> bool:
     src_config = context.get("src_config")
     row_values_config = context.get("row_values_config")
     dst_config = context.get("dst_config")
-    return (
+    common_legal = (
         tuple(context.get("operand_kinds", ())) == ("tile", "tile", "tile")
         and tuple(context.get("operand_dtypes", ()))
         == ("f32", "f32", "f32")
@@ -677,8 +676,6 @@ def _single_vl_row_expand_div_vmi_legal(**context) -> bool:
         and dst_valid == dst_shape
         and isinstance(row_values_shape, tuple)
         and len(row_values_shape) == 2
-        and row_values_shape[0] >= src_shape[0]
-        and row_values_shape[1] == 1
         and row_values_valid == (src_shape[0], 1)
         and all(
             context.get(key) in {"ub", "vec"}
@@ -692,12 +689,25 @@ def _single_vl_row_expand_div_vmi_legal(**context) -> bool:
         and src_config.b_layout == "row_major"
         and src_config.s_layout == "none_box"
         and row_values_config is not None
-        and row_values_config.b_layout == "col_major"
         and row_values_config.s_layout == "none_box"
         and dst_config is not None
         and dst_config.b_layout == "row_major"
         and dst_config.s_layout == "none_box"
     )
+    if not common_legal:
+        return False
+    if row_values_config.b_layout == "col_major":
+        return (
+            row_values_shape[0] >= src_shape[0]
+            and row_values_shape[1] == 1
+        )
+    if row_values_config.b_layout == "row_major":
+        return (
+            row_values_shape[0] == src_shape[0]
+            and row_values_shape[1] >= 1
+            and row_values_shape[1] * 4 % 32 == 0
+        )
+    return False
 
 
 def emit_elementwise_vmi(
@@ -1429,14 +1439,14 @@ def _validate_row_reduce_tiles(
         raise ValueError("row-reduce destination must be row- or col-major")
     dst_rows, dst_cols = dst._spec.shape
     if dst._spec.b_layout == "row_major":
-        if dst_rows != rows or dst_cols < 1:
+        if dst_rows != rows or dst_cols < 1 or dst_cols * 4 % 32 != 0:
             raise ValueError(
-                "row-major row-reduce destination physical rows must match source"
+                "row-major row-reduce destination must match source rows and "
+                "use a 32-byte physical row"
             )
-    elif dst_rows < rows or dst_cols != 1:
+    elif rows != 1 or dst_rows < 1 or dst_cols != 1:
         raise ValueError(
-            "col-major row-reduce destination must have at least the valid "
-            "source rows and exactly one physical column"
+            "multi-row row-reduce destination must be row-major and aligned"
         )
     if cols != f32.lanes:
         raise ValueError("row-reduce source rows must contain exactly one f32 VL block")
@@ -1471,9 +1481,13 @@ def _row_reduce_vmi_legal(**context) -> bool:
     if configs[0].b_layout != "row_major" or configs[1].b_layout != "row_major":
         return False
     if configs[2].b_layout == "row_major":
-        return dst_shape[0] == rows and dst_shape[1] >= 1
+        return (
+            dst_shape[0] == rows
+            and dst_shape[1] >= 1
+            and dst_shape[1] * 4 % 32 == 0
+        )
     if configs[2].b_layout == "col_major":
-        return dst_shape[0] >= rows and dst_shape[1] == 1
+        return rows == 1 and dst_shape[0] >= 1 and dst_shape[1] == 1
     return False
 
 
@@ -1579,16 +1593,26 @@ def emit_row_expand_div_vmi(
     row_values_shape = row_values._spec.shape
     row_values_valid = row_values._spec.valid_shape or row_values_shape
     rows = src._spec.shape[0]
-    if (
-        len(row_values_shape) != 2
-        or row_values_shape[0] < rows
-        or row_values_shape[1] != 1
-        or row_values_valid != (rows, 1)
-        or row_values._spec.b_layout != "col_major"
-    ):
+    common_row_values = (
+        len(row_values_shape) == 2 and row_values_valid == (rows, 1)
+    )
+    col_major_row_values = (
+        common_row_values
+        and row_values._spec.b_layout == "col_major"
+        and row_values_shape[0] >= rows
+        and row_values_shape[1] == 1
+    )
+    row_major_row_values = (
+        common_row_values
+        and row_values._spec.b_layout == "row_major"
+        and row_values_shape[0] == rows
+        and row_values_shape[1] >= 1
+        and row_values_shape[1] * 4 % 32 == 0
+    )
+    if not (col_major_row_values or row_major_row_values):
         raise ValueError(
-            "trowexpanddiv VMI denominator must be a col-major none-box "
-            "[P, 1] tile with valid_shape [N, 1]"
+            "trowexpanddiv VMI denominator must be col-major [P, 1] or "
+            "32-byte-row-aligned row-major [N, P], with valid_shape [N, 1]"
         )
 
     block_map = CanonicalBlockMap.from_tile(src, logical_lanes=f32.lanes)
@@ -1597,8 +1621,11 @@ def emit_row_expand_div_vmi(
     with for_(0, rows, step=1) as row:
         coordinate = block_map.coordinate(row)
         numerator = _vload(src, coordinate)
+        denominator_offset = row
+        if row_values._spec.b_layout == "row_major":
+            denominator_offset = index_mul(row, row_values_shape[1])
         denominator = _vload_linear(
-            row_values, row, lanes=f32.lanes, dist_mode="brc"
+            row_values, denominator_offset, lanes=f32.lanes, dist_mode="brc"
         )
         _vstore(
             _vdiv(numerator, denominator, full_mask),
