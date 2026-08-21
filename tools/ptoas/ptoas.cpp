@@ -2963,6 +2963,13 @@ static void appendVMISemanticPipeline(OpPassManager &pm) {
     }
     pm.addNestedPass<func::FuncOp>(
         pto::createPTOFlattenFusionRegionPass());
+    if (isVMIFullFusionEnabled(defaultFusionEnabled)) {
+      // A selected VMI side input intentionally remains a separate preheader
+      // region.  Once regions are flattened, make its unique read-only UB
+      // round trip visible to the same exact-address forwarding proof.
+      pm.addNestedPass<func::FuncOp>(
+          pto::createPTOFusionLoadStoreElisionPass());
+    }
     // Fusion-local forwarding can make tile handles dead only after the
     // region is flattened. Re-run handle cleanup so object emission never
     // carries dead tile metadata into LLVM conversion.

@@ -612,6 +612,43 @@ static int findTrackedStoreIndex(ArrayRef<TrackedStore> stores, Value base,
   return -1;
 }
 
+static bool isFullVectorBroadcastLoad(pto::VldsOp load, Value userMask) {
+  std::optional<StringRef> dist = load.getDist();
+  if (!dist || *dist != "BRC_B32")
+    return false;
+  std::optional<int64_t> activeLanes = getStaticPrefixActiveLanes(userMask);
+  return activeLanes &&
+         *activeLanes == getPhysicalMaskLanes(userMask.getType());
+}
+
+/// Match the exact compact-scalar materialization used by a one-VL row
+/// pipeline.  The producer writes lane zero and BRC_B32 reloads that scalar
+/// into every lane.  This is deliberately separate from ordinary forwarding:
+/// replacing the load with the stored vector directly would leave lanes 1..63
+/// undefined and would be a miscompile.
+static int findTrackedScalarBroadcastStoreIndex(ArrayRef<TrackedStore> stores,
+                                                pto::VldsOp load,
+                                                Value userMask) {
+  if (!isFullVectorBroadcastLoad(load, userMask) ||
+      !load.getResult().hasOneUse())
+    return -1;
+
+  Value canonicalBaseAddress = getCanonicalBufferAddress(load.getSource());
+  for (int index = static_cast<int>(stores.size()) - 1; index >= 0; --index) {
+    const TrackedStore &store = stores[index];
+    if (!areEquivalentValues(getCanonicalBufferAddress(store.base),
+                             canonicalBaseAddress) ||
+        store.indices.size() != 1 ||
+        !areEquivalentValues(store.indices.front(), load.getOffset()) ||
+        store.value.getType() != load.getResult().getType())
+      continue;
+    std::optional<int64_t> storedLanes = getStaticPrefixActiveLanes(store.mask);
+    if (storedLanes && *storedLanes == 1)
+      return index;
+  }
+  return -1;
+}
+
 static void pruneTrackedStoresForLoadBase(SmallVectorImpl<TrackedStore> &stores,
                                           Value base) {
   if (!base) {
@@ -717,8 +754,28 @@ static bool elideLoadStoreRoundTripsInLeafBody(
       SmallVector<Value, 4> loadIndices{offset};
       int matchIndex =
           findTrackedStoreIndex(trackedStores, base, loadIndices, inferredMask);
+      bool scalarBroadcast = false;
+      if (matchIndex < 0) {
+        matchIndex = findTrackedScalarBroadcastStoreIndex(trackedStores, load,
+                                                          inferredMask);
+        scalarBroadcast = matchIndex >= 0;
+      }
       if (matchIndex >= 0) {
-        load.getResult().replaceAllUsesWith(trackedStores[matchIndex].value);
+        Value forwarded = trackedStores[matchIndex].value;
+        if (scalarBroadcast) {
+          OpBuilder builder(load);
+          // The physical user mask is commonly materialized after BRC_B32.
+          // Insert the replacement immediately before the sole user so both
+          // the producer vector and its mask dominate the vdup.
+          builder.setInsertionPoint(*load.getResult().user_begin());
+          forwarded = builder
+                          .create<pto::VdupOp>(load.getLoc(),
+                                               load.getResult().getType(),
+                                               forwarded, inferredMask,
+                                               builder.getStringAttr("LOWEST"))
+                          .getResult();
+        }
+        load.getResult().replaceAllUsesWith(forwarded);
         scheduleErase(load);
         changed = true;
       } else {
@@ -768,6 +825,114 @@ static bool elideLoadStoreRoundTripsInLeafBody(
   return changed;
 }
 
+static bool isLoopPipeline(scf::ForOp loop) {
+  auto kind = loop->getAttrOfType<StringAttr>("pto.vmi.fusion.kind");
+  return kind && kind.getValue() == "loop_pipeline";
+}
+
+static bool isUniqueVPTOMemoryPair(func::FuncOp func, pto::VstsOp store,
+                                   pto::VldsOp load) {
+  Value address = getCanonicalBufferAddress(store.getDestination());
+  APInt staticAddress;
+  if (!address || !matchPattern(address, m_ConstantInt(&staticAddress)))
+    return false;
+
+  bool unique = true;
+  func.walk([&](Operation *op) {
+    if (!unique || op == store.getOperation() || op == load.getOperation())
+      return;
+    StringRef opName = op->getName().getStringRef();
+    if (opName == "pto.mem_bar" || opName.contains("sync") ||
+        opName == "func.call") {
+      unique = false;
+      return;
+    }
+    if (auto otherStore = dyn_cast<pto::VstsOp>(op)) {
+      if (areEquivalentValues(
+              getCanonicalBufferAddress(otherStore.getDestination()), address))
+        unique = false;
+      return;
+    }
+    if (auto otherLoad = dyn_cast<pto::VldsOp>(op)) {
+      if (areEquivalentValues(getCanonicalBufferAddress(otherLoad.getSource()),
+                              address))
+        unique = false;
+      return;
+    }
+    // alloc_tile reserves a statically named handle but does not read or
+    // write UB.  Different PTODSL Python launchers may preserve this dead
+    // handle until the post-flatten cleanup, so treating it as an observable
+    // access would make the proof environment-dependent.
+    if (isa<pto::AllocTileOp>(op) || isAddressScaffoldOp(op) ||
+        isMemoryEffectFree(op))
+      return;
+    for (Value operand : op->getOperands())
+      if (areEquivalentValues(getCanonicalBufferAddress(operand), address)) {
+        unique = false;
+        return;
+      }
+  });
+  return unique;
+}
+
+/// Forward a proven read-only preheader value after fusion regions have been
+/// flattened.  The exact contract is one full-vector store, one full-vector
+/// reload in the same block, and reload uses confined to a row-pipeline loop.
+/// Requiring a unique static UB address prevents aliasing, escape, sync, or an
+/// observable temporary from being partially rewritten.
+static bool elideLoopInvariantPreheaderRoundTrip(func::FuncOp func) {
+  SmallVector<scf::ForOp, 2> pipelines;
+  func.walk([&](scf::ForOp loop) {
+    if (isLoopPipeline(loop))
+      pipelines.push_back(loop);
+  });
+  if (pipelines.size() != 1)
+    return false;
+
+  scf::ForOp loop = pipelines.front();
+  Block *block = loop->getBlock();
+  if (!block)
+    return false;
+
+  for (Operation &candidate : *block) {
+    auto load = dyn_cast<pto::VldsOp>(candidate);
+    if (!load || !load->isBeforeInBlock(loop))
+      continue;
+    if (load.getDist() && *load.getDist() != "NORM")
+      continue;
+    if (load.getResult().use_empty() ||
+        !llvm::all_of(load.getResult().getUsers(), [&](Operation *user) {
+          return loop->isProperAncestor(user);
+        }))
+      continue;
+
+    Value inferredMask = inferVPTOLoadUserMask(load);
+    if (!inferredMask || !isAllTruePatternMask(inferredMask))
+      continue;
+
+    for (Operation *previous = load->getPrevNode(); previous;
+         previous = previous->getPrevNode()) {
+      auto store = dyn_cast<pto::VstsOp>(previous);
+      if (!store)
+        continue;
+      if (!areEquivalentValues(
+              getCanonicalBufferAddress(store.getDestination()),
+              getCanonicalBufferAddress(load.getSource())) ||
+          !areEquivalentValues(store.getOffset(), load.getOffset()) ||
+          !areEquivalentMaskValues(store.getMask(), inferredMask) ||
+          store.getValue().getType() != load.getResult().getType() ||
+          !isUniqueVPTOMemoryPair(func, store, load))
+        continue;
+
+      load.getResult().replaceAllUsesWith(store.getValue());
+      load.erase();
+      store.erase();
+      return true;
+    }
+  }
+  return false;
+}
+
 struct PTOFusionLoadStoreElisionPass
     : public pto::impl::PTOFusionLoadStoreElisionBase<
           PTOFusionLoadStoreElisionPass> {
@@ -780,6 +945,7 @@ struct PTOFusionLoadStoreElisionPass
       return;
 
     bool changed = false;
+    changed |= elideLoopInvariantPreheaderRoundTrip(func);
     func.walk([&](pto::FusionRegionOp fusionRegion) {
       changed |= normalizeFusionRegionYieldFrontier(fusionRegion);
     });

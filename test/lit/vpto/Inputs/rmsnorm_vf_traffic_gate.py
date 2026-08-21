@@ -27,6 +27,7 @@ EXPECTED_TOTALS = {
     "scalar-vreg": (3, 2, 2),
     "dead-store": (3, 1, 1),
     "vf-boundary": (3, 1, 0),
+    "row-vf-boundary": (2, 1, 0),
 }
 
 MANUAL_VF_BOUNDARY = (3, 1, 0)
@@ -113,9 +114,12 @@ def main():
 
     print("stage={}".format(args.stage))
     print("static_total_vld_vst_membar={}/{}/{}".format(*totals))
+    manual_boundary = (
+        (2, 1, 0) if args.stage == "row-vf-boundary" else MANUAL_VF_BOUNDARY
+    )
     print(
         "manual_vf_boundary_vld_vst_membar={}/{}/{}".format(
-            *MANUAL_VF_BOUNDARY
+            *manual_boundary
         )
     )
     print("essential_boundary_vld_vst={}/{}".format(essential_loads, essential_stores))
