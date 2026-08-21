@@ -24,15 +24,40 @@
 // SELECT-SAME: pto.tilelib.impl = "ptodsl"
 
 // INLINE-LABEL: func.func @trowexpanddiv_one_vl_selection
+// INLINE: scf.for
 // INLINE: %[[NUM:.+]] = pto.vmi.vload
 // INLINE: %[[DEN:.+]] = pto.vmi.vload {{.*}}dist_mode = "brc"
 // INLINE: %[[DIV:.+]] = pto.vmi.vdiv %[[NUM]], %[[DEN]], %{{.*}}
 // INLINE: pto.vmi.vstore %[[DIV]]
 
 // FINAL-LABEL: func.func @trowexpanddiv_one_vl_selection
+// FINAL: scf.for
 // FINAL: %[[DEN:.+]] = pto.vlds {{.*}} {dist = "BRC_B32"}
 // FINAL: pto.vdiv {{.*}}, %[[DEN]],
-// FINAL-NOT: pto.vmi.
+// FINAL-NOT: pto.vmi.vdiv
+
+// SELECT-LABEL: func.func @trowexpanddiv_multirow_selection
+// SELECT: pto.trowexpanddiv
+// SELECT-SAME: pto.tilelib.candidate = "vmi_trowexpanddiv"
+// SELECT: pto.trowexpanddiv
+// SELECT-SAME: pto.tilelib.candidate = "vmi_trowexpanddiv"
+
+// INLINE-LABEL: func.func @trowexpanddiv_multirow_selection
+// INLINE: scf.for
+// INLINE: pto.vmi.vload
+// INLINE: pto.vmi.vload {{.*}}dist_mode = "brc"
+// INLINE: pto.vmi.vdiv
+// INLINE: pto.vmi.vstore
+// INLINE: scf.for
+
+// FINAL-LABEL: func.func @trowexpanddiv_multirow_selection
+// FINAL: scf.for
+// FINAL: pto.vlds
+// FINAL: pto.vlds {{.*}} {dist = "BRC_B32"}
+// FINAL: pto.vdiv
+// FINAL: pto.vsts
+// FINAL: scf.for
+// FINAL-NOT: pto.vmi.vdiv
 
 module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
   func.func @trowexpanddiv_one_vl_selection() {
@@ -49,6 +74,18 @@ module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
     pto.trowexpanddiv ins(%src, %row_major_den : !pto.tile_buf<vec, 1x64xf32>, !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=8, v_row=1, v_col=1, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%dst : !pto.tile_buf<vec, 1x64xf32>)
     pto.trowexpanddiv ins(%tail, %den : !pto.tile_buf<vec, 1x64xf32, valid=1x32>, !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=1, v_row=1, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>) outs(%tail : !pto.tile_buf<vec, 1x64xf32, valid=1x32>)
     pto.trowexpanddiv ins(%wide, %den : !pto.tile_buf<vec, 1x128xf32>, !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=1, v_row=1, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>) outs(%wide : !pto.tile_buf<vec, 1x128xf32>)
+    return
+  }
+
+  func.func @trowexpanddiv_multirow_selection() {
+    %src8 = pto.alloc_tile : !pto.tile_buf<vec, 8x64xf32>
+    %den8 = pto.alloc_tile : !pto.tile_buf<vec, 8x1xf32, blayout=col_major>
+    %dst8 = pto.alloc_tile : !pto.tile_buf<vec, 8x64xf32>
+    %src64 = pto.alloc_tile : !pto.tile_buf<vec, 64x64xf32>
+    %den64 = pto.alloc_tile : !pto.tile_buf<vec, 512x1xf32, valid=64x1, blayout=col_major>
+    %dst64 = pto.alloc_tile : !pto.tile_buf<vec, 64x64xf32>
+    pto.trowexpanddiv ins(%src8, %den8 : !pto.tile_buf<vec, 8x64xf32>, !pto.tile_buf<vec, 8x1xf32, blayout=col_major>) outs(%dst8 : !pto.tile_buf<vec, 8x64xf32>)
+    pto.trowexpanddiv ins(%src64, %den64 : !pto.tile_buf<vec, 64x64xf32>, !pto.tile_buf<vec, 512x1xf32, valid=64x1, blayout=col_major>) outs(%dst64 : !pto.tile_buf<vec, 64x64xf32>)
     return
   }
 }

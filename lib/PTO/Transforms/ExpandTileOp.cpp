@@ -1127,10 +1127,10 @@ static bool hasStaticCompactElementwiseShape(Operation *tileOp) {
          valid[1] > 0 && valid[1] <= shape[1] && valid[1] <= 64;
 }
 
-// RMSNorm divides one full f32 VL by one compact scalar produced by the
+// RMSNorm divides each full f32 VL row by one compact scalar produced by the
 // preceding reduction/scalar chain.  The denominator may have physical row
-// padding, but the col-major [N, 1], valid [1, 1] form proves that the VMI BRC
-// load observes exactly one scalar.  Keep this separate from the generic
+// padding, but col-major [P, 1], valid [N, 1] proves that each VMI BRC load
+// observes exactly one row scalar.  Keep this separate from the generic
 // full-shape gate so no other padded broadcast form is admitted accidentally.
 static bool hasStaticCompactRowExpandDivShape(Operation *tileOp) {
   if (getTileOpName(tileOp) != "trowexpanddiv" ||
@@ -1151,15 +1151,17 @@ static bool hasStaticCompactRowExpandDivShape(Operation *tileOp) {
   const auto &src = infos[0];
   const auto &rowValues = infos[1];
   const auto &dst = infos[2];
-  return src.tileShape == SmallVector<int64_t, 2>{1, 64} &&
-         src.tileValidShape == src.tileShape &&
-         src.blayout == static_cast<int32_t>(pto::BLayout::RowMajor) &&
-         dst.tileShape == src.tileShape &&
-         dst.tileValidShape == dst.tileShape &&
-         dst.blayout == static_cast<int32_t>(pto::BLayout::RowMajor) &&
+  if (src.tileShape[0] < 1 || src.tileShape[1] != 64 ||
+      src.tileValidShape != src.tileShape ||
+      src.blayout != static_cast<int32_t>(pto::BLayout::RowMajor) ||
+      dst.tileShape != src.tileShape || dst.tileValidShape != dst.tileShape ||
+      dst.blayout != static_cast<int32_t>(pto::BLayout::RowMajor))
+    return false;
+  const int64_t rows = src.tileShape[0];
+  return !ShapedType::isDynamic(rows) &&
          !ShapedType::isDynamic(rowValues.tileShape[0]) &&
-         rowValues.tileShape[0] >= 1 && rowValues.tileShape[1] == 1 &&
-         rowValues.tileValidShape == SmallVector<int64_t, 2>{1, 1} &&
+         rowValues.tileShape[0] >= rows && rowValues.tileShape[1] == 1 &&
+         rowValues.tileValidShape == SmallVector<int64_t, 2>{rows, 1} &&
          rowValues.blayout == static_cast<int32_t>(pto::BLayout::ColMajor);
 }
 

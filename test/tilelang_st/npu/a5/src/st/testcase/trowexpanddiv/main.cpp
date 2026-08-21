@@ -22,6 +22,7 @@ using namespace PtoTestCommon;
 
 // f32 kernels
 void LaunchTROWEXPANDDIV_f32_1x64_vmi_ieee(float *src0, float *src1, float *dst, void *stream);
+void LaunchTROWEXPANDDIV_f32_64x64_vmi_rows(float *src0, float *src1, float *dst, void *stream);
 void LaunchTROWEXPANDDIV_f32_40x64(float *src0, float *src1, float *dst, void *stream);
 void LaunchTROWEXPANDDIV_f32_16x256(float *src0, float *src1, float *dst, void *stream);
 void LaunchTROWEXPANDDIV_f32_16x128_noeq(float *src0, float *src1, float *dst, void *stream);
@@ -45,6 +46,7 @@ struct TestCase {
 static const TestCase kCases[] = {
     // f32 cases
     {"f32_1x64_vmi_ieee", (LaunchFn)LaunchTROWEXPANDDIV_f32_1x64_vmi_ieee, 1, 64, 8, 1, 1, 64, 1, 64, sizeof(float)},
+    {"f32_64x64_vmi_rows", (LaunchFn)LaunchTROWEXPANDDIV_f32_64x64_vmi_rows, 64, 64, 512, 1, 64, 64, 64, 64, sizeof(float)},
     {"f32_40x64", (LaunchFn)LaunchTROWEXPANDDIV_f32_40x64, 40, 64, 40, 8, 40, 64, 40, 64, sizeof(float)},
     {"f32_16x256", (LaunchFn)LaunchTROWEXPANDDIV_f32_16x256, 16, 256, 16, 8, 16, 256, 16, 256, sizeof(float)},
     {"f32_16x128_noeq", (LaunchFn)LaunchTROWEXPANDDIV_f32_16x128_noeq, 16, 128, 16, 8, 16, 128, 16, 128, sizeof(float)},

@@ -36,6 +36,18 @@ CASES = [
         "input_pattern": "ieee_boundaries",
         "check_special_signs": True,
     },
+    {
+        "name": "f32_64x64_vmi_rows",
+        "dtype": np.float32,
+        "src0_shape": (64, 64),
+        "src0_valid_shape": (64, 64),
+        "src1_shape": (512, 1),
+        "src1_valid_shape": (64, 1),
+        "dst_shape": (64, 64),
+        "dst_valid_shape": (64, 64),
+        "eps": 1e-6,
+        "high_precision": False,
+    },
     # launchTRowExpandDiv<float, 40, 64, 40, 1, true, false>
     {
         "name": "f32_40x64",

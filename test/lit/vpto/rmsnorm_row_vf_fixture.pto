@@ -24,8 +24,8 @@
 // FLOW-NOT: scf.for
 // FLOW-NOT: pto.trowsum
 
-// Padded trowsum is selected after the exact compact-row candidate extension;
-// Nx64 trowexpanddiv remains the only compute fallback at this stage.
+// All arithmetic TileOps use selected VMI candidates.  Only DMA TileOps remain
+// PTODSL hard boundaries at this stage.
 // BASELINE-LABEL: func.func @rmsnorm_row_vf_n64
 // BASELINE: pto.tcvt
 // BASELINE-SAME: pto.tilelib.candidate = "vmi_tcvt"
@@ -41,8 +41,8 @@
 // BASELINE: pto.tsqrt
 // BASELINE-SAME: pto.tilelib.impl = "vmi"
 // BASELINE: pto.trowexpanddiv
-// BASELINE-SAME: pto.tilelib.candidate = "template_trowexpanddiv"
-// BASELINE-SAME: pto.tilelib.impl = "ptodsl"
+// BASELINE-SAME: pto.tilelib.candidate = "vmi_trowexpanddiv"
+// BASELINE-SAME: pto.tilelib.impl = "vmi"
 // BASELINE: pto.tcolexpandmul
 // BASELINE-SAME: pto.tilelib.impl = "vmi"
 // BASELINE: pto.tcvt

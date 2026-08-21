@@ -55,5 +55,6 @@ col-major `512x1 valid 64x1`, reinterpreted as row-major
 row-major storage (32 bytes per physical row) and preserves one VL1 iteration
 per logical row.  The fixture-introduction baseline exposed `trowsum` and
 `trowexpanddiv` as the two PTODSL compute fallbacks.  The compiler now accepts
-the exact padded `trowsum` form; the separate Nx64 divide candidate is tracked
-and tested independently without weakening dynamic/tail legality.
+both exact forms: padded one-VL row reduction and `N x 64 / N x 1` default-
+precision divide.  Dynamic, tail, high-precision, non-f32, and unproven layout
+forms remain on the ordinary path.

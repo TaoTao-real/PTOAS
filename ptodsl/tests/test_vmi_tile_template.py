@@ -894,7 +894,7 @@ def check_texpands_candidate() -> None:
 
 
 def check_trowexpanddiv_candidate() -> None:
-    """RMSNorm's compact scalar broadcast is the only initial VMI form."""
+    """RMSNorm's compact one-scalar-per-row broadcast is the VMI form."""
     tile_spec = {
         "kind": "tile",
         "dtype": "f32",
@@ -926,7 +926,33 @@ def check_trowexpanddiv_candidate() -> None:
     expect('dist_mode = "brc"' in text, "denominator must use one-scalar BRC load")
     expect(text.count("pto.vmi.vdiv") == 1, "candidate must issue one default divide")
     expect(text.count("pto.vmi.vstore") == 1, "standalone candidate must retain store")
-    expect("scf.for" not in text, "one-VL candidate needs no physical chunk loop")
+    expect(text.count("scf.for") == 1, "candidate must preserve one logical row loop")
+
+    for rows in (8, 64):
+        row_tile_spec = {
+            **tile_spec,
+            "shape": [rows, 64],
+            "valid_shape": [rows, 64],
+        }
+        row_denominator_spec = {
+            **denominator_spec,
+            "shape": [max(rows, 8), 1],
+            "valid_shape": [rows, 1],
+        }
+        row_text = instantiate_candidate(
+            target="a5",
+            op_name="pto.trowexpanddiv",
+            operand_specs=[row_tile_spec, row_denominator_spec, row_tile_spec],
+            provider_module="ptodsl.vmi_tilelib",
+            context_attrs={"precisionType": "default"},
+        ).mlir_text()
+        expect(row_text.count("scf.for") == 1, f"N={rows} must use one row loop")
+        expect(
+            row_text.count("pto.vmi.vload") == 2
+            and row_text.count("pto.vmi.vdiv") == 1
+            and row_text.count("pto.vmi.vstore") == 1,
+            f"N={rows} row loop must contain one load/div/store instruction body",
+        )
 
     invalid_specs = [
         {**tile_spec, "shape": [1, 128], "valid_shape": [1, 128]},
@@ -936,6 +962,11 @@ def check_trowexpanddiv_candidate() -> None:
             "config": {**denominator_spec["config"], "b_layout": "row_major"},
         },
         {**denominator_spec, "valid_shape": [2, 1]},
+        {
+            **denominator_spec,
+            "shape": [8, 1],
+            "valid_shape": [8, 1],
+        },
     ]
     for invalid_spec in invalid_specs[:2]:
         expect_raises(
@@ -949,7 +980,7 @@ def check_trowexpanddiv_candidate() -> None:
             LookupError,
             "no legal PTODSL VMI candidate",
         )
-    for invalid_denominator in invalid_specs[2:]:
+    for invalid_denominator in invalid_specs[2:4]:
         expect_raises(
             lambda spec=invalid_denominator: instantiate_candidate(
                 target="a5",
@@ -961,6 +992,18 @@ def check_trowexpanddiv_candidate() -> None:
             LookupError,
             "no legal PTODSL VMI candidate",
         )
+    multirow_tile = {**tile_spec, "shape": [9, 64], "valid_shape": [9, 64]}
+    expect_raises(
+        lambda: instantiate_candidate(
+            target="a5",
+            op_name="pto.trowexpanddiv",
+            operand_specs=[multirow_tile, invalid_specs[4], multirow_tile],
+            provider_module="ptodsl.vmi_tilelib",
+            context_attrs={"precisionType": "default"},
+        ),
+        LookupError,
+        "no legal PTODSL VMI candidate",
+    )
     expect_raises(
         lambda: instantiate_candidate(
             target="a5",
