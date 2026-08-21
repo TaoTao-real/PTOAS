@@ -4,6 +4,7 @@
 // RUN: pto-test-opt %S/../../samples/RMSNormRowVFA5/rmsnorm_row_vf.pto | FileCheck %s --check-prefix=FLOW
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --tile-lib-backend=ptodsl --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=ordinary --vmi-fusion-mode=off --emit-vpto %S/../../samples/RMSNormRowVFA5/rmsnorm_row_vf.pto -o /dev/null
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --tile-lib-backend=ptodsl --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=off --emit-vpto %S/../../samples/RMSNormRowVFA5/rmsnorm_row_vf.pto -o /dev/null --mlir-print-ir-after=pto-select-tilelib-candidate 2>&1 | FileCheck %s --check-prefix=BASELINE
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --tile-lib-backend=ptodsl --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=region --emit-vpto %S/../../samples/RMSNormRowVFA5/rmsnorm_row_vf.pto -o /dev/null --mlir-print-ir-after=pto-fusion-region-gen 2>&1 | FileCheck %s --check-prefix=REGION
 // RUN: %python_executable %S/../../samples/RMSNormRowVFA5/rmsnorm_row_vf_golden.py | FileCheck %s --check-prefix=GOLDEN
 
 // FLOW-LABEL: func.func @rmsnorm_row_vf_n64
@@ -29,6 +30,36 @@
 // BASELINE-LABEL: func.func @rmsnorm_row_vf_n64
 // BASELINE: pto.tcvt
 // BASELINE-SAME: pto.tilelib.candidate = "vmi_tcvt"
+
+// Gamma conversion is a selected-VMI preheader region, not a member of the
+// N=64 principal row pipeline.
+// REGION-LABEL: func.func @rmsnorm_row_vf_n64
+// REGION: pto.fusion_region {
+// REGION: pto.tcvt
+// REGION-SAME: !pto.tile_buf<vec, 1x64xbf16>
+// REGION: pto.yield
+// REGION: } {pto.fusion.group_id = 0 : i64}
+// REGION: pto.fusion_region {
+// REGION: pto.tcvt
+// REGION-SAME: !pto.tile_buf<vec, 64x64xbf16>
+// REGION: pto.tmul
+// REGION-SAME: pto.tilelib.impl = "vmi"
+// REGION: pto.trowsum
+// REGION-SAME: pto.tilelib.impl = "vmi"
+// REGION: pto.treshape
+// REGION: pto.tmuls
+// REGION: pto.tadds
+// REGION: pto.tsqrt
+// REGION: pto.treshape
+// REGION: pto.trowexpanddiv
+// REGION-SAME: pto.tilelib.impl = "vmi"
+// REGION: pto.tcolexpandmul
+// REGION-SAME: pto.tilelib.impl = "vmi"
+// REGION: pto.tcvt
+// REGION-SAME: pto.tilelib.impl = "vmi"
+// REGION-NOT: pto.tilelib.impl = "ptodsl"
+// REGION: pto.yield
+// REGION: } {pto.fusion.group_id = 1 : i64}
 // BASELINE: pto.tmul
 // BASELINE-SAME: pto.tilelib.impl = "vmi"
 // BASELINE: pto.trowsum

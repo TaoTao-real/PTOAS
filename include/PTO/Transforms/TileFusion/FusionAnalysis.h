@@ -1,10 +1,12 @@
 // Copyright (c) 2026 Huawei Technologies Co., Ltd.
-// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
-// CANN Open Software License Agreement Version 2.0 (the "License").
-// Please refer to the License for details. You may not use this file except in compliance with the License.
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
-// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
-// See LICENSE in the root of the software repository for the full text of the License.
+// This program is free software, you can redistribute it and/or modify it under
+// the terms and conditions of CANN Open Software License Agreement Version 2.0
+// (the "License"). Please refer to the License for details. You may not use
+// this file except in compliance with the License. THIS SOFTWARE IS PROVIDED ON
+// AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS
+// FOR A PARTICULAR PURPOSE. See LICENSE in the root of the software repository
+// for the full text of the License.
 
 #ifndef PTO_TRANSFORMS_TILEFUSION_FUSIONANALYSIS_H
 #define PTO_TRANSFORMS_TILEFUSION_FUSIONANALYSIS_H
@@ -44,6 +46,32 @@ struct IterationDomainClass {
   unsigned id = 0;
   IterationDomainInfo info;
   SmallVector<unsigned, 4> members;
+};
+
+enum class PrincipalRowDomainProof {
+  Proven,
+  Unproven,
+};
+
+enum class PrincipalRowDomainUnprovenReason {
+  None,
+  NotSelectedVMI,
+  UnsupportedFamily,
+  MissingRank2Tile,
+  DynamicRows,
+  NotOneFullVLPerRow,
+  InconsistentRows,
+};
+
+/// Internal proof that a selected VMI TileOp preserves the logical
+/// `row = 0..N step 1` domain.  Unlike IterationDomainInfo this intentionally
+/// ignores whether the per-row value is represented as Nx64, Nx1, or a padded
+/// Nx8 valid-Nx1 scalar state.
+struct PrincipalRowDomainInfo {
+  int64_t rows = ShapedType::kDynamic;
+  PrincipalRowDomainProof proof = PrincipalRowDomainProof::Unproven;
+  PrincipalRowDomainUnprovenReason unprovenReason =
+      PrincipalRowDomainUnprovenReason::NotSelectedVMI;
 };
 
 struct FusionDFGEdge {
@@ -91,6 +119,7 @@ struct FusionComputeNode {
   Operation *op = nullptr;
   FusionOpSemantics semantics;
   bool selectedVMI = false;
+  PrincipalRowDomainInfo principalRowDomain;
   unsigned iterationDomainClass = 0;
   SmallVector<unsigned, 4> incomingEdges;
   SmallVector<unsigned, 4> outgoingEdges;
@@ -120,8 +149,7 @@ struct PreFusionAnalysisResult {
 /// This function is intentionally option-free so it can be cached by the MLIR
 /// analysis manager (PreFusionAnalysis) and shared by every pass that only
 /// consumes the dataflow structures (e.g. FusionRegionGen).
-FailureOr<PreFusionAnalysisResult>
-buildPreFusionAnalysisDFG(func::FuncOp func);
+FailureOr<PreFusionAnalysisResult> buildPreFusionAnalysisDFG(func::FuncOp func);
 
 /// Infer iteration-domain classes for every block of \p result.  When
 /// \p enableShapeInference is false, uses the conservative static/direct-bound
@@ -129,12 +157,12 @@ buildPreFusionAnalysisDFG(func::FuncOp func);
 /// domain step that runs on top of the shared dataflow graph built by
 /// buildPreFusionAnalysisDFG.
 LogicalResult inferIterationDomainClasses(PreFusionAnalysisResult &result,
-                                         bool enableShapeInference);
+                                          bool enableShapeInference);
 
 /// Convenience: build the shared DFG and infer iteration-domain classes in one
-/// step.  Prefer calling buildPreFusionAnalysisDFG + inferIterationDomainClasses
-/// separately when the DFG can be shared across passes via the analysis
-/// manager.
+/// step.  Prefer calling buildPreFusionAnalysisDFG +
+/// inferIterationDomainClasses separately when the DFG can be shared across
+/// passes via the analysis manager.
 FailureOr<PreFusionAnalysisResult>
 buildPreFusionAnalysis(func::FuncOp func, bool enableShapeInference = false);
 

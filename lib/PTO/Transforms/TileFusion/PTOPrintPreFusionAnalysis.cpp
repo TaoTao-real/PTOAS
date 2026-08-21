@@ -1,10 +1,12 @@
 // Copyright (c) 2026 Huawei Technologies Co., Ltd.
-// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
-// CANN Open Software License Agreement Version 2.0 (the "License").
-// Please refer to the License for details. You may not use this file except in compliance with the License.
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
-// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
-// See LICENSE in the root of the software repository for the full text of the License.
+// This program is free software, you can redistribute it and/or modify it under
+// the terms and conditions of CANN Open Software License Agreement Version 2.0
+// (the "License"). Please refer to the License for details. You may not use
+// this file except in compliance with the License. THIS SOFTWARE IS PROVIDED ON
+// AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS
+// FOR A PARTICULAR PURPOSE. See LICENSE in the root of the software repository
+// for the full text of the License.
 
 #include "PTO/Transforms/Passes.h"
 #include "PTO/Transforms/TileFusion/FusionAnalysis.h"
@@ -60,8 +62,8 @@ static StringRef stringifyIterationProof(pto::IterationDomainProof proof) {
   return "unproven";
 }
 
-static StringRef stringifyUnprovenReason(
-    pto::IterationDomainUnprovenReason reason) {
+static StringRef
+stringifyUnprovenReason(pto::IterationDomainUnprovenReason reason) {
   switch (reason) {
   case pto::IterationDomainUnprovenReason::None:
     return "none";
@@ -73,6 +75,32 @@ static StringRef stringifyUnprovenReason(
     return "inconsistent_shape";
   }
   return "missing_tile_domain";
+}
+
+static StringRef
+stringifyPrincipalRowProof(pto::PrincipalRowDomainProof proof) {
+  return proof == pto::PrincipalRowDomainProof::Proven ? "proven" : "unproven";
+}
+
+static StringRef
+stringifyPrincipalRowReason(pto::PrincipalRowDomainUnprovenReason reason) {
+  switch (reason) {
+  case pto::PrincipalRowDomainUnprovenReason::None:
+    return "none";
+  case pto::PrincipalRowDomainUnprovenReason::NotSelectedVMI:
+    return "not_selected_vmi";
+  case pto::PrincipalRowDomainUnprovenReason::UnsupportedFamily:
+    return "unsupported_family";
+  case pto::PrincipalRowDomainUnprovenReason::MissingRank2Tile:
+    return "missing_rank2_tile";
+  case pto::PrincipalRowDomainUnprovenReason::DynamicRows:
+    return "dynamic_rows";
+  case pto::PrincipalRowDomainUnprovenReason::NotOneFullVLPerRow:
+    return "not_one_full_vl_per_row";
+  case pto::PrincipalRowDomainUnprovenReason::InconsistentRows:
+    return "inconsistent_rows";
+  }
+  return "unsupported_family";
 }
 
 static StringRef stringifyWriteInstanceEscapeClass(
@@ -139,11 +167,9 @@ buildValueLabels(Block &block, const pto::FusionBlockAnalysis &analysis) {
 
   for (const pto::FusionComputeNode &node : analysis.computeNodes) {
     for (auto [idx, output] : llvm::enumerate(node.semantics.tileOutputs))
-      labels.try_emplace(
-          output,
-          (llvm::Twine("node") + llvm::Twine(node.id) + ".out" +
-           llvm::Twine(idx))
-              .str());
+      labels.try_emplace(output, (llvm::Twine("node") + llvm::Twine(node.id) +
+                                  ".out" + llvm::Twine(idx))
+                                     .str());
   }
 
   for (Operation &op : block) {
@@ -180,8 +206,8 @@ static void printLocalBoundaries(llvm::raw_ostream &os, Block &block,
         semanticsOr->kind != pto::FusionOpKind::LocalBoundary)
       continue;
 
-    os << "    local_boundary[" << boundaryId++ << "] op="
-       << semanticsOr->opName << " inputs=[";
+    os << "    local_boundary[" << boundaryId++
+       << "] op=" << semanticsOr->opName << " inputs=[";
     for (auto [idx, input] : llvm::enumerate(semanticsOr->tileInputs)) {
       if (idx)
         os << ", ";
@@ -198,8 +224,7 @@ static void printLocalBoundaries(llvm::raw_ostream &os, Block &block,
 }
 
 struct PrintPreFusionAnalysisPass
-    : public pto::impl::PrintPreFusionAnalysisBase<
-          PrintPreFusionAnalysisPass> {
+    : public pto::impl::PrintPreFusionAnalysisBase<PrintPreFusionAnalysisPass> {
   using pto::impl::PrintPreFusionAnalysisBase<
       PrintPreFusionAnalysisPass>::PrintPreFusionAnalysisBase;
 
@@ -229,8 +254,7 @@ struct PrintPreFusionAnalysisPass
         os << "    domain_class[" << klass.id << "] domain=";
         appendDomain(os, klass.info);
         os << " proof=" << stringifyIterationProof(klass.info.proof)
-           << " reason="
-           << stringifyUnprovenReason(klass.info.unprovenReason)
+           << " reason=" << stringifyUnprovenReason(klass.info.unprovenReason)
            << " members=";
         appendIndexList(os, klass.members);
         os << "\n";
@@ -238,9 +262,19 @@ struct PrintPreFusionAnalysisPass
 
       for (const pto::FusionComputeNode &node : blockAnalysis.computeNodes) {
         os << "    compute[" << node.id << "] op=" << node.semantics.opName
-           << " family="
-           << stringifyComputeFamily(node.semantics.computeFamily)
-           << " domain_class=" << node.iterationDomainClass << " inputs=[";
+           << " family=" << stringifyComputeFamily(node.semantics.computeFamily)
+           << " domain_class=" << node.iterationDomainClass
+           << " principal_rows=";
+        if (node.principalRowDomain.rows == ShapedType::kDynamic)
+          os << "?";
+        else
+          os << node.principalRowDomain.rows;
+        os << " principal_row_proof="
+           << stringifyPrincipalRowProof(node.principalRowDomain.proof)
+           << " principal_row_reason="
+           << stringifyPrincipalRowReason(
+                  node.principalRowDomain.unprovenReason)
+           << " inputs=[";
         for (auto [idx, input] : llvm::enumerate(node.semantics.tileInputs)) {
           if (idx)
             os << ", ";

@@ -1,0 +1,58 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// CANN Open Software License Agreement Version 2.0
+
+// RUN: pto-test-opt %s --pass-pipeline='builtin.module(func.func(pto-pre-fusion-analysis,pto-fusion-plan{fusion-strategy=vmi-ub-disjoint},pto-op-scheduling,pto-fusion-region-gen))' | FileCheck %s
+// RUN: pto-test-opt %s --mlir-disable-threading --pass-pipeline='builtin.module(func.func(pto-print-pre-fusion-analysis))' | FileCheck %s --check-prefix=DOMAIN
+
+// DOMAIN: compute[0] op=tmul
+// DOMAIN-SAME: principal_rows=8
+// DOMAIN-SAME: principal_row_proof=proven
+// DOMAIN-SAME: principal_row_reason=none
+// DOMAIN: compute[1] op=tmul
+// DOMAIN-SAME: principal_rows=64
+// DOMAIN-SAME: principal_row_proof=proven
+// DOMAIN-SAME: principal_row_reason=none
+
+// CHECK-LABEL: func.func @different_principal_rows_split
+// CHECK: pto.fusion_region {
+// CHECK: pto.tmul
+// CHECK-SAME: pto.tilelib.candidate = "vmi_tmul"
+// CHECK: } {pto.fusion.group_id = 0 : i64}
+// CHECK: pto.fusion_region {
+// CHECK: pto.tmul
+// CHECK-SAME: pto.tilelib.candidate = "vmi_tmul"
+// CHECK: } {pto.fusion.group_id = 1 : i64}
+
+// CHECK-LABEL: func.func @independent_same_rows_split
+// CHECK: pto.fusion_region {
+// CHECK: pto.tmul
+// CHECK: } {pto.fusion.group_id = 0 : i64}
+// CHECK: pto.fusion_region {
+// CHECK: pto.tmul
+// CHECK: } {pto.fusion.group_id = 1 : i64}
+
+module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+  func.func @different_principal_rows_split() {
+    %lhs8 = pto.alloc_tile : !pto.tile_buf<vec, 8x64xf32>
+    %rhs8 = pto.alloc_tile : !pto.tile_buf<vec, 8x64xf32>
+    %out8 = pto.alloc_tile : !pto.tile_buf<vec, 8x64xf32>
+    %lhs64 = pto.alloc_tile : !pto.tile_buf<vec, 64x64xf32>
+    %rhs64 = pto.alloc_tile : !pto.tile_buf<vec, 64x64xf32>
+    %out64 = pto.alloc_tile : !pto.tile_buf<vec, 64x64xf32>
+    pto.tmul ins(%lhs8, %rhs8 : !pto.tile_buf<vec, 8x64xf32>, !pto.tile_buf<vec, 8x64xf32>) outs(%out8 : !pto.tile_buf<vec, 8x64xf32>) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tmul"}
+    pto.tmul ins(%lhs64, %rhs64 : !pto.tile_buf<vec, 64x64xf32>, !pto.tile_buf<vec, 64x64xf32>) outs(%out64 : !pto.tile_buf<vec, 64x64xf32>) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tmul"}
+    return
+  }
+
+  func.func @independent_same_rows_split() {
+    %lhs0 = pto.alloc_tile : !pto.tile_buf<vec, 64x64xf32>
+    %rhs0 = pto.alloc_tile : !pto.tile_buf<vec, 64x64xf32>
+    %out0 = pto.alloc_tile : !pto.tile_buf<vec, 64x64xf32>
+    %lhs1 = pto.alloc_tile : !pto.tile_buf<vec, 64x64xf32>
+    %rhs1 = pto.alloc_tile : !pto.tile_buf<vec, 64x64xf32>
+    %out1 = pto.alloc_tile : !pto.tile_buf<vec, 64x64xf32>
+    pto.tmul ins(%lhs0, %rhs0 : !pto.tile_buf<vec, 64x64xf32>, !pto.tile_buf<vec, 64x64xf32>) outs(%out0 : !pto.tile_buf<vec, 64x64xf32>) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tmul"}
+    pto.tmul ins(%lhs1, %rhs1 : !pto.tile_buf<vec, 64x64xf32>, !pto.tile_buf<vec, 64x64xf32>) outs(%out1 : !pto.tile_buf<vec, 64x64xf32>) {pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tmul"}
+    return
+  }
+}

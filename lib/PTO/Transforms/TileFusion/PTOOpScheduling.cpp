@@ -1,10 +1,12 @@
 // Copyright (c) 2026 Huawei Technologies Co., Ltd.
-// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
-// CANN Open Software License Agreement Version 2.0 (the "License").
-// Please refer to the License for details. You may not use this file except in compliance with the License.
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
-// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
-// See LICENSE in the root of the software repository for the full text of the License.
+// This program is free software, you can redistribute it and/or modify it under
+// the terms and conditions of CANN Open Software License Agreement Version 2.0
+// (the "License"). Please refer to the License for details. You may not use
+// this file except in compliance with the License. THIS SOFTWARE IS PROVIDED ON
+// AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS
+// FOR A PARTICULAR PURPOSE. See LICENSE in the root of the software repository
+// for the full text of the License.
 
 #include "PTO/Transforms/TileFusion/FusionAnalysis.h"
 #include "PTO/Transforms/TileFusion/FusionOpSemantics.h"
@@ -35,8 +37,7 @@ using namespace mlir;
 
 namespace {
 
-static constexpr llvm::StringLiteral kFusionGroupIdAttr =
-    "pto.fusion.group_id";
+static constexpr llvm::StringLiteral kFusionGroupIdAttr = "pto.fusion.group_id";
 static constexpr llvm::StringLiteral kFusionOrderAttr = "pto.fusion.order";
 
 enum class SchedulingBarrierKind {
@@ -82,7 +83,7 @@ static SchedulingBarrierKind classifySchedulingBarrier(Operation *op) {
     return SchedulingBarrierKind::HardBoundary;
   if (isa<CallOpInterface>(op))
     return SchedulingBarrierKind::HardBoundary;
-  if (isa<pto::AllocTileOp>(op))
+  if (isa<pto::AllocTileOp, pto::TReshapeOp>(op))
     return SchedulingBarrierKind::Movable;
 
   FailureOr<pto::FusionOpSemantics> semanticsOr = pto::getFusionOpSemantics(op);
@@ -120,7 +121,8 @@ static bool hasTileDependency(Operation *opA, Operation *opB) {
          sharesAnyValue(a.tileOutputs, b.tileOutputs);
 }
 
-static bool crossesOperandDefinition(Operation *movingOp, Operation *candidate) {
+static bool crossesOperandDefinition(Operation *movingOp,
+                                     Operation *candidate) {
   for (Value operand : movingOp->getOperands()) {
     Operation *defOp = operand.getDefiningOp();
     if (defOp == candidate)
@@ -220,18 +222,19 @@ collectScheduledGroups(Block &block, SmallVectorImpl<ScheduledGroup> &groups) {
   });
 
   for (ScheduledGroup &group : groups) {
-    llvm::sort(group.members, [](const GroupMember &lhs, const GroupMember &rhs) {
-      if (lhs.order != rhs.order)
-        return lhs.order < rhs.order;
-      return lhs.originalIndex < rhs.originalIndex;
-    });
+    llvm::sort(group.members,
+               [](const GroupMember &lhs, const GroupMember &rhs) {
+                 if (lhs.order != rhs.order)
+                   return lhs.order < rhs.order;
+                 return lhs.originalIndex < rhs.originalIndex;
+               });
 
     std::optional<int64_t> previousOrder;
     for (const GroupMember &member : group.members) {
       if (classifySchedulingBarrier(member.op) !=
           SchedulingBarrierKind::Movable) {
         member.op->emitError("fusion scheduling metadata must only annotate "
-                             "movable compute ops");
+                             "movable compute or proven structural ops");
         return failure();
       }
       if (previousOrder && *previousOrder == member.order) {
@@ -246,8 +249,8 @@ collectScheduledGroups(Block &block, SmallVectorImpl<ScheduledGroup> &groups) {
   return success();
 }
 
-static bool canPrefixMoveLaterAcross(
-    ArrayRef<GroupMember> members, Operation *placement, Operation *barrier) {
+static bool canPrefixMoveLaterAcross(ArrayRef<GroupMember> members,
+                                     Operation *placement, Operation *barrier) {
   for (const GroupMember &prevMember : members) {
     if (!canMoveLaterAcross(prevMember.op, barrier))
       return false;
@@ -258,8 +261,7 @@ static bool canPrefixMoveLaterAcross(
 }
 
 static void movePrefixPastBarrier(ArrayRef<GroupMember> members,
-                                  Operation *placement,
-                                  Operation *barrier) {
+                                  Operation *placement, Operation *barrier) {
   Operation *anchor = barrier;
   for (const GroupMember &prevMember : members) {
     prevMember.op->moveAfter(anchor);
@@ -312,8 +314,7 @@ static LogicalResult scheduleRegion(Region &region) {
   return success();
 }
 
-struct OpSchedulingPass
-    : public pto::impl::OpSchedulingBase<OpSchedulingPass> {
+struct OpSchedulingPass : public pto::impl::OpSchedulingBase<OpSchedulingPass> {
   using pto::impl::OpSchedulingBase<OpSchedulingPass>::OpSchedulingBase;
 
   void runOnOperation() override {

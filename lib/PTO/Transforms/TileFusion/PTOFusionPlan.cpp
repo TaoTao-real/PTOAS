@@ -1,10 +1,12 @@
 // Copyright (c) 2026 Huawei Technologies Co., Ltd.
-// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
-// CANN Open Software License Agreement Version 2.0 (the "License").
-// Please refer to the License for details. You may not use this file except in compliance with the License.
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
-// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
-// See LICENSE in the root of the software repository for the full text of the License.
+// This program is free software, you can redistribute it and/or modify it under
+// the terms and conditions of CANN Open Software License Agreement Version 2.0
+// (the "License"). Please refer to the License for details. You may not use
+// this file except in compliance with the License. THIS SOFTWARE IS PROVIDED ON
+// AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS
+// FOR A PARTICULAR PURPOSE. See LICENSE in the root of the software repository
+// for the full text of the License.
 
 #include "PTO/Transforms/TileFusion/FusionAnalysis.h"
 #include "PTO/Transforms/TileFusion/FusionOpSemantics.h"
@@ -39,8 +41,7 @@ using namespace mlir;
 
 namespace {
 
-static constexpr llvm::StringLiteral kFusionGroupIdAttr =
-    "pto.fusion.group_id";
+static constexpr llvm::StringLiteral kFusionGroupIdAttr = "pto.fusion.group_id";
 static constexpr llvm::StringLiteral kFusionOrderAttr = "pto.fusion.order";
 
 struct PlannedFusionGroup {
@@ -69,6 +70,39 @@ struct PlanningDecision {
   PlanningCost cost;
 };
 
+static bool isProvenPrincipalRowReshape(Operation *op, int64_t rows) {
+  auto reshape = dyn_cast_or_null<pto::TReshapeOp>(op);
+  if (!reshape || reshape->getNumOperands() != 1 ||
+      reshape->getNumResults() != 1 || rows <= 0)
+    return false;
+
+  auto srcTy = dyn_cast<pto::TileBufType>(reshape->getOperand(0).getType());
+  auto dstTy = dyn_cast<pto::TileBufType>(reshape->getResult(0).getType());
+  if (!srcTy || !dstTy || srcTy.getElementType() != dstTy.getElementType() ||
+      !srcTy.getElementType().isF32() || srcTy.getShape().size() != 2 ||
+      dstTy.getShape().size() != 2 || srcTy.getValidShape().size() != 2 ||
+      dstTy.getValidShape().size() != 2)
+    return false;
+  if (srcTy.getValidShape()[0] != rows || srcTy.getValidShape()[1] != 1 ||
+      dstTy.getValidShape()[0] != rows || dstTy.getValidShape()[1] != 1)
+    return false;
+  if (llvm::any_of(srcTy.getShape(), ShapedType::isDynamic) ||
+      llvm::any_of(dstTy.getShape(), ShapedType::isDynamic))
+    return false;
+
+  const int64_t srcElements = srcTy.getShape()[0] * srcTy.getShape()[1];
+  const int64_t dstElements = dstTy.getShape()[0] * dstTy.getShape()[1];
+  if (srcElements != dstElements)
+    return false;
+
+  auto srcLayout = srcTy.getConfigAttr().getBLayout().getValue();
+  auto dstLayout = dstTy.getConfigAttr().getBLayout().getValue();
+  return (srcLayout == pto::BLayout::ColMajor &&
+          dstLayout == pto::BLayout::RowMajor) ||
+         (srcLayout == pto::BLayout::RowMajor &&
+          dstLayout == pto::BLayout::ColMajor);
+}
+
 static bool isCurrentlyPlannableOp(StringRef opName) {
   return llvm::StringSwitch<bool>(opName)
       .Cases("tmul", "tdiv", "tadd", "tsub", "tmax", "tmin", true)
@@ -81,9 +115,9 @@ static bool isCurrentlyPlannableOp(StringRef opName) {
       .Default(false);
 }
 
-static bool isProvenIterationDomain(
-    const pto::FusionBlockAnalysis &blockAnalysis,
-    const pto::FusionComputeNode &node) {
+static bool
+isProvenIterationDomain(const pto::FusionBlockAnalysis &blockAnalysis,
+                        const pto::FusionComputeNode &node) {
   if (node.iterationDomainClass >= blockAnalysis.iterationDomainClasses.size())
     return false;
   return blockAnalysis.iterationDomainClasses[node.iterationDomainClass]
@@ -92,10 +126,8 @@ static bool isProvenIterationDomain(
 
 static bool hasHardBoundaryBetween(const pto::FusionComputeNode &a,
                                    const pto::FusionComputeNode &b) {
-  const pto::FusionComputeNode &earlier =
-      a.blockOrder < b.blockOrder ? a : b;
-  const pto::FusionComputeNode &later =
-      a.blockOrder < b.blockOrder ? b : a;
+  const pto::FusionComputeNode &earlier = a.blockOrder < b.blockOrder ? a : b;
+  const pto::FusionComputeNode &later = a.blockOrder < b.blockOrder ? b : a;
 
   Operation *cursor = earlier.op->getNextNode();
   while (cursor && cursor != later.op) {
@@ -107,19 +139,18 @@ static bool hasHardBoundaryBetween(const pto::FusionComputeNode &a,
   return false;
 }
 
-static bool hasHardBoundaryToGroup(
-    ArrayRef<const pto::FusionComputeNode *> group,
-    const pto::FusionComputeNode &candidate) {
+static bool
+hasHardBoundaryToGroup(ArrayRef<const pto::FusionComputeNode *> group,
+                       const pto::FusionComputeNode &candidate) {
   for (const pto::FusionComputeNode *member : group)
     if (hasHardBoundaryBetween(*member, candidate))
       return true;
   return false;
 }
 
-static bool dependsOnPreviousNode(
-    const pto::FusionBlockAnalysis &blockAnalysis,
-    const pto::FusionComputeNode &previous,
-    const pto::FusionComputeNode &current) {
+static bool dependsOnPreviousNode(const pto::FusionBlockAnalysis &blockAnalysis,
+                                  const pto::FusionComputeNode &previous,
+                                  const pto::FusionComputeNode &current) {
   for (unsigned edgeId : current.incomingEdges) {
     if (edgeId >= blockAnalysis.edges.size())
       continue;
@@ -148,8 +179,7 @@ buildStableInGroupOrder(ArrayRef<const pto::FusionComputeNode *> members) {
 }
 
 static void assignStableGroupMetadata(ArrayRef<PlannedFusionGroup> groups,
-                                      MLIRContext *ctx,
-                                      int64_t &nextGroupId) {
+                                      MLIRContext *ctx, int64_t &nextGroupId) {
   SmallVector<const PlannedFusionGroup *, 8> orderedGroups;
   orderedGroups.reserve(groups.size());
   for (const PlannedFusionGroup &group : groups)
@@ -168,13 +198,32 @@ static void assignStableGroupMetadata(ArrayRef<PlannedFusionGroup> groups,
     const int64_t groupId = nextGroupId++;
     SmallVector<const pto::FusionComputeNode *, 8> stableOrder =
         buildStableInGroupOrder(group->members);
-    for (auto [order, node] : llvm::enumerate(stableOrder)) {
-      node->op->setAttr(kFusionGroupIdAttr,
-                        IntegerAttr::get(IntegerType::get(ctx, 64), groupId));
-      node->op->setAttr(
-          kFusionOrderAttr,
-          IntegerAttr::get(IntegerType::get(ctx, 64),
-                           static_cast<int64_t>(order)));
+    SmallVector<Operation *, 12> orderedOps;
+    for (auto [nodeIndex, node] : llvm::enumerate(stableOrder)) {
+      if (nodeIndex != 0) {
+        const pto::FusionComputeNode *previous = stableOrder[nodeIndex - 1];
+        if (previous->principalRowDomain.proof ==
+                pto::PrincipalRowDomainProof::Proven &&
+            node->principalRowDomain.proof ==
+                pto::PrincipalRowDomainProof::Proven &&
+            previous->principalRowDomain.rows ==
+                node->principalRowDomain.rows) {
+          for (Operation *cursor = previous->op->getNextNode();
+               cursor && cursor != node->op; cursor = cursor->getNextNode())
+            if (isProvenPrincipalRowReshape(cursor,
+                                            node->principalRowDomain.rows))
+              orderedOps.push_back(cursor);
+        }
+      }
+      orderedOps.push_back(node->op);
+    }
+
+    for (auto [order, op] : llvm::enumerate(orderedOps)) {
+      op->setAttr(kFusionGroupIdAttr,
+                  IntegerAttr::get(IntegerType::get(ctx, 64), groupId));
+      op->setAttr(kFusionOrderAttr,
+                  IntegerAttr::get(IntegerType::get(ctx, 64),
+                                   static_cast<int64_t>(order)));
     }
   }
 }
@@ -207,9 +256,10 @@ struct GroupFootprint {
   unsigned vfParameterCount = 0;
 };
 
-static bool nodesHaveDirectDataFlowConnection(
-    const pto::FusionBlockAnalysis &blockAnalysis,
-    const pto::FusionComputeNode &lhs, const pto::FusionComputeNode &rhs) {
+static bool
+nodesHaveDirectDataFlowConnection(const pto::FusionBlockAnalysis &blockAnalysis,
+                                  const pto::FusionComputeNode &lhs,
+                                  const pto::FusionComputeNode &rhs) {
   for (unsigned edgeId : lhs.outgoingEdges) {
     if (edgeId >= blockAnalysis.edges.size())
       continue;
@@ -277,9 +327,9 @@ class CostModel {
 public:
   virtual ~CostModel() = default;
 
-  virtual PlanningDecision evaluateSeed(const PlanningContext &ctx,
-                                        const pto::FusionComputeNode &candidate)
-      const = 0;
+  virtual PlanningDecision
+  evaluateSeed(const PlanningContext &ctx,
+               const pto::FusionComputeNode &candidate) const = 0;
 
   virtual PlanningDecision
   evaluateAppend(const PlanningContext &ctx,
@@ -335,8 +385,8 @@ public:
     GroupFootprint footprint = computeGroupFootprint(proposedGroup);
 
     decision.cost.dependencyBenefit =
-        4 * static_cast<int64_t>(
-                countEdgesFromGroup(ctx.blockAnalysis, currentGroup, candidate));
+        4 * static_cast<int64_t>(countEdgesFromGroup(ctx.blockAnalysis,
+                                                     currentGroup, candidate));
     decision.cost.loopMergeBenefit = 2;
     decision.cost.liveTilePenalty =
         std::max<int64_t>(0, static_cast<int64_t>(footprint.liveTileCount) - 4);
@@ -539,10 +589,11 @@ public:
 // not a fusion mandate: same group does not force the inner scf.for ops to
 // fuse.
 //
-// Unlike the Conservative* engines this one does not require direct dependency
-// or a positive cost score, but it still requires one iteration-domain class.
-// Single-node groups are kept (not dropped) so every selected VMI TileOp gets a
-// fusion_region without crossing a phase/domain boundary.
+// Unlike the Conservative* engines this one does not require a positive cost
+// score. Principal-row members do require a direct or proven reshape-bridged
+// dependency; unrelated candidates retain the legacy iteration-domain rule.
+// Single-node groups are kept (not dropped) so every selected VMI TileOp gets
+// a fusion_region without crossing a phase/domain boundary.
 class VMIUBDisjointStrategyEngine final : public StrategyEngine {
 public:
   SmallVector<PlannedFusionGroup, 8>
@@ -566,20 +617,68 @@ public:
       curMembers.clear();
     };
 
-    auto hasVMIPlanningBoundaryBetween = [](Operation *earlier,
-                                            Operation *later) {
-      for (Operation *cursor = earlier->getNextNode();
-           cursor && cursor != later; cursor = cursor->getNextNode()) {
-        if (isa<pto::AllocTileOp>(cursor))
-          continue;
-        StringRef opName = cursor->getName().getStringRef();
-        if (!opName.starts_with("pto.") && cursor->getRegions().empty() &&
-            !isa<CallOpInterface>(cursor) && isMemoryEffectFree(cursor))
-          continue;
-        return true;
-      }
-      return false;
+    auto samePlanningDomain = [&](const pto::FusionComputeNode &earlier,
+                                  const pto::FusionComputeNode &later) {
+      const bool earlierHasRows = earlier.principalRowDomain.proof ==
+                                  pto::PrincipalRowDomainProof::Proven;
+      const bool laterHasRows = later.principalRowDomain.proof ==
+                                pto::PrincipalRowDomainProof::Proven;
+      if (earlierHasRows || laterHasRows)
+        return earlierHasRows && laterHasRows &&
+               earlier.principalRowDomain.rows == later.principalRowDomain.rows;
+      return earlier.iterationDomainClass == later.iterationDomainClass;
     };
+
+    auto hasProvenRowPreservingConnection =
+        [&](const pto::FusionComputeNode &earlier,
+            const pto::FusionComputeNode &later) {
+          const bool principalRowPair =
+              earlier.principalRowDomain.proof ==
+                  pto::PrincipalRowDomainProof::Proven &&
+              later.principalRowDomain.proof ==
+                  pto::PrincipalRowDomainProof::Proven;
+          if (!principalRowPair)
+            return true;
+          if (nodesHaveDirectDataFlowConnection(block, earlier, later))
+            return true;
+
+          const int64_t rows = later.principalRowDomain.rows;
+          for (Operation *cursor = earlier.op->getNextNode();
+               cursor && cursor != later.op; cursor = cursor->getNextNode()) {
+            if (!isProvenPrincipalRowReshape(cursor, rows))
+              continue;
+            Value source = cursor->getOperand(0);
+            Value result = cursor->getResult(0);
+            if (llvm::is_contained(earlier.semantics.tileOutputs, source) &&
+                llvm::is_contained(later.semantics.tileInputs, result))
+              return true;
+          }
+          return false;
+        };
+
+    auto hasVMIPlanningBoundaryBetween =
+        [](const pto::FusionComputeNode &earlier,
+           const pto::FusionComputeNode &later) {
+          const int64_t principalRows = later.principalRowDomain.rows;
+          for (Operation *cursor = earlier.op->getNextNode();
+               cursor && cursor != later.op; cursor = cursor->getNextNode()) {
+            if (isa<pto::AllocTileOp>(cursor))
+              continue;
+            if (earlier.principalRowDomain.proof ==
+                    pto::PrincipalRowDomainProof::Proven &&
+                later.principalRowDomain.proof ==
+                    pto::PrincipalRowDomainProof::Proven &&
+                earlier.principalRowDomain.rows == principalRows &&
+                isProvenPrincipalRowReshape(cursor, principalRows))
+              continue;
+            StringRef opName = cursor->getName().getStringRef();
+            if (!opName.starts_with("pto.") && cursor->getRegions().empty() &&
+                !isa<CallOpInterface>(cursor) && isMemoryEffectFree(cursor))
+              continue;
+            return true;
+          }
+          return false;
+        };
 
     const pto::FusionComputeNode *previousSelected = nullptr;
     for (const pto::FusionComputeNode &node : block.computeNodes) {
@@ -594,9 +693,9 @@ public:
       // with the group, but a PTODSL TileOp, DMA/sync/unknown PTO op, call, or
       // nested control-flow operation closes it.
       if (previousSelected &&
-          (previousSelected->iterationDomainClass !=
-               node.iterationDomainClass ||
-           hasVMIPlanningBoundaryBetween(previousSelected->op, node.op)))
+          (!samePlanningDomain(*previousSelected, node) ||
+           !hasProvenRowPreservingConnection(*previousSelected, node) ||
+           hasVMIPlanningBoundaryBetween(*previousSelected, node)))
         flushCurrent();
 
       curMembers.push_back(&node);
@@ -640,7 +739,8 @@ struct FusionPlanPass : public pto::impl::FusionPlanBase<FusionPlanPass> {
       return;
     }
     pto::PreFusionAnalysisResult analysis = sharedAnalysis.getResult();
-    if (failed(pto::inferIterationDomainClasses(analysis, enableShapeInference))) {
+    if (failed(
+            pto::inferIterationDomainClasses(analysis, enableShapeInference))) {
       signalPassFailure();
       return;
     }
@@ -655,16 +755,16 @@ struct FusionPlanPass : public pto::impl::FusionPlanBase<FusionPlanPass> {
     // VMI path uses VMIUBDisjoint, which groups selected VMI compute nodes by
     // F3 adjacency (a PTODSL fallback or other non-plannable op between two
     // selected VMI nodes closes the group) and keeps single-node groups so
-    // every selected VMI TileOp gets a fusion_region. It requires one
-    // iteration-domain class but does NOT judge UB disjointness, DFG
-    // dependency, or cost here — the resulting fusion_region is a
-    // *container* for downstream VMI analysis, not a proof that its inner
-    // scf.for loops can be fused (that is PTOVmiLoopFusion's job).
+    // every selected VMI TileOp gets a fusion_region. It requires either the
+    // same proven principal row domain or, for unrelated candidates, the same
+    // legacy iteration-domain class. It does NOT judge UB disjointness, DFG
+    // dependency, or cost here — the resulting fusion_region is a *container*
+    // for downstream VMI analysis, not a proof that its inner scf.for loops
+    // can be fused (that is PTOVmiLoopFusion's job).
     std::unique_ptr<StrategyEngine> strategyEngine;
     const std::string strategyVal = strategy.getValue();
     if (strategyVal == "conservative-dag-greedy")
-      strategyEngine =
-          std::make_unique<ConservativeDAGGreedyStrategyEngine>();
+      strategyEngine = std::make_unique<ConservativeDAGGreedyStrategyEngine>();
     else if (strategyVal == "vmi-ub-disjoint")
       strategyEngine = std::make_unique<VMIUBDisjointStrategyEngine>();
     else {

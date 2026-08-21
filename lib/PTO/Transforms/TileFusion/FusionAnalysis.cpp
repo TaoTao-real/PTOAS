@@ -1,10 +1,12 @@
 // Copyright (c) 2026 Huawei Technologies Co., Ltd.
-// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
-// CANN Open Software License Agreement Version 2.0 (the "License").
-// Please refer to the License for details. You may not use this file except in compliance with the License.
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
-// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
-// See LICENSE in the root of the software repository for the full text of the License.
+// This program is free software, you can redistribute it and/or modify it under
+// the terms and conditions of CANN Open Software License Agreement Version 2.0
+// (the "License"). Please refer to the License for details. You may not use
+// this file except in compliance with the License. THIS SOFTWARE IS PROVIDED ON
+// AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS
+// FOR A PARTICULAR PURPOSE. See LICENSE in the root of the software repository
+// for the full text of the License.
 
 #include "PTO/Transforms/TileFusion/FusionAnalysis.h"
 
@@ -82,9 +84,9 @@ static bool isShapeComputableOp(Operation *op) {
   return false;
 }
 
-
 /// A structural signature map that deduplicates computable shape expressions.
-/// Maps (opName opaque pointer, canonicalOperands, attrs) → representative Value.
+/// Maps (opName opaque pointer, canonicalOperands, attrs) → representative
+/// Value.
 class StructuralSignatureMap {
 public:
   struct Key {
@@ -115,7 +117,8 @@ public:
       unsigned h = DenseMapInfo<void *>::getHashValue(key.opNamePtr);
       for (Value v : key.operands)
         h = llvm::hash_combine(h, DenseMapInfo<Value>::getHashValue(v));
-      h = llvm::hash_combine(h, DenseMapInfo<Attribute>::getHashValue(key.attrs));
+      h = llvm::hash_combine(h,
+                             DenseMapInfo<Attribute>::getHashValue(key.attrs));
       return h;
     }
     static bool isEqual(const Key &lhs, const Key &rhs) { return lhs == rhs; }
@@ -283,8 +286,8 @@ private:
 static void bindDimToValue(ShapeConstraintSolver &solver,
                            DenseMap<Value, unsigned> &symbolDimByValue,
                            DenseMap<Value, Value> &canonicalByValue,
-                           StructuralSignatureMap &signatureMap,
-                           unsigned dim, Value value) {
+                           StructuralSignatureMap &signatureMap, unsigned dim,
+                           Value value) {
   if (!value || dim == kInvalidShapeDim)
     return;
 
@@ -296,8 +299,7 @@ static void bindDimToValue(ShapeConstraintSolver &solver,
 
   // Canonicalize the value so structurally equivalent SSA values map to
   // the same representative, enabling the solver to merge their dims.
-  Value canonical =
-      canonicalizeValue(value, canonicalByValue, signatureMap);
+  Value canonical = canonicalizeValue(value, canonicalByValue, signatureMap);
   auto [it, inserted] =
       symbolDimByValue.try_emplace(canonical, kInvalidShapeDim);
   if (inserted)
@@ -355,11 +357,12 @@ static void bindExplicitValidDims(ShapeConstraintSolver &solver,
   }
 }
 
-static ShapeValueDims getValueDims(
-    ShapeConstraintSolver &solver, DenseMap<Value, ShapeValueDims> &dimsByValue,
-    DenseMap<Value, unsigned> &symbolDimByValue,
-    DenseMap<Value, Value> &canonicalByValue,
-    StructuralSignatureMap &signatureMap, Value value) {
+static ShapeValueDims getValueDims(ShapeConstraintSolver &solver,
+                                   DenseMap<Value, ShapeValueDims> &dimsByValue,
+                                   DenseMap<Value, unsigned> &symbolDimByValue,
+                                   DenseMap<Value, Value> &canonicalByValue,
+                                   StructuralSignatureMap &signatureMap,
+                                   Value value) {
   auto existing = dimsByValue.find(value);
   if (existing != dimsByValue.end())
     return existing->second;
@@ -374,7 +377,7 @@ static ShapeValueDims getValueDims(
     if (!ShapedType::isDynamic(validShape[1]))
       solver.bindConstant(dims.cols, validShape[1]);
     bindExplicitValidDims(solver, symbolDimByValue, canonicalByValue,
-                         signatureMap, value, dims);
+                          signatureMap, value, dims);
   }
 
   dimsByValue.try_emplace(value, dims);
@@ -397,16 +400,17 @@ static void mergeShapes(ShapeConstraintSolver &solver, ShapeValueDims lhs,
   mergeCols(solver, lhs, rhs);
 }
 
-static void mergeAllShapes(
-    ShapeConstraintSolver &solver, DenseMap<Value, ShapeValueDims> &dimsByValue,
-    DenseMap<Value, unsigned> &symbolDimByValue,
-    DenseMap<Value, Value> &canonicalByValue,
-    StructuralSignatureMap &signatureMap, ArrayRef<Value> values) {
+static void mergeAllShapes(ShapeConstraintSolver &solver,
+                           DenseMap<Value, ShapeValueDims> &dimsByValue,
+                           DenseMap<Value, unsigned> &symbolDimByValue,
+                           DenseMap<Value, Value> &canonicalByValue,
+                           StructuralSignatureMap &signatureMap,
+                           ArrayRef<Value> values) {
   if (values.empty())
     return;
-  ShapeValueDims anchor = getValueDims(solver, dimsByValue, symbolDimByValue,
-                                        canonicalByValue, signatureMap,
-                                        values.front());
+  ShapeValueDims anchor =
+      getValueDims(solver, dimsByValue, symbolDimByValue, canonicalByValue,
+                   signatureMap, values.front());
   for (Value value : values.drop_front())
     mergeShapes(solver, anchor,
                 getValueDims(solver, dimsByValue, symbolDimByValue,
@@ -417,8 +421,7 @@ static void applyShapeConstraintsForNode(
     ShapeConstraintSolver &solver, DenseMap<Value, ShapeValueDims> &dimsByValue,
     DenseMap<Value, unsigned> &symbolDimByValue,
     DenseMap<Value, Value> &canonicalByValue,
-    StructuralSignatureMap &signatureMap,
-    const FusionComputeNode &node) {
+    StructuralSignatureMap &signatureMap, const FusionComputeNode &node) {
   const FusionOpSemantics &semantics = node.semantics;
   switch (semantics.computeFamily) {
   case FusionComputeFamily::Elementwise:
@@ -437,9 +440,9 @@ static void applyShapeConstraintsForNode(
   case FusionComputeFamily::RowBroadcastBinary: {
     if (semantics.tileOutputs.empty())
       return;
-    ShapeValueDims output = getValueDims(
-        solver, dimsByValue, symbolDimByValue, canonicalByValue, signatureMap,
-        semantics.tileOutputs.front());
+    ShapeValueDims output =
+        getValueDims(solver, dimsByValue, symbolDimByValue, canonicalByValue,
+                     signatureMap, semantics.tileOutputs.front());
     if (!semantics.tileInputs.empty())
       mergeShapes(solver,
                   getValueDims(solver, dimsByValue, symbolDimByValue,
@@ -447,13 +450,14 @@ static void applyShapeConstraintsForNode(
                                semantics.tileInputs[0]),
                   output);
     if (semantics.tileInputs.size() >= 2) {
-      ShapeValueDims rowInput = getValueDims(
-          solver, dimsByValue, symbolDimByValue, canonicalByValue, signatureMap,
-          semantics.tileInputs[1]);
+      ShapeValueDims rowInput =
+          getValueDims(solver, dimsByValue, symbolDimByValue, canonicalByValue,
+                       signatureMap, semantics.tileInputs[1]);
       mergeRows(solver, rowInput, output);
       solver.bindConstant(rowInput.cols, 1);
     }
-    for (Value extraOutput : ArrayRef<Value>(semantics.tileOutputs).drop_front())
+    for (Value extraOutput :
+         ArrayRef<Value>(semantics.tileOutputs).drop_front())
       mergeShapes(solver, output,
                   getValueDims(solver, dimsByValue, symbolDimByValue,
                                canonicalByValue, signatureMap, extraOutput));
@@ -470,9 +474,9 @@ static void applyShapeConstraintsForNode(
     // RowBroadcastBinary treatment of the [rows,1] broadcast operand below).
     if (semantics.tileOutputs.empty())
       return;
-    ShapeValueDims output = getValueDims(
-        solver, dimsByValue, symbolDimByValue, canonicalByValue, signatureMap,
-        semantics.tileOutputs.front());
+    ShapeValueDims output =
+        getValueDims(solver, dimsByValue, symbolDimByValue, canonicalByValue,
+                     signatureMap, semantics.tileOutputs.front());
     if (!semantics.tileInputs.empty()) {
       mergeShapes(solver,
                   getValueDims(solver, dimsByValue, symbolDimByValue,
@@ -495,12 +499,12 @@ static void applyShapeConstraintsForNode(
                    signatureMap, semantics.tileInputs);
     if (semantics.tileInputs.empty() || semantics.tileOutputs.empty())
       return;
-    ShapeValueDims input = getValueDims(
-        solver, dimsByValue, symbolDimByValue, canonicalByValue, signatureMap,
-        semantics.tileInputs.front());
-    ShapeValueDims output = getValueDims(
-        solver, dimsByValue, symbolDimByValue, canonicalByValue, signatureMap,
-        semantics.tileOutputs.front());
+    ShapeValueDims input =
+        getValueDims(solver, dimsByValue, symbolDimByValue, canonicalByValue,
+                     signatureMap, semantics.tileInputs.front());
+    ShapeValueDims output =
+        getValueDims(solver, dimsByValue, symbolDimByValue, canonicalByValue,
+                     signatureMap, semantics.tileOutputs.front());
     if (semantics.computeFamily == FusionComputeFamily::ReduceRow) {
       mergeRows(solver, input, output);
       solver.bindConstant(output.cols, 1);
@@ -508,7 +512,8 @@ static void applyShapeConstraintsForNode(
       solver.bindConstant(output.rows, 1);
       mergeCols(solver, input, output);
     }
-    for (Value extraOutput : ArrayRef<Value>(semantics.tileOutputs).drop_front())
+    for (Value extraOutput :
+         ArrayRef<Value>(semantics.tileOutputs).drop_front())
       mergeShapes(solver, output,
                   getValueDims(solver, dimsByValue, symbolDimByValue,
                                canonicalByValue, signatureMap, extraOutput));
@@ -523,8 +528,7 @@ static ShapeValueDims getIterationDomainDimsForNode(
     ShapeConstraintSolver &solver, DenseMap<Value, ShapeValueDims> &dimsByValue,
     DenseMap<Value, unsigned> &symbolDimByValue,
     DenseMap<Value, Value> &canonicalByValue,
-    StructuralSignatureMap &signatureMap,
-    const FusionComputeNode &node) {
+    StructuralSignatureMap &signatureMap, const FusionComputeNode &node) {
   const FusionOpSemantics &semantics = node.semantics;
   switch (semantics.computeFamily) {
   case FusionComputeFamily::Elementwise:
@@ -580,7 +584,7 @@ static unsigned assignShapeInferredDomainClass(
     ShapeValueDims dims, const IterationDomainInfo &info, unsigned nodeId) {
   if (info.proof == IterationDomainProof::Proven) {
     std::pair<unsigned, unsigned> key{solver.find(dims.rows),
-                                     solver.find(dims.cols)};
+                                      solver.find(dims.cols)};
     auto it = provenClassByRoot.find(key);
     if (it != provenClassByRoot.end()) {
       classes[it->second].members.push_back(nodeId);
@@ -710,6 +714,140 @@ inferIterationDomainInfo(const FusionOpSemantics &semantics) {
   return IterationDomainInfo();
 }
 
+static std::optional<std::pair<int64_t, int64_t>>
+getStaticRank2ValidShape(Value value) {
+  SmallVector<int64_t, 4> shape = getValidShapeVec(value.getType());
+  if (shape.size() != 2 || llvm::any_of(shape, ShapedType::isDynamic))
+    return std::nullopt;
+  return std::pair<int64_t, int64_t>{shape[0], shape[1]};
+}
+
+static PrincipalRowDomainInfo
+inferPrincipalRowDomain(const FusionComputeNode &node) {
+  PrincipalRowDomainInfo info;
+  if (!node.selectedVMI)
+    return info;
+
+  info.unprovenReason = PrincipalRowDomainUnprovenReason::UnsupportedFamily;
+  StringRef opName = node.semantics.opName;
+
+  auto proveRows = [&](int64_t rows) {
+    info.rows = rows;
+    if (ShapedType::isDynamic(rows) || rows <= 0) {
+      info.unprovenReason = PrincipalRowDomainUnprovenReason::DynamicRows;
+      return;
+    }
+    info.proof = PrincipalRowDomainProof::Proven;
+    info.unprovenReason = PrincipalRowDomainUnprovenReason::None;
+  };
+
+  auto requireShape = [&](Value value, int64_t rows, int64_t cols) -> bool {
+    std::optional<std::pair<int64_t, int64_t>> shape =
+        getStaticRank2ValidShape(value);
+    if (!shape) {
+      info.unprovenReason = PrincipalRowDomainUnprovenReason::MissingRank2Tile;
+      return false;
+    }
+    if (shape->first != rows) {
+      info.unprovenReason = PrincipalRowDomainUnprovenReason::InconsistentRows;
+      return false;
+    }
+    if (shape->second != cols) {
+      info.unprovenReason =
+          PrincipalRowDomainUnprovenReason::NotOneFullVLPerRow;
+      return false;
+    }
+    return true;
+  };
+
+  auto getAnchorRows = [&](Value value) -> std::optional<int64_t> {
+    std::optional<std::pair<int64_t, int64_t>> shape =
+        getStaticRank2ValidShape(value);
+    if (!shape) {
+      info.unprovenReason = PrincipalRowDomainUnprovenReason::MissingRank2Tile;
+      return std::nullopt;
+    }
+    return shape->first;
+  };
+
+  ArrayRef<Value> inputs = node.semantics.tileInputs;
+  ArrayRef<Value> outputs = node.semantics.tileOutputs;
+  if (outputs.empty()) {
+    info.unprovenReason = PrincipalRowDomainUnprovenReason::MissingRank2Tile;
+    return info;
+  }
+
+  if (opName == "tcvt" || opName == "tmul") {
+    std::optional<int64_t> rows = getAnchorRows(outputs.front());
+    if (!rows)
+      return info;
+    for (Value value : inputs)
+      if (!requireShape(value, *rows, 64))
+        return info;
+    for (Value value : outputs)
+      if (!requireShape(value, *rows, 64))
+        return info;
+    proveRows(*rows);
+    return info;
+  }
+
+  if (opName == "tmuls" || opName == "tadds" || opName == "tsqrt") {
+    std::optional<int64_t> rows = getAnchorRows(outputs.front());
+    if (!rows)
+      return info;
+    for (Value value : inputs)
+      if (!requireShape(value, *rows, 1))
+        return info;
+    for (Value value : outputs)
+      if (!requireShape(value, *rows, 1))
+        return info;
+    proveRows(*rows);
+    return info;
+  }
+
+  if (opName == "trowsum") {
+    if (inputs.empty())
+      return info;
+    std::optional<int64_t> rows = getAnchorRows(inputs.front());
+    if (!rows)
+      return info;
+    for (Value value : inputs)
+      if (!requireShape(value, *rows, 64))
+        return info;
+    for (Value value : outputs)
+      if (!requireShape(value, *rows, 1))
+        return info;
+    proveRows(*rows);
+    return info;
+  }
+
+  if (opName == "trowexpanddiv") {
+    if (inputs.size() != 2)
+      return info;
+    std::optional<int64_t> rows = getAnchorRows(outputs.front());
+    if (!rows || !requireShape(inputs[0], *rows, 64) ||
+        !requireShape(inputs[1], *rows, 1) ||
+        !requireShape(outputs.front(), *rows, 64))
+      return info;
+    proveRows(*rows);
+    return info;
+  }
+
+  if (opName == "tcolexpandmul") {
+    if (inputs.size() != 2)
+      return info;
+    std::optional<int64_t> rows = getAnchorRows(outputs.front());
+    if (!rows || !requireShape(inputs[0], *rows, 64) ||
+        !requireShape(inputs[1], 1, 64) ||
+        !requireShape(outputs.front(), *rows, 64))
+      return info;
+    proveRows(*rows);
+    return info;
+  }
+
+  return info;
+}
+
 static unsigned assignStaticIterationDomainClass(
     SmallVectorImpl<IterationDomainClass> &classes,
     DenseMap<std::pair<int64_t, int64_t>, unsigned> &provenClassByKey,
@@ -755,7 +893,8 @@ static LogicalResult inferStaticIterationDomain(FusionBlockAnalysis &analysis) {
   return success();
 }
 
-static LogicalResult inferDynamicIterationDomain(FusionBlockAnalysis &analysis) {
+static LogicalResult
+inferDynamicIterationDomain(FusionBlockAnalysis &analysis) {
   ShapeConstraintSolver solver;
   DenseMap<Value, ShapeValueDims> dimsByValue;
   DenseMap<Value, unsigned> symbolDimByValue;
@@ -765,10 +904,10 @@ static LogicalResult inferDynamicIterationDomain(FusionBlockAnalysis &analysis) 
   for (const FusionComputeNode &node : analysis.computeNodes) {
     for (Value input : node.semantics.tileInputs)
       (void)getValueDims(solver, dimsByValue, symbolDimByValue,
-                          canonicalByValue, signatureMap, input);
+                         canonicalByValue, signatureMap, input);
     for (Value output : node.semantics.tileOutputs)
       (void)getValueDims(solver, dimsByValue, symbolDimByValue,
-                          canonicalByValue, signatureMap, output);
+                         canonicalByValue, signatureMap, output);
   }
 
   for (const FusionComputeNode &node : analysis.computeNodes)
@@ -799,9 +938,9 @@ static LogicalResult inferDynamicIterationDomain(FusionBlockAnalysis &analysis) 
   analysis.iterationDomainClasses.clear();
   DenseMap<std::pair<unsigned, unsigned>, unsigned> provenClassByRoot;
   for (FusionComputeNode &node : analysis.computeNodes) {
-    ShapeValueDims domainDims = getIterationDomainDimsForNode(
-        solver, dimsByValue, symbolDimByValue, canonicalByValue, signatureMap,
-        node);
+    ShapeValueDims domainDims =
+        getIterationDomainDimsForNode(solver, dimsByValue, symbolDimByValue,
+                                      canonicalByValue, signatureMap, node);
     IterationDomainInfo info = buildIterationDomainInfo(solver, domainDims);
     node.iterationDomainClass = assignShapeInferredDomainClass(
         solver, analysis.iterationDomainClasses, provenClassByRoot, domainDims,
@@ -819,8 +958,8 @@ struct MutableWriteInstance {
   unsigned producerBlockOrder = 0;
 };
 
-static FusionWriteInstanceEscapeClass classifyEscapeClass(
-    const FusionWriteInstanceLiveness &live) {
+static FusionWriteInstanceEscapeClass
+classifyEscapeClass(const FusionWriteInstanceLiveness &live) {
   if (live.hasExternalUsers || live.escapesBlock ||
       live.hasLocalHardBoundaryUsers) {
     return FusionWriteInstanceEscapeClass::HardExternal;
@@ -857,7 +996,8 @@ static unsigned getOrCreateLivenessSlot(DenseMap<Value, unsigned> &slotByValue,
   return it->second;
 }
 
-static void appendUniqueNode(SmallVectorImpl<unsigned> &nodes, unsigned nodeId) {
+static void appendUniqueNode(SmallVectorImpl<unsigned> &nodes,
+                             unsigned nodeId) {
   if (!llvm::is_contained(nodes, nodeId))
     nodes.push_back(nodeId);
 }
@@ -868,10 +1008,11 @@ static void recordLastLocalConsumer(std::optional<unsigned> &lastLocalConsumer,
     lastLocalConsumer = consumerId;
 }
 
-static void finalizeBlockLiveness(
-    Block &block, DenseMap<Operation *, FusionOpKind> &kindByOp,
-    DenseMap<Operation *, unsigned> &computeNodeByOp,
-    SmallVectorImpl<MutableLiveness> &mutableLiveness) {
+static void
+finalizeBlockLiveness(Block &block,
+                      DenseMap<Operation *, FusionOpKind> &kindByOp,
+                      DenseMap<Operation *, unsigned> &computeNodeByOp,
+                      SmallVectorImpl<MutableLiveness> &mutableLiveness) {
   for (MutableLiveness &state : mutableLiveness) {
     for (OpOperand &use : state.live.value.getUses()) {
       Operation *user = use.getOwner();
@@ -909,10 +1050,10 @@ static void finalizeBlockLiveness(
   }
 }
 
-static std::optional<unsigned> findReachingWriteInstance(
-    ArrayRef<unsigned> writeInstanceIds,
-    ArrayRef<MutableWriteInstance> mutableWriteInstances,
-    std::optional<unsigned> userBlockOrder) {
+static std::optional<unsigned>
+findReachingWriteInstance(ArrayRef<unsigned> writeInstanceIds,
+                          ArrayRef<MutableWriteInstance> mutableWriteInstances,
+                          std::optional<unsigned> userBlockOrder) {
   if (writeInstanceIds.empty())
     return std::nullopt;
 
@@ -961,9 +1102,9 @@ static void finalizeWriteInstances(
           userBlockOrder = orderIt->second;
       }
 
-      std::optional<unsigned> writeInstanceId = findReachingWriteInstance(
-          storageState.live.writeInstances, mutableWriteInstances,
-          userBlockOrder);
+      std::optional<unsigned> writeInstanceId =
+          findReachingWriteInstance(storageState.live.writeInstances,
+                                    mutableWriteInstances, userBlockOrder);
       if (!writeInstanceId)
         continue;
 
@@ -1055,9 +1196,11 @@ static FailureOr<FusionBlockAnalysis> analyzeBlockDFG(Block &block) {
     node.semantics = *semanticsOr;
     if (auto impl = op.getAttrOfType<StringAttr>("pto.tilelib.impl"))
       node.selectedVMI = impl.getValue() == "vmi";
+    node.principalRowDomain = inferPrincipalRowDomain(node);
     computeNodeByOp[&op] = node.id;
 
-    for (auto [outputIdx, output] : llvm::enumerate(node.semantics.tileOutputs)) {
+    for (auto [outputIdx, output] :
+         llvm::enumerate(node.semantics.tileOutputs)) {
       producerByValue[output] = node.id;
       unsigned liveSlot =
           getOrCreateLivenessSlot(livenessSlotByValue, mutableLiveness, output);
@@ -1095,7 +1238,8 @@ static FailureOr<FusionBlockAnalysis> analyzeBlockDFG(Block &block) {
       analysis.edges.push_back(edge);
       node.incomingEdges.push_back(edgeId);
       if (edge.producerNode < analysis.computeNodes.size())
-        analysis.computeNodes[edge.producerNode].outgoingEdges.push_back(edgeId);
+        analysis.computeNodes[edge.producerNode].outgoingEdges.push_back(
+            edgeId);
     }
 
     analysis.computeNodes.push_back(std::move(node));
@@ -1116,8 +1260,8 @@ static FailureOr<FusionBlockAnalysis> analyzeBlockDFG(Block &block) {
   return std::move(analysis);
 }
 
-static LogicalResult analyzeRegionDFG(Region &region,
-                                      SmallVectorImpl<FusionBlockAnalysis> &blocks) {
+static LogicalResult
+analyzeRegionDFG(Region &region, SmallVectorImpl<FusionBlockAnalysis> &blocks) {
   for (Block &block : region.getBlocks()) {
     FailureOr<FusionBlockAnalysis> blockAnalysis = analyzeBlockDFG(block);
     if (failed(blockAnalysis))

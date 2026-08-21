@@ -1,10 +1,12 @@
 // Copyright (c) 2026 Huawei Technologies Co., Ltd.
-// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
-// CANN Open Software License Agreement Version 2.0 (the "License").
-// Please refer to the License for details. You may not use this file except in compliance with the License.
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
-// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
-// See LICENSE in the root of the software repository for the full text of the License.
+// This program is free software, you can redistribute it and/or modify it under
+// the terms and conditions of CANN Open Software License Agreement Version 2.0
+// (the "License"). Please refer to the License for details. You may not use
+// this file except in compliance with the License. THIS SOFTWARE IS PROVIDED ON
+// AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS
+// FOR A PARTICULAR PURPOSE. See LICENSE in the root of the software repository
+// for the full text of the License.
 
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
@@ -33,8 +35,7 @@ using namespace mlir;
 
 namespace {
 
-static constexpr llvm::StringLiteral kFusionGroupIdAttr =
-    "pto.fusion.group_id";
+static constexpr llvm::StringLiteral kFusionGroupIdAttr = "pto.fusion.group_id";
 static constexpr llvm::StringLiteral kFusionOrderAttr = "pto.fusion.order";
 static constexpr llvm::StringLiteral kTileLibImplAttr = "pto.tilelib.impl";
 static constexpr llvm::StringLiteral kTileLibCandidateAttr =
@@ -156,7 +157,8 @@ static bool isNestedInOp(Operation *op, Operation *ancestor) {
   return false;
 }
 
-static bool isNestedInSpan(Operation *op, const DenseSet<Operation *> &spanOps) {
+static bool isNestedInSpan(Operation *op,
+                           const DenseSet<Operation *> &spanOps) {
   for (Operation *cur = op; cur; cur = cur->getParentOp())
     if (spanOps.contains(cur))
       return true;
@@ -205,7 +207,8 @@ static bool hasAnyUseOutsideSpan(Value value,
 }
 
 static const FusionBlockAnalysisIndex *
-getBlockAnalysisIndex(const PreFusionAnalysisIndex *analysisIndex, Block *block) {
+getBlockAnalysisIndex(const PreFusionAnalysisIndex *analysisIndex,
+                      Block *block) {
   if (!analysisIndex)
     return nullptr;
   auto it = analysisIndex->blocks.find(block);
@@ -305,8 +308,8 @@ buildGroupSpanInterface(const GroupSpan &span,
         bool escapesSpan =
             hasReplaceableUseOutsideSpan(init, spanOps, boundary);
         if (writeInstance)
-          escapesSpan =
-              escapesSpan && writeInstanceEscapesSpan(*writeInstance, spanNodeIds);
+          escapesSpan = escapesSpan &&
+                        writeInstanceEscapesSpan(*writeInstance, spanNodeIds);
 
         if (escapesSpan)
           appendUniqueValue(iface.externallyVisibleValues, seenOutputs, init);
@@ -324,7 +327,8 @@ buildGroupSpanInterface(const GroupSpan &span,
           continue;
         if (!canSinkAllocTileDefToRegion(init, span, spanOps))
           continue;
-        if (hasAnyUseOutsideSpan(init, spanOps) && !visibleValues.contains(init))
+        if (hasAnyUseOutsideSpan(init, spanOps) &&
+            !visibleValues.contains(init))
           continue;
         Operation *defOp = init.getDefiningOp();
         if (seenLocalDefs.insert(defOp).second)
@@ -361,13 +365,18 @@ encapsulateGroupSpan(const GroupSpan &span,
   if (span.members.empty())
     return success();
 
-  const bool hasTileLibSelection = llvm::any_of(
-      span.members, [](const GroupSpanMember &member) {
+  const bool hasTileLibSelection =
+      llvm::any_of(span.members, [](const GroupSpanMember &member) {
         return member.op->hasAttr(kTileLibImplAttr) ||
                member.op->hasAttr(kTileLibCandidateAttr);
       });
   if (hasTileLibSelection) {
     for (const GroupSpanMember &member : span.members) {
+      // A proven treshape is a zero-copy structural bridge between the padded
+      // Nx1 scalar state and its Nx8 row-major view.  It is not a TileOp
+      // implementation and therefore has no candidate attribute of its own.
+      if (isa<pto::TReshapeOp>(member.op))
+        continue;
       auto impl = member.op->getAttrOfType<StringAttr>(kTileLibImplAttr);
       auto candidate =
           member.op->getAttrOfType<StringAttr>(kTileLibCandidateAttr);
@@ -416,15 +425,14 @@ encapsulateGroupSpan(const GroupSpan &span,
   OpBuilder bodyBuilder = OpBuilder::atBlockEnd(body);
   bodyBuilder.create<pto::YieldOp>(loc, ValueRange(yieldValues));
 
+  replaceEscapingUsesOutsideRegion(fusionRegion, iface.externallyVisibleValues);
   if (failed(verify(fusionRegion.getOperation())))
     return failure();
-
-  replaceEscapingUsesOutsideRegion(fusionRegion, iface.externallyVisibleValues);
   return success();
 }
 
-static LogicalResult processRegion(Region &region,
-                                   const PreFusionAnalysisIndex *analysisIndex) {
+static LogicalResult
+processRegion(Region &region, const PreFusionAnalysisIndex *analysisIndex) {
   for (Block &block : region.getBlocks()) {
     SmallVector<Region *, 4> nestedRegions;
     for (Operation &op : block)
@@ -459,8 +467,8 @@ struct PTOFusionRegionGenPass
     // Reuse the shared pre-fusion dataflow graph cached by the analysis
     // manager (built once, by FusionPlan or lazily here).  FusionRegionGen
     // consumes only compute-node ids and write-instance pointers, never the
-    // iteration-domain classes, so it does not need the --enable-shape-inference
-    // option and can use the cached DFG directly.
+    // iteration-domain classes, so it does not need the
+    // --enable-shape-inference option and can use the cached DFG directly.
     const pto::PreFusionAnalysis &sharedAnalysis =
         getAnalysis<pto::PreFusionAnalysis>();
     if (!sharedAnalysis.isValid()) {
@@ -471,7 +479,8 @@ struct PTOFusionRegionGenPass
 
     PreFusionAnalysisIndex analysisIndex;
     for (const pto::FusionBlockAnalysis &blockAnalysis : analysis.blocks) {
-      FusionBlockAnalysisIndex &index = analysisIndex.blocks[blockAnalysis.block];
+      FusionBlockAnalysisIndex &index =
+          analysisIndex.blocks[blockAnalysis.block];
       for (const pto::FusionComputeNode &node : blockAnalysis.computeNodes)
         index.nodeIdByOp.try_emplace(node.op, node.id);
       for (const pto::FusionWriteInstanceLiveness &writeInstance :
