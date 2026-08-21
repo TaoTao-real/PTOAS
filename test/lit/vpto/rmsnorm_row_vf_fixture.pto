@@ -1,0 +1,59 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// CANN Open Software License Agreement Version 2.0
+
+// RUN: pto-test-opt %S/../../samples/RMSNormRowVFA5/rmsnorm_row_vf.pto | FileCheck %s --check-prefix=FLOW
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --tile-lib-backend=ptodsl --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=ordinary --vmi-fusion-mode=off --emit-vpto %S/../../samples/RMSNormRowVFA5/rmsnorm_row_vf.pto -o /dev/null
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --tile-lib-backend=ptodsl --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=off --emit-vpto %S/../../samples/RMSNormRowVFA5/rmsnorm_row_vf.pto -o /dev/null --mlir-print-ir-after=pto-select-tilelib-candidate 2>&1 | FileCheck %s --check-prefix=BASELINE
+// RUN: %python_executable %S/../../samples/RMSNormRowVFA5/rmsnorm_row_vf_golden.py | FileCheck %s --check-prefix=GOLDEN
+
+// FLOW-LABEL: func.func @rmsnorm_row_vf_n64
+// FLOW-COUNT-2: pto.tload
+// FLOW: pto.tcvt ins(%{{.*}} : !pto.tile_buf<vec, 1x64xbf16>) outs(%{{.*}} : !pto.tile_buf<vec, 1x64xf32>)
+// FLOW: pto.tcvt ins(%{{.*}} : !pto.tile_buf<vec, 64x64xbf16>) outs(%{{.*}} : !pto.tile_buf<vec, 64x64xf32>)
+// FLOW-NEXT: pto.tmul
+// FLOW-NEXT: pto.trowsum
+// FLOW: pto.treshape
+// FLOW: pto.tmuls
+// FLOW-NEXT: pto.tadds
+// FLOW-NEXT: pto.tsqrt
+// FLOW: pto.treshape
+// FLOW: pto.trowexpanddiv
+// FLOW-NEXT: pto.tcolexpandmul
+// FLOW-NEXT: pto.tcvt ins(%{{.*}} {rmode = #pto<round_mode RINT>{{.*}}} : !pto.tile_buf<vec, 64x64xf32>) outs(%{{.*}} : !pto.tile_buf<vec, 64x64xbf16>)
+// FLOW-COUNT-1: pto.tstore
+// FLOW-NOT: scf.for
+// FLOW-NOT: pto.trowsum
+
+// The A5-aligned padded compact row state exposes two baseline gaps:
+// padded trowsum output and Nx64 trowexpanddiv.  All other compute instances
+// select VMI.
+// BASELINE-LABEL: func.func @rmsnorm_row_vf_n64
+// BASELINE: pto.tcvt
+// BASELINE-SAME: pto.tilelib.candidate = "vmi_tcvt"
+// BASELINE: pto.tmul
+// BASELINE-SAME: pto.tilelib.impl = "vmi"
+// BASELINE: pto.trowsum
+// BASELINE-SAME: pto.tilelib.candidate = "template_trowsum"
+// BASELINE-SAME: pto.tilelib.impl = "ptodsl"
+// BASELINE: pto.tmuls
+// BASELINE-SAME: pto.tilelib.impl = "vmi"
+// BASELINE: pto.tadds
+// BASELINE-SAME: pto.tilelib.impl = "vmi"
+// BASELINE: pto.tsqrt
+// BASELINE-SAME: pto.tilelib.impl = "vmi"
+// BASELINE: pto.trowexpanddiv
+// BASELINE-SAME: pto.tilelib.candidate = "template_trowexpanddiv"
+// BASELINE-SAME: pto.tilelib.impl = "ptodsl"
+// BASELINE: pto.tcolexpandmul
+// BASELINE-SAME: pto.tilelib.impl = "vmi"
+// BASELINE: pto.tcvt
+// BASELINE-SAME: pto.tilelib.candidate = "vmi_tcvt"
+
+// GOLDEN: rows=1 dataset=exact-association
+// GOLDEN: rows=1 dataset=layout-sensitive
+// GOLDEN: rows=8 dataset=exact-association
+// GOLDEN: rows=8 dataset=layout-sensitive
+// GOLDEN: rows=32 dataset=exact-association
+// GOLDEN: rows=32 dataset=layout-sensitive
+// GOLDEN: rows=64 dataset=exact-association
+// GOLDEN: rows=64 dataset=layout-sensitive

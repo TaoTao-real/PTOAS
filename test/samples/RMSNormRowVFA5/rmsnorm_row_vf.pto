@@ -1,0 +1,74 @@
+!bf16_rows = !pto.tile_buf<vec, 64x64xbf16>
+!bf16_gamma = !pto.tile_buf<vec, 1x64xbf16>
+!f32_rows = !pto.tile_buf<vec, 64x64xf32>
+!f32_gamma = !pto.tile_buf<vec, 1x64xf32>
+!f32_row_state_col = !pto.tile_buf<vec, 512x1xf32, valid=64x1, blayout=col_major>
+!f32_row_state_row = !pto.tile_buf<vec, 64x8xf32, valid=64x1>
+
+module attributes {pto.target_arch = "a5"} {
+  func.func @rmsnorm_row_vf_n64(
+      %x: !pto.ptr<bf16>, %y: !pto.ptr<bf16>, %gamma: !pto.ptr<bf16>,
+      %token_count: index, %block_idx: i32, %block_count: i32)
+      attributes {pto.entry, pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c64 = arith.constant 64 : index
+    %inv_width = arith.constant 1.5625e-2 : f32
+    %epsilon = arith.constant 1.0e-6 : f32
+
+    %x_bf16_addr = arith.constant 16384 : i64
+    %gamma_bf16_addr = arith.constant 24576 : i64
+    %x_f32_addr = arith.constant 24832 : i64
+    %gamma_f32_addr = arith.constant 41216 : i64
+    %square_addr = arith.constant 41472 : i64
+    %reduce_scratch_addr = arith.constant 57856 : i64
+    %row_state_addr = arith.constant 74240 : i64
+    %normalized_addr = arith.constant 76288 : i64
+    %scaled_addr = arith.constant 92672 : i64
+    %y_bf16_addr = arith.constant 109056 : i64
+
+    %x_view = pto.make_tensor_view %x, shape = [%token_count, %c64], strides = [%c64, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<?x?xbf16>
+    %y_view = pto.make_tensor_view %y, shape = [%token_count, %c64], strides = [%c64, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<?x?xbf16>
+    %gamma_view = pto.make_tensor_view %gamma, shape = [%c1, %c64], strides = [%c64, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<1x64xbf16>
+
+    %x_bf16 = pto.alloc_tile addr = %x_bf16_addr : !bf16_rows
+    %gamma_bf16 = pto.alloc_tile addr = %gamma_bf16_addr : !bf16_gamma
+    %y_bf16 = pto.alloc_tile addr = %y_bf16_addr : !bf16_rows
+    %x_part = pto.partition_view %x_view, offsets = [%c0, %c0], sizes = [%c64, %c64] : !pto.tensor_view<?x?xbf16> -> !pto.partition_tensor_view<64x64xbf16>
+    %gamma_part = pto.partition_view %gamma_view, offsets = [%c0, %c0], sizes = [%c1, %c64] : !pto.tensor_view<1x64xbf16> -> !pto.partition_tensor_view<1x64xbf16>
+    pto.tload ins(%x_part : !pto.partition_tensor_view<64x64xbf16>) outs(%x_bf16 : !bf16_rows)
+    pto.tload ins(%gamma_part : !pto.partition_tensor_view<1x64xbf16>) outs(%gamma_bf16 : !bf16_gamma)
+
+    // The gamma conversion is a selected VMI preheader producer.  Its one-row
+    // domain must not be forged into the N-row main fusion region.
+    %gamma_f32 = pto.alloc_tile addr = %gamma_f32_addr : !f32_gamma
+    pto.tcvt ins(%gamma_bf16 : !bf16_gamma) outs(%gamma_f32 : !f32_gamma)
+
+    // Main principal-row chain: [64,64] -> [64,1] -> [64,64].
+    %x_f32 = pto.alloc_tile addr = %x_f32_addr : !f32_rows
+    %square = pto.alloc_tile addr = %square_addr : !f32_rows
+    %reduce_scratch = pto.alloc_tile addr = %reduce_scratch_addr : !f32_rows
+    %sum = pto.alloc_tile addr = %row_state_addr : !f32_row_state_col
+    %mean = pto.alloc_tile addr = %row_state_addr : !f32_row_state_row
+    %mean_eps = pto.alloc_tile addr = %row_state_addr : !f32_row_state_row
+    %rms = pto.alloc_tile addr = %row_state_addr : !f32_row_state_row
+    %normalized = pto.alloc_tile addr = %normalized_addr : !f32_rows
+    %scaled = pto.alloc_tile addr = %scaled_addr : !f32_rows
+
+    pto.tcvt ins(%x_bf16 : !bf16_rows) outs(%x_f32 : !f32_rows)
+    pto.tmul ins(%x_f32, %x_f32 : !f32_rows, !f32_rows) outs(%square : !f32_rows)
+    pto.trowsum ins(%square, %reduce_scratch : !f32_rows, !f32_rows) outs(%sum : !f32_row_state_col)
+    %sum_row = pto.treshape %sum : !f32_row_state_col -> !f32_row_state_row
+    pto.tmuls ins(%sum_row, %inv_width : !f32_row_state_row, f32) outs(%mean : !f32_row_state_row)
+    pto.tadds ins(%mean, %epsilon : !f32_row_state_row, f32) outs(%mean_eps : !f32_row_state_row)
+    pto.tsqrt ins(%mean_eps : !f32_row_state_row) outs(%rms : !f32_row_state_row)
+    %rms_col = pto.treshape %rms : !f32_row_state_row -> !f32_row_state_col
+    pto.trowexpanddiv ins(%x_f32, %rms_col : !f32_rows, !f32_row_state_col) outs(%normalized : !f32_rows)
+    pto.tcolexpandmul ins(%normalized, %gamma_f32 : !f32_rows, !f32_gamma) outs(%scaled : !f32_rows)
+    pto.tcvt ins(%scaled {rmode = #pto<round_mode RINT>} : !f32_rows) outs(%y_bf16 : !bf16_rows)
+
+    %y_part = pto.partition_view %y_view, offsets = [%c0, %c0], sizes = [%c64, %c64] : !pto.tensor_view<?x?xbf16> -> !pto.partition_tensor_view<64x64xbf16>
+    pto.tstore ins(%y_bf16 : !bf16_rows) outs(%y_part : !pto.partition_tensor_view<64x64xbf16>)
+    return
+  }
+}
