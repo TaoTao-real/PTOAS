@@ -9,6 +9,7 @@
 // RUN: pto-test-opt %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_ascendc_aligned.pto | FileCheck %s --check-prefix=FLOW
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=ordinary --vmi-fusion-mode=off --emit-vpto %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_ascendc_aligned.pto -o /dev/null
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --emit-vpto %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_ascendc_aligned.pto -o - | FileCheck %s --check-prefix=PROMOTED
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --enable-vecscope-mem-bar --emit-vpto %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_ascendc_aligned.pto -o - | %python_executable %S/Inputs/rmsnorm_vf_traffic_gate.py --stage baseline | FileCheck %s --check-prefix=TRAFFIC
 // RUN: %python_executable %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_golden.py | FileCheck %s --check-prefix=GOLDEN
 
 // FLOW-LABEL: func.func @rms_norm_1vl_ascendc_aligned
@@ -41,6 +42,15 @@
 // PROMOTED: pto.vcadd %[[ACC]],
 // PROMOTED-NOT: 41728
 // PROMOTED-NOT: pto.vmi.v
+
+// TRAFFIC: stage=baseline
+// TRAFFIC-NEXT: static_total_vld_vst_membar=7/6/6
+// TRAFFIC-NEXT: manual_vf_boundary_vld_vst_membar=3/1/0
+// TRAFFIC-NEXT: essential_boundary_vld_vst=3/1
+// TRAFFIC-NEXT: excess_vld_vst_membar=4/5/6
+// TRAFFIC-NEXT: accumulator_ub_root_materialized=no
+// TRAFFIC-NEXT: dynamic_per_row_total_vld_vst_membar=259/132/132
+// TRAFFIC-NEXT: dynamic_per_row_manual_vf_boundary=192/64/0
 
 // GOLDEN: x_sha256=4592fd5558963014cdeda9c7abe87ca56fc7d9460ea824e6e86391e99a41446f
 // GOLDEN: gamma_sha256=53aa7ef4ac5abbf117e37472b3f1f2c5050de6cefb3aa8dc34a4a77cf59c42ac
