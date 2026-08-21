@@ -2805,6 +2805,8 @@ lowerPTOToVPTOBackend(PassManager &pm, ModuleOp module,
     if (isVMIFullFusionEnabled(defaultFusionEnabled)) {
       kernelModulePM.addNestedPass<mlir::func::FuncOp>(
           pto::createPTOVMIAccumulatorPromotionPass());
+      kernelModulePM.addNestedPass<mlir::func::FuncOp>(
+          pto::createPTOVMIScalarPromotionPass());
       kernelModulePM.addPass(mlir::createCanonicalizerPass());
       kernelModulePM.addPass(mlir::createCSEPass());
     }

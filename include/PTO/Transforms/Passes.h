@@ -138,6 +138,7 @@ std::unique_ptr<Pass> createSelectTileLibCandidatePass(
 std::unique_ptr<Pass> createPTOPlanVMIAccumulatorPhasesPass();
 std::unique_ptr<Pass> createPTOPlanVMIScalarPhasesPass();
 std::unique_ptr<Pass> createPTOVMIAccumulatorPromotionPass();
+std::unique_ptr<Pass> createPTOVMIScalarPromotionPass();
 std::unique_ptr<Pass> createExpandTileOpPass();
 std::unique_ptr<Pass> createExpandTileOpPass(const ExpandTileOpOptions &options);
 std::unique_ptr<Pass> createFoldTileBufIntrinsicsPass();

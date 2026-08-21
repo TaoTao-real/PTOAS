@@ -80,6 +80,9 @@ def main():
     # storage was materialized again.  Its provenance attribute may remain.
     if re.search(r"arith\.constant\s+41728\s*:\s*i64", ir):
         return fail("promoted accumulator UB root 41728 was materialized")
+    scalar_promoted = args.stage in {"scalar-vreg", "dead-store", "vf-boundary"}
+    if scalar_promoted and re.search(r"arith\.constant\s+42240\s*:\s*i64", ir):
+        return fail("promoted scalar UB root 42240 was materialized")
 
     load_dist = collections.Counter(distribution(line) for line in loads)
     store_dist = collections.Counter(distribution(line) for line in stores)
@@ -118,6 +121,8 @@ def main():
     print("essential_boundary_vld_vst={}/{}".format(essential_loads, essential_stores))
     print("excess_vld_vst_membar={}/{}/{}".format(*excess))
     print("accumulator_ub_root_materialized=no")
+    if scalar_promoted:
+        print("scalar_ub_root_materialized=no")
 
     if args.stage == "baseline":
         # Each chunk loop has 64 iterations.  Scalar-chain operations execute

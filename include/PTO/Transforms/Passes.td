@@ -628,6 +628,26 @@ def PTOVMIAccumulatorPromotion
   ];
 }
 
+def PTOVMIScalarPromotion
+    : Pass<"pto-vmi-scalar-promotion", "func::FuncOp"> {
+  let summary = "Promote proven RMSNorm scalar and divisor storage to VMI vregs";
+  let description = [{
+    Consumes accepted RMSNorm scalar-phase provenance after TileLib expansion,
+    inlining, loop fusion, and accumulator promotion. The pass forwards the
+    one-lane reduction value through tmuls, tadds, and tsqrt as SSA VMI vregs,
+    then broadcasts the final divisor once outside the apply loop. Exact
+    address, mask, candidate, use, and control-flow proofs are required before
+    any UB load or store is removed.
+  }];
+  let constructor = "mlir::pto::createPTOVMIScalarPromotionPass()";
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+    "mlir::func::FuncDialect",
+    "mlir::pto::PTODialect",
+    "mlir::scf::SCFDialect"
+  ];
+}
+
 def ExpandTileOp : Pass<"pto-expand-tile-op", "ModuleOp"> {
   let summary = "Expand tile ops using the selected TileLib implementation";
   let description = [{

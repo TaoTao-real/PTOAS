@@ -1,0 +1,143 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// CANN Open Software License Agreement Version 2.0
+
+// RUN: pto-test-opt --pto-vmi-scalar-promotion %s | FileCheck %s --check-prefix=PROMOTE
+// RUN: sed 's/%%scalar_lanes = arith.constant 1/%%scalar_lanes = arith.constant 0/' %s | pto-test-opt --pto-vmi-scalar-promotion | FileCheck %s --check-prefix=REJECT-MASK
+// RUN: sed 's|// INJECT_SYNC|pto.set_flag[<PIPE_V>, <PIPE_V>, <EVENT_ID0>]|' %s | pto-test-opt --pto-vmi-scalar-promotion | FileCheck %s --check-prefix=REJECT-SYNC
+// RUN: sed 's|// INJECT_ESCAPE|%%escape = pto.vmi.vbrc %%root_value : !pto.vmi.vreg<1xf32> -> !pto.vmi.vreg<64xf32>|' %s | pto-test-opt --pto-vmi-scalar-promotion | FileCheck %s --check-prefix=REJECT-ESCAPE
+// RUN: sed 's|// INJECT_ALIAS|%%partial_addr = arith.constant 4064 : i64 %%partial = pto.alloc_tile addr = %%partial_addr : !vl|' %s | pto-test-opt --pto-vmi-scalar-promotion | FileCheck %s --check-prefix=REJECT-ALIAS
+
+!vl = !pto.tile_buf<vec, 1x64xf32>
+!scalar = !pto.tile_buf<vec, 1x8xf32, valid=1x1>
+!divisor = !pto.tile_buf<vec, 8x1xf32, valid=1x1, blayout=col_major>
+
+module {
+  // PROMOTE-LABEL: func.func @scalar_promotion
+  // PROMOTE: %[[REDUCTION_REGION:.*]]:2 = pto.fusion_region
+  // PROMOTE: %[[SUM:.*]] = pto.vmi.vcadd
+  // PROMOTE-NOT: pto.vmi.vstore %[[SUM]]
+  // PROMOTE: pto.yield({{.*}}, %[[SUM]])
+  // PROMOTE: %[[ROOT_REGION:.*]] = pto.fusion_region
+  // PROMOTE: %[[MEAN:.*]] = pto.vmi.vmuls %[[REDUCTION_REGION]]#1
+  // PROMOTE: %[[SHIFT:.*]] = pto.vmi.vadds %[[MEAN]]
+  // PROMOTE: %[[ROOT:.*]] = pto.vmi.vsqrt %[[SHIFT]]
+  // PROMOTE: pto.yield(%[[ROOT]])
+  // PROMOTE: %[[DIVISOR:.*]] = pto.vmi.vbrc %[[ROOT_REGION]]
+  // PROMOTE-SAME: !pto.vmi.vreg<1xf32> -> !pto.vmi.vreg<64xf32>
+  // PROMOTE: scf.for
+  // PROMOTE: pto.vmi.vdiv {{.*}}, %[[DIVISOR]],
+  // PROMOTE: pto.vmi.scalar.phase_status = "promoted"
+  // PROMOTE-SAME: pto.vmi.scalar.promoted
+  // PROMOTE-NOT: pto.vmi.scalar.promotion_reject_reason
+
+  // REJECT-MASK-LABEL: func.func @scalar_promotion
+  // REJECT-MASK: pto.vmi.scalar.promotion_reject_reason = "reduction_scalar_store_contract_changed"
+  // REJECT-MASK-NOT: pto.vmi.scalar.promoted
+
+  // REJECT-SYNC-LABEL: func.func @scalar_promotion
+  // REJECT-SYNC: pto.vmi.scalar.promotion_reject_reason = "scalar_phase_contains_sync_or_call_after_expansion"
+  // REJECT-SYNC-NOT: pto.vmi.scalar.promoted
+
+  // REJECT-ESCAPE-LABEL: func.func @scalar_promotion
+  // REJECT-ESCAPE: pto.vmi.scalar.promotion_reject_reason = "scalar_mask_or_escape_contract_changed"
+  // REJECT-ESCAPE-NOT: pto.vmi.scalar.promoted
+
+  // REJECT-ALIAS-LABEL: func.func @scalar_promotion
+  // REJECT-ALIAS: pto.vmi.scalar.promotion_reject_reason = "scalar_partial_alias_after_expansion"
+  // REJECT-ALIAS-NOT: pto.vmi.scalar.promoted
+  func.func @scalar_promotion() {
+    %c0 = arith.constant 0 : index
+    %c64 = arith.constant 64 : index
+    %c4096 = arith.constant 4096 : index
+    %scalar_lanes = arith.constant 1 : index
+    %zero = arith.constant 0.0 : f32
+    %scale = arith.constant 2.44140625e-4 : f32
+    %epsilon = arith.constant 1.0e-6 : f32
+    %root_addr = arith.constant 4096 : i64
+    %acc_addr = arith.constant 8192 : i64
+    %acc = pto.alloc_tile addr = %acc_addr : !vl
+    %root_mask = pto.vmi.create_mask %c64 : index -> !pto.vmi.mask<64xpred>
+    %scalar_mask = pto.vmi.create_mask %scalar_lanes : index -> !pto.vmi.mask<1xpred>
+    %acc_value = pto.vmi.vbrc %zero : f32 -> !pto.vmi.vreg<64xf32>
+
+    %reduced = pto.fusion_region {
+      %sum = pto.alloc_tile addr = %root_addr : !scalar
+      %sum_ptr = pto.tile_buf_addr %sum {
+        pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_trowsum"
+      } : !scalar -> !pto.ptr<f32, ub>
+      %sum_value = pto.vmi.vcadd %acc_value, %root_mask {reassoc}
+        : !pto.vmi.vreg<64xf32>, !pto.vmi.mask<64xpred> -> !pto.vmi.vreg<1xf32>
+      pto.vmi.vstore %sum_value, %sum_ptr[%c0], %scalar_mask
+        : !pto.vmi.vreg<1xf32>, !pto.ptr<f32, ub>, !pto.vmi.mask<1xpred>
+      pto.yield(%sum) : (!scalar) -> ()
+    } : !scalar
+
+    "pto.fusion_region"() ({
+      %mean = pto.alloc_tile addr = %root_addr : !scalar
+      %shifted = pto.alloc_tile addr = %root_addr : !scalar
+      %root = pto.alloc_tile addr = %root_addr : !scalar
+      %sum_ptr = pto.tile_buf_addr %reduced {
+        pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tmuls"
+      } : !scalar -> !pto.ptr<f32, ub>
+      %mean_ptr = pto.tile_buf_addr %mean {
+        pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tmuls"
+      } : !scalar -> !pto.ptr<f32, ub>
+      %sum_value = pto.vmi.vload %sum_ptr[%c0]
+        : !pto.ptr<f32, ub> -> !pto.vmi.vreg<1xf32>
+      %mean_value = pto.vmi.vmuls %sum_value, %scale, %scalar_mask
+        : !pto.vmi.vreg<1xf32>, f32, !pto.vmi.mask<1xpred> -> !pto.vmi.vreg<1xf32>
+      pto.vmi.vstore %mean_value, %mean_ptr[%c0], %scalar_mask
+        : !pto.vmi.vreg<1xf32>, !pto.ptr<f32, ub>, !pto.vmi.mask<1xpred>
+      %mean_read_ptr = pto.tile_buf_addr %mean {
+        pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tadds"
+      } : !scalar -> !pto.ptr<f32, ub>
+      %shifted_ptr = pto.tile_buf_addr %shifted {
+        pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tadds"
+      } : !scalar -> !pto.ptr<f32, ub>
+      %mean_read = pto.vmi.vload %mean_read_ptr[%c0]
+        : !pto.ptr<f32, ub> -> !pto.vmi.vreg<1xf32>
+      %shifted_value = pto.vmi.vadds %mean_read, %epsilon, %scalar_mask
+        : !pto.vmi.vreg<1xf32>, f32, !pto.vmi.mask<1xpred> -> !pto.vmi.vreg<1xf32>
+      pto.vmi.vstore %shifted_value, %shifted_ptr[%c0], %scalar_mask
+        : !pto.vmi.vreg<1xf32>, !pto.ptr<f32, ub>, !pto.vmi.mask<1xpred>
+      %shifted_read_ptr = pto.tile_buf_addr %shifted {
+        pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tsqrt"
+      } : !scalar -> !pto.ptr<f32, ub>
+      %root_ptr = pto.tile_buf_addr %root {
+        pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_tsqrt"
+      } : !scalar -> !pto.ptr<f32, ub>
+      %shifted_read = pto.vmi.vload %shifted_read_ptr[%c0]
+        : !pto.ptr<f32, ub> -> !pto.vmi.vreg<1xf32>
+      %root_value = pto.vmi.vsqrt %shifted_read, %scalar_mask
+        : !pto.vmi.vreg<1xf32>, !pto.vmi.mask<1xpred> -> !pto.vmi.vreg<1xf32>
+      // INJECT_ESCAPE
+      pto.vmi.vstore %root_value, %root_ptr[%c0], %scalar_mask
+        : !pto.vmi.vreg<1xf32>, !pto.ptr<f32, ub>, !pto.vmi.mask<1xpred>
+      pto.yield() : () -> ()
+    }) {pto.fusion.group_id = 1 : i64} : () -> ()
+
+    %divisor = pto.alloc_tile addr = %root_addr : !divisor
+    // INJECT_ALIAS
+    scf.for %col = %c0 to %c4096 step %c64 {
+      // INJECT_SYNC
+      "pto.fusion_region"() ({
+        %divisor_ptr = pto.tile_buf_addr %divisor {
+          pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_trowexpanddiv"
+        } : !divisor -> !pto.ptr<f32, ub>
+        %divisor_value = pto.vmi.vload %divisor_ptr[%c0] {
+          dist_mode = "brc", pto.tilelib.impl = "vmi",
+          pto.tilelib.candidate = "vmi_trowexpanddiv"
+        } : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+        %quotient = pto.vmi.vdiv %acc_value, %divisor_value, %root_mask {
+          pto.tilelib.impl = "vmi", pto.tilelib.candidate = "vmi_trowexpanddiv"
+        } : !pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32>, !pto.vmi.mask<64xpred> -> !pto.vmi.vreg<64xf32>
+        pto.yield() : () -> ()
+      }) {pto.fusion.group_id = 2 : i64} : () -> ()
+    } {pto.vmi.scalar.apply_iterations = 64 : i64,
+       pto.vmi.scalar.phase = "apply_loop",
+       pto.vmi.scalar.phase_group = 0 : i64,
+       pto.vmi.scalar.phase_status = "accepted",
+       pto.vmi.scalar.storage_root = 4096 : i64}
+    return
+  }
+}

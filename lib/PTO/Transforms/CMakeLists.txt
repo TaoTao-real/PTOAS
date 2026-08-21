@@ -71,6 +71,7 @@ add_mlir_dialect_library(PTOTransforms
   TileFusion/PTOPlanVMIAccumulatorPhases.cpp
   TileFusion/PTOPlanVMIScalarPhases.cpp
   TileFusion/PTOVMIAccumulatorPromotion.cpp
+  TileFusion/PTOVMIScalarPromotion.cpp
   FoldTileBufIntrinsics.cpp
   LowerPTOToUBufOps.cpp
   PTOLowerToOpLibCalls.cpp
