@@ -181,8 +181,7 @@ static std::optional<int64_t> getStaticPrefixActiveLanes(Value value) {
   if (isa<pto::PandOp>(op)) {
     int64_t activeLanes = physicalLanes;
     for (Value operand : op->getOperands()) {
-      std::optional<int64_t> operandLanes =
-          getStaticPrefixActiveLanes(operand);
+      std::optional<int64_t> operandLanes = getStaticPrefixActiveLanes(operand);
       if (!operandLanes)
         return std::nullopt;
       activeLanes = std::min(activeLanes, *operandLanes);
@@ -221,6 +220,41 @@ static bool isAddressScaffoldOp(Operation *op) {
              memref::CastOp, memref::ReshapeOp, memref::ReinterpretCastOp,
              memref::CollapseShapeOp, memref::ExpandShapeOp,
              memref::MemorySpaceCastOp, memref::TransposeOp>(op);
+}
+
+/// Remove address-only chains made dead by the previous forwarding round.
+///
+/// A dead pointer chain in a later fusion phase must not make an earlier UB
+/// store appear externally observable.  Erase only the explicitly supported
+/// address scaffold operations, and iterate in reverse lexical order so a
+/// dead cast user exposes its dead pointer producer in the same cleanup.
+static bool eraseDeadAddressScaffoldOps(func::FuncOp func) {
+  bool changed = false;
+  while (true) {
+    SmallVector<Operation *, 16> dead;
+    func.walk([&](Operation *op) {
+      if (!isAddressScaffoldOp(op) || op->getNumResults() == 0)
+        return;
+      if (llvm::all_of(op->getResults(),
+                       [](Value result) { return result.use_empty(); }))
+        dead.push_back(op);
+    });
+    if (dead.empty())
+      break;
+
+    bool erasedThisRound = false;
+    for (Operation *op : llvm::reverse(dead)) {
+      if (!llvm::all_of(op->getResults(),
+                        [](Value result) { return result.use_empty(); }))
+        continue;
+      op->erase();
+      erasedThisRound = true;
+      changed = true;
+    }
+    if (!erasedThisRound)
+      break;
+  }
+  return changed;
 }
 
 static bool isSupportedLeafOp(Operation *op) {
@@ -750,64 +784,82 @@ struct PTOFusionLoadStoreElisionPass
       changed |= normalizeFusionRegionYieldFrontier(fusionRegion);
     });
 
-    llvm::DenseMap<Operation *, FusionRegionStoreContext> regionContexts;
-    func.walk([&](pto::FusionRegionOp fusionRegion) {
-      std::optional<FusionRegionStoreContext> context =
-          buildFusionRegionStoreContext(fusionRegion);
-      if (!context)
-        return;
-      regionContexts.try_emplace(fusionRegion.getOperation(),
-                                 std::move(*context));
-    });
+    auto runElisionRound = [&]() {
+      bool roundChanged = false;
+      llvm::DenseMap<Operation *, FusionRegionStoreContext> regionContexts;
+      func.walk([&](pto::FusionRegionOp fusionRegion) {
+        std::optional<FusionRegionStoreContext> context =
+            buildFusionRegionStoreContext(fusionRegion);
+        if (!context)
+          return;
+        regionContexts.try_emplace(fusionRegion.getOperation(),
+                                   std::move(*context));
+      });
 
-    func.walk([&](pto::FusionRegionOp fusionRegion) {
-      auto it = regionContexts.find(fusionRegion.getOperation());
-      if (it == regionContexts.end())
-        return;
+      func.walk([&](pto::FusionRegionOp fusionRegion) {
+        auto it = regionContexts.find(fusionRegion.getOperation());
+        if (it == regionContexts.end())
+          return;
 
-      Block &body = fusionRegion.getBody().front();
-      if (!isSupportedStraightLineBlock(body))
-        return;
+        Block &body = fusionRegion.getBody().front();
+        if (!isSupportedStraightLineBlock(body))
+          return;
 
-      changed |= elideLoadStoreRoundTripsInLeafBody(body, &it->second, nullptr);
-    });
+        roundChanged |=
+            elideLoadStoreRoundTripsInLeafBody(body, &it->second, nullptr);
+      });
 
-    auto runElisionForLeafBody = [&](Block *leafBody, Operation *scopeOp,
-                                     pto::FusionRegionOp fusionRegion) {
-      if (!leafBody || !fusionRegion)
-        return;
+      auto runElisionForLeafBody = [&](Block *leafBody, Operation *scopeOp,
+                                       pto::FusionRegionOp fusionRegion) {
+        if (!leafBody || !fusionRegion)
+          return;
 
-      auto it = regionContexts.find(fusionRegion.getOperation());
-      if (it == regionContexts.end())
-        return;
+        auto it = regionContexts.find(fusionRegion.getOperation());
+        if (it == regionContexts.end())
+          return;
 
-      changed |=
-          elideLoadStoreRoundTripsInLeafBody(*leafBody, &it->second, scopeOp);
+        roundChanged |=
+            elideLoadStoreRoundTripsInLeafBody(*leafBody, &it->second, scopeOp);
+      };
+
+      func.walk([&](pto::VecScopeOp vecscope) {
+        if (auto fusionRegion =
+                vecscope->getParentOfType<pto::FusionRegionOp>()) {
+          if (isSupportedStraightLineBlock(vecscope.getBody().front()))
+            runElisionForLeafBody(&vecscope.getBody().front(), vecscope,
+                                  fusionRegion);
+        }
+      });
+      func.walk([&](pto::StrictVecScopeOp vecscope) {
+        if (auto fusionRegion =
+                vecscope->getParentOfType<pto::FusionRegionOp>()) {
+          if (isSupportedStraightLineBlock(vecscope.getBody().front()))
+            runElisionForLeafBody(&vecscope.getBody().front(), vecscope,
+                                  fusionRegion);
+        }
+      });
+
+      func.walk([&](scf::ForOp loop) {
+        if (!isSupportedLoopRoot(loop))
+          return;
+        runElisionForLeafBody(getLeafLoopBody(loop), loop.getOperation(),
+                              loop->getParentOfType<pto::FusionRegionOp>());
+      });
+      return roundChanged;
     };
 
-    func.walk([&](pto::VecScopeOp vecscope) {
-      if (auto fusionRegion =
-              vecscope->getParentOfType<pto::FusionRegionOp>()) {
-        if (isSupportedStraightLineBlock(vecscope.getBody().front()))
-          runElisionForLeafBody(&vecscope.getBody().front(), vecscope,
-                                fusionRegion);
-      }
-    });
-    func.walk([&](pto::StrictVecScopeOp vecscope) {
-      if (auto fusionRegion =
-              vecscope->getParentOfType<pto::FusionRegionOp>()) {
-        if (isSupportedStraightLineBlock(vecscope.getBody().front()))
-          runElisionForLeafBody(&vecscope.getBody().front(), vecscope,
-                                fusionRegion);
-      }
-    });
-
-    func.walk([&](scf::ForOp loop) {
-      if (!isSupportedLoopRoot(loop))
-        return;
-      runElisionForLeafBody(getLeafLoopBody(loop), loop.getOperation(),
-                            loop->getParentOfType<pto::FusionRegionOp>());
-    });
+    // Forwarding can kill a later phase's pointer-only chain. Rebuild the
+    // escape frontier after cleaning that chain, then reconsider tail stores.
+    // Each successful round erases at least one operation, so this reaches a
+    // finite fixed point without weakening alias, mask, or yielded-frontier
+    // proofs.
+    while (true) {
+      bool roundChanged = runElisionRound();
+      bool scaffoldChanged = eraseDeadAddressScaffoldOps(func);
+      changed |= roundChanged || scaffoldChanged;
+      if (!roundChanged && !scaffoldChanged)
+        break;
+    }
 
     if (!changed)
       markAllAnalysesPreserved();

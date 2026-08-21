@@ -10,7 +10,7 @@
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=ordinary --vmi-fusion-mode=off --emit-vpto %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_ascendc_aligned.pto -o /dev/null
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --emit-vpto %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_ascendc_aligned.pto -o /dev/null --mlir-print-ir-after=pto-plan-vmi-scalar-phases 2>&1 | FileCheck %s --check-prefix=SCALAR-PLAN
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --emit-vpto %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_ascendc_aligned.pto -o - | FileCheck %s --check-prefix=PROMOTED
-// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --enable-vecscope-mem-bar --emit-vpto %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_ascendc_aligned.pto -o - | %python_executable %S/Inputs/rmsnorm_vf_traffic_gate.py --stage scalar-vreg | FileCheck %s --check-prefix=TRAFFIC
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --enable-vecscope-mem-bar --emit-vpto %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_ascendc_aligned.pto -o - | %python_executable %S/Inputs/rmsnorm_vf_traffic_gate.py --stage dead-store | FileCheck %s --check-prefix=TRAFFIC
 // RUN: %python_executable %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_golden.py | FileCheck %s --check-prefix=GOLDEN
 
 // FLOW-LABEL: func.func @rms_norm_1vl_ascendc_aligned
@@ -70,11 +70,11 @@
 // SCALAR-PLAN-SAME: pto.vmi.scalar.phase = "apply_loop"
 // SCALAR-PLAN-NOT: pto.vmi.scalar.phase_reject_reason
 
-// TRAFFIC: stage=scalar-vreg
-// TRAFFIC-NEXT: static_total_vld_vst_membar=3/2/2
+// TRAFFIC: stage=dead-store
+// TRAFFIC-NEXT: static_total_vld_vst_membar=3/1/1
 // TRAFFIC-NEXT: manual_vf_boundary_vld_vst_membar=3/1/0
 // TRAFFIC-NEXT: essential_boundary_vld_vst=3/1
-// TRAFFIC-NEXT: excess_vld_vst_membar=0/1/2
+// TRAFFIC-NEXT: excess_vld_vst_membar=0/0/1
 // TRAFFIC-NEXT: accumulator_ub_root_materialized=no
 // TRAFFIC-NEXT: scalar_ub_root_materialized=no
 
