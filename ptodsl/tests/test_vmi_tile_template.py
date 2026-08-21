@@ -443,6 +443,47 @@ def check_provider_helper() -> None:
         context_attrs={},
     ).mlir_text()
     expect("pto.vmi.vcadd" in compact_rowsum, "compact rowsum should lower to VMI")
+    padded_col_row_state = {
+        **raw_tile_spec,
+        "shape": [256, 1],
+        "valid_shape": [32, 1],
+        "config": {**raw_tile_spec["config"], "b_layout": "col_major"},
+    }
+    padded_rowsum = instantiate_candidate(
+        target="a5",
+        op_name="pto.trowsum",
+        operand_specs=[raw_tile_spec, raw_tile_spec, padded_col_row_state],
+        provider_module="ptodsl.vmi_tilelib",
+        context_attrs={},
+    ).mlir_text()
+    expect(
+        padded_rowsum.count("scf.for") == 1
+        and "pto.vmi.vcadd" in padded_rowsum,
+        "padded col-major rowsum should preserve one logical row loop",
+    )
+    expect(
+        padded_rowsum.count("pto.vmi.vstore") == 1,
+        "padded col-major rowsum must retain its standalone compact store",
+    )
+    for invalid_padded in (
+        {
+            **padded_col_row_state,
+            "shape": [32, 2],
+            "valid_shape": [32, 1],
+        },
+        {**padded_col_row_state, "valid_shape": [31, 1]},
+    ):
+        expect_raises(
+            lambda spec=invalid_padded: instantiate_candidate(
+                target="a5",
+                op_name="pto.trowsum",
+                operand_specs=[raw_tile_spec, raw_tile_spec, spec],
+                provider_module="ptodsl.vmi_tilelib",
+                context_attrs={},
+            ),
+            LookupError,
+            "no legal PTODSL VMI candidate",
+        )
     invalid_compact = {**compact_row_state, "valid_shape": [31, 1]}
     expect_raises(
         lambda: instantiate_candidate(

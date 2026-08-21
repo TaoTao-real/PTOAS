@@ -24,17 +24,16 @@
 // FLOW-NOT: scf.for
 // FLOW-NOT: pto.trowsum
 
-// The A5-aligned padded compact row state exposes two baseline gaps:
-// padded trowsum output and Nx64 trowexpanddiv.  All other compute instances
-// select VMI.
+// Padded trowsum is selected after the exact compact-row candidate extension;
+// Nx64 trowexpanddiv remains the only compute fallback at this stage.
 // BASELINE-LABEL: func.func @rmsnorm_row_vf_n64
 // BASELINE: pto.tcvt
 // BASELINE-SAME: pto.tilelib.candidate = "vmi_tcvt"
 // BASELINE: pto.tmul
 // BASELINE-SAME: pto.tilelib.impl = "vmi"
 // BASELINE: pto.trowsum
-// BASELINE-SAME: pto.tilelib.candidate = "template_trowsum"
-// BASELINE-SAME: pto.tilelib.impl = "ptodsl"
+// BASELINE-SAME: pto.tilelib.candidate = "vmi_trowsum"
+// BASELINE-SAME: pto.tilelib.impl = "vmi"
 // BASELINE: pto.tmuls
 // BASELINE-SAME: pto.tilelib.impl = "vmi"
 // BASELINE: pto.tadds

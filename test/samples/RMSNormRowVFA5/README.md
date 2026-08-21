@@ -53,6 +53,7 @@ The compact row state intentionally uses a padded physical representation:
 col-major `512x1 valid 64x1`, reinterpreted as row-major
 `64x8 valid 64x1` for scalar elementwise ops.  This is the minimum A5-legal
 row-major storage (32 bytes per physical row) and preserves one VL1 iteration
-per logical row.  At the fixture baseline, `trowsum` and `trowexpanddiv` are the
-two expected PTODSL fallbacks; subsequent feature commits add the exact padded
-forms without weakening dynamic/tail legality.
+per logical row.  The fixture-introduction baseline exposed `trowsum` and
+`trowexpanddiv` as the two PTODSL compute fallbacks.  The compiler now accepts
+the exact padded `trowsum` form; the separate Nx64 divide candidate is tracked
+and tested independently without weakening dynamic/tail legality.

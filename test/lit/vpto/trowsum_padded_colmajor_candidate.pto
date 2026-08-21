@@ -1,0 +1,40 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// CANN Open Software License Agreement Version 2.0
+
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=off --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-select-tilelib-candidate 2>&1 | FileCheck %s --check-prefix=SELECT
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=off --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-inline-libcall 2>&1 | FileCheck %s --check-prefix=INLINE
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --tile-lib-backend=ptodsl --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=off --emit-vpto %s -o - | FileCheck %s --check-prefix=FINAL
+
+// SELECT-LABEL: func.func @padded_colmajor_rowsum
+// SELECT: pto.trowsum
+// SELECT-SAME: pto.tilelib.candidate = "vmi_trowsum"
+// SELECT-SAME: pto.tilelib.impl = "vmi"
+// SELECT: pto.trowsum
+// SELECT-SAME: pto.tilelib.candidate = "template_trowsum"
+// SELECT-SAME: pto.tilelib.impl = "ptodsl"
+
+// INLINE-LABEL: func.func @padded_colmajor_rowsum
+// INLINE: scf.for
+// INLINE: pto.vmi.vcadd
+// INLINE: pto.vmi.vstore
+
+// FINAL-LABEL: func.func @padded_colmajor_rowsum
+// FINAL: scf.for
+// FINAL: pto.vcadd
+// FINAL: pto.vsts
+// FINAL-NOT: pto.vmi.vcadd
+// FINAL-NOT: pto.vmi.vstore
+
+module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+  func.func @padded_colmajor_rowsum() {
+    %src = pto.alloc_tile : !pto.tile_buf<vec, 32x64xf32>
+    %tmp = pto.alloc_tile : !pto.tile_buf<vec, 32x64xf32>
+    %padded = pto.alloc_tile : !pto.tile_buf<vec, 256x1xf32, valid=32x1, blayout=col_major>
+    %wide = pto.alloc_tile : !pto.tile_buf<vec, 32x128xf32>
+    %wide_tmp = pto.alloc_tile : !pto.tile_buf<vec, 32x128xf32>
+    %wide_dst = pto.alloc_tile : !pto.tile_buf<vec, 32x1xf32, blayout=col_major>
+    pto.trowsum ins(%src, %tmp : !pto.tile_buf<vec, 32x64xf32>, !pto.tile_buf<vec, 32x64xf32>) outs(%padded : !pto.tile_buf<vec, 256x1xf32, valid=32x1, blayout=col_major>)
+    pto.trowsum ins(%wide, %wide_tmp : !pto.tile_buf<vec, 32x128xf32>, !pto.tile_buf<vec, 32x128xf32>) outs(%wide_dst : !pto.tile_buf<vec, 32x1xf32, blayout=col_major>)
+    return
+  }
+}

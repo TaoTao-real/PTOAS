@@ -1420,10 +1420,19 @@ def _validate_row_reduce_tiles(
         raise ValueError("row-reduce workspace valid_shape must match source")
     if dst_valid != (rows, 1):
         raise ValueError("row-reduce destination valid_shape must be [rows, 1]")
-    if dst._spec.shape[0] != rows or dst._spec.shape[1] < 1:
-        raise ValueError("row-reduce destination physical rows must match source")
     if dst._spec.b_layout not in {"row_major", "col_major"}:
         raise ValueError("row-reduce destination must be row- or col-major")
+    dst_rows, dst_cols = dst._spec.shape
+    if dst._spec.b_layout == "row_major":
+        if dst_rows != rows or dst_cols < 1:
+            raise ValueError(
+                "row-major row-reduce destination physical rows must match source"
+            )
+    elif dst_rows < rows or dst_cols != 1:
+        raise ValueError(
+            "col-major row-reduce destination must have at least the valid "
+            "source rows and exactly one physical column"
+        )
     if cols != f32.lanes:
         raise ValueError("row-reduce source rows must contain exactly one f32 VL block")
     return CanonicalBlockMap.from_tile(src, logical_lanes=f32.lanes)
@@ -1448,17 +1457,19 @@ def _row_reduce_vmi_legal(**context) -> bool:
     if shape != src_valid or workspace_shape != shape or workspace_valid != src_valid:
         return False
     rows, cols = shape
-    if cols != f32.lanes or dst_shape[0] != rows or dst_shape[1] < 1:
+    if cols != f32.lanes:
         return False
     if dst_valid != (rows, 1):
         return False
     if any(config is None or config.s_layout != "none_box" for config in configs):
         return False
-    return (
-        configs[0].b_layout == "row_major"
-        and configs[1].b_layout == "row_major"
-        and configs[2].b_layout in {"row_major", "col_major"}
-    )
+    if configs[0].b_layout != "row_major" or configs[1].b_layout != "row_major":
+        return False
+    if configs[2].b_layout == "row_major":
+        return dst_shape[0] == rows and dst_shape[1] >= 1
+    if configs[2].b_layout == "col_major":
+        return dst_shape[0] >= rows and dst_shape[1] == 1
+    return False
 
 
 def emit_row_reduce_vmi(

@@ -1071,17 +1071,21 @@ static bool hasStaticCompactRowReduceShape(Operation *tileOp) {
   if (src.tileShape.size() != 2 || src.tileShape[1] != 64)
     return false;
   if (dst.tileShape.size() != 2 || dst.tileValidShape.size() != 2 ||
-      dst.tileShape[0] != src.tileShape[0] ||
       dst.tileValidShape[0] != src.tileShape[0] ||
-      dst.tileValidShape[1] != 1 || dst.tileShape[1] < 1)
+      dst.tileValidShape[1] != 1)
     return false;
-  // RowMajor and ColMajor both have a statically known row stride here; the
-  // Python emitter uses the corresponding physical offset for row-major and
-  // the compact one-point offset for col-major.
-  return src.blayout == static_cast<int32_t>(pto::BLayout::RowMajor) &&
-         tmp.blayout == static_cast<int32_t>(pto::BLayout::RowMajor) &&
-         (dst.blayout == static_cast<int32_t>(pto::BLayout::RowMajor) ||
-          dst.blayout == static_cast<int32_t>(pto::BLayout::ColMajor));
+  if (src.blayout != static_cast<int32_t>(pto::BLayout::RowMajor) ||
+      tmp.blayout != static_cast<int32_t>(pto::BLayout::RowMajor))
+    return false;
+
+  // Row-major state keeps one physical row per logical row.  Col-major state
+  // may carry leading physical padding (for example [512, 1], valid [64, 1])
+  // while the valid rows stay compact at linear offsets [0, N).
+  if (dst.blayout == static_cast<int32_t>(pto::BLayout::RowMajor))
+    return dst.tileShape[0] == src.tileShape[0] && dst.tileShape[1] >= 1;
+  if (dst.blayout == static_cast<int32_t>(pto::BLayout::ColMajor))
+    return dst.tileShape[0] >= src.tileShape[0] && dst.tileShape[1] == 1;
+  return false;
 }
 
 static bool hasStaticCompactElementwiseShape(Operation *tileOp) {
