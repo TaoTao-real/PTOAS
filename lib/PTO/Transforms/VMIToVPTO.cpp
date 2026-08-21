@@ -2407,6 +2407,48 @@ FailureOr<Value> createContiguousStoreMask(Location loc, VMIVRegType vmiType,
   return maskAndRemaining->first;
 }
 
+/// Materialize the active logical lanes of a contiguous VMI value instead of
+/// blindly enabling padding lanes in its physical carrier.  Full chunks keep
+/// PAT_ALL.  A compact value such as !pto.vmi.vreg<1xf32, contiguous> uses
+/// PAT_VL1, which also makes the compute predicate agree with its masked UB
+/// store and permits later load/store forwarding.
+FailureOr<Value>
+createLogicalActiveMaskForVReg(Location loc, VMIVRegType logicalType,
+                               int64_t physicalPart, VRegType physicalType,
+                               PatternRewriter &rewriter) {
+  VMILayoutAttr layout = logicalType.getLayoutAttr();
+  if (!layout || !layout.isContiguous() || layout.getLaneStride() != 1)
+    return createAllTrueMaskForVReg(loc, physicalType, rewriter);
+
+  FailureOr<int64_t> physicalArity = getVMIPhysicalArity(logicalType);
+  FailureOr<int64_t> lanesPerPart =
+      getDataLanesPerPart(logicalType.getElementType());
+  if (failed(physicalArity) || failed(lanesPerPart) || physicalPart < 0 ||
+      physicalPart >= *physicalArity)
+    return failure();
+
+  FailureOr<int64_t> activeLanes =
+      getActiveDataLanesInPhysicalChunk(logicalType, physicalPart);
+  if (failed(activeLanes))
+    return failure();
+  if (*activeLanes >= *lanesPerPart)
+    return createAllTrueMaskForVReg(loc, physicalType, rewriter);
+
+  FailureOr<MaskType> maskType =
+      getMaskTypeForVReg(physicalType, rewriter.getContext());
+  if (failed(maskType))
+    return failure();
+  if (std::optional<std::string> pattern =
+          getPrefixPattern(*activeLanes, *lanesPerPart))
+    return createPrefixMask(loc, *maskType, *pattern, rewriter);
+
+  FailureOr<std::pair<Value, Value>> maskAndRemaining = createRuntimePrefixMask(
+      loc, *maskType, createI32Constant(loc, *activeLanes, rewriter), rewriter);
+  if (failed(maskAndRemaining))
+    return failure();
+  return maskAndRemaining->first;
+}
+
 FailureOr<Value> createMaskedStorePredicate(Location loc, VMIVRegType vmiType,
                                             int64_t chunk, Value userMask,
                                             VRegType vregType,
@@ -8373,18 +8415,20 @@ struct OneToNVMIBinaryOpPattern : OpConversionPattern<SourceOp> {
 
     SmallVector<Value> results;
     results.reserve(resultTypes.size());
-    for (auto [lhs, rhs, resultType] :
-         llvm::zip_equal(lhsParts, rhsParts, resultTypes)) {
+    auto logicalResultType = cast<VMIVRegType>(op.getResult().getType());
+    for (auto [physicalPart, lhs, rhs, resultType] : llvm::enumerate(
+             lhsParts, rhsParts, resultTypes)) {
       auto vregType = dyn_cast<VRegType>(resultType);
       if (!vregType || lhs.getType() != resultType ||
           rhs.getType() != resultType)
         return rewriter.notifyMatchFailure(
             op, "physical binary part type mismatch");
-      FailureOr<Value> mask =
-          createAllTrueMaskForVReg(op.getLoc(), vregType, rewriter);
+      FailureOr<Value> mask = createLogicalActiveMaskForVReg(
+          op.getLoc(), logicalResultType,
+          static_cast<int64_t>(physicalPart), vregType, rewriter);
       if (failed(mask))
         return rewriter.notifyMatchFailure(
-            op, "unsupported element type for all-true binary mask");
+            op, "failed to materialize binary logical active-lane mask");
       results.push_back(
           rewriter.create<TargetOp>(op.getLoc(), resultType, lhs, rhs, *mask)
               .getResult());
@@ -8740,17 +8784,19 @@ struct OneToNVMIUnaryOpPattern : OpConversionPattern<SourceOp> {
 
     SmallVector<Value> results;
     results.reserve(resultTypes.size());
-    for (auto [source, resultType] :
-         llvm::zip_equal(sourceParts, resultTypes)) {
+    auto logicalResultType = cast<VMIVRegType>(op.getResult().getType());
+    for (auto [physicalPart, source, resultType] :
+         llvm::enumerate(sourceParts, resultTypes)) {
       auto vregType = dyn_cast<VRegType>(resultType);
       if (!vregType || source.getType() != resultType)
         return rewriter.notifyMatchFailure(op,
                                            "physical unary part type mismatch");
-      FailureOr<Value> mask =
-          createAllTrueMaskForVReg(op.getLoc(), vregType, rewriter);
+      FailureOr<Value> mask = createLogicalActiveMaskForVReg(
+          op.getLoc(), logicalResultType,
+          static_cast<int64_t>(physicalPart), vregType, rewriter);
       if (failed(mask))
         return rewriter.notifyMatchFailure(
-            op, "unsupported element type for all-true unary mask");
+            op, "failed to materialize unary logical active-lane mask");
       results.push_back(
           rewriter.create<TargetOp>(op.getLoc(), resultType, source, *mask)
               .getResult());

@@ -1,0 +1,68 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software; you can redistribute it and/or modify it under
+// the terms and conditions of CANN Open Software License Agreement Version 2.0.
+// Please refer to the License for details. You may not use this file except in
+// compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY
+// KIND, EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
+// NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+
+// RUN: pto-test-opt %s -vmi-to-vpto | FileCheck %s
+
+module {
+  func.func @compact_elementwise_masks(
+      %lhs: !pto.vmi.vreg<1xf32, #pto.vmi.layout<contiguous>>,
+      %rhs: !pto.vmi.vreg<1xf32, #pto.vmi.layout<contiguous>>)
+      -> !pto.vmi.vreg<1xf32, #pto.vmi.layout<contiguous>> {
+    %sum = pto.vmi.addf %lhs, %rhs
+        : !pto.vmi.vreg<1xf32, #pto.vmi.layout<contiguous>>,
+          !pto.vmi.vreg<1xf32, #pto.vmi.layout<contiguous>>
+          -> !pto.vmi.vreg<1xf32, #pto.vmi.layout<contiguous>>
+    %product = pto.vmi.mulf %sum, %rhs
+        : !pto.vmi.vreg<1xf32, #pto.vmi.layout<contiguous>>,
+          !pto.vmi.vreg<1xf32, #pto.vmi.layout<contiguous>>
+          -> !pto.vmi.vreg<1xf32, #pto.vmi.layout<contiguous>>
+    %root = pto.vmi.sqrt %product
+        : !pto.vmi.vreg<1xf32, #pto.vmi.layout<contiguous>>
+          -> !pto.vmi.vreg<1xf32, #pto.vmi.layout<contiguous>>
+    return %root : !pto.vmi.vreg<1xf32, #pto.vmi.layout<contiguous>>
+  }
+
+  func.func @full_elementwise_masks(
+      %lhs: !pto.vmi.vreg<64xf32, #pto.vmi.layout<contiguous>>,
+      %rhs: !pto.vmi.vreg<64xf32, #pto.vmi.layout<contiguous>>)
+      -> !pto.vmi.vreg<64xf32, #pto.vmi.layout<contiguous>> {
+    %sum = pto.vmi.addf %lhs, %rhs
+        : !pto.vmi.vreg<64xf32, #pto.vmi.layout<contiguous>>,
+          !pto.vmi.vreg<64xf32, #pto.vmi.layout<contiguous>>
+          -> !pto.vmi.vreg<64xf32, #pto.vmi.layout<contiguous>>
+    %product = pto.vmi.mulf %sum, %rhs
+        : !pto.vmi.vreg<64xf32, #pto.vmi.layout<contiguous>>,
+          !pto.vmi.vreg<64xf32, #pto.vmi.layout<contiguous>>
+          -> !pto.vmi.vreg<64xf32, #pto.vmi.layout<contiguous>>
+    %root = pto.vmi.sqrt %product
+        : !pto.vmi.vreg<64xf32, #pto.vmi.layout<contiguous>>
+          -> !pto.vmi.vreg<64xf32, #pto.vmi.layout<contiguous>>
+    return %root : !pto.vmi.vreg<64xf32, #pto.vmi.layout<contiguous>>
+  }
+}
+
+// CHECK-LABEL: func.func @compact_elementwise_masks(
+// CHECK: %[[VL1A:.*]] = pto.pge_b32 "PAT_VL1"
+// CHECK: %[[SUM:.*]] = pto.vadd %{{.*}}, %{{.*}}, %[[VL1A]]
+// CHECK: %[[VL1B:.*]] = pto.pge_b32 "PAT_VL1"
+// CHECK: %[[PRODUCT:.*]] = pto.vmul %[[SUM]], %{{.*}}, %[[VL1B]]
+// CHECK: %[[VL1C:.*]] = pto.pge_b32 "PAT_VL1"
+// CHECK: %[[ROOT:.*]] = pto.vsqrt %[[PRODUCT]], %[[VL1C]]
+// CHECK: return %[[ROOT]] : !pto.vreg<64xf32>
+
+// CHECK-LABEL: func.func @full_elementwise_masks(
+// CHECK: pto.pset_b32 "PAT_ALL"
+// CHECK: pto.vadd
+// CHECK: pto.pset_b32 "PAT_ALL"
+// CHECK: pto.vmul
+// CHECK: pto.pset_b32 "PAT_ALL"
+// CHECK: pto.vsqrt
+// CHECK-NOT: pto.pge_b32 "PAT_VL1"
+// CHECK-NOT: pto.vmi.
+// CHECK-NOT: !pto.vmi.

@@ -131,11 +131,78 @@ static bool isAllTruePatternMask(Value value) {
          activeLanes.getSExtValue() >= physicalLanes;
 }
 
+static int64_t getPhysicalMaskLanes(Type type) {
+  auto maskType = dyn_cast<pto::MaskType>(type);
+  if (!maskType)
+    return 0;
+  if (maskType.isB8())
+    return 256;
+  if (maskType.isB16())
+    return 128;
+  if (maskType.isB32())
+    return 64;
+  return 0;
+}
+
+/// Return the number of active lanes when a VPTO mask is provably a prefix.
+/// This recognizes both pattern masks and the conservative
+/// `pand(PAT_VLx, plt(x), PAT_ALL)` form emitted for compact masked stores.
+static std::optional<int64_t> getStaticPrefixActiveLanes(Value value) {
+  Operation *op = value ? value.getDefiningOp() : nullptr;
+  int64_t physicalLanes = value ? getPhysicalMaskLanes(value.getType()) : 0;
+  if (!op || physicalLanes == 0)
+    return std::nullopt;
+
+  if (isa<pto::PsetB8Op, pto::PsetB16Op, pto::PsetB32Op, pto::PgeB8Op,
+          pto::PgeB16Op, pto::PgeB32Op>(op)) {
+    auto pattern = op->getAttrOfType<StringAttr>("pattern");
+    if (!pattern)
+      return std::nullopt;
+    StringRef value = pattern.getValue();
+    if (value == "PAT_ALL")
+      return physicalLanes;
+    if (value == "PAT_ALLF")
+      return 0;
+    if (!value.consume_front("PAT_VL"))
+      return std::nullopt;
+    int64_t activeLanes = 0;
+    if (value.getAsInteger(10, activeLanes))
+      return std::nullopt;
+    return std::clamp<int64_t>(activeLanes, 0, physicalLanes);
+  }
+
+  if (isa<pto::PltB8Op, pto::PltB16Op, pto::PltB32Op>(op)) {
+    APInt activeLanes;
+    if (!matchPattern(op->getOperand(0), m_ConstantInt(&activeLanes)))
+      return std::nullopt;
+    return std::clamp<int64_t>(activeLanes.getSExtValue(), 0, physicalLanes);
+  }
+
+  if (isa<pto::PandOp>(op)) {
+    int64_t activeLanes = physicalLanes;
+    for (Value operand : op->getOperands()) {
+      std::optional<int64_t> operandLanes =
+          getStaticPrefixActiveLanes(operand);
+      if (!operandLanes)
+        return std::nullopt;
+      activeLanes = std::min(activeLanes, *operandLanes);
+    }
+    return activeLanes;
+  }
+
+  return std::nullopt;
+}
+
 static bool areEquivalentMaskValues(Value lhs, Value rhs) {
   if (areEquivalentValues(lhs, rhs))
     return true;
-  return lhs && rhs && lhs.getType() == rhs.getType() &&
-         isAllTruePatternMask(lhs) && isAllTruePatternMask(rhs);
+  if (!lhs || !rhs || lhs.getType() != rhs.getType())
+    return false;
+  if (isAllTruePatternMask(lhs) && isAllTruePatternMask(rhs))
+    return true;
+  std::optional<int64_t> lhsLanes = getStaticPrefixActiveLanes(lhs);
+  std::optional<int64_t> rhsLanes = getStaticPrefixActiveLanes(rhs);
+  return lhsLanes && rhsLanes && *lhsLanes == *rhsLanes;
 }
 
 static bool isPureNoRegionOp(Operation *op) {
