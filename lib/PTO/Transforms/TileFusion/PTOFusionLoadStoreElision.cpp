@@ -679,6 +679,37 @@ static bool shouldElideTailStore(
       aliasesAnyAddress(canonicalBase, context.externallyObservedAddresses))
     return false;
 
+  // Different TileLib phases commonly rebuild pointer/address scaffolding for
+  // the same static UB range.  Those equivalent pointers need not share an SSA
+  // use chain with this store's base.  Preserve the store when a later
+  // top-level phase reads or writes an equivalent address; otherwise an
+  // in-place producer such as Softmax expdif can be mistaken for dead even
+  // though the final divide loop reloads the exponent matrix.
+  bool hasLaterEquivalentAccess = false;
+  context.regionOp->walk([&](Operation *op) {
+    if (hasLaterEquivalentAccess || op == store.op)
+      return;
+    Value accessedBase;
+    if (auto load = dyn_cast<pto::VldsOp>(op))
+      accessedBase = load.getSource();
+    else if (auto otherStore = dyn_cast<pto::VstsOp>(op))
+      accessedBase = otherStore.getDestination();
+    else
+      return;
+    if (!areEquivalentValues(getCanonicalBufferAddress(accessedBase),
+                             getCanonicalBufferAddress(canonicalBase)))
+      return;
+    Operation *topLevelUser =
+        getTopLevelAncestorInBlock(op, context.body);
+    if (!topLevelUser || topLevelUser == localScopeOp)
+      return;
+    if (localScopeOp->getBlock() == topLevelUser->getBlock() &&
+        localScopeOp->isBeforeInBlock(topLevelUser))
+      hasLaterEquivalentAccess = true;
+  });
+  if (hasLaterEquivalentAccess)
+    return false;
+
   APInt staticAddress;
   if (!matchPattern(getCanonicalBufferAddress(canonicalBase),
                     m_ConstantInt(&staticAddress)))
@@ -933,6 +964,120 @@ static bool elideLoopInvariantPreheaderRoundTrip(func::FuncOp func) {
   return false;
 }
 
+static bool isSyncOrUnknownCall(Operation *op) {
+  if (!op)
+    return true;
+  StringRef name = op->getName().getStringRef();
+  return name == "pto.mem_bar" || name.contains("sync") ||
+         isa<func::CallOp>(op);
+}
+
+/// Forward a compact column state from one completed vector phase into the
+/// next phase of the same fusion region.  Softmax max/sum are the motivating
+/// cases: a loop returns the final column vreg, the ordinary standalone
+/// candidate materializes it in UB, and the immediately following candidate
+/// reloads exactly the same bytes before entering its own loop.
+///
+/// This deliberately does not look through a region-bearing operation between
+/// the pair.  Consequently it cannot remove the exp matrix materialization:
+/// that store is dynamic inside the exp/sum loop and its reload belongs to the
+/// later divide loop.  Only a unique, static-address, top-level VST/VLD pair
+/// separated by pure address/scalar scaffolding is eligible.
+static bool elideAdjacentPhaseStateRoundTrips(
+    func::FuncOp func, pto::FusionRegionOp fusionRegion,
+    const FusionRegionStoreContext &context) {
+  Block &body = fusionRegion.getBody().front();
+  SmallVector<Operation *, 8> eraseOrder;
+  bool changed = false;
+
+  auto hasUniqueMemoryPair = [&](pto::VstsOp store, pto::VldsOp load) {
+    Value address = getCanonicalBufferAddress(store.getDestination());
+    APInt staticAddress;
+    if (!address || !matchPattern(address, m_ConstantInt(&staticAddress)))
+      return false;
+    if (aliasesYieldedBuffer(store.getDestination(), context.yieldedValues) ||
+        aliasesAnyAddress(store.getDestination(),
+                          context.externallyObservedAddresses))
+      return false;
+
+    bool unique = true;
+    fusionRegion.walk([&](Operation *op) {
+      if (!unique || op == store.getOperation() || op == load.getOperation())
+        return;
+      if (isSyncOrUnknownCall(op)) {
+        unique = false;
+        return;
+      }
+      if (auto otherStore = dyn_cast<pto::VstsOp>(op)) {
+        if (areEquivalentValues(
+                getCanonicalBufferAddress(otherStore.getDestination()),
+                address))
+          unique = false;
+        return;
+      }
+      if (auto otherLoad = dyn_cast<pto::VldsOp>(op)) {
+        if (areEquivalentValues(getCanonicalBufferAddress(otherLoad.getSource()),
+                                address))
+          unique = false;
+        return;
+      }
+      if (isa<pto::AllocTileOp>(op) || isAddressScaffoldOp(op) ||
+          isMemoryEffectFree(op))
+        return;
+      for (Value operand : op->getOperands()) {
+        if (areEquivalentValues(getCanonicalBufferAddress(operand), address)) {
+          unique = false;
+          return;
+        }
+      }
+    });
+    return unique;
+  };
+
+  SmallVector<Operation *, 32> topLevelOps;
+  for (Operation &op : body.without_terminator())
+    topLevelOps.push_back(&op);
+
+  for (auto [index, candidate] : llvm::enumerate(topLevelOps)) {
+    auto store = dyn_cast<pto::VstsOp>(candidate);
+    if (!store || llvm::is_contained(eraseOrder, candidate))
+      continue;
+
+    for (Operation *next : ArrayRef<Operation *>(topLevelOps).drop_front(index + 1)) {
+      if (auto load = dyn_cast<pto::VldsOp>(next)) {
+        Value inferredMask = inferVPTOLoadUserMask(load);
+        if (!inferredMask ||
+            !areEquivalentValues(
+                getCanonicalBufferAddress(store.getDestination()),
+                getCanonicalBufferAddress(load.getSource())) ||
+            !areEquivalentValues(store.getOffset(), load.getOffset()) ||
+            !areEquivalentMaskValues(store.getMask(), inferredMask) ||
+            store.getValue().getType() != load.getResult().getType() ||
+            !hasUniqueMemoryPair(store, load))
+          break;
+
+        load.getResult().replaceAllUsesWith(store.getValue());
+        eraseOrder.push_back(load.getOperation());
+        eraseOrder.push_back(store.getOperation());
+        changed = true;
+        break;
+      }
+
+      // Do not cross a vector computation, control-flow phase, memory effect,
+      // sync, or unknown call.  The intended state roundtrip has only pointer
+      // casts, masks, and scalar address arithmetic between VST and VLD.
+      if (next->getNumRegions() != 0 || isSyncOrUnknownCall(next) ||
+          (!isAddressScaffoldOp(next) && !isPureNoRegionOp(next)))
+        break;
+    }
+  }
+
+  for (Operation *op : eraseOrder)
+    if (op && op->getBlock())
+      op->erase();
+  return changed;
+}
+
 struct PTOFusionLoadStoreElisionPass
     : public pto::impl::PTOFusionLoadStoreElisionBase<
           PTOFusionLoadStoreElisionPass> {
@@ -948,6 +1093,18 @@ struct PTOFusionLoadStoreElisionPass
     changed |= elideLoopInvariantPreheaderRoundTrip(func);
     func.walk([&](pto::FusionRegionOp fusionRegion) {
       changed |= normalizeFusionRegionYieldFrontier(fusionRegion);
+    });
+
+    // Run before the leaf-body fixed point: phase-state forwarding exposes
+    // dead pointer scaffolding and removes the only UB hazards between the
+    // column reduction phases.
+    func.walk([&](pto::FusionRegionOp fusionRegion) {
+      std::optional<FusionRegionStoreContext> context =
+          buildFusionRegionStoreContext(fusionRegion);
+      if (!context)
+        return;
+      changed |=
+          elideAdjacentPhaseStateRoundTrips(func, fusionRegion, *context);
     });
 
     auto runElisionRound = [&]() {

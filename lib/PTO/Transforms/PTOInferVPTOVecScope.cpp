@@ -79,7 +79,21 @@ static bool isForbiddenInsideInferredVectorScope(Operation *op) {
 static bool isCloneableMaskProducer(Operation *op) {
   return isa<pto::PsetB8Op, pto::PsetB16Op, pto::PsetB32Op, pto::PgeB8Op,
              pto::PgeB16Op, pto::PgeB32Op, pto::PltB8Op, pto::PltB16Op,
-             pto::PltB32Op>(op);
+             pto::PltB32Op, pto::PandOp>(op);
+}
+
+/// A scalar vdup is a vector constant materialization.  CSE may legally share
+/// it across otherwise independent vector clusters, but the inferred
+/// resultless vecscope form cannot carry the resulting vreg across a scope
+/// boundary.  Clone only the scalar-source form; lane-selection vdup variants
+/// depend on an existing vreg and must remain part of their original cluster.
+static bool isCloneableVectorConstantProducer(Operation *op) {
+  auto vdup = dyn_cast<pto::VdupOp>(op);
+  if (!vdup || vdup->getNumResults() != 1 ||
+      !isa<pto::VRegType>(vdup->getResult(0).getType()))
+    return false;
+  return llvm::none_of(vdup->getOperandTypes(),
+                       [](Type type) { return isa<pto::VRegType>(type); });
 }
 
 static bool isVectorScopeBoundaryOperation(Operation *op) {
@@ -318,6 +332,36 @@ static void cloneSharedMaskProducers(Block &block, MLIRContext *context) {
   }
 }
 
+static void cloneSharedVectorConstantProducers(Block &block,
+                                               MLIRContext *context) {
+  IRRewriter rewriter(context);
+  SmallVector<Operation *, 16> ops;
+  for (Operation &op : block)
+    ops.push_back(&op);
+
+  for (Operation *op : ops) {
+    if (!isCloneableVectorConstantProducer(op))
+      continue;
+
+    OpResult result = op->getResult(0);
+    SmallVector<OpOperand *, 8> uses;
+    for (OpOperand &use : result.getUses())
+      uses.push_back(&use);
+    if (uses.size() < 2)
+      continue;
+
+    keepEarliestUseFirst(uses, block);
+    for (OpOperand *use : ArrayRef<OpOperand *>(uses).drop_front()) {
+      Operation *user = getAncestorInBlock(use->getOwner(), block);
+      if (!user)
+        continue;
+      rewriter.setInsertionPoint(user);
+      Operation *clone = rewriter.clone(*op);
+      use->set(clone->getResult(0));
+    }
+  }
+}
+
 static bool findEscapingMovedResult(
     const llvm::SmallPtrSetImpl<Operation *> &movedOps,
     EscapingMovedValue &escapingValue) {
@@ -501,6 +545,12 @@ static LogicalResult wrapGreedySubclusters(ArrayRef<Operation *> ops,
 }
 
 static LogicalResult inferVecScopesInBlock(Block &block, MLIRContext *context) {
+  // Clone shared vreg constants first.  Their cloned operations reuse the
+  // original predicate, so run the existing mask cloning afterwards.
+  cloneSharedVectorConstantProducers(block, context);
+  cloneSharedMaskProducers(block, context);
+  // A cloned compound mask (for example pand(PAT_VL32, plt(32))) reuses its
+  // leaf predicates.  A second round separates those newly introduced uses.
   cloneSharedMaskProducers(block, context);
 
   SmallVector<Operation *, 16> pending;
