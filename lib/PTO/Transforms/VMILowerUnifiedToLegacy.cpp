@@ -1063,7 +1063,14 @@ static LogicalResult lowerVexpdif(VMIVexpdifOp op, OpBuilder &builder) {
 
   Value diff =
       builder.create<VMISubFOp>(loc, resultType, x, op.getMax()).getResult();
-  Value raw = builder.create<VMIExpOp>(loc, resultType, diff).getResult();
+  auto exp = builder.create<VMIExpOp>(loc, resultType, diff);
+  // Preserve the contraction provenance through legacy VMI layout
+  // assignment. VMIToVPTO can then recover the installed A5 vexpdif
+  // instruction from the physical vsub parts instead of permanently
+  // expanding the fused Softmax primitive to vsub + vexp.
+  exp->setAttr("pto.vmi.fused_origin", builder.getStringAttr("vexpdif"));
+  exp->setAttr("pto.vmi.vexpdif.part", builder.getStringAttr("ODD"));
+  Value raw = exp.getResult();
   op.getResult().replaceAllUsesWith(raw);
   op->erase();
   return success();
