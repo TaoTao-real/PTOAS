@@ -1,0 +1,46 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under
+// the terms and conditions of CANN Open Software License Agreement Version 2.0.
+// Please refer to the License for details. You may not use this file except in
+// compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY
+// KIND, EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
+// NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+
+// A fused stage may carry an accumulator whose final value is consumed after
+// the loop run.  The replacement fused loop must take over that external SSA
+// use before the original loop is erased.
+//
+// RUN: pto-test-opt %s -pto-low-level-loop-fusion | FileCheck %s
+
+module {
+  func.func @forward_fused_loop_result() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %c0_i32 = arith.constant 0 : i32
+    %c1_i32 = arith.constant 1 : i32
+    %result = pto.fusion_region {
+      scf.for %i = %c0 to %c4 step %c1 {
+        %next = arith.addi %i, %c1 : index
+      }
+      %acc = scf.for %i = %c0 to %c4 step %c1
+          iter_args(%value = %c0_i32) -> (i32) {
+        %next = arith.addi %value, %c1_i32 : i32
+        scf.yield %next : i32
+      }
+      %observed = arith.addi %acc, %c1_i32 : i32
+      pto.yield(%observed) : (i32) -> ()
+    } : i32
+    return
+  }
+}
+
+// CHECK-LABEL: func.func @forward_fused_loop_result
+// CHECK: %[[FUSED:.*]] = scf.for {{.*}} iter_args(%[[ARG:.*]] = %{{.*}}) -> (i32) {
+// CHECK: %[[NEXT:.*]] = arith.addi %[[ARG]], %{{.*}} : i32
+// CHECK: scf.yield %[[NEXT]] : i32
+// CHECK: }
+// CHECK-NOT: scf.for
+// CHECK: %[[OBSERVED:.*]] = arith.addi %[[FUSED]], %{{.*}} : i32
+// CHECK: pto.yield(%[[OBSERVED]])

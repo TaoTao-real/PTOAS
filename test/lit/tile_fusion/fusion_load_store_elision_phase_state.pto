@@ -1,0 +1,78 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// CANN Open Software License Agreement Version 2.0
+
+// RUN: pto-test-opt %s -pto-fusion-load-store-elision | FileCheck %s
+
+!col = memref<1x64xf32, #pto.address_space<vec>>
+
+module {
+  // CHECK-LABEL: func.func @forward_phase_state
+  // CHECK-NOT: pto.vsts %arg0
+  // CHECK-NOT: pto.vlds
+  // CHECK: %[[STATE:.*]] = pto.vadd %arg0, %arg0,
+  // CHECK: scf.for {{.*}} iter_args(%{{.*}} = %[[STATE]])
+  func.func @forward_phase_state(%state: !pto.vreg<64xf32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %addr = arith.constant 65536 : i64
+    %mask = pto.pge_b32 "PAT_ALL" : !pto.mask<b32>
+    %result = pto.fusion_region {
+      %storage = pto.pointer_cast(%addr) : !col
+      %ptr = pto.castptr %storage : !col -> !pto.ptr<f32, ub>
+      pto.vsts %state, %ptr[%c0], %mask
+          : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
+      %reload_storage = pto.pointer_cast(%addr) : !col
+      %reload_ptr = pto.castptr %reload_storage : !col -> !pto.ptr<f32, ub>
+      %reload = pto.vlds %reload_ptr[%c0]
+          : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
+      %forwarded = pto.vadd %reload, %state, %mask
+          : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<b32>
+          -> !pto.vreg<64xf32>
+      %carried = scf.for %i = %c0 to %c4 step %c1
+          iter_args(%value = %forwarded) -> (!pto.vreg<64xf32>) {
+        scf.yield %value : !pto.vreg<64xf32>
+      }
+      pto.yield(%carried) : (!pto.vreg<64xf32>) -> ()
+    } : !pto.vreg<64xf32>
+    return
+  }
+
+  // The in-place exp matrix is produced at dynamic offsets inside one loop
+  // and consumed by a later loop.  It is not compact phase state and both
+  // physical accesses must remain.
+  // CHECK-LABEL: func.func @preserve_matrix_materialization
+  // CHECK: scf.for
+  // CHECK: pto.vsts
+  // CHECK: scf.for
+  // CHECK: pto.vlds
+  func.func @preserve_matrix_materialization(%value: !pto.vreg<64xf32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %c64 = arith.constant 64 : index
+    %addr = arith.constant 0 : i64
+    %mask = pto.pge_b32 "PAT_ALL" : !pto.mask<b32>
+    "pto.fusion_region"() ({
+      %storage = pto.pointer_cast(%addr) : memref<4x64xf32, #pto.address_space<vec>>
+      %ptr = pto.castptr %storage
+          : memref<4x64xf32, #pto.address_space<vec>> -> !pto.ptr<f32, ub>
+      scf.for %i = %c0 to %c4 step %c1 {
+        %offset = arith.muli %i, %c64 : index
+        pto.vsts %value, %ptr[%offset], %mask
+            : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
+      }
+      %reload_storage = pto.pointer_cast(%addr)
+          : memref<4x64xf32, #pto.address_space<vec>>
+      %reload_ptr = pto.castptr %reload_storage
+          : memref<4x64xf32, #pto.address_space<vec>> -> !pto.ptr<f32, ub>
+      scf.for %i = %c0 to %c4 step %c1 {
+        %offset = arith.muli %i, %c64 : index
+        %reload = pto.vlds %reload_ptr[%offset]
+            : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
+      }
+      pto.yield() : () -> ()
+    }) : () -> ()
+    return
+  }
+}

@@ -628,6 +628,31 @@ static bool fuseStageRun(SmallVectorImpl<StageInfo> &stages,
   auto fusedOuterLoop =
       buildFusedLoopNestAtLevel(blockBuilder, stages, stageMappings, 0);
 
+  // A stage loop may carry a physical vreg accumulator whose final value is
+  // consumed by an epilogue outside the fused run (Softmax Dn tcolsum is the
+  // canonical example).  buildFusedLoopNestAtLevel records the corresponding
+  // fused result in each stage mapping, but erasing the original loop without
+  // forwarding those external uses leaves dangling SSA values and can crash a
+  // later pass.  Replace the outer results before moving setup ops or erasing
+  // the old nests.  Nested results are internal to the outer loop and vanish
+  // with their original parent.
+  SmallVector<std::pair<Value, Value>, 8> outerResultReplacements;
+  for (auto [stageIndex, stage] : llvm::enumerate(stages)) {
+    for (Value originalResult : stage.getOuterLoop().getResults()) {
+      Value replacement = stageMappings[stageIndex].lookupOrNull(originalResult);
+      if (!replacement) {
+        if (debugOS)
+          *debugOS << "[op-fusion] missing fused result mapping for "
+                   << originalResult << "\n";
+        fusedOuterLoop.erase();
+        return false;
+      }
+      outerResultReplacements.emplace_back(originalResult, replacement);
+    }
+  }
+  for (auto [originalResult, replacement] : outerResultReplacements)
+    originalResult.replaceAllUsesWith(replacement);
+
   for (StageInfo &stage : llvm::drop_begin(stages))
     for (Operation *setupOp : stage.setupOps)
       setupOp->moveBefore(fusedOuterLoop);
