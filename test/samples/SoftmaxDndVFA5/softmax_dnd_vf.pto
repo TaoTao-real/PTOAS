@@ -1,0 +1,100 @@
+!f32_tile = !pto.tile_buf<vec, 16x64xf32>
+!f32_col = !pto.tile_buf<vec, 1x64xf32>
+
+module attributes {pto.target_arch = "a5"} {
+  func.func @softmax_dnd_vf_b4_m16_n64(
+      %x: !pto.ptr<f32>, %y: !pto.ptr<f32>,
+      %tile_count: index, %block_idx: i32, %block_count: i32)
+      attributes {pto.entry, pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c16 = arith.constant 16 : index
+    %c32 = arith.constant 32 : index
+    %c48 = arith.constant 48 : index
+    %c_rows = arith.constant 64 : index
+    %c_inner = arith.constant 64 : index
+
+    // Each tile reserves the Base128 maximum footprint so the three generated
+    // widths share one proven non-overlapping UB address map.
+    %x0_addr = arith.constant 0 : i64
+    %x1_addr = arith.constant 8192 : i64
+    %x2_addr = arith.constant 16384 : i64
+    %x3_addr = arith.constant 24576 : i64
+    %y0_addr = arith.constant 32768 : i64
+    %y1_addr = arith.constant 40960 : i64
+    %y2_addr = arith.constant 49152 : i64
+    %y3_addr = arith.constant 57344 : i64
+    %max0_addr = arith.constant 65536 : i64
+    %max1_addr = arith.constant 66048 : i64
+    %max2_addr = arith.constant 66560 : i64
+    %max3_addr = arith.constant 67072 : i64
+    %sum0_addr = arith.constant 67584 : i64
+    %sum1_addr = arith.constant 68096 : i64
+    %sum2_addr = arith.constant 68608 : i64
+    %sum3_addr = arith.constant 69120 : i64
+
+    %x_view = pto.make_tensor_view %x, shape = [%c_rows, %c_inner], strides = [%c_inner, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<64x64xf32>
+    %y_view = pto.make_tensor_view %y, shape = [%c_rows, %c_inner], strides = [%c_inner, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<64x64xf32>
+
+    %x0_part = pto.partition_view %x_view, offsets = [%c0, %c0], sizes = [%c16, %c_inner] : !pto.tensor_view<64x64xf32> -> !pto.partition_tensor_view<16x64xf32>
+    %x1_part = pto.partition_view %x_view, offsets = [%c16, %c0], sizes = [%c16, %c_inner] : !pto.tensor_view<64x64xf32> -> !pto.partition_tensor_view<16x64xf32>
+    %x2_part = pto.partition_view %x_view, offsets = [%c32, %c0], sizes = [%c16, %c_inner] : !pto.tensor_view<64x64xf32> -> !pto.partition_tensor_view<16x64xf32>
+    %x3_part = pto.partition_view %x_view, offsets = [%c48, %c0], sizes = [%c16, %c_inner] : !pto.tensor_view<64x64xf32> -> !pto.partition_tensor_view<16x64xf32>
+    %y0_part = pto.partition_view %y_view, offsets = [%c0, %c0], sizes = [%c16, %c_inner] : !pto.tensor_view<64x64xf32> -> !pto.partition_tensor_view<16x64xf32>
+    %y1_part = pto.partition_view %y_view, offsets = [%c16, %c0], sizes = [%c16, %c_inner] : !pto.tensor_view<64x64xf32> -> !pto.partition_tensor_view<16x64xf32>
+    %y2_part = pto.partition_view %y_view, offsets = [%c32, %c0], sizes = [%c16, %c_inner] : !pto.tensor_view<64x64xf32> -> !pto.partition_tensor_view<16x64xf32>
+    %y3_part = pto.partition_view %y_view, offsets = [%c48, %c0], sizes = [%c16, %c_inner] : !pto.tensor_view<64x64xf32> -> !pto.partition_tensor_view<16x64xf32>
+
+    %x0 = pto.alloc_tile addr = %x0_addr : !f32_tile
+    %x1 = pto.alloc_tile addr = %x1_addr : !f32_tile
+    %x2 = pto.alloc_tile addr = %x2_addr : !f32_tile
+    %x3 = pto.alloc_tile addr = %x3_addr : !f32_tile
+    %y0 = pto.alloc_tile addr = %y0_addr : !f32_tile
+    %y1 = pto.alloc_tile addr = %y1_addr : !f32_tile
+    %y2 = pto.alloc_tile addr = %y2_addr : !f32_tile
+    %y3 = pto.alloc_tile addr = %y3_addr : !f32_tile
+    pto.tload ins(%x0_part : !pto.partition_tensor_view<16x64xf32>) outs(%x0 : !f32_tile)
+    pto.tload ins(%x1_part : !pto.partition_tensor_view<16x64xf32>) outs(%x1 : !f32_tile)
+    pto.tload ins(%x2_part : !pto.partition_tensor_view<16x64xf32>) outs(%x2 : !f32_tile)
+    pto.tload ins(%x3_part : !pto.partition_tensor_view<16x64xf32>) outs(%x3 : !f32_tile)
+
+    %max0 = pto.alloc_tile addr = %max0_addr : !f32_col
+    %max1 = pto.alloc_tile addr = %max1_addr : !f32_col
+    %max2 = pto.alloc_tile addr = %max2_addr : !f32_col
+    %max3 = pto.alloc_tile addr = %max3_addr : !f32_col
+    %exp0 = pto.alloc_tile addr = %x0_addr : !f32_tile
+    %exp1 = pto.alloc_tile addr = %x1_addr : !f32_tile
+    %exp2 = pto.alloc_tile addr = %x2_addr : !f32_tile
+    %exp3 = pto.alloc_tile addr = %x3_addr : !f32_tile
+    %sum0 = pto.alloc_tile addr = %sum0_addr : !f32_col
+    %sum1 = pto.alloc_tile addr = %sum1_addr : !f32_col
+    %sum2 = pto.alloc_tile addr = %sum2_addr : !f32_col
+    %sum3 = pto.alloc_tile addr = %sum3_addr : !f32_col
+
+    pto.tcolmax ins(%x0 : !f32_tile) outs(%max0 : !f32_col)
+    pto.tcolexpandexpdif ins(%x0, %max0 : !f32_tile, !f32_col) outs(%exp0 : !f32_tile)
+    pto.tcolsum ins(%exp0 : !f32_tile) outs(%sum0 : !f32_col)
+    pto.tcolexpanddiv ins(%exp0, %sum0 : !f32_tile, !f32_col) outs(%y0 : !f32_tile)
+
+    pto.tcolmax ins(%x1 : !f32_tile) outs(%max1 : !f32_col)
+    pto.tcolexpandexpdif ins(%x1, %max1 : !f32_tile, !f32_col) outs(%exp1 : !f32_tile)
+    pto.tcolsum ins(%exp1 : !f32_tile) outs(%sum1 : !f32_col)
+    pto.tcolexpanddiv ins(%exp1, %sum1 : !f32_tile, !f32_col) outs(%y1 : !f32_tile)
+
+    pto.tcolmax ins(%x2 : !f32_tile) outs(%max2 : !f32_col)
+    pto.tcolexpandexpdif ins(%x2, %max2 : !f32_tile, !f32_col) outs(%exp2 : !f32_tile)
+    pto.tcolsum ins(%exp2 : !f32_tile) outs(%sum2 : !f32_col)
+    pto.tcolexpanddiv ins(%exp2, %sum2 : !f32_tile, !f32_col) outs(%y2 : !f32_tile)
+
+    pto.tcolmax ins(%x3 : !f32_tile) outs(%max3 : !f32_col)
+    pto.tcolexpandexpdif ins(%x3, %max3 : !f32_tile, !f32_col) outs(%exp3 : !f32_tile)
+    pto.tcolsum ins(%exp3 : !f32_tile) outs(%sum3 : !f32_col)
+    pto.tcolexpanddiv ins(%exp3, %sum3 : !f32_tile, !f32_col) outs(%y3 : !f32_tile)
+
+    pto.tstore ins(%y0 : !f32_tile) outs(%y0_part : !pto.partition_tensor_view<16x64xf32>)
+    pto.tstore ins(%y1 : !f32_tile) outs(%y1_part : !pto.partition_tensor_view<16x64xf32>)
+    pto.tstore ins(%y2 : !f32_tile) outs(%y2_part : !pto.partition_tensor_view<16x64xf32>)
+    pto.tstore ins(%y3 : !f32_tile) outs(%y3_part : !pto.partition_tensor_view<16x64xf32>)
+    return
+  }
+}
