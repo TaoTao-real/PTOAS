@@ -8807,6 +8807,75 @@ struct OneToNVMIUnaryOpPattern : OpConversionPattern<SourceOp> {
   }
 };
 
+/// Lower a legacy VMI exp.  When VMILowerUnifiedToLegacy marked the op as the
+/// expansion of unified vexpdif, recover the physical A5 vexpdif instruction
+/// from the already-converted vsub parts.  Ordinary authored vexp remains a
+/// normal VexpOp and is never contracted implicitly.
+struct OneToNVMIExpOpPattern : OpConversionPattern<VMIExpOp> {
+  using OpConversionPattern<VMIExpOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(VMIExpOp op, OneToNOpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    ValueRange sourceParts = adaptor.getSource();
+    FailureOr<SmallVector<Type>> maybeResultTypes =
+        getConvertedResultTypes(op, 0, *this->getTypeConverter());
+    if (failed(maybeResultTypes))
+      return failure();
+    SmallVector<Type> resultTypes = std::move(*maybeResultTypes);
+    if (sourceParts.size() != resultTypes.size())
+      return rewriter.notifyMatchFailure(op, "physical exp arity mismatch");
+
+    auto origin = op->getAttrOfType<StringAttr>("pto.vmi.fused_origin");
+    const bool recoverExpDif = origin && origin.getValue() == "vexpdif";
+    StringAttr part =
+        op->getAttrOfType<StringAttr>("pto.vmi.vexpdif.part");
+    if (recoverExpDif && (!part || (part.getValue() != "EVEN" &&
+                                    part.getValue() != "ODD")))
+      return rewriter.notifyMatchFailure(
+          op, "vexpdif provenance requires a valid physical part");
+
+    SmallVector<Value> results;
+    results.reserve(resultTypes.size());
+    auto logicalResultType = cast<VMIVRegType>(op.getResult().getType());
+    for (auto [physicalPart, source, resultType] :
+         llvm::enumerate(sourceParts, resultTypes)) {
+      auto vregType = dyn_cast<VRegType>(resultType);
+      if (!vregType || source.getType() != resultType)
+        return rewriter.notifyMatchFailure(
+            op, "physical exp part type mismatch");
+      FailureOr<Value> mask = createLogicalActiveMaskForVReg(
+          op.getLoc(), logicalResultType,
+          static_cast<int64_t>(physicalPart), vregType, rewriter);
+      if (failed(mask))
+        return rewriter.notifyMatchFailure(
+            op, "failed to materialize exp logical active-lane mask");
+
+      if (!recoverExpDif) {
+        results.push_back(
+            rewriter.create<VexpOp>(op.getLoc(), resultType, source, *mask)
+                .getResult());
+        continue;
+      }
+
+      auto physicalSub = source.getDefiningOp<VsubOp>();
+      if (!physicalSub)
+        return rewriter.notifyMatchFailure(
+            op, "vexpdif provenance source did not lower to physical vsub");
+      results.push_back(
+          rewriter
+              .create<VexpdifOp>(op.getLoc(), resultType,
+                                  physicalSub.getLhs(), physicalSub.getRhs(),
+                                  *mask, part)
+              .getResult());
+    }
+
+    replaceOpWithFlatConvertedValues(rewriter, op, results,
+                                     *this->getTypeConverter());
+    return success();
+  }
+};
+
 template <typename SourceOp, typename TargetOp>
 struct OneToNVMIMaskBinaryOpPattern : OpConversionPattern<SourceOp> {
   using OpConversionPattern<SourceOp>::OpConversionPattern;
@@ -11879,7 +11948,7 @@ void populateVMIConversionPatterns(
       OneToNVMIUnaryOpPattern<VMIAbsFOp, VabsOp>,
       OneToNVMIUnaryOpPattern<VMIAbsIOp, VabsOp>,
       OneToNVMIUnaryOpPattern<VMISqrtOp, VsqrtOp>,
-      OneToNVMIUnaryOpPattern<VMIExpOp, VexpOp>,
+      OneToNVMIExpOpPattern,
       OneToNVMIUnaryOpPattern<VMILnOp, VlnOp>,
       OneToNVMIUnaryOpPattern<VMIReluOp, VreluOp>,
       OneToNVMIBinaryOpPattern<VMIAndIOp, VandOp>,

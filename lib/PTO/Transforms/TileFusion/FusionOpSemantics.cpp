@@ -25,7 +25,7 @@ static FusionComputeFamily getFusionComputeFamily(StringRef opName) {
       .Cases("trowexpandsub", "trowexpandmul", "trowexpanddiv",
              FusionComputeFamily::RowBroadcastBinary)
       .Cases("tcolexpandsub", "tcolexpandadd", "tcolexpandmul",
-             "tcolexpanddiv",
+             "tcolexpanddiv", "tcolexpandexpdif",
              FusionComputeFamily::ColBroadcastBinary)
       .Cases("trowsum", "trowmax", "trowmin", FusionComputeFamily::ReduceRow)
       .Cases("tcolsum", "tcolmax", "tcolmin", FusionComputeFamily::ReduceCol)
