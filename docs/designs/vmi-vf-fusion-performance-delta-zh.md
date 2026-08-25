@@ -96,7 +96,7 @@ Softmax `[4,16,64]` 和 `[4,16,128]` 分别降低 35.53% 和 14.36%。Softmax
 
 ## 4. 新增和增强的优化 Pass
 
-### 4.1 新增 Pass
+### 4.1 相对优化前分支新增的独立 Pass
 
 | Pass | 主要职责 | 适用场景 |
 | --- | --- | --- |
@@ -105,7 +105,6 @@ Softmax `[4,16,64]` 和 `[4,16,128]` 分别降低 35.53% 和 14.36%。Softmax
 | `pto-vmi-accumulator-promotion` | 用 loop-carried vreg 替代 accumulator UB 往返 | 固定 chunk、完整 mask、无 alias/escape 的 accumulator |
 | `pto-plan-vmi-scalar-phases` | 证明 reduction 后 scalar chain 与 broadcast divisor | RMSNorm/variance 类 scalar epilogue |
 | `pto-vmi-scalar-promotion` | scalar chain 用 SSA/vreg 直传并只广播一次 | VL1 compact state→full-VL apply loop |
-| `pto-insert-vecscope-mem-bar` | 依据实际 VPTO memory hazard 插入必要 barrier | vecscope 内 VLD/VST；与 GM↔UB 同步分开 |
 
 ### 4.2 增强的既有阶段
 
@@ -115,7 +114,7 @@ Softmax `[4,16,64]` 和 `[4,16,128]` 分别降低 35.53% 和 14.36%。Softmax
 | `pto-low-level-loop-fusion` | 合并已证明共享 header 的 row/chunk/column loop | RMSNorm `[64,64]` 主 row loop 从 8 个降到 1 个 |
 | `pto-fusion-load-store-elision` | exact range/mask 的 producer→consumer forwarding；dead storage 清理；invariant hoist | 中间 UB VLD/VST 归零或显著减少 |
 | VMIToVPTO / vecscope inference | 保持 phase vreg、compact mask、广播与布局语义 | 让高层 promotion 真正落到 VPTO/汇编 |
-| vecscope hazard analysis | normalized root、affine offset、byte range disjoint 证明 | 删除假冲突 membar，保留真实 hazard |
+| `pto-insert-vecscope-mem-bar` / hazard analysis | 优化前已有早期框架；本分支补充 normalized root、affine offset、byte range disjoint 证明 | 删除假冲突 membar，保留真实 hazard |
 
 这些 Pass 的边界是保守的：dynamic address、tail、mask 不一致、alias、escape、
 unknown call、sync 或多个不唯一 pipeline 任一无法证明时，完整保留未优化路径。
