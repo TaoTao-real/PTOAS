@@ -2,8 +2,9 @@
 
 - 状态：Implemented / A5 validated
 - 日期：2026-08-25
-- 适用分支：`codex/rmsnorm-softmax-vmi-vf-cherry-pick`
-- 验证提交：`149405c569b068daa738fc5e865066d1c9a7dbcd`
+- 适用分支：`codex/rmsnorm-softmax-vmi-vf-performance-delta`
+- A5 验证源码：`149405c569b068daa738fc5e865066d1c9a7dbcd`
+- 当前分支等价提交：`957f00670`
 - 设计依据：ADR-0002、ADR-0003
 
 ## 1. 目标与范围
@@ -77,7 +78,7 @@ A/B/C/D 性能归因采用：
 ### 3.3 效果
 
 该优化主要提升正确性、可诊断性和后续优化命中率，不直接保证运行时变快。
-实测 candidate-only B 并非所有用例都优于 liuzidi 分支，说明不能把最终收益归因
+实测 candidate-only B 并非所有用例都优于优化前分支，说明不能把最终收益归因
 到 TileOp expand。
 
 ### 3.4 适用场景
@@ -164,9 +165,9 @@ vmi_texpands(0)
 ### 5.3 效果
 
 在当前同设备横向测试中，4096 宽 workload 为 BF16 `[8,4096]`；每一行的 VF
-body 是 `1x4096`。与 liuzidi 分支 D 相比：
+body 是 `1x4096`。与优化前分支 D 相比：
 
-| 指标 | liuzidi D | 当前分支 D | 改善 |
+| 指标 | 优化前分支 D | 性能优化分支 D | 改善 |
 | --- | ---: | ---: | ---: |
 | Vector median | 60.471 us | 39.971 us | 33.90% / 1.51x |
 | Task median | 73.296 us | 52.982 us | 27.72% / 1.38x |
@@ -268,7 +269,7 @@ start=0, end=N, step=1, one full FP32 VL per row
 
 RMSNorm `[64,64]` 是当前最明显的收益：
 
-| 指标 | liuzidi D | 当前分支 D | 改善 |
+| 指标 | 优化前分支 D | 性能优化分支 D | 改善 |
 | --- | ---: | ---: | ---: |
 | Vector median | 4.700 us | 0.518 us | 88.98% / 9.07x |
 | Task median | 9.731 us | 5.443 us | 44.07% / 1.79x |
@@ -314,8 +315,8 @@ RMSNorm `[64,64]` 的最终物理结构：
 
 | 分支 | loop | VLD | VST | VF 内部 membar |
 | --- | ---: | ---: | ---: | ---: |
-| liuzidi D | 8 | 11 | 10 | 10 |
-| 当前分支 D | 1 | 2 | 1 | 0 |
+| 优化前分支 D | 8 | 11 | 10 | 10 |
+| 性能优化分支 D | 1 | 2 | 1 | 0 |
 
 静态只保留 gamma/x 输入 VLD 和 y 输出 VST；所有计算阶段中间 UB 流量归零。这是
 该用例 Vector 9.07x 提升的主要直接原因。
@@ -395,7 +396,7 @@ sum、divide phase 之间把状态写回 UB，再重新加载。
 
 同设备横向比较：
 
-| Softmax shape | Vector：liuzidi D | Vector：当前 D | Vector 变化 | Task 变化 |
+| Softmax shape | Vector：优化前分支 D | Vector：性能优化分支 D | Vector 变化 | Task 变化 |
 | --- | ---: | ---: | ---: | ---: |
 | `[4,16,32]` | 1.578 us | 1.848 us | 回退 17.11% | 回退 6.32% |
 | `[4,16,64]` | 0.636 us | 0.410 us | 提升 35.53% / 1.55x | 提升 1.62% |
@@ -416,9 +417,9 @@ N=64/128 的 vector 阶段改善明确，但 vector 在总 task 中占比较小�
 
 ### 10.5 相关实现
 
-- `23bf95935`：Base32/Base64/Base128 column candidates；
-- `43c42b1c6`：Softmax max/sum phase-state forwarding；
-- `149405c56`：三宽度 A5 六路径 fixture/harness。
+- `d9bb892e6`：Base32/Base64/Base128 column candidates；
+- `b3c5e6d35`：Softmax max/sum phase-state forwarding；
+- `957f00670`：三宽度 A5 六路径 fixture/harness。
 
 ## 11. 场景适用矩阵
 
@@ -488,7 +489,7 @@ loop/VLD/VST/membar 统计以及每次 profile 后的输出。
 共享分支：
 
 ```text
-https://github.com/TaoTao-real/PTOAS/tree/codex/rmsnorm-softmax-vmi-vf-cherry-pick
+https://github.com/TaoTao-real/PTOAS/tree/codex/rmsnorm-softmax-vmi-vf-performance-delta
 ```
 
 RMSNorm 完整链：
@@ -500,7 +501,7 @@ git cherry-pick c3bc02cba^..e13e1021a
 Softmax：
 
 ```bash
-git cherry-pick 23bf95935 43c42b1c6 149405c56
+git cherry-pick d9bb892e6 b3c5e6d35 957f00670
 ```
 
 目标分支若与当前实现历史已分叉，应按 candidate contract、RMSNorm cross-phase、
