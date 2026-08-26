@@ -32,6 +32,9 @@ vector-store-to-vector-load barrier and the normalization pass.
 For a frozen source comparison, set `VF_SOFTMAX_INCLUDE` to a directory that
 contains the exact `vf_softmax.h` under test. The experiment manifest retains
 that header and its SHA-256 instead of silently substituting the CANN default.
+The frozen 2026 attachment also requires `SOFTMAX_ATTACHED_VF_CALL=1` because
+its wrapper maps the two tensor parameters oppositely from the installed CANN
+9.2 beta header; the switch changes only the call site, not the frozen source.
 
 The PTO graph uses the same phase order and observable UB lifetime:
 

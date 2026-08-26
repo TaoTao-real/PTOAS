@@ -150,6 +150,13 @@ extern "C" __global__ AICORE void SOFTMAX_KERNEL_NAME(
   WaitFlag<HardEvent::MTE2_V>(EVENT_ID0);
 
 #if defined(SOFTMAX_USE_VF)
+#if defined(SOFTMAX_ATTACHED_VF_CALL)
+  // The frozen 2026 attachment maps dstTensor to the Base write pointer and
+  // srcTensor to the Base exp scratch/read pointer. Honor that implementation
+  // without editing the attached header.
+  FaVectorApi::SoftmaxDnVF<float>(output, data, kInner, kReduce, kBatch,
+                                  kMinValue, kInner);
+#else
   // CANN 9.2's installed wrapper names these parameters dst/src, but passes
   // dstTensor as the Base implementation's exp scratch/source and srcTensor
   // as its normalized destination.  Preserve that authoritative call
@@ -157,6 +164,7 @@ extern "C" __global__ AICORE void SOFTMAX_KERNEL_NAME(
   // receives the normalized result.
   FaVectorApi::SoftmaxDnVF<float>(data, output, kInner, kReduce, kBatch,
                                   kMinValue, kInner);
+#endif
 #else
   SoftmaxDnOrdinary(output, data, maxEven, maxOdd, sumEven, sumOdd,
                     rowTemp);

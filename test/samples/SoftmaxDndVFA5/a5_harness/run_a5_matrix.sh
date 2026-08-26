@@ -24,6 +24,7 @@ golden="$source_root/test/samples/SoftmaxDndVFA5/softmax_dnd_vf_golden.py"
 canonical_pto="$source_root/test/samples/SoftmaxDndVFA5/softmax_dnd_vf.pto"
 ascendc_source="$source_root/test/samples/SoftmaxDndVFA5/softmax_dnd_ascendc.cpp"
 vf_softmax_include=${VF_SOFTMAX_INCLUDE:-}
+attached_vf_call=${SOFTMAX_ATTACHED_VF_CALL:-0}
 
 test -x "$ptoas"
 test -x "$msprof"
@@ -140,6 +141,7 @@ for width in $widths_list; do
     -DGENERATED_ROOT="$object_root"
     -DASCENDC_SOURCE="$ascendc_source"
     -DSOFTMAX_INNER="$width"
+    -DSOFTMAX_ATTACHED_VF_CALL="$attached_vf_call"
   )
   if [[ -n "$vf_softmax_include" ]]; then
     cmake_args+=("-DVF_SOFTMAX_INCLUDE=$vf_softmax_include")
