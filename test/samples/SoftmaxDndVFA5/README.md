@@ -67,3 +67,7 @@ paired no-regression gate. `a5_harness/extract_profile.py` and
 `a5_harness/summarize_profiles.py` convert serial msprof output into the
 four-path comparison table.  The validated 2026-08-24 results and the exact
 correctness/lowering gates are recorded in `A5_ACCEPTANCE.md`.
+
+If a width fails the task bootstrap bound at ten samples,
+`a5_harness/extend_paired_profiles.sh` appends only D/DL samples 11--20 for the
+affected widths without rebuilding or overwriting the initial profiles.
