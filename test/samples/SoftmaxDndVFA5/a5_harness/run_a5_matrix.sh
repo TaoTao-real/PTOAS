@@ -25,6 +25,7 @@ canonical_pto="$source_root/test/samples/SoftmaxDndVFA5/softmax_dnd_vf.pto"
 ascendc_source="$source_root/test/samples/SoftmaxDndVFA5/softmax_dnd_ascendc.cpp"
 vf_softmax_include=${VF_SOFTMAX_INCLUDE:-}
 attached_vf_call=${SOFTMAX_ATTACHED_VF_CALL:-0}
+prebuilt_pto_experiment=${PREBUILT_PTO_EXPERIMENT:-}
 
 test -x "$ptoas"
 test -x "$msprof"
@@ -74,51 +75,66 @@ for width in $widths_list; do
     >"$experiment_dir/logs/golden-n${width}.log" 2>&1
 done
 
-/usr/bin/python3 "$harness/generate_pto_variants.py" \
-  --source "$canonical_pto" \
-  --output-dir "$experiment_dir/inputs/generated" \
-  --experiment-tag "$tag" "${width_args[@]}"
+if [[ -n "$prebuilt_pto_experiment" ]]; then
+  test -f "$prebuilt_pto_experiment/FINALIZED"
+  cp -a "$prebuilt_pto_experiment/inputs/generated/." \
+    "$experiment_dir/inputs/generated/"
+  cp -a "$prebuilt_pto_experiment/artifacts/vpto/." \
+    "$experiment_dir/artifacts/vpto/"
+  cp "$prebuilt_pto_experiment/results/lowering-stats.tsv" \
+    "$experiment_dir/results/lowering-stats.tsv"
+  {
+    echo "PREBUILT_PTO_EXPERIMENT=$prebuilt_pto_experiment"
+    find "$experiment_dir/inputs/generated" "$experiment_dir/artifacts/vpto" \
+      -type f -print0 | sort -z | xargs -0 sha256sum
+  } >"$experiment_dir/results/prebuilt-pto.sha256"
+else
+  /usr/bin/python3 "$harness/generate_pto_variants.py" \
+    --source "$canonical_pto" \
+    --output-dir "$experiment_dir/inputs/generated" \
+    --experiment-tag "$tag" "${width_args[@]}"
 
-common_ptoas_flags=(
-  --pto-arch=a5
-  --pto-backend=vpto
-  --pto-level=level3
-  --tile-lib-backend=ptodsl
-  --enable-insert-sync
-  --enable-vecscope-mem-bar
-  --bisheng-vf-auto-sync=off
-)
+  common_ptoas_flags=(
+    --pto-arch=a5
+    --pto-backend=vpto
+    --pto-level=level3
+    --tile-lib-backend=ptodsl
+    --enable-insert-sync
+    --enable-vecscope-mem-bar
+    --bisheng-vf-auto-sync=off
+  )
 
-printf 'width\tvariant\tscf_for\tvld\tvst\tmem_bar\tvexpdif\tresidual_vmi_ops\tfat_object_bytes\n' \
-  >"$experiment_dir/results/lowering-stats.tsv"
-while IFS=$'\t' read -r width variant symbol policy mode state_mode pto_file; do
-  [[ "$width" == width ]] && continue
-  generated="$experiment_dir/inputs/generated"
-  object_root="$generated/n${width}-objects"
-  mkdir -p "$object_root"
-  flags=("${common_ptoas_flags[@]}" \
-    --tilelib-candidate-policy="$policy" --vmi-fusion-mode="$mode" \
-    --vmi-state-promotion-mode="$state_mode")
-  /usr/bin/python3 "$ptoas" "${flags[@]}" --emit-vpto \
-    "$generated/$pto_file" -o "$experiment_dir/artifacts/vpto/n${width}-${variant}.mlir" \
-    >"$experiment_dir/logs/n${width}-${variant}-vpto.stdout" \
-    2>"$experiment_dir/logs/n${width}-${variant}-vpto.stderr"
-  /usr/bin/python3 "$ptoas" "${flags[@]}" \
-    "$generated/$pto_file" -o "$object_root/${variant}.fat.o" \
-    >"$experiment_dir/logs/n${width}-${variant}-object.stdout" \
-    2>"$experiment_dir/logs/n${width}-${variant}-object.stderr"
-  ir="$experiment_dir/artifacts/vpto/n${width}-${variant}.mlir"
-  residual=$(grep -E -c '^[[:space:]]*(%[^=]+=[[:space:]]*)?pto\.vmi\.' "$ir" || true)
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$width" "$variant" \
-    "$(grep -c 'scf.for' "$ir" || true)" \
-    "$(grep -c 'pto.vld' "$ir" || true)" \
-    "$(grep -c 'pto.vst' "$ir" || true)" \
-    "$(grep -c 'pto.mem_bar' "$ir" || true)" \
-    "$(grep -c 'pto.vexpdif' "$ir" || true)" "$residual" \
-    "$(stat -c %s "$object_root/${variant}.fat.o")" \
-    >>"$experiment_dir/results/lowering-stats.tsv"
-done <"$experiment_dir/inputs/generated/variants.tsv"
+  printf 'width\tvariant\tscf_for\tvld\tvst\tmem_bar\tvexpdif\tresidual_vmi_ops\tfat_object_bytes\n' \
+    >"$experiment_dir/results/lowering-stats.tsv"
+  while IFS=$'\t' read -r width variant symbol policy mode state_mode pto_file; do
+    [[ "$width" == width ]] && continue
+    generated="$experiment_dir/inputs/generated"
+    object_root="$generated/n${width}-objects"
+    mkdir -p "$object_root"
+    flags=("${common_ptoas_flags[@]}" \
+      --tilelib-candidate-policy="$policy" --vmi-fusion-mode="$mode" \
+      --vmi-state-promotion-mode="$state_mode")
+    /usr/bin/python3 "$ptoas" "${flags[@]}" --emit-vpto \
+      "$generated/$pto_file" -o "$experiment_dir/artifacts/vpto/n${width}-${variant}.mlir" \
+      >"$experiment_dir/logs/n${width}-${variant}-vpto.stdout" \
+      2>"$experiment_dir/logs/n${width}-${variant}-vpto.stderr"
+    /usr/bin/python3 "$ptoas" "${flags[@]}" \
+      "$generated/$pto_file" -o "$object_root/${variant}.fat.o" \
+      >"$experiment_dir/logs/n${width}-${variant}-object.stdout" \
+      2>"$experiment_dir/logs/n${width}-${variant}-object.stderr"
+    ir="$experiment_dir/artifacts/vpto/n${width}-${variant}.mlir"
+    residual=$(grep -E -c '^[[:space:]]*(%[^=]+=[[:space:]]*)?pto\.vmi\.' "$ir" || true)
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$width" "$variant" \
+      "$(grep -c 'scf.for' "$ir" || true)" \
+      "$(grep -c 'pto.vld' "$ir" || true)" \
+      "$(grep -c 'pto.vst' "$ir" || true)" \
+      "$(grep -c 'pto.mem_bar' "$ir" || true)" \
+      "$(grep -c 'pto.vexpdif' "$ir" || true)" "$residual" \
+      "$(stat -c %s "$object_root/${variant}.fat.o")" \
+      >>"$experiment_dir/results/lowering-stats.tsv"
+  done <"$experiment_dir/inputs/generated/variants.tsv"
+fi
 
 sanitize_identifier() {
   /usr/bin/python3 - "$1" <<'PY'

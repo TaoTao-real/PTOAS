@@ -35,6 +35,9 @@ that header and its SHA-256 instead of silently substituting the CANN default.
 The frozen 2026 attachment also requires `SOFTMAX_ATTACHED_VF_CALL=1` because
 its wrapper maps the two tensor parameters oppositely from the installed CANN
 9.2 beta header; the switch changes only the call site, not the frozen source.
+`PREBUILT_PTO_EXPERIMENT` may name a finalized experiment when only the AC-F
+call site changes. The harness copies and hashes only its immutable generated
+PTO/object/VPTO artifacts; it never reuses runtime runner directories.
 
 The PTO graph uses the same phase order and observable UB lifetime:
 
