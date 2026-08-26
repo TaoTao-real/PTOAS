@@ -459,8 +459,18 @@ def _vreduce_add(source: _VectorValue, mask: _MaskValue) -> _VectorValue:
 def _vcvt(source: _VectorValue, dst_dtype: ScalarType) -> _VectorValue:
     if not isinstance(dst_dtype, ScalarType):
         raise TypeError("_vcvt expects a tile-template destination ScalarType")
+    kwargs = {}
+    if source.dtype == f32 and dst_dtype in (f16, bf16):
+        # Tile-level RINT + saturation OFF maps to the A5 R/NOSAT narrowing
+        # contract.  Leaving saturate unspecified defaults the VMI surface to
+        # SAT and changes Inf/NaN boundary semantics.
+        kwargs.update(rounding="R", saturate="NOSAT")
     return _wrap_vreg(
-        pto.vmi.vcvt(source.value, to_dtype=_pto_dtype(dst_dtype)),
+        pto.vmi.vcvt(
+            source.value,
+            to_dtype=_pto_dtype(dst_dtype),
+            **kwargs,
+        ),
         dst_dtype,
     )
 
@@ -599,7 +609,7 @@ def _compact_elementwise_vmi_legal(**context) -> bool:
 
 
 def _single_vl_convert_vmi_legal(**context) -> bool:
-    """Restrict VMI tcvt to one static f32-width VL per logical row.
+    """Restrict VMI tcvt to one static f32-width-or-prefix VL per row.
 
     ``emit_convert_vmi`` deliberately uses one VMI load/convert/store per
     logical block.  A wide row must remain on the ordinary PTODSL path, which
@@ -619,7 +629,8 @@ def _single_vl_convert_vmi_legal(**context) -> bool:
         return False
     if src_shape != dst_shape or src_valid != src_shape or dst_valid != dst_shape:
         return False
-    if src_shape[1] != f32.lanes:
+    logical_lanes = src_shape[1]
+    if logical_lanes not in (f32.lanes // 2, f32.lanes):
         return False
     if any(
         config is None
@@ -631,6 +642,11 @@ def _single_vl_convert_vmi_legal(**context) -> bool:
     dtype_pair = tuple(context.get("operand_dtypes", ()))
     if dtype_pair not in {
         ("bf16", "f32"),
+        ("f32", "f16"),
+        ("f32", "bf16"),
+    }:
+        return False
+    if logical_lanes != f32.lanes and dtype_pair not in {
         ("f32", "f16"),
         ("f32", "bf16"),
     }:
@@ -1753,6 +1769,45 @@ def emit_col_reduce_vmi(
     _vstore_linear(accumulator, dst, 0, full_mask)
 
 
+def col_expand_binary_vmi_legal(
+    src_shape=(),
+    src_valid_shape=(),
+    src_config=None,
+    col_values_shape=(),
+    col_values_valid_shape=(),
+    col_values_config=None,
+    dst_shape=(),
+    dst_valid_shape=(),
+    dst_config=None,
+    **_,
+) -> bool:
+    """Reject unsupported shapes before prefer-vmi selects the candidate."""
+    if len(src_shape) != 2 or src_shape != dst_shape:
+        return False
+    rows, cols = src_shape
+    return (
+        rows > 0
+        and cols in {32, f32.lanes, 128}
+        and col_values_shape == (1, cols)
+        and src_valid_shape == src_shape
+        and col_values_valid_shape == col_values_shape
+        and dst_valid_shape == dst_shape
+        and all(
+            config is not None
+            and config.b_layout == "row_major"
+            and config.s_layout == "none_box"
+            for config in (src_config, col_values_config, dst_config)
+        )
+    )
+
+
+def paired_col_expand_binary_vmi_legal(src_shape=(), **context) -> bool:
+    return (
+        col_expand_binary_vmi_legal(src_shape=src_shape, **context)
+        and src_shape[0] % 2 == 0
+    )
+
+
 def _validate_col_expand_binary_tiles(
     src: _TileProxy, col_values: _TileProxy, dst: _TileProxy
 ) -> CanonicalBlockMap:
@@ -1779,8 +1834,6 @@ def _validate_col_expand_binary_tiles(
         raise ValueError(
             "col-expand-binary col_values must be a row-major [1, cols] tile"
         )
-    if rows % 2 != 0:
-        raise ValueError("Softmax Dn col-expand VMI requires an even row count")
     if cols not in {32, f32.lanes, 128}:
         raise ValueError(
             "Softmax Dn col-expand VMI supports cols in {32, 64, 128}"
@@ -1830,6 +1883,10 @@ def emit_col_expand_binary_vmi(
     # ColMax result directly to the consumer without a per-row reload.
     broadcast = _vload_linear(col_values, 0, lanes=block_map.logical_lanes)
     if paired_rows:
+        if block_map.rows % 2 != 0:
+            raise ValueError(
+                "paired-row col-expand VMI requires an even row count"
+            )
         with for_(0, block_map.rows // 2, step=1) as pair:
             even_row = index_mul(pair, 2)
             odd_row = index_add(even_row, 1)
@@ -1870,16 +1927,85 @@ def emit_convert_vmi(src: _TileProxy, dst: _TileProxy) -> None:
         raise ValueError("tcvt source and destination shapes must match")
     if src._spec.b_layout != "row_major" or dst._spec.b_layout != "row_major":
         raise ValueError("tcvt VMI candidate requires row-major tiles")
-    block_map = CanonicalBlockMap.from_tile(src, logical_lanes=f32.lanes)
+    logical_lanes = src._spec.shape[1]
+    if logical_lanes not in (f32.lanes // 2, f32.lanes):
+        raise ValueError("tcvt VMI candidate requires 32 or 64 logical lanes")
+    block_map = CanonicalBlockMap.from_tile(src, logical_lanes=logical_lanes)
 
     _prepare_tile_access(src, dst)
     dst_mask = _create_mask_lanes(
-        f32.lanes, f32.lanes, dst.element_type, trace=src._trace
+        logical_lanes, logical_lanes, dst.element_type, trace=src._trace
     )
     with for_(0, block_map.logical_block_count, step=1) as logical_block:
         coordinate = block_map.coordinate(logical_block)
         converted = _vcvt(_vload(src, coordinate), dst.element_type)
         _vstore(converted, dst, coordinate, dst_mask)
+
+
+def emit_channel_split_vmi(src: _TileProxy, dsts: Sequence[_TileProxy]) -> None:
+    channels = len(dsts)
+    if channels not in (2, 4):
+        raise ValueError("tchannel_split VMI candidate supports K=2 or K=4")
+    rows, wide_cols = src._spec.shape
+    if wide_cols != channels * dsts[0]._spec.shape[1]:
+        raise ValueError("tchannel_split requires Nx(K*C) -> K x NxC")
+    if any(
+        dst._spec.shape != (rows, wide_cols // channels)
+        or dst.element_type != src.element_type
+        for dst in dsts
+    ):
+        raise ValueError("tchannel_split requires equal channel shapes and dtypes")
+    _prepare_tile_access(src, *dsts)
+    channel_cols = wide_cols // channels
+    mask = _create_mask_lanes(
+        channel_cols, channel_cols, src.element_type, trace=src._trace
+    )
+    with for_(0, rows, step=1) as row:
+        source_offset = index_mul(row, wide_cols)
+        source = _vload_linear(src, source_offset, lanes=wide_cols)
+        results = pto.vmi.channel_split(source.value, channels=channels)
+        destination_offset = index_mul(row, channel_cols)
+        for result, dst in zip(results, dsts):
+            _vstore_linear(
+                _wrap_vreg(result, src.element_type),
+                dst,
+                destination_offset,
+                mask,
+            )
+
+
+def emit_channel_merge_vmi(srcs: Sequence[_TileProxy], dst: _TileProxy) -> None:
+    channels = len(srcs)
+    if channels not in (2, 4):
+        raise ValueError("tchannel_merge VMI candidate supports K=2 or K=4")
+    rows, channel_cols = srcs[0]._spec.shape
+    if dst._spec.shape != (rows, channels * channel_cols):
+        raise ValueError("tchannel_merge requires K x NxC -> Nx(K*C)")
+    if any(
+        src._spec.shape != (rows, channel_cols)
+        or src.element_type != dst.element_type
+        for src in srcs
+    ):
+        raise ValueError("tchannel_merge requires equal channel shapes and dtypes")
+    _prepare_tile_access(*srcs, dst)
+    wide_cols = channels * channel_cols
+    mask = _create_mask_lanes(
+        wide_cols, wide_cols, dst.element_type, trace=dst._trace
+    )
+    with for_(0, rows, step=1) as row:
+        source_offset = index_mul(row, channel_cols)
+        inputs = [
+            _vload_linear(src, source_offset, lanes=channel_cols)
+            for src in srcs
+        ]
+        merged = pto.vmi.channel_merge([value.value for value in inputs])
+        destination_offset = index_mul(row, wide_cols)
+        _vstore_linear(
+            _wrap_vreg(merged, dst.element_type),
+            dst,
+            destination_offset,
+            mask,
+        )
 
 
 def emit_scalar_fill_vmi(scalar: _Value, dst: _TileProxy) -> None:

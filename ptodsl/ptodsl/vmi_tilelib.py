@@ -20,6 +20,14 @@ from .tilelib.templates.a5._vmi_common import (
 from .tilelib.templates.a5.tadd import vmi_tadd_block64
 from .tilelib.templates.a5.tadds import vmi_tadds
 from .tilelib.templates.a5.tcvt import vmi_tcvt
+from .tilelib.templates.a5.tchannel_split import (
+    vmi_tchannel_split_k2,
+    vmi_tchannel_split_k4,
+)
+from .tilelib.templates.a5.tchannel_merge import (
+    vmi_tchannel_merge_k2,
+    vmi_tchannel_merge_k4,
+)
 from .tilelib.templates.a5.tcolmax import vmi_tcolmax
 from .tilelib.templates.a5.tcolsum import vmi_tcolsum
 from .tilelib.templates.a5.tcolexpandadd import vmi_tcolexpandadd
@@ -54,6 +62,10 @@ __all__ = [
     "vmi_tadd_block64",
     "vmi_tadds",
     "vmi_tcvt",
+    "vmi_tchannel_split_k2",
+    "vmi_tchannel_split_k4",
+    "vmi_tchannel_merge_k2",
+    "vmi_tchannel_merge_k4",
     "vmi_tcolmax",
     "vmi_tcolsum",
     "vmi_tcolexpandadd",

@@ -242,16 +242,17 @@ static ScalarPromotionCandidate analyzeApplyLoop(scf::ForOp loop) {
         regionHasCandidate(region, "vmi_tadds") &&
         regionHasCandidate(region, "vmi_tsqrt")) {
       candidate.scalarRegion = region;
-      continue;
     }
     if (!candidate.reductionRegion &&
         regionHasCandidate(region, "vmi_trowsum")) {
       candidate.reductionRegion = region;
-      break;
+      if (candidate.scalarRegion)
+        break;
     }
   }
   if (!candidate.reductionRegion || !candidate.scalarRegion ||
-      !candidate.reductionRegion->isBeforeInBlock(candidate.scalarRegion) ||
+      (candidate.reductionRegion != candidate.scalarRegion &&
+       !candidate.reductionRegion->isBeforeInBlock(candidate.scalarRegion)) ||
       !candidate.scalarRegion->isBeforeInBlock(loop)) {
     reject(candidate, "reduction_or_scalar_region_not_found_in_order");
     return candidate;
@@ -265,12 +266,23 @@ static ScalarPromotionCandidate analyzeApplyLoop(scf::ForOp loop) {
   });
   candidate.reductionRegion.walk(
       [&](pto::VMIvcaddOp op) { reductions.push_back(op); });
-  if (reductionStores.size() != 1 || reductions.size() != 1) {
+  if (reductions.size() != 1) {
     reject(candidate, "reduction_value_or_store_not_unique");
     return candidate;
   }
-  candidate.reductionStore = reductionStores.front();
   candidate.reduction = reductions.front();
+  SmallVector<pto::VMIvStoreOp, 2> matchingReductionStores;
+  llvm::copy_if(reductionStores, std::back_inserter(matchingReductionStores),
+                [&](pto::VMIvStoreOp store) {
+                  return store.getValues().size() == 1 &&
+                         store.getValues().front() ==
+                             candidate.reduction.getResult();
+                });
+  if (matchingReductionStores.size() != 1) {
+    reject(candidate, "reduction_value_or_store_not_unique");
+    return candidate;
+  }
+  candidate.reductionStore = matchingReductionStores.front();
   if (!isVRegF32(candidate.reduction.getResult().getType(), 1) ||
       candidate.reductionStore.getValues().size() != 1 ||
       candidate.reductionStore.getValues().front() !=
@@ -293,7 +305,8 @@ static ScalarPromotionCandidate analyzeApplyLoop(scf::ForOp loop) {
       scalarLoads.push_back(load);
   });
   candidate.scalarRegion.walk([&](pto::VMIvStoreOp store) {
-    if (getPointerRoot(store.getDestination()) == candidate.root)
+    if (store != candidate.reductionStore &&
+        getPointerRoot(store.getDestination()) == candidate.root)
       scalarStores.push_back(store);
   });
   candidate.scalarRegion.walk([&](pto::VMIMulSOp op) { scales.push_back(op); });
@@ -368,23 +381,28 @@ static ScalarPromotionCandidate analyzeApplyLoop(scf::ForOp loop) {
   }
 
   SmallVector<pto::VMIvLoadOp, 2> divisorLoads;
-  SmallVector<pto::VMIVdivOp, 2> divides;
+  SmallVector<pto::VMIVdivOp, 4> divides;
   loop.walk([&](pto::VMIvLoadOp load) {
     if (getPointerRoot(load.getSource()) == candidate.root)
       divisorLoads.push_back(load);
   });
-  loop.walk([&](pto::VMIVdivOp op) {
-    if (hasCandidate(op, "vmi_trowexpanddiv"))
-      divides.push_back(op);
-  });
-  if (divisorLoads.size() != 1 || divides.size() != 1) {
+  loop.walk([&](pto::VMIVdivOp op) { divides.push_back(op); });
+  if (divisorLoads.size() != 1) {
     reject(candidate, "divisor_load_or_divide_not_unique");
     return candidate;
   }
   candidate.divisorLoad = divisorLoads.front();
-  candidate.divide = divides.front();
-  if (!hasCandidate(candidate.divisorLoad, "vmi_trowexpanddiv") ||
-      !candidate.divisorLoad.getDistMode() ||
+  SmallVector<pto::VMIVdivOp, 2> matchingDivides;
+  llvm::copy_if(divides, std::back_inserter(matchingDivides),
+                [&](pto::VMIVdivOp divide) {
+                  return divide.getRhs() == candidate.divisorLoad.getResult(0);
+                });
+  if (matchingDivides.size() != 1) {
+    reject(candidate, "divisor_load_or_divide_not_unique");
+    return candidate;
+  }
+  candidate.divide = matchingDivides.front();
+  if (!candidate.divisorLoad.getDistMode() ||
       candidate.divisorLoad.getDistMode() != "brc" ||
       !isZeroIndex(candidate.divisorLoad.getOffset()) ||
       candidate.divisorLoad->getNumResults() != 1 ||
@@ -484,20 +502,25 @@ static FailureOr<Value> appendFusionRegionOutput(pto::FusionRegionOp region,
 
 static LogicalResult promote(ScalarPromotionCandidate &candidate,
                              IRRewriter &rewriter) {
-  FailureOr<Value> reductionValue = appendFusionRegionOutput(
-      candidate.reductionRegion, candidate.reduction.getResult(), rewriter);
-  if (failed(reductionValue))
-    return failure();
-  FailureOr<Value> rootValue = appendFusionRegionOutput(
-      candidate.scalarRegion, candidate.rootOp.getResult(), rewriter);
-  if (failed(rootValue))
-    return failure();
+  Value reachingReduction = candidate.reduction.getResult();
+  if (candidate.reductionRegion != candidate.scalarRegion) {
+    FailureOr<Value> reductionValue = appendFusionRegionOutput(
+        candidate.reductionRegion, reachingReduction, rewriter);
+    if (failed(reductionValue))
+      return failure();
+    reachingReduction = *reductionValue;
+  }
 
-  candidate.scaleLoad.getResult(0).replaceAllUsesWith(*reductionValue);
+  candidate.scaleLoad.getResult(0).replaceAllUsesWith(reachingReduction);
   candidate.shiftLoad.getResult(0).replaceAllUsesWith(
       candidate.scale.getResult());
   candidate.sqrtLoad.getResult(0).replaceAllUsesWith(
       candidate.shift.getResult());
+
+  FailureOr<Value> rootValue = appendFusionRegionOutput(
+      candidate.scalarRegion, candidate.rootOp.getResult(), rewriter);
+  if (failed(rootValue))
+    return failure();
 
   rewriter.setInsertionPoint(candidate.applyLoop);
   auto divisor = rewriter.create<pto::VMIVbrcOp>(

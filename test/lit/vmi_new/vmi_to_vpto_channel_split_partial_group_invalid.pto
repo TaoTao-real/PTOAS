@@ -21,4 +21,4 @@ module {
 
 // CHECK: VMI{{-}}UNSUPPORTED{{:}} pto.vmi.channel_split requires source layout to be contiguous or matching deinterleaved channel layout
 // CHECK-SAME: complete physical channel groups
-// CHECK-SAME: requires source and result to have the same physical arity
+// CHECK-SAME: requires full source logical 256-byte chunks

@@ -1,0 +1,84 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// CANN Open Software License Agreement Version 2.0
+
+// TileOp-level INTERLEAVE fixture.  The split/merge pair represents
+// vdintlv(x,x) followed by vintlv(-odd,even); all arithmetic is FP32 and the
+// only narrowing is BF16 RINT/NOSAT.
+
+!f32_half = !pto.tile_buf<vec, 1x32xf32>
+!f32_vl = !pto.tile_buf<vec, 1x64xf32>
+!bf16_vl = !pto.tile_buf<vec, 1x64xbf16>
+
+module attributes {pto.target_arch = "a5"} {
+  func.func @rope_partial_interleave_n8(
+      %input: !pto.ptr<f32>, %sin: !pto.ptr<f32>, %cos: !pto.ptr<f32>,
+      %output: !pto.ptr<bf16>)
+      attributes {pto.entry, pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    %c64 = arith.constant 64 : index
+    %c448 = arith.constant 448 : index
+    %c512 = arith.constant 512 : index
+    %minus_one = arith.constant -1.0 : f32
+
+    %a0 = arith.constant 0 : i64
+    %a256 = arith.constant 256 : i64
+    %a512 = arith.constant 512 : i64
+    %a768 = arith.constant 768 : i64
+    %a896 = arith.constant 896 : i64
+    %a1024 = arith.constant 1024 : i64
+    %a1280 = arith.constant 1280 : i64
+    %a1536 = arith.constant 1536 : i64
+    %a1792 = arith.constant 1792 : i64
+    %a2048 = arith.constant 2048 : i64
+    %a2304 = arith.constant 2304 : i64
+
+    %input_view = pto.make_tensor_view %input, shape = [%c8, %c512], strides = [%c512, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<8x512xf32>
+    %sin_view = pto.make_tensor_view %sin, shape = [%c8, %c64], strides = [%c64, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<8x64xf32>
+    %cos_view = pto.make_tensor_view %cos, shape = [%c8, %c64], strides = [%c64, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<8x64xf32>
+    %output_view = pto.make_tensor_view %output, shape = [%c8, %c512], strides = [%c512, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<8x512xbf16>
+
+    scf.for %row = %c0 to %c8 step %c1 {
+      %x = pto.alloc_tile addr = %a0 : !f32_vl
+      %sin_tile = pto.alloc_tile addr = %a256 : !f32_vl
+      %cos_tile = pto.alloc_tile addr = %a512 : !f32_vl
+      %x_part = pto.partition_view %input_view, offsets = [%row, %c448], sizes = [%c1, %c64] : !pto.tensor_view<8x512xf32> -> !pto.partition_tensor_view<1x64xf32>
+      %sin_part = pto.partition_view %sin_view, offsets = [%row, %c0], sizes = [%c1, %c64] : !pto.tensor_view<8x64xf32> -> !pto.partition_tensor_view<1x64xf32>
+      %cos_part = pto.partition_view %cos_view, offsets = [%row, %c0], sizes = [%c1, %c64] : !pto.tensor_view<8x64xf32> -> !pto.partition_tensor_view<1x64xf32>
+      pto.tload ins(%x_part : !pto.partition_tensor_view<1x64xf32>) outs(%x : !f32_vl)
+      pto.tload ins(%sin_part : !pto.partition_tensor_view<1x64xf32>) outs(%sin_tile : !f32_vl)
+      pto.tload ins(%cos_part : !pto.partition_tensor_view<1x64xf32>) outs(%cos_tile : !f32_vl)
+
+      %even = pto.alloc_tile addr = %a768 : !f32_half
+      %odd = pto.alloc_tile addr = %a896 : !f32_half
+      %negative_odd = pto.alloc_tile addr = %a1024 : !f32_half
+      %rotated = pto.alloc_tile addr = %a1280 : !f32_vl
+      %cos_x = pto.alloc_tile addr = %a1536 : !f32_vl
+      %sin_rotated = pto.alloc_tile addr = %a1792 : !f32_vl
+      %out_f32 = pto.alloc_tile addr = %a2048 : !f32_vl
+      %out_bf16 = pto.alloc_tile addr = %a2304 : !bf16_vl
+
+      pto.tchannel_split ins(%x : !f32_vl) outs(%even, %odd : !f32_half, !f32_half)
+      pto.tmuls ins(%odd, %minus_one : !f32_half, f32) outs(%negative_odd : !f32_half)
+      pto.tchannel_merge ins(%negative_odd, %even : !f32_half, !f32_half) outs(%rotated : !f32_vl)
+      pto.tmul ins(%cos_tile, %x : !f32_vl, !f32_vl) outs(%cos_x : !f32_vl)
+      pto.tmul ins(%sin_tile, %rotated : !f32_vl, !f32_vl) outs(%sin_rotated : !f32_vl)
+      pto.tadd ins(%cos_x, %sin_rotated : !f32_vl, !f32_vl) outs(%out_f32 : !f32_vl)
+      pto.tcvt ins(%out_f32 {rmode = #pto<round_mode RINT>} : !f32_vl) outs(%out_bf16 : !bf16_vl)
+      %rotary_out = pto.partition_view %output_view, offsets = [%row, %c448], sizes = [%c1, %c64] : !pto.tensor_view<8x512xbf16> -> !pto.partition_tensor_view<1x64xbf16>
+      pto.tstore ins(%out_bf16 : !bf16_vl) outs(%rotary_out : !pto.partition_tensor_view<1x64xbf16>)
+
+      scf.for %col = %c0 to %c448 step %c64 {
+        %prefix = pto.alloc_tile addr = %a0 : !f32_vl
+        %prefix_bf16 = pto.alloc_tile addr = %a256 : !bf16_vl
+        %prefix_in = pto.partition_view %input_view, offsets = [%row, %col], sizes = [%c1, %c64] : !pto.tensor_view<8x512xf32> -> !pto.partition_tensor_view<1x64xf32>
+        pto.tload ins(%prefix_in : !pto.partition_tensor_view<1x64xf32>) outs(%prefix : !f32_vl)
+        pto.tcvt ins(%prefix {rmode = #pto<round_mode RINT>} : !f32_vl) outs(%prefix_bf16 : !bf16_vl)
+        %prefix_out = pto.partition_view %output_view, offsets = [%row, %col], sizes = [%c1, %c64] : !pto.tensor_view<8x512xbf16> -> !pto.partition_tensor_view<1x64xbf16>
+        pto.tstore ins(%prefix_bf16 : !bf16_vl) outs(%prefix_out : !pto.partition_tensor_view<1x64xbf16>)
+      }
+    }
+    return
+  }
+}

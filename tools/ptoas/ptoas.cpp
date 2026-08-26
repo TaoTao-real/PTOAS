@@ -462,6 +462,22 @@ static llvm::cl::opt<std::string> vmiFusionMode(
     llvm::cl::desc("Internal VMI fusion staging: auto, off, region, loop, or full"),
     llvm::cl::Hidden, llvm::cl::init("auto"));
 
+static llvm::cl::opt<std::string> vmiStatePromotionMode(
+    "vmi-state-promotion-mode",
+    llvm::cl::desc("Internal VMI vector-state promotion staging: legacy, "
+                   "shadow, generic, or off"),
+    llvm::cl::Hidden, llvm::cl::init("legacy"));
+
+static llvm::cl::opt<unsigned> vmiStatePromotionMaxVectorChunks(
+    "vmi-state-promotion-max-vector-chunks",
+    llvm::cl::desc("Optional diagnostic A5 physical-vector-chunk budget"),
+    llvm::cl::Hidden, llvm::cl::init(0));
+
+static llvm::cl::opt<bool> vmiStatePromotionRemarks(
+    "vmi-state-promotion-remarks",
+    llvm::cl::desc("Emit stable VMI state-promotion acceptance remarks"),
+    llvm::cl::Hidden, llvm::cl::init(false));
+
 static llvm::cl::opt<std::string> daemonSocketPath(
     "daemon-socket-path",
     llvm::cl::desc("Path to Unix domain socket for daemon RPC "
@@ -583,6 +599,13 @@ static bool isExplicitVMIFusionModeValid() {
   return vmiFusionMode == "auto" || vmiFusionMode == "off" ||
          vmiFusionMode == "region" || vmiFusionMode == "loop" ||
          vmiFusionMode == "full";
+}
+
+static bool isVMIStatePromotionModeValid() {
+  return vmiStatePromotionMode == "legacy" ||
+         vmiStatePromotionMode == "shadow" ||
+         vmiStatePromotionMode == "generic" ||
+         vmiStatePromotionMode == "off";
 }
 
 static bool isVMIRegionEnabled(bool defaultEnabled) {
@@ -2803,10 +2826,20 @@ lowerPTOToVPTOBackend(PassManager &pm, ModuleOp module,
     kernelModulePM.addPass(mlir::createCanonicalizerPass());
     kernelModulePM.addPass(mlir::createCSEPass());
     if (isVMIFullFusionEnabled(defaultFusionEnabled)) {
-      kernelModulePM.addNestedPass<mlir::func::FuncOp>(
-          pto::createPTOVMIAccumulatorPromotionPass());
-      kernelModulePM.addNestedPass<mlir::func::FuncOp>(
-          pto::createPTOVMIScalarPromotionPass());
+      if (vmiStatePromotionMode == "shadow" ||
+          vmiStatePromotionMode == "generic") {
+        kernelModulePM.addNestedPass<mlir::func::FuncOp>(
+            pto::createPTOVMIStatePromotionPass(
+                vmiStatePromotionMode, vmiStatePromotionMaxVectorChunks,
+                vmiStatePromotionRemarks));
+      }
+      if (vmiStatePromotionMode == "legacy" ||
+          vmiStatePromotionMode == "shadow") {
+        kernelModulePM.addNestedPass<mlir::func::FuncOp>(
+            pto::createPTOVMIAccumulatorPromotionPass());
+        kernelModulePM.addNestedPass<mlir::func::FuncOp>(
+            pto::createPTOVMIScalarPromotionPass());
+      }
       kernelModulePM.addPass(mlir::createCanonicalizerPass());
       kernelModulePM.addPass(mlir::createCSEPass());
     }
@@ -3007,6 +3040,12 @@ int mlir::pto::compilePTOASModule(
   if (!isExplicitVMIFusionModeValid()) {
     llvm::errs() << "Error: invalid --vmi-fusion-mode='" << vmiFusionMode
                  << "'. Expected auto, off, region, loop, or full.\n";
+    return 1;
+  }
+  if (!isVMIStatePromotionModeValid()) {
+    llvm::errs() << "Error: invalid --vmi-state-promotion-mode='"
+                 << vmiStatePromotionMode
+                 << "'. Expected legacy, shadow, generic, or off.\n";
     return 1;
   }
   if (tileLibCandidatePolicy != "prefer-vmi" &&

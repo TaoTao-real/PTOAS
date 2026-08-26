@@ -1,0 +1,23 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// CANN Open Software License Agreement Version 2.0
+
+// RUN: %python_executable %S/../../samples/SoftmaxDndVFA5/a5_harness/generate_pto_variants.py --source %S/../../samples/SoftmaxDndVFA5/softmax_dnd_vf.pto --output-dir %t.variants --experiment-tag generic-state-promotion --width 32 --width 128
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --tile-lib-backend=ptodsl --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --vmi-state-promotion-mode=generic --enable-vecscope-mem-bar --emit-vpto %t.variants/n32-D.pto -o - | %python_executable %S/Inputs/softmax_vf_traffic_gate.py --width=32 --loops=12 --vld=20 --vst=12 --membar=24 | FileCheck %s --check-prefix=N32
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --tile-lib-backend=ptodsl --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --vmi-state-promotion-mode=generic --enable-vecscope-mem-bar --emit-vpto %S/../../samples/SoftmaxDndVFA5/softmax_dnd_vf.pto -o - | %python_executable %S/Inputs/softmax_vf_traffic_gate.py --width=64 --loops=12 --vld=20 --vst=12 --membar=8 | FileCheck %s --check-prefix=N64
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --tile-lib-backend=ptodsl --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --vmi-state-promotion-mode=generic --enable-vecscope-mem-bar --emit-vpto %t.variants/n128-D.pto -o - | %python_executable %S/Inputs/softmax_vf_traffic_gate.py --width=128 --loops=12 --vld=40 --vst=24 --membar=8 | FileCheck %s --check-prefix=N128
+// RUN: %python_executable %S/../../samples/SoftmaxDndVFA5/softmax_dnd_vf_golden.py | FileCheck %s --check-prefix=GOLDEN
+
+// N32: width=32 loop_vld_vst_membar=12/20/12/24 expdif=8 outputs=4
+
+// N64: width=64 loop_vld_vst_membar=12/20/12/8 expdif=8 outputs=4
+
+// The generic proof forwards sixteen additional full-width round trips at
+// N=128 without eliminating the exp matrix materialization or output stores.
+// N128: width=128 loop_vld_vst_membar=12/40/24/8 expdif=16 outputs=4
+
+// GOLDEN: width=32 dataset=exact-onehot
+// GOLDEN: width=32 dataset=finite-sensitive
+// GOLDEN: width=64 dataset=exact-onehot
+// GOLDEN: width=64 dataset=finite-sensitive
+// GOLDEN: width=128 dataset=exact-onehot
+// GOLDEN: width=128 dataset=finite-sensitive

@@ -11,6 +11,8 @@
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --emit-vpto %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_ascendc_aligned.pto -o /dev/null --mlir-print-ir-after=pto-plan-vmi-scalar-phases 2>&1 | FileCheck %s --check-prefix=SCALAR-PLAN
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --emit-vpto %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_ascendc_aligned.pto -o - | FileCheck %s --check-prefix=PROMOTED
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --enable-vecscope-mem-bar --emit-vpto %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_ascendc_aligned.pto -o - | %python_executable %S/Inputs/rmsnorm_vf_traffic_gate.py --stage vf-boundary | FileCheck %s --check-prefix=TRAFFIC
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --vmi-state-promotion-mode=generic --enable-vecscope-mem-bar --emit-vpto %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_ascendc_aligned.pto -o - | tee %t.generic.vpto | %python_executable %S/Inputs/rmsnorm_vf_traffic_gate.py --stage vf-boundary | FileCheck %s --check-prefix=GENERIC-TRAFFIC
+// RUN: FileCheck %s --check-prefix=GENERIC-PROMOTED < %t.generic.vpto
 // RUN: %python_executable %S/../../samples/RMSNorm1VLA5/rmsnorm_1vl_golden.py | FileCheck %s --check-prefix=GOLDEN
 
 // FLOW-LABEL: func.func @rms_norm_1vl_ascendc_aligned
@@ -77,6 +79,23 @@
 // TRAFFIC-NEXT: excess_vld_vst_membar=0/0/0
 // TRAFFIC-NEXT: accumulator_ub_root_materialized=no
 // TRAFFIC-NEXT: scalar_ub_root_materialized=no
+
+// GENERIC-TRAFFIC: stage=vf-boundary
+// GENERIC-TRAFFIC-NEXT: static_total_vld_vst_membar=3/1/0
+// GENERIC-TRAFFIC-NEXT: manual_vf_boundary_vld_vst_membar=3/1/0
+// GENERIC-TRAFFIC-NEXT: essential_boundary_vld_vst=3/1
+// GENERIC-TRAFFIC-NEXT: excess_vld_vst_membar=0/0/0
+// GENERIC-TRAFFIC-NEXT: accumulator_ub_root_materialized=no
+// GENERIC-TRAFFIC-NEXT: scalar_ub_root_materialized=no
+
+// GENERIC-PROMOTED-LABEL: func.func @rms_norm_1vl_ascendc_aligned
+// GENERIC-PROMOTED: scf.for {{.*}} iter_args
+// GENERIC-PROMOTED-SAME: -> (!pto.vreg<64xf32>)
+// GENERIC-PROMOTED: pto.vmi.state_promotion.flow = "loop-carried"
+// GENERIC-PROMOTED-SAME: pto.vmi.state_promotion.status = "accepted"
+// GENERIC-PROMOTED-NOT: 41728
+// GENERIC-PROMOTED-NOT: 42240
+// GENERIC-PROMOTED-NOT: pto.vmi.v
 
 // GOLDEN: x_sha256=4592fd5558963014cdeda9c7abe87ca56fc7d9460ea824e6e86391e99a41446f
 // GOLDEN: gamma_sha256=53aa7ef4ac5abbf117e37472b3f1f2c5050de6cefb3aa8dc34a4a77cf59c42ac

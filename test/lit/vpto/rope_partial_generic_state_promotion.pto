@@ -1,0 +1,41 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// CANN Open Software License Agreement Version 2.0
+
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --vmi-state-promotion-mode=generic --emit-vpto %S/../../samples/RopePartialVFA5/rope_partial_half_tile.pto -o - | FileCheck %s --check-prefix=HALF
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --vmi-state-promotion-mode=generic --emit-vpto %S/../../samples/RopePartialVFA5/rope_partial_interleave_tile.pto -o - | FileCheck %s --check-prefix=INTERLEAVE
+// RUN: %python_executable %S/../../samples/RopePartialVFA5/rope_partial_golden.py | FileCheck %s --check-prefix=GOLDEN
+
+// HALF-LABEL: func.func @rope_partial_half_n8
+// HALF-COUNT-4: pto.vlds
+// HALF: pto.vcvt{{.*}}{part = "EVEN", rnd = "R", sat = "NOSAT"}
+// HALF: pto.vsts
+// HALF-COUNT-4: pto.vlds
+// HALF: pto.vcvt{{.*}}{part = "EVEN", rnd = "R", sat = "NOSAT"}
+// HALF: pto.vsts
+// HALF: pto.vlds
+// HALF: pto.vcvt{{.*}}{part = "EVEN", rnd = "R", sat = "NOSAT"}
+// HALF: pto.vsts
+// HALF-NOT: pto.vmi.v
+// HALF-NOT: membar
+
+// INTERLEAVE-LABEL: func.func @rope_partial_interleave_n8
+// INTERLEAVE: pto.vlds
+// INTERLEAVE-COUNT-1: pto.vdintlv
+// INTERLEAVE-COUNT-1: pto.vintlv
+// INTERLEAVE-COUNT-2: pto.vlds
+// INTERLEAVE: pto.vcvt{{.*}}{part = "EVEN", rnd = "R", sat = "NOSAT"}
+// INTERLEAVE: pto.vsts
+// INTERLEAVE: pto.vlds
+// INTERLEAVE: pto.vcvt{{.*}}{part = "EVEN", rnd = "R", sat = "NOSAT"}
+// INTERLEAVE: pto.vsts
+// INTERLEAVE-NOT: pto.vmi.v
+// INTERLEAVE-NOT: membar
+
+// GOLDEN: mode=half dataset=exact
+// GOLDEN-SAME: output_sha256=9abaa8905d660f28553178c6fdfcb6ca70f9f12cdf7bd1c4c0871a71e26a2d7d
+// GOLDEN: mode=half dataset=layout-sensitive
+// GOLDEN-SAME: output_sha256=92e778cac9a3103ba2eb829f656624984aa6c6ce187707f4451d7378ea6b3d98
+// GOLDEN: mode=interleave dataset=exact
+// GOLDEN-SAME: output_sha256=8e4b407d056cbdbeb71aec123e6b8088ef71315ae43e1bece084ec4ddfaacd58
+// GOLDEN: mode=interleave dataset=layout-sensitive
+// GOLDEN-SAME: output_sha256=46c61cf7cb236de88717532ce7c848fffec0f94162abc2d8d3bc4ee0d97a4de2

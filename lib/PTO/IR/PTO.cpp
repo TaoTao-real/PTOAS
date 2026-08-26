@@ -5709,6 +5709,77 @@ LogicalResult pto::TAndOp::verify() {
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 
+static FailureOr<std::pair<SmallVector<int64_t, 4>, Type>>
+verifyStaticRank2ChannelTile(Operation *op, Value value, StringRef name) {
+  Type type = value.getType();
+  if (!isPTOShapedLike(type)) {
+    op->emitOpError() << "expects " << name << " to be a PTO shaped-like type";
+    return failure();
+  }
+  SmallVector<int64_t, 4> shape = getShapeVec(type);
+  if (shape.size() != 2 || llvm::any_of(shape, [](int64_t dim) {
+        return ShapedType::isDynamic(dim) || dim <= 0;
+      })) {
+    op->emitOpError() << "expects " << name << " to have a static rank-2 shape";
+    return failure();
+  }
+  Type elementType = getElemTy(type);
+  if (!elementType) {
+    op->emitOpError() << "failed to get " << name << " element type";
+    return failure();
+  }
+  return std::make_pair(std::move(shape), elementType);
+}
+
+LogicalResult pto::TChannelSplitOp::verify() {
+  if (getDsts().size() != 2 && getDsts().size() != 4)
+    return emitOpError("expects exactly 2 or 4 destination channels");
+  auto src = verifyStaticRank2ChannelTile(getOperation(), getSrc(), "src");
+  if (failed(src))
+    return failure();
+  int64_t channels = static_cast<int64_t>(getDsts().size());
+  if (src->first[1] % channels != 0)
+    return emitOpError("expects src columns to be divisible by channel count");
+  int64_t channelCols = src->first[1] / channels;
+  for (auto [index, dst] : llvm::enumerate(getDsts())) {
+    auto info = verifyStaticRank2ChannelTile(
+        getOperation(), dst, (Twine("dst") + Twine(index)).str());
+    if (failed(info))
+      return failure();
+    if (info->second != src->second || info->first[0] != src->first[0] ||
+        info->first[1] != channelCols)
+      return emitOpError(
+          "expects Nx(K*C) -> K x NxC with matching element types");
+  }
+  return success();
+}
+
+LogicalResult pto::TChannelMergeOp::verify() {
+  if (getSrcs().size() != 2 && getSrcs().size() != 4)
+    return emitOpError("expects exactly 2 or 4 source channels");
+  auto dst = verifyStaticRank2ChannelTile(getOperation(), getDst(), "dst");
+  if (failed(dst))
+    return failure();
+  auto first = verifyStaticRank2ChannelTile(getOperation(), getSrcs().front(),
+                                            "src0");
+  if (failed(first))
+    return failure();
+  for (auto [index, src] : llvm::enumerate(getSrcs())) {
+    auto info = verifyStaticRank2ChannelTile(
+        getOperation(), src, (Twine("src") + Twine(index)).str());
+    if (failed(info))
+      return failure();
+    if (info->second != first->second || info->first != first->first)
+      return emitOpError("expects all source channels to have matching types");
+  }
+  int64_t channels = static_cast<int64_t>(getSrcs().size());
+  if (dst->second != first->second || dst->first[0] != first->first[0] ||
+      dst->first[1] != channels * first->first[1])
+    return emitOpError(
+        "expects K x NxC -> Nx(K*C) with matching element types");
+  return success();
+}
+
 mlir::LogicalResult mlir::pto::TConcatOp::verify() {
   auto verifyCommon = [&]() -> FailureOr<Type> {
     Type t0 = getSrc0().getType();
@@ -14737,6 +14808,22 @@ void TMrgSortOp::getEffects(
   if (!executed.empty()) {
     PTO_ADD_WRITE(executed[0]);
   }
+}
+
+void TChannelSplitOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  PTO_ADD_READ(getSrcMutable());
+  for (OpOperand &dst : getDstsMutable())
+    PTO_ADD_WRITE(dst);
+}
+
+void TChannelMergeOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  for (OpOperand &src : getSrcsMutable())
+    PTO_ADD_READ(src);
+  PTO_ADD_WRITE(getDstMutable());
 }
 
 PTO_DEFINE_BINARY_EFFECTS(TMulOp, getSrc0Mutable(), getSrc1Mutable(), getDstMutable())

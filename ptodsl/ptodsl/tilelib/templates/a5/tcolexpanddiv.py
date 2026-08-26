@@ -105,6 +105,7 @@ def template_tcolexpanddiv_i32(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
 
 from ._vmi_common import (  # noqa: E402
     canonical_vmi_template,
+    col_expand_binary_vmi_legal,
     emit_col_expand_binary_vmi,
 )
 
@@ -118,6 +119,7 @@ from ._vmi_common import (  # noqa: E402
     # context attr to TColExpandDivOp (even when default), and validate_context_attrs
     # rejects attrs the candidate did not declare, so the candidate declares it.
     context_constraints={"precisionType": ("default",)},
+    constraints=(col_expand_binary_vmi_legal,),
 )
 def vmi_tcolexpanddiv(src: pto.Tile, col_values: pto.Tile, dst: pto.Tile):
     emit_col_expand_binary_vmi(src, col_values, dst, binop="div")

@@ -1,0 +1,9 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// CANN Open Software License Agreement Version 2.0
+
+// Qwen3 uses one-row RoPE column multiplies and wide RMSNorm column multiplies.
+// Those shapes must either select a legal VMI candidate or fall back to the
+// ordinary template; prefer-vmi must never turn candidate rejection into a
+// compilation failure.
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --vmi-state-promotion-mode=generic --emit-vpto %S/../../samples/Qwen3DecodeA5/rmsnorm.pto -o /dev/null
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --vmi-state-promotion-mode=generic --emit-vpto %S/../../samples/Qwen3DecodeA5/rope_kv_cache.pto -o /dev/null

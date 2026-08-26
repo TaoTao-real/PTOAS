@@ -139,6 +139,11 @@ std::unique_ptr<Pass> createPTOPlanVMIAccumulatorPhasesPass();
 std::unique_ptr<Pass> createPTOPlanVMIScalarPhasesPass();
 std::unique_ptr<Pass> createPTOVMIAccumulatorPromotionPass();
 std::unique_ptr<Pass> createPTOVMIScalarPromotionPass();
+std::unique_ptr<Pass> createPTOVMIStatePromotionPass();
+std::unique_ptr<Pass>
+createPTOVMIStatePromotionPass(llvm::StringRef mode,
+                               int64_t maxVectorChunks,
+                               bool emitRemarks);
 std::unique_ptr<Pass> createExpandTileOpPass();
 std::unique_ptr<Pass> createExpandTileOpPass(const ExpandTileOpOptions &options);
 std::unique_ptr<Pass> createFoldTileBufIntrinsicsPass();

@@ -790,6 +790,23 @@ def check_col_expand_candidate() -> str:
             "!pto.vmi.vreg<{}xf32>".format(width) in text,
             "expdif should retain the {}-lane logical value".format(width),
         )
+
+    # Non-paired column broadcasts are valid for a single RoPE row.  The
+    # even-row restriction belongs only to the paired Softmax expdif schedule.
+    one_row = {
+        **col_tile_spec,
+        "shape": [1, 64],
+        "valid_shape": [1, 64],
+    }
+    rope_mul = instantiate_candidate(
+        target="a5",
+        op_name="pto.tcolexpandmul",
+        operand_specs=[one_row, one_row, one_row],
+        provider_module="ptodsl.vmi_tilelib",
+        context_attrs={},
+    ).mlir_text()
+    expect(rope_mul.count("scf.for") == 1, "one-row RoPE mul should lower")
+    expect("pto.vmi.vmul" in rope_mul, "one-row RoPE mul should use VMI")
     return expdif_text
 
 

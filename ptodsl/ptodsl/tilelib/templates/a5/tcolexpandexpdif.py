@@ -18,6 +18,7 @@ template_tcolexpandexpdif_f32, template_tcolexpandexpdif_f16 = register_column_e
 from ._vmi_common import (  # noqa: E402
     canonical_vmi_template,
     emit_col_expand_binary_vmi,
+    paired_col_expand_binary_vmi_legal,
 )
 
 
@@ -26,6 +27,7 @@ from ._vmi_common import (  # noqa: E402
     op="tcolexpandexpdif",
     name="vmi_tcolexpandexpdif",
     dtypes=(("f32", "f32", "f32"),),
+    constraints=(paired_col_expand_binary_vmi_legal,),
 )
 def vmi_tcolexpandexpdif(
     src: pto.Tile, col_values: pto.Tile, dst: pto.Tile

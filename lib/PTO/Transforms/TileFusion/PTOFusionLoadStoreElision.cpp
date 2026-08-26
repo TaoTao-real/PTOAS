@@ -258,7 +258,7 @@ static bool eraseDeadAddressScaffoldOps(func::FuncOp func) {
 }
 
 static bool isSupportedLeafOp(Operation *op) {
-  if (isa<pto::VldsOp, pto::VstsOp>(op))
+  if (isa<pto::VldsOp, pto::VstsOp, pto::AllocTileOp>(op))
     return true;
   if (isAddressScaffoldOp(op))
     return true;
@@ -515,8 +515,8 @@ buildFusionRegionStoreContext(pto::FusionRegionOp fusionRegion) {
 static bool isSupportedLoopRoot(scf::ForOp loop) {
   if (!loop)
     return false;
-  return isa<pto::FusionRegionOp, pto::VecScopeOp, pto::StrictVecScopeOp>(
-      loop->getParentOp());
+  return isa<pto::FusionRegionOp, pto::VecScopeOp, pto::StrictVecScopeOp,
+             func::FuncOp, scf::ForOp>(loop->getParentOp());
 }
 
 static Block *getLeafLoopBody(scf::ForOp carrierLoop) {
@@ -838,7 +838,8 @@ static bool elideLoadStoreRoundTripsInLeafBody(
       continue;
     }
 
-    if (!isPureNoRegionOp(&op) && !isAddressScaffoldOp(&op))
+    if (!isPureNoRegionOp(&op) && !isAddressScaffoldOp(&op) &&
+        !isa<pto::AllocTileOp>(op))
       trackedStores.clear();
   }
 
@@ -1078,6 +1079,94 @@ static bool elideAdjacentPhaseStateRoundTrips(
   return changed;
 }
 
+static Value getConservativeStaticAddressRoot(Value buffer) {
+  Value address = getCanonicalBufferAddress(buffer);
+  while (auto add = address ? address.getDefiningOp<pto::AddPtrOp>()
+                            : pto::AddPtrOp{})
+    address = getCanonicalTrackedValue(add.getPtr());
+  APInt staticAddress;
+  if (!address || !matchPattern(address, m_ConstantInt(&staticAddress)))
+    return {};
+  return address;
+}
+
+/// Remove only post-flatten static UB stores whose value is already consumed
+/// through SSA and whose address has no remaining read or non-vector observer.
+/// This is intentionally narrower than general dead-store elimination: it is
+/// the final cleanup for stores made redundant by proven state forwarding.
+static bool elideUnobservedStaticVectorStores(func::FuncOp func) {
+  bool hasFusionRegion = false;
+  func.walk([&](pto::FusionRegionOp) { hasFusionRegion = true; });
+  if (hasFusionRegion)
+    return false;
+
+  struct StoreGroup {
+    Value root;
+    SmallVector<pto::VstsOp, 4> stores;
+    bool observed = false;
+  };
+  SmallVector<StoreGroup, 4> groups;
+
+  func.walk([&](pto::VstsOp store) {
+    bool hasSSAConsumer = llvm::any_of(
+        store.getValue().getUsers(), [&](Operation *user) {
+          return user != store.getOperation() && !isa<pto::VstsOp>(user);
+        });
+    if (!hasSSAConsumer)
+      return;
+    Value root = getConservativeStaticAddressRoot(store.getDestination());
+    if (!root)
+      return;
+    auto it = llvm::find_if(groups, [&](const StoreGroup &group) {
+      return areEquivalentValues(group.root, root);
+    });
+    if (it == groups.end()) {
+      groups.push_back(StoreGroup{root, {}, false});
+      it = std::prev(groups.end());
+    }
+    it->stores.push_back(store);
+  });
+  if (groups.empty())
+    return false;
+
+  auto operationUsesRoot = [&](Operation *op, Value root) {
+    return llvm::any_of(op->getOperands(), [&](Value operand) {
+      Value operandRoot = getConservativeStaticAddressRoot(operand);
+      return operandRoot && areEquivalentValues(operandRoot, root);
+    });
+  };
+
+  func.walk([&](Operation *op) {
+    if (isa<pto::VstsOp, pto::AllocTileOp>(op) || isAddressScaffoldOp(op) ||
+        isMemoryEffectFree(op))
+      return;
+    for (StoreGroup &group : groups) {
+      if (group.observed)
+        continue;
+      if (auto load = dyn_cast<pto::VldsOp>(op)) {
+        Value root = getConservativeStaticAddressRoot(load.getSource());
+        group.observed = root && areEquivalentValues(root, group.root);
+        continue;
+      }
+      if (operationUsesRoot(op, group.root))
+        group.observed = true;
+    }
+  });
+
+  bool changed = false;
+  for (StoreGroup &group : groups) {
+    if (group.observed)
+      continue;
+    for (pto::VstsOp store : group.stores) {
+      if (store && store->getBlock()) {
+        store.erase();
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
 struct PTOFusionLoadStoreElisionPass
     : public pto::impl::PTOFusionLoadStoreElisionBase<
           PTOFusionLoadStoreElisionPass> {
@@ -1134,15 +1223,19 @@ struct PTOFusionLoadStoreElisionPass
 
       auto runElisionForLeafBody = [&](Block *leafBody, Operation *scopeOp,
                                        pto::FusionRegionOp fusionRegion) {
-        if (!leafBody || !fusionRegion)
+        if (!leafBody)
           return;
 
-        auto it = regionContexts.find(fusionRegion.getOperation());
-        if (it == regionContexts.end())
-          return;
+        const FusionRegionStoreContext *context = nullptr;
+        if (fusionRegion) {
+          auto it = regionContexts.find(fusionRegion.getOperation());
+          if (it == regionContexts.end())
+            return;
+          context = &it->second;
+        }
 
         roundChanged |=
-            elideLoadStoreRoundTripsInLeafBody(*leafBody, &it->second, scopeOp);
+            elideLoadStoreRoundTripsInLeafBody(*leafBody, context, scopeOp);
       };
 
       func.walk([&](pto::VecScopeOp vecscope) {
@@ -1183,6 +1276,8 @@ struct PTOFusionLoadStoreElisionPass
       if (!roundChanged && !scaffoldChanged)
         break;
     }
+
+    changed |= elideUnobservedStaticVectorStores(func);
 
     if (!changed)
       markAllAnalysesPreserved();

@@ -12162,19 +12162,21 @@ checkSupportedChannelSplitShape(VMIChannelSplitOp op,
       return fail("requires every result layout to be contiguous");
   }
 
+  unsigned sourceElementBits =
+      pto::getPTOStorageElemBitWidth(sourceType.getElementType());
+  int64_t sourceLogicalBits = sourceType.getElementCount() * sourceElementBits;
+  if (sourceElementBits == 0 || sourceLogicalBits <= 0 ||
+      sourceLogicalBits % (256 * 8) != 0)
+    return fail("requires full source logical 256-byte chunks");
   FailureOr<int64_t> sourceArity = getVMIPhysicalArity(sourceType);
-  int64_t resultArity = 0;
+  if (failed(sourceArity))
+    return fail("requires computable source physical arity");
   for (Value result : op.getResults()) {
     FailureOr<int64_t> arity =
         getVMIPhysicalArity(cast<VMIVRegType>(result.getType()));
     if (failed(arity))
       return fail("requires computable result physical arity");
-    resultArity += *arity;
   }
-  if (failed(sourceArity))
-    return fail("requires computable source physical arity");
-  if (*sourceArity != resultArity)
-    return fail("requires source and result to have the same physical arity");
 
   return success();
 }
@@ -12192,7 +12194,6 @@ checkSupportedChannelMergeShape(VMIChannelMergeOp op,
   if (channels != 2 && channels != 4)
     return fail("pto.vmi.channel_merge supports only 2 or 4 channels");
 
-  int64_t inputArity = 0;
   for (Value input : op.getInputs()) {
     auto inputType = cast<VMIVRegType>(input.getType());
     VMILayoutAttr inputLayout = inputType.getLayoutAttr();
@@ -12201,7 +12202,6 @@ checkSupportedChannelMergeShape(VMIChannelMergeOp op,
     FailureOr<int64_t> arity = getVMIPhysicalArity(inputType);
     if (failed(arity))
       return fail("requires computable input physical arity");
-    inputArity += *arity;
   }
 
   auto resultType = cast<VMIVRegType>(op.getResult().getType());
@@ -12214,11 +12214,15 @@ checkSupportedChannelMergeShape(VMIChannelMergeOp op,
     return fail("requires result layout to be contiguous or matching "
                 "deinterleaved channel layout");
 
+  unsigned resultElementBits =
+      pto::getPTOStorageElemBitWidth(resultType.getElementType());
+  int64_t resultLogicalBits = resultType.getElementCount() * resultElementBits;
+  if (resultElementBits == 0 || resultLogicalBits <= 0 ||
+      resultLogicalBits % (256 * 8) != 0)
+    return fail("requires full result logical 256-byte chunks");
   FailureOr<int64_t> resultArity = getVMIPhysicalArity(resultType);
   if (failed(resultArity))
     return fail("requires computable result physical arity");
-  if (*resultArity != inputArity)
-    return fail("requires source and result to have the same physical arity");
 
   return success();
 }

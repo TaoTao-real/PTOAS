@@ -648,6 +648,34 @@ def PTOVMIScalarPromotion
   ];
 }
 
+def PTOVMIStatePromotion
+    : Pass<"pto-vmi-state-promotion", "func::FuncOp"> {
+  let summary = "Promote proven VMI UB state to vector SSA";
+  let description = [{
+    Implements phase-aware Vector Mem2SSA without matching operator names.
+    Static, normalized VMI load/store locations are classified as straight-line,
+    loop-invariant, or loop-carried state.  Promotion is committed only after
+    alias, mask, escape, control-flow, effect, and vector-pressure proofs pass.
+    Shadow mode records the same stable decisions without changing the IR.
+  }];
+  let constructor = "mlir::pto::createPTOVMIStatePromotionPass()";
+  let dependentDialects = [
+    "mlir::arith::ArithDialect",
+    "mlir::func::FuncDialect",
+    "mlir::pto::PTODialect",
+    "mlir::scf::SCFDialect"
+  ];
+  let options = [
+    Option<"mode", "mode", "std::string", /*default=*/"\"generic\"",
+           "Execution mode: generic or shadow">,
+    Option<"maxVectorChunks", "max-vector-chunks", "int64_t",
+           /*default=*/"0",
+           "Optional diagnostic A5 physical-chunk budget; zero uses exactness-only conservative admission">,
+    Option<"emitRemarks", "emit-remarks", "bool", /*default=*/"false",
+           "Emit machine-stable accepted/rejected remarks">
+  ];
+}
+
 def ExpandTileOp : Pass<"pto-expand-tile-op", "ModuleOp"> {
   let summary = "Expand tile ops using the selected TileLib implementation";
   let description = [{

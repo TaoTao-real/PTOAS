@@ -22,4 +22,4 @@ module {
 
 // CHECK: VMI{{-}}UNSUPPORTED{{:}} pto.vmi.channel_merge requires every input layout to be contiguous
 // CHECK-SAME: complete physical channel groups
-// CHECK-SAME: requires source and result to have the same physical arity
+// CHECK-SAME: requires full result logical 256-byte chunks
