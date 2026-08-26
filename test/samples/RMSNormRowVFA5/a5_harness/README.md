@@ -10,7 +10,8 @@ RMSNorm implementations on A5:
 | A | ordinary PTODSL/VPTO |
 | B | selected VMI candidates, fusion disabled |
 | C | B plus region and row-loop fusion |
-| D | C plus vreg forwarding, gamma hoisting, and UB traffic elision |
+| D | C plus generic VMI state promotion |
+| DL | C plus the migration-period legacy state planner |
 
 The driver requires an experiment directory created by the private-lab helper
 and an exact committed source tree. It generates unique kernel symbols, builds
@@ -26,3 +27,11 @@ ACL_DEVICE_ID=1 ROWS_LIST=64 PROFILE_REPEATS=5 \
 Set `ROWS_LIST="1 8 32 64"` for the extended four-size matrix. The committed
 acceptance protocol uses the same six variants for `N=64`; reports may select
 ACU, ACF, B, and D as the four primary implementation paths.
+
+After collecting at least ten interleaved profiles, evaluate the formal D over
+DL no-regression gate (paired median and 95% bootstrap upper bound <= 1.03):
+
+```bash
+python3 paired_gate.py EXPERIMENT/results/samples.tsv \
+  --output EXPERIMENT/results/paired-gate-10.json
+```
