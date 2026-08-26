@@ -31,6 +31,12 @@ include_directories(
   ${ASCEND_HOME_PATH}/x86_64-linux/asc/include/interface
   ${ASCEND_HOME_PATH}/x86_64-linux/asc/impl
   ${ASCEND_HOME_PATH}/x86_64-linux/asc/impl/basic_api
+  ${ASCEND_HOME_PATH}/aarch64-linux/asc
+  ${ASCEND_HOME_PATH}/aarch64-linux/asc/include
+  ${ASCEND_HOME_PATH}/aarch64-linux/asc/include/basic_api
+  ${ASCEND_HOME_PATH}/aarch64-linux/asc/include/interface
+  ${ASCEND_HOME_PATH}/aarch64-linux/asc/impl
+  ${ASCEND_HOME_PATH}/aarch64-linux/asc/impl/basic_api
   ${ASCEND_DRIVER_PATH}/kernel/inc)
 
 set(CCE_BASE_OPTIONS
@@ -100,7 +106,7 @@ function(add_ascendc_variant variant kernel_name launch_name use_vf)
   add_host_runner(${variant} ${variant}_kernel ${launch_name})
 endfunction()
 
-foreach(variant IN ITEMS A B C D)
+foreach(variant IN ITEMS A B C D DL)
   if(NOT DEFINED ${variant}_KERNEL_NAME OR NOT DEFINED ${variant}_LAUNCH_NAME)
     message(FATAL_ERROR "${variant}_KERNEL_NAME and ${variant}_LAUNCH_NAME are required")
   endif()

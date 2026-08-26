@@ -94,13 +94,14 @@ common_ptoas_flags=(
 
 printf 'rows\tvariant\tscf_for\tvld\tvst\tmem_bar\tresidual_vmi_ops\n' \
   >"$experiment_dir/results/lowering-stats.tsv"
-while IFS=$'\t' read -r rows variant symbol policy mode pto_file; do
+while IFS=$'\t' read -r rows variant symbol policy mode state_mode pto_file; do
   [[ "$rows" == rows ]] && continue
   generated="$experiment_dir/inputs/generated"
   object_root="$generated/n${rows}-objects"
   mkdir -p "$object_root"
   flags=("${common_ptoas_flags[@]}" \
-    --tilelib-candidate-policy="$policy" --vmi-fusion-mode="$mode")
+    --tilelib-candidate-policy="$policy" --vmi-fusion-mode="$mode" \
+    --vmi-state-promotion-mode="$state_mode")
   /usr/bin/python3 "$ptoas" "${flags[@]}" --emit-vpto \
     "$generated/$pto_file" -o "$experiment_dir/artifacts/vpto/n${rows}-${variant}.mlir" \
     >"$experiment_dir/logs/n${rows}-${variant}-vpto.stdout" \
@@ -142,7 +143,7 @@ for rows in $rows_list; do
     -DASCENDC_SOURCE="$ascendc_source"
     -DRMSNORM_ROWS="$rows"
   )
-  for variant in A B C D; do
+  for variant in A B C D DL; do
     lower=$(printf '%s' "$variant" | tr '[:upper:]' '[:lower:]')
     symbol="rmsnorm_row_vf_n${rows}_${lower}_${safe_tag}"
     cmake_args+=("-D${variant}_KERNEL_NAME=$symbol")
@@ -191,7 +192,7 @@ run_plain() {
 }
 
 for rows in $rows_list; do
-  for variant in D ACF B ACU A C; do
+  for variant in D DL ACF B ACU A C; do
     for input_set in exact-association layout-sensitive; do
       run_plain "$rows" "$variant" "$input_set" cold 0
       run_plain "$rows" "$variant" "$input_set" nonprofile 1
@@ -227,14 +228,14 @@ run_profile() {
 }
 
 for rows in $rows_list; do
-  for variant in D ACF B ACU A C; do
+  for variant in D DL ACF B ACU A C; do
     run_plain "$rows" "$variant" "$dataset" warmup 0
   done
   for ((repeat = 1; repeat <= profile_repeats; ++repeat)); do
     if ((repeat % 2)); then
-      order=(ACU ACF A B C D)
+      order=(DL D C B A)
     else
-      order=(D C B A ACF ACU)
+      order=(D DL A B C)
     fi
     for variant in "${order[@]}"; do
       run_profile "$rows" "$variant" "$repeat"
