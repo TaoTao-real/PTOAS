@@ -311,9 +311,13 @@ static AccessProof analyzeLoad(pto::VMIvLoadOp load) {
   std::optional<int64_t> root = getPointerRoot(load.getSource());
   std::optional<int64_t> offset = getConstantInt(load.getOffset());
   auto vreg = dyn_cast<pto::VMIVRegType>(load.getResult(0).getType());
-  std::optional<int64_t> elementBytes =
-      vreg ? getElementBytes(vreg.getElementType()) : std::nullopt;
-  if (!root || !offset || !vreg || !elementBytes) {
+  if (!root || !offset || !vreg) {
+    proof.rejection = RejectReason::UnknownLocation;
+    proof.detail = "dynamic-root-offset-or-type";
+    return proof;
+  }
+  std::optional<int64_t> elementBytes = getElementBytes(vreg.getElementType());
+  if (!elementBytes) {
     proof.rejection = RejectReason::UnknownLocation;
     proof.detail = "dynamic-root-offset-or-type";
     return proof;
@@ -324,8 +328,12 @@ static AccessProof analyzeLoad(pto::VMIvLoadOp load) {
     proof.detail = "unsupported-vreg-type";
     return proof;
   }
-  proof.location = StateLocation{*root, *offset * *elementBytes,
-                                 dist == "brc" ? *elementBytes : *bytes,
+  const int64_t rootId = root.value_or(0);
+  const int64_t elementByteCount = *elementBytes;
+  const int64_t byteOffset = offset.value_or(0) * elementByteCount;
+  const int64_t accessBytes =
+      dist == "brc" ? elementByteCount : bytes.value_or(0);
+  proof.location = StateLocation{rootId, byteOffset, accessBytes,
                                  vreg.getElementType(), dist};
   proof.activeLanes = vreg.getElementCount();
   return proof;
@@ -344,10 +352,14 @@ static AccessProof analyzeStore(pto::VMIvStoreOp store) {
   auto vreg = dyn_cast<pto::VMIVRegType>(value.getType());
   std::optional<int64_t> root = getPointerRoot(store.getDestination());
   std::optional<int64_t> offset = getConstantInt(store.getOffset());
-  std::optional<int64_t> elementBytes =
-      vreg ? getElementBytes(vreg.getElementType()) : std::nullopt;
-  std::optional<int64_t> bytes = vreg ? getVRegBytes(vreg) : std::nullopt;
-  if (!root || !offset || !vreg || !elementBytes || !bytes) {
+  if (!root || !offset || !vreg) {
+    proof.rejection = RejectReason::UnknownLocation;
+    proof.detail = "dynamic-root-offset-or-type";
+    return proof;
+  }
+  std::optional<int64_t> elementBytes = getElementBytes(vreg.getElementType());
+  std::optional<int64_t> bytes = getVRegBytes(vreg);
+  if (!elementBytes || !bytes) {
     proof.rejection = RejectReason::UnknownLocation;
     proof.detail = "dynamic-root-offset-or-type";
     return proof;
@@ -358,7 +370,9 @@ static AccessProof analyzeStore(pto::VMIvStoreOp store) {
     proof.detail = "dynamic-or-invalid-store-mask";
     return proof;
   }
-  proof.location = StateLocation{*root, *offset * *elementBytes, *bytes,
+  const int64_t rootId = root.value_or(0);
+  const int64_t byteOffset = offset.value_or(0) * *elementBytes;
+  proof.location = StateLocation{rootId, byteOffset, bytes.value_or(0),
                                  vreg.getElementType(), "continuous"};
   return proof;
 }
