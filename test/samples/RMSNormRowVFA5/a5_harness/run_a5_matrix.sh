@@ -233,9 +233,9 @@ for rows in $rows_list; do
   done
   for ((repeat = 1; repeat <= profile_repeats; ++repeat)); do
     if ((repeat % 2)); then
-      order=(DL D C B A)
+      order=(DL ACF D C B ACU A)
     else
-      order=(D DL A B C)
+      order=(D ACF DL A ACU B C)
     fi
     for variant in "${order[@]}"; do
       run_profile "$rows" "$variant" "$repeat"
@@ -247,4 +247,8 @@ done
   "$experiment_dir/results/samples.tsv" \
   --output-tsv "$experiment_dir/results/performance-summary.tsv" \
   --output-json "$experiment_dir/results/performance-summary.json"
+/usr/bin/python3 "$harness/paired_gate.py" \
+  "$experiment_dir/results/samples.tsv" --candidate D --baseline ACF \
+  --output "$experiment_dir/results/d-vs-acf-paired-${profile_repeats}.json" \
+  >"$experiment_dir/results/d-vs-acf-paired-${profile_repeats}.stdout"
 capture_npu_health "$experiment_dir/results/npu-health-after.txt"

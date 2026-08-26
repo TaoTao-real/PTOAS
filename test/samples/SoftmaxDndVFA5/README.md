@@ -62,8 +62,9 @@ private experiment evidence and must not be committed.
 `a5_harness/generate_pto_variants.py` creates experiment-scoped A/B/C/D/DL PTO
 sources. `D` selects generic VMI state promotion and `DL` selects its frozen
 legacy baseline. `a5_harness/run_a5_matrix.sh` performs byte-exact and tolerant
-correctness checks before ten interleaved profiles and evaluates the formal
-paired no-regression gate. `a5_harness/extract_profile.py` and
+correctness checks before ten interleaved profiles of A/B/C/D/DL/AC-U/AC-F.
+It evaluates both the generic-D/legacy-D no-regression gate and the paired
+generic-D/manual-AC-F comparison. `a5_harness/extract_profile.py` and
 `a5_harness/summarize_profiles.py` convert serial msprof output into the
 four-path comparison table.  The validated 2026-08-24 results and the exact
 correctness/lowering gates are recorded in `A5_ACCEPTANCE.md`.

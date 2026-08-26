@@ -19,15 +19,15 @@ def percentile(values, probability):
     return ordered[lower] * (1.0 - fraction) + ordered[upper] * fraction
 
 
-def paired_gate(rows, metric, threshold, samples=20000):
+def paired_gate(rows, metric, candidate, baseline, threshold, samples=20000):
     by_variant = defaultdict(dict)
     for row in rows:
         by_variant[row["variant"]][int(row["repeat"])] = float(row[metric])
-    repeats = sorted(set(by_variant["D"]) & set(by_variant["DL"]))
-    ratios = [by_variant["D"][repeat] / by_variant["DL"][repeat]
+    repeats = sorted(set(by_variant[candidate]) & set(by_variant[baseline]))
+    ratios = [by_variant[candidate][repeat] / by_variant[baseline][repeat]
               for repeat in repeats]
     if not ratios:
-        raise ValueError("no paired D/DL samples")
+        raise ValueError(f"no paired {candidate}/{baseline} samples")
     rng = random.Random(0xA5_256)
     bootstrap = [
         statistics.median(rng.choice(ratios) for _ in ratios)
@@ -49,6 +49,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("samples")
     parser.add_argument("--output", required=True)
+    parser.add_argument("--candidate", default="D")
+    parser.add_argument("--baseline", default="DL")
     parser.add_argument("--threshold", type=float, default=1.03)
     args = parser.parse_args()
     grouped = defaultdict(list)
@@ -58,13 +60,21 @@ def main():
     result = {}
     for width, rows in sorted(grouped.items()):
         result[str(width)] = {
-            "task": paired_gate(rows, "task_duration_us", args.threshold),
-            "vector": paired_gate(rows, "aiv_vec_time_us", args.threshold),
+            "task": paired_gate(
+                rows, "task_duration_us", args.candidate, args.baseline,
+                args.threshold
+            ),
+            "vector": paired_gate(
+                rows, "aiv_vec_time_us", args.candidate, args.baseline,
+                args.threshold
+            ),
         }
         result[str(width)]["pass"] = (
             result[str(width)]["task"]["pass"]
             and result[str(width)]["vector"]["pass"]
         )
+    result["candidate"] = args.candidate
+    result["baseline"] = args.baseline
     result["pass"] = bool(grouped) and all(
         result[str(width)]["pass"] for width in grouped
     )
