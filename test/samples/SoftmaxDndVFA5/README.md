@@ -52,15 +52,18 @@ chunk, and mask errors without depending on a host approximation of A5 exp.
 
 `finite-sensitive` uses bounded finite values with a unique pattern per tile,
 row, and column.  The independent golden performs explicit FP32 rounding and
-the same even/odd accumulation association.  Device comparison uses the
-recorded tolerance because host `expf` is not an implementation of the A5
-`vexpdif` approximation.
+the same even/odd accumulation association. Device comparison uses `atol=1e-6`
+and `rtol=1e-6` because host `expf` is not an implementation of the A5
+`vexpdif` approximation; every exact-onehot result remains byte-exact.
 
 Generated input binaries, lowering dumps, objects, assembly, and profiles are
 private experiment evidence and must not be committed.
 
-`a5_harness/generate_pto_variants.py` creates experiment-scoped A/B/C/D PTO
-sources.  `a5_harness/extract_profile.py` and
+`a5_harness/generate_pto_variants.py` creates experiment-scoped A/B/C/D/DL PTO
+sources. `D` selects generic VMI state promotion and `DL` selects its frozen
+legacy baseline. `a5_harness/run_a5_matrix.sh` performs byte-exact and tolerant
+correctness checks before ten interleaved profiles and evaluates the formal
+paired no-regression gate. `a5_harness/extract_profile.py` and
 `a5_harness/summarize_profiles.py` convert serial msprof output into the
 four-path comparison table.  The validated 2026-08-24 results and the exact
 correctness/lowering gates are recorded in `A5_ACCEPTANCE.md`.

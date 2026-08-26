@@ -8,10 +8,11 @@ from pathlib import Path
 
 WIDTHS = (32, 64, 128)
 VARIANTS = {
-    "A": ("ordinary", "off"),
-    "B": ("prefer-vmi", "off"),
-    "C": ("prefer-vmi", "loop"),
-    "D": ("prefer-vmi", "full"),
+    "A": ("ordinary", "off", "off"),
+    "B": ("prefer-vmi", "off", "off"),
+    "C": ("prefer-vmi", "loop", "off"),
+    "D": ("prefer-vmi", "full", "generic"),
+    "DL": ("prefer-vmi", "full", "legacy"),
 }
 
 
@@ -69,18 +70,19 @@ def main():
     tag = identifier(args.experiment_tag)
     widths = tuple(args.width or WIDTHS)
     manifest = [
-        "width\tvariant\tkernel_symbol\tcandidate_policy\tfusion_mode\tpto"
+        "width\tvariant\tkernel_symbol\tcandidate_policy\tfusion_mode\t"
+        "state_promotion_mode\tpto"
     ]
     for width in widths:
-        for variant, (policy, mode) in VARIANTS.items():
+        for variant, (policy, mode, state_mode) in VARIANTS.items():
             symbol = "softmax_dnd_b4_m16_n{}_{}_{}".format(
                 width, variant.lower(), tag
             )
             path = output_dir / "n{}-{}.pto".format(width, variant)
             path.write_text(render(source, width, symbol))
             manifest.append(
-                "{}\t{}\t{}\t{}\t{}\t{}".format(
-                    width, variant, symbol, policy, mode, path.name
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}".format(
+                    width, variant, symbol, policy, mode, state_mode, path.name
                 )
             )
     (output_dir / "variants.tsv").write_text("\n".join(manifest) + "\n")

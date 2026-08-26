@@ -53,8 +53,8 @@ def main():
     serializable = {}
     for (width, variant), summary in sorted(summaries.items()):
         vector = summary["vector"]
-        acu = summaries[(width, "ACU")]["vector"]["median"]
-        baseline = summaries[(width, "B")]["vector"]["median"]
+        acu = summaries.get((width, "ACU"))
+        baseline = summaries.get((width, "B"))
         values = (
             width,
             variant,
@@ -67,8 +67,10 @@ def main():
             summary["task"]["median"],
             summary["aiv"]["median"],
             summary["cycles"]["median"],
-            acu / vector["median"],
-            baseline / vector["median"],
+            (acu["vector"]["median"] / vector["median"]
+             if acu is not None else "NA"),
+            (baseline["vector"]["median"] / vector["median"]
+             if baseline is not None else "NA"),
         )
         output.append("\t".join(str(value) for value in values))
         serializable["{}:{}".format(width, variant)] = summary
