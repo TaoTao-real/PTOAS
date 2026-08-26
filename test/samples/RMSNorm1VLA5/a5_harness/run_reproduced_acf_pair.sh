@@ -68,6 +68,7 @@ run_plain() {
   cp "$fixture/x.bin" "$run_dir/x.bin"
   cp "$fixture/gamma.bin" "$run_dir/gamma.bin"
   cp "$fixture/y.init.bin" "$run_dir/y.bin"
+  chmod u+w "$run_dir/y.bin"
   set +e
   (cd "$run_dir" && timeout 120 "$binary") \
     >"$experiment_dir/logs/${variant}-${run_kind}-${run}.stdout" \
@@ -112,6 +113,7 @@ run_profile() {
     cp "$fixture/x.bin" "$run_dir/x.bin"
     cp "$fixture/gamma.bin" "$run_dir/gamma.bin"
     cp "$fixture/y.init.bin" "$run_dir/y.bin"
+    chmod u+w "$run_dir/y.bin"
     set +e
     (cd "$run_dir" && timeout 300 "$msprof" \
       --output="$profile" --application="$binary") \
@@ -158,4 +160,3 @@ done
   "$experiment_dir/results/samples.tsv" --candidate D --baseline ACF \
   --output "$experiment_dir/results/d-vs-acf-paired-${profile_repeats}.json" \
   >"$experiment_dir/results/d-vs-acf-paired-${profile_repeats}.stdout"
-
