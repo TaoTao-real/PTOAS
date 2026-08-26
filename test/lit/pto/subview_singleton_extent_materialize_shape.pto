@@ -1,0 +1,26 @@
+// RUN: ptoas --pto-arch=a5 --mlir-print-ir-after=pto-materialize-tile-handles %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=IR
+// RUN: ptoas --pto-arch=a5 %s -o /dev/null
+
+// A singleton row never advances by the inherited parent row stride.  The
+// materialized handle must therefore recover the logical 1x32 subview shape,
+// allowing a compact 1x32 producer to convert directly into the staged output
+// slice.  Multi-row non-compact subviews remain parent-shaped.
+module attributes {pto.target_arch = "a5"} {
+  func.func @subview_singleton_extent_materialize_shape() {
+    %c0 = arith.constant 0 : index
+    %c3 = arith.constant 3 : index
+    %c448 = arith.constant 448 : index
+    %src = pto.alloc_tile : !pto.tile_buf<vec, 1x32xf32>
+    %output = pto.alloc_tile : !pto.tile_buf<vec, 8x512xbf16>
+    %slice = pto.subview %output[%c3, %c448] sizes [1, 32] :
+      !pto.tile_buf<vec, 8x512xbf16> -> !pto.tile_buf<vec, 1x32xbf16>
+    pto.tcvt ins(%src {rmode = #pto<round_mode RINT>} : !pto.tile_buf<vec, 1x32xf32>)
+      outs(%slice : !pto.tile_buf<vec, 1x32xbf16>)
+    return
+  }
+
+}
+
+// IR: IR Dump After PTOMaterializeTileHandles
+// IR: pto.alloc_tile{{.*}}!pto.tile_buf<vec, 1x32xbf16>
+// IR: pto.tcvt{{.*}}!pto.tile_buf<vec, 1x32xf32>{{.*}}!pto.tile_buf<vec, 1x32xbf16>

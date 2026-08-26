@@ -73,6 +73,13 @@ asserts byte-exact BF16 equality between them before emitting hashes.
 
 Generic VMI Vector State Promotion now covers both TileOp fixtures.
 
+- The PTO fixtures now use the same GM/UB boundary as the attached manual VF
+  wrapper: one full input load, one full sin load, one full cos load, row-local
+  vector work entirely on UB subviews, and one full output store.  Final VPTO
+  therefore has exactly three `copy_gm_to_ubuf` operations before the row loop
+  and one `copy_ubuf_to_gm` after all vector writes; no GM DMA is nested in the
+  row or prefix loops.
+
 - HALF selects the static 32-lane `vmi_tcvt` path.  FP32-to-BF16 narrowing is
   RINT/NOSAT and state promotion forwards all multiply/add/subtract and convert
   intermediates as SSA/vregs.  Final VPTO contains nine contractual VLDs
@@ -108,11 +115,17 @@ build-llvm21/tools/ptoas/ptoas \
   --vmi-state-promotion-mode=generic --emit-vpto \
   test/samples/RopePartialVFA5/rope_partial_interleave_tile.pto
 
+/usr/bin/python3 test/samples/RopePartialVFA5/check_staged_vpto.py \
+  --mode interleave /path/to/rope-interleave.vpto
+
 PYTHONPATH=/path/to/llvm21/mlir_core:$PWD/build-llvm21/python \
 build-llvm21/tools/ptoas/ptoas \
   --pto-level=level3 --pto-arch=a5 --pto-backend=vpto \
   --vmi-fusion-mode=off --emit-vpto \
   test/samples/RopePartialVFA5/rope_partial_half_tile.pto
+
+/usr/bin/python3 test/samples/RopePartialVFA5/check_staged_vpto.py \
+  --mode half /path/to/rope-half.vpto
 ```
 
 Full dumps from this investigation are kept outside the source tree under

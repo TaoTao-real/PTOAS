@@ -11,6 +11,9 @@
 !bf16_half = !pto.tile_buf<vec, 1x32xbf16>
 !f32_vl = !pto.tile_buf<vec, 1x64xf32>
 !bf16_vl = !pto.tile_buf<vec, 1x64xbf16>
+!f32_input = !pto.tile_buf<vec, 8x512xf32>
+!f32_trig = !pto.tile_buf<vec, 8x64xf32>
+!bf16_output = !pto.tile_buf<vec, 8x512xbf16>
 
 module attributes {pto.target_arch = "a5"} {
   func.func @rope_partial_half_n8(
@@ -25,73 +28,67 @@ module attributes {pto.target_arch = "a5"} {
     %c448 = arith.constant 448 : index
     %c512 = arith.constant 512 : index
 
-    %a0 = arith.constant 0 : i64
-    %a128 = arith.constant 128 : i64
-    %a256 = arith.constant 256 : i64
-    %a384 = arith.constant 384 : i64
-    %a512 = arith.constant 512 : i64
-    %a640 = arith.constant 640 : i64
-    %a768 = arith.constant 768 : i64
-    %a896 = arith.constant 896 : i64
+    // Match the attached AscendC wrapper: stage all GM inputs in UB before
+    // entering the VF row loop, keep the complete BF16 output in UB, and issue
+    // one final GM write-back.  Total persistent UB footprint is 28 KiB.
+    %input_addr = arith.constant 0 : i64
+    %sin_addr = arith.constant 16384 : i64
+    %cos_addr = arith.constant 18432 : i64
+    %output_addr = arith.constant 20480 : i64
+    %tmp0_addr = arith.constant 28672 : i64
+    %tmp1_addr = arith.constant 28800 : i64
 
     %input_view = pto.make_tensor_view %input, shape = [%c8, %c512], strides = [%c512, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<8x512xf32>
     %sin_view = pto.make_tensor_view %sin, shape = [%c8, %c64], strides = [%c64, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<8x64xf32>
     %cos_view = pto.make_tensor_view %cos, shape = [%c8, %c64], strides = [%c64, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<8x64xf32>
     %output_view = pto.make_tensor_view %output, shape = [%c8, %c512], strides = [%c512, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<8x512xbf16>
 
-    scf.for %row = %c0 to %c8 step %c1 {
-      %x0 = pto.alloc_tile addr = %a0 : !f32_half
-      %x1 = pto.alloc_tile addr = %a128 : !f32_half
-      %sin0 = pto.alloc_tile addr = %a256 : !f32_half
-      %sin1 = pto.alloc_tile addr = %a384 : !f32_half
-      %cos0 = pto.alloc_tile addr = %a512 : !f32_half
-      %cos1 = pto.alloc_tile addr = %a640 : !f32_half
-      %x0_part = pto.partition_view %input_view, offsets = [%row, %c448], sizes = [%c1, %c32] : !pto.tensor_view<8x512xf32> -> !pto.partition_tensor_view<1x32xf32>
-      %rot_hi_col = arith.addi %c448, %c32 : index
-      %x1_part = pto.partition_view %input_view, offsets = [%row, %rot_hi_col], sizes = [%c1, %c32] : !pto.tensor_view<8x512xf32> -> !pto.partition_tensor_view<1x32xf32>
-      %sin0_part = pto.partition_view %sin_view, offsets = [%row, %c0], sizes = [%c1, %c32] : !pto.tensor_view<8x64xf32> -> !pto.partition_tensor_view<1x32xf32>
-      %sin1_part = pto.partition_view %sin_view, offsets = [%row, %c32], sizes = [%c1, %c32] : !pto.tensor_view<8x64xf32> -> !pto.partition_tensor_view<1x32xf32>
-      %cos0_part = pto.partition_view %cos_view, offsets = [%row, %c0], sizes = [%c1, %c32] : !pto.tensor_view<8x64xf32> -> !pto.partition_tensor_view<1x32xf32>
-      %cos1_part = pto.partition_view %cos_view, offsets = [%row, %c32], sizes = [%c1, %c32] : !pto.tensor_view<8x64xf32> -> !pto.partition_tensor_view<1x32xf32>
-      pto.tload ins(%x0_part : !pto.partition_tensor_view<1x32xf32>) outs(%x0 : !f32_half)
-      pto.tload ins(%x1_part : !pto.partition_tensor_view<1x32xf32>) outs(%x1 : !f32_half)
-      pto.tload ins(%sin0_part : !pto.partition_tensor_view<1x32xf32>) outs(%sin0 : !f32_half)
-      pto.tload ins(%sin1_part : !pto.partition_tensor_view<1x32xf32>) outs(%sin1 : !f32_half)
-      pto.tload ins(%cos0_part : !pto.partition_tensor_view<1x32xf32>) outs(%cos0 : !f32_half)
-      pto.tload ins(%cos1_part : !pto.partition_tensor_view<1x32xf32>) outs(%cos1 : !f32_half)
+    %input_part = pto.partition_view %input_view, offsets = [%c0, %c0], sizes = [%c8, %c512] : !pto.tensor_view<8x512xf32> -> !pto.partition_tensor_view<8x512xf32>
+    %sin_part = pto.partition_view %sin_view, offsets = [%c0, %c0], sizes = [%c8, %c64] : !pto.tensor_view<8x64xf32> -> !pto.partition_tensor_view<8x64xf32>
+    %cos_part = pto.partition_view %cos_view, offsets = [%c0, %c0], sizes = [%c8, %c64] : !pto.tensor_view<8x64xf32> -> !pto.partition_tensor_view<8x64xf32>
+    %output_part = pto.partition_view %output_view, offsets = [%c0, %c0], sizes = [%c8, %c512] : !pto.tensor_view<8x512xbf16> -> !pto.partition_tensor_view<8x512xbf16>
+    %input_local = pto.alloc_tile addr = %input_addr : !f32_input
+    %sin_local = pto.alloc_tile addr = %sin_addr : !f32_trig
+    %cos_local = pto.alloc_tile addr = %cos_addr : !f32_trig
+    %output_local = pto.alloc_tile addr = %output_addr : !bf16_output
+    pto.tload ins(%input_part : !pto.partition_tensor_view<8x512xf32>) outs(%input_local : !f32_input)
+    pto.tload ins(%sin_part : !pto.partition_tensor_view<8x64xf32>) outs(%sin_local : !f32_trig)
+    pto.tload ins(%cos_part : !pto.partition_tensor_view<8x64xf32>) outs(%cos_local : !f32_trig)
 
-      %sin0_x1 = pto.alloc_tile addr = %a768 : !f32_half
-      %cos0_x0 = pto.alloc_tile addr = %a896 : !f32_half
-      %y0_f32 = pto.alloc_tile addr = %a768 : !f32_half
-      %y0 = pto.alloc_tile addr = %a896 : !bf16_half
+    scf.for %row = %c0 to %c8 step %c1 {
+      %x0 = pto.subview %input_local[%row, %c448] sizes [1, 32] : !f32_input -> !f32_half
+      %rot_hi_col = arith.addi %c448, %c32 : index
+      %x1 = pto.subview %input_local[%row, %rot_hi_col] sizes [1, 32] : !f32_input -> !f32_half
+      %sin0 = pto.subview %sin_local[%row, %c0] sizes [1, 32] : !f32_trig -> !f32_half
+      %sin1 = pto.subview %sin_local[%row, %c32] sizes [1, 32] : !f32_trig -> !f32_half
+      %cos0 = pto.subview %cos_local[%row, %c0] sizes [1, 32] : !f32_trig -> !f32_half
+      %cos1 = pto.subview %cos_local[%row, %c32] sizes [1, 32] : !f32_trig -> !f32_half
+      %y0 = pto.subview %output_local[%row, %c448] sizes [1, 32] : !bf16_output -> !bf16_half
+      %y1 = pto.subview %output_local[%row, %rot_hi_col] sizes [1, 32] : !bf16_output -> !bf16_half
+
+      %sin0_x1 = pto.alloc_tile addr = %tmp0_addr : !f32_half
+      %cos0_x0 = pto.alloc_tile addr = %tmp1_addr : !f32_half
+      %y0_f32 = pto.alloc_tile addr = %tmp0_addr : !f32_half
       pto.tmul ins(%sin0, %x1 : !f32_half, !f32_half) outs(%sin0_x1 : !f32_half)
       pto.tmul ins(%cos0, %x0 : !f32_half, !f32_half) outs(%cos0_x0 : !f32_half)
       pto.tsub ins(%cos0_x0, %sin0_x1 : !f32_half, !f32_half) outs(%y0_f32 : !f32_half)
       pto.tcvt ins(%y0_f32 {rmode = #pto<round_mode RINT>} : !f32_half) outs(%y0 : !bf16_half)
-      %y0_part = pto.partition_view %output_view, offsets = [%row, %c448], sizes = [%c1, %c32] : !pto.tensor_view<8x512xbf16> -> !pto.partition_tensor_view<1x32xbf16>
-      pto.tstore ins(%y0 : !bf16_half) outs(%y0_part : !pto.partition_tensor_view<1x32xbf16>)
 
-      %sin1_x0 = pto.alloc_tile addr = %a768 : !f32_half
-      %cos1_x1 = pto.alloc_tile addr = %a896 : !f32_half
-      %y1_f32 = pto.alloc_tile addr = %a768 : !f32_half
-      %y1 = pto.alloc_tile addr = %a896 : !bf16_half
+      %sin1_x0 = pto.alloc_tile addr = %tmp0_addr : !f32_half
+      %cos1_x1 = pto.alloc_tile addr = %tmp1_addr : !f32_half
+      %y1_f32 = pto.alloc_tile addr = %tmp0_addr : !f32_half
       pto.tmul ins(%sin1, %x0 : !f32_half, !f32_half) outs(%sin1_x0 : !f32_half)
       pto.tmul ins(%cos1, %x1 : !f32_half, !f32_half) outs(%cos1_x1 : !f32_half)
       pto.tadd ins(%sin1_x0, %cos1_x1 : !f32_half, !f32_half) outs(%y1_f32 : !f32_half)
       pto.tcvt ins(%y1_f32 {rmode = #pto<round_mode RINT>} : !f32_half) outs(%y1 : !bf16_half)
-      %y1_part = pto.partition_view %output_view, offsets = [%row, %rot_hi_col], sizes = [%c1, %c32] : !pto.tensor_view<8x512xbf16> -> !pto.partition_tensor_view<1x32xbf16>
-      pto.tstore ins(%y1 : !bf16_half) outs(%y1_part : !pto.partition_tensor_view<1x32xbf16>)
 
       scf.for %col = %c0 to %c448 step %c64 {
-        %prefix = pto.alloc_tile addr = %a0 : !f32_vl
-        %prefix_bf16 = pto.alloc_tile addr = %a256 : !bf16_vl
-        %prefix_in = pto.partition_view %input_view, offsets = [%row, %col], sizes = [%c1, %c64] : !pto.tensor_view<8x512xf32> -> !pto.partition_tensor_view<1x64xf32>
-        pto.tload ins(%prefix_in : !pto.partition_tensor_view<1x64xf32>) outs(%prefix : !f32_vl)
+        %prefix = pto.subview %input_local[%row, %col] sizes [1, 64] : !f32_input -> !f32_vl
+        %prefix_bf16 = pto.subview %output_local[%row, %col] sizes [1, 64] : !bf16_output -> !bf16_vl
         pto.tcvt ins(%prefix {rmode = #pto<round_mode RINT>} : !f32_vl) outs(%prefix_bf16 : !bf16_vl)
-        %prefix_out = pto.partition_view %output_view, offsets = [%row, %col], sizes = [%c1, %c64] : !pto.tensor_view<8x512xbf16> -> !pto.partition_tensor_view<1x64xbf16>
-        pto.tstore ins(%prefix_bf16 : !bf16_vl) outs(%prefix_out : !pto.partition_tensor_view<1x64xbf16>)
       }
     }
+    pto.tstore ins(%output_local : !bf16_output) outs(%output_part : !pto.partition_tensor_view<8x512xbf16>)
     return
   }
 }

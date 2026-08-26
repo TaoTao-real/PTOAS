@@ -377,8 +377,18 @@ getMaterializedTileShape(MemRefType memTy, const TileHandleMetadata &meta) {
                              subCols, childRowStride, childColStride))
     return shape;
 
-  if (inheritedStrides[0] == childRowStride &&
-      inheritedStrides[1] == childColStride) {
+  // A stride is semantically irrelevant when the corresponding logical
+  // subview extent is one: no access can advance along that dimension.  This
+  // matters for row slices such as 1x64 cut from an NxC staging buffer.  The
+  // parent row stride differs from the compact 1x64 stride, but both describe
+  // exactly the same addresses for the slice.  Recover the logical subview
+  // shape in that case so elementwise/conversion verifiers do not mistake the
+  // parent storage pitch for a larger compute domain.
+  bool rowStrideCompatible =
+      subRows <= 1 || inheritedStrides[0] == childRowStride;
+  bool colStrideCompatible =
+      subCols <= 1 || inheritedStrides[1] == childColStride;
+  if (rowStrideCompatible && colStrideCompatible) {
     shape[0] = subRows;
     shape[1] = subCols;
   }

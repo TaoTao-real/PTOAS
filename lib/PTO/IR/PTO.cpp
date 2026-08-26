@@ -5732,6 +5732,12 @@ verifyStaticRank2ChannelTile(Operation *op, Value value, StringRef name) {
 }
 
 LogicalResult pto::TChannelSplitOp::verify() {
+  // PTOViewToMemref intentionally represents a non-compact tile subview with
+  // its parent storage shape and child valid extents.  The tile-level shape
+  // contract was already verified before that decoding, so defer the decoded
+  // memref form to PTOMaterializeTileHandles like the other TileOps do.
+  if (shouldBypassDecodedMemrefVerifier(getOperation()))
+    return success();
   if (getDsts().size() != 2 && getDsts().size() != 4)
     return emitOpError("expects exactly 2 or 4 destination channels");
   auto src = verifyStaticRank2ChannelTile(getOperation(), getSrc(), "src");
@@ -5755,6 +5761,8 @@ LogicalResult pto::TChannelSplitOp::verify() {
 }
 
 LogicalResult pto::TChannelMergeOp::verify() {
+  if (shouldBypassDecodedMemrefVerifier(getOperation()))
+    return success();
   if (getSrcs().size() != 2 && getSrcs().size() != 4)
     return emitOpError("expects exactly 2 or 4 source channels");
   auto dst = verifyStaticRank2ChannelTile(getOperation(), getDst(), "dst");

@@ -8,6 +8,9 @@
 !f32_half = !pto.tile_buf<vec, 1x32xf32>
 !f32_vl = !pto.tile_buf<vec, 1x64xf32>
 !bf16_vl = !pto.tile_buf<vec, 1x64xbf16>
+!f32_input = !pto.tile_buf<vec, 8x512xf32>
+!f32_trig = !pto.tile_buf<vec, 8x64xf32>
+!bf16_output = !pto.tile_buf<vec, 8x512xbf16>
 
 module attributes {pto.target_arch = "a5"} {
   func.func @rope_partial_interleave_n8(
@@ -22,42 +25,48 @@ module attributes {pto.target_arch = "a5"} {
     %c512 = arith.constant 512 : index
     %minus_one = arith.constant -1.0 : f32
 
-    %a0 = arith.constant 0 : i64
-    %a256 = arith.constant 256 : i64
-    %a512 = arith.constant 512 : i64
-    %a768 = arith.constant 768 : i64
-    %a896 = arith.constant 896 : i64
-    %a1024 = arith.constant 1024 : i64
-    %a1280 = arith.constant 1280 : i64
-    %a1536 = arith.constant 1536 : i64
-    %a1792 = arith.constant 1792 : i64
-    %a2048 = arith.constant 2048 : i64
-    %a2304 = arith.constant 2304 : i64
+    %input_addr = arith.constant 0 : i64
+    %sin_addr = arith.constant 16384 : i64
+    %cos_addr = arith.constant 18432 : i64
+    %output_addr = arith.constant 20480 : i64
+    %even_addr = arith.constant 28672 : i64
+    %odd_addr = arith.constant 28800 : i64
+    %negative_odd_addr = arith.constant 28928 : i64
+    %rotated_addr = arith.constant 29184 : i64
+    %cos_x_addr = arith.constant 29440 : i64
+    %sin_rotated_addr = arith.constant 29696 : i64
+    %out_f32_addr = arith.constant 29952 : i64
 
     %input_view = pto.make_tensor_view %input, shape = [%c8, %c512], strides = [%c512, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<8x512xf32>
     %sin_view = pto.make_tensor_view %sin, shape = [%c8, %c64], strides = [%c64, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<8x64xf32>
     %cos_view = pto.make_tensor_view %cos, shape = [%c8, %c64], strides = [%c64, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<8x64xf32>
     %output_view = pto.make_tensor_view %output, shape = [%c8, %c512], strides = [%c512, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<8x512xbf16>
 
-    scf.for %row = %c0 to %c8 step %c1 {
-      %x = pto.alloc_tile addr = %a0 : !f32_vl
-      %sin_tile = pto.alloc_tile addr = %a256 : !f32_vl
-      %cos_tile = pto.alloc_tile addr = %a512 : !f32_vl
-      %x_part = pto.partition_view %input_view, offsets = [%row, %c448], sizes = [%c1, %c64] : !pto.tensor_view<8x512xf32> -> !pto.partition_tensor_view<1x64xf32>
-      %sin_part = pto.partition_view %sin_view, offsets = [%row, %c0], sizes = [%c1, %c64] : !pto.tensor_view<8x64xf32> -> !pto.partition_tensor_view<1x64xf32>
-      %cos_part = pto.partition_view %cos_view, offsets = [%row, %c0], sizes = [%c1, %c64] : !pto.tensor_view<8x64xf32> -> !pto.partition_tensor_view<1x64xf32>
-      pto.tload ins(%x_part : !pto.partition_tensor_view<1x64xf32>) outs(%x : !f32_vl)
-      pto.tload ins(%sin_part : !pto.partition_tensor_view<1x64xf32>) outs(%sin_tile : !f32_vl)
-      pto.tload ins(%cos_part : !pto.partition_tensor_view<1x64xf32>) outs(%cos_tile : !f32_vl)
+    %input_part = pto.partition_view %input_view, offsets = [%c0, %c0], sizes = [%c8, %c512] : !pto.tensor_view<8x512xf32> -> !pto.partition_tensor_view<8x512xf32>
+    %sin_part = pto.partition_view %sin_view, offsets = [%c0, %c0], sizes = [%c8, %c64] : !pto.tensor_view<8x64xf32> -> !pto.partition_tensor_view<8x64xf32>
+    %cos_part = pto.partition_view %cos_view, offsets = [%c0, %c0], sizes = [%c8, %c64] : !pto.tensor_view<8x64xf32> -> !pto.partition_tensor_view<8x64xf32>
+    %output_part = pto.partition_view %output_view, offsets = [%c0, %c0], sizes = [%c8, %c512] : !pto.tensor_view<8x512xbf16> -> !pto.partition_tensor_view<8x512xbf16>
+    %input_local = pto.alloc_tile addr = %input_addr : !f32_input
+    %sin_local = pto.alloc_tile addr = %sin_addr : !f32_trig
+    %cos_local = pto.alloc_tile addr = %cos_addr : !f32_trig
+    %output_local = pto.alloc_tile addr = %output_addr : !bf16_output
+    pto.tload ins(%input_part : !pto.partition_tensor_view<8x512xf32>) outs(%input_local : !f32_input)
+    pto.tload ins(%sin_part : !pto.partition_tensor_view<8x64xf32>) outs(%sin_local : !f32_trig)
+    pto.tload ins(%cos_part : !pto.partition_tensor_view<8x64xf32>) outs(%cos_local : !f32_trig)
 
-      %even = pto.alloc_tile addr = %a768 : !f32_half
-      %odd = pto.alloc_tile addr = %a896 : !f32_half
-      %negative_odd = pto.alloc_tile addr = %a1024 : !f32_half
-      %rotated = pto.alloc_tile addr = %a1280 : !f32_vl
-      %cos_x = pto.alloc_tile addr = %a1536 : !f32_vl
-      %sin_rotated = pto.alloc_tile addr = %a1792 : !f32_vl
-      %out_f32 = pto.alloc_tile addr = %a2048 : !f32_vl
-      %out_bf16 = pto.alloc_tile addr = %a2304 : !bf16_vl
+    scf.for %row = %c0 to %c8 step %c1 {
+      %x = pto.subview %input_local[%row, %c448] sizes [1, 64] : !f32_input -> !f32_vl
+      %sin_tile = pto.subview %sin_local[%row, %c0] sizes [1, 64] : !f32_trig -> !f32_vl
+      %cos_tile = pto.subview %cos_local[%row, %c0] sizes [1, 64] : !f32_trig -> !f32_vl
+      %out_bf16 = pto.subview %output_local[%row, %c448] sizes [1, 64] : !bf16_output -> !bf16_vl
+
+      %even = pto.alloc_tile addr = %even_addr : !f32_half
+      %odd = pto.alloc_tile addr = %odd_addr : !f32_half
+      %negative_odd = pto.alloc_tile addr = %negative_odd_addr : !f32_half
+      %rotated = pto.alloc_tile addr = %rotated_addr : !f32_vl
+      %cos_x = pto.alloc_tile addr = %cos_x_addr : !f32_vl
+      %sin_rotated = pto.alloc_tile addr = %sin_rotated_addr : !f32_vl
+      %out_f32 = pto.alloc_tile addr = %out_f32_addr : !f32_vl
 
       pto.tchannel_split ins(%x : !f32_vl) outs(%even, %odd : !f32_half, !f32_half)
       pto.tmuls ins(%odd, %minus_one : !f32_half, f32) outs(%negative_odd : !f32_half)
@@ -66,19 +75,14 @@ module attributes {pto.target_arch = "a5"} {
       pto.tmul ins(%sin_tile, %rotated : !f32_vl, !f32_vl) outs(%sin_rotated : !f32_vl)
       pto.tadd ins(%cos_x, %sin_rotated : !f32_vl, !f32_vl) outs(%out_f32 : !f32_vl)
       pto.tcvt ins(%out_f32 {rmode = #pto<round_mode RINT>} : !f32_vl) outs(%out_bf16 : !bf16_vl)
-      %rotary_out = pto.partition_view %output_view, offsets = [%row, %c448], sizes = [%c1, %c64] : !pto.tensor_view<8x512xbf16> -> !pto.partition_tensor_view<1x64xbf16>
-      pto.tstore ins(%out_bf16 : !bf16_vl) outs(%rotary_out : !pto.partition_tensor_view<1x64xbf16>)
 
       scf.for %col = %c0 to %c448 step %c64 {
-        %prefix = pto.alloc_tile addr = %a0 : !f32_vl
-        %prefix_bf16 = pto.alloc_tile addr = %a256 : !bf16_vl
-        %prefix_in = pto.partition_view %input_view, offsets = [%row, %col], sizes = [%c1, %c64] : !pto.tensor_view<8x512xf32> -> !pto.partition_tensor_view<1x64xf32>
-        pto.tload ins(%prefix_in : !pto.partition_tensor_view<1x64xf32>) outs(%prefix : !f32_vl)
+        %prefix = pto.subview %input_local[%row, %col] sizes [1, 64] : !f32_input -> !f32_vl
+        %prefix_bf16 = pto.subview %output_local[%row, %col] sizes [1, 64] : !bf16_output -> !bf16_vl
         pto.tcvt ins(%prefix {rmode = #pto<round_mode RINT>} : !f32_vl) outs(%prefix_bf16 : !bf16_vl)
-        %prefix_out = pto.partition_view %output_view, offsets = [%row, %col], sizes = [%c1, %c64] : !pto.tensor_view<8x512xbf16> -> !pto.partition_tensor_view<1x64xbf16>
-        pto.tstore ins(%prefix_bf16 : !bf16_vl) outs(%prefix_out : !pto.partition_tensor_view<1x64xbf16>)
       }
     }
+    pto.tstore ins(%output_local : !bf16_output) outs(%output_part : !pto.partition_tensor_view<8x512xbf16>)
     return
   }
 }
