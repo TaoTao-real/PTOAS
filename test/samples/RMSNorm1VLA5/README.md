@@ -21,6 +21,10 @@ A/B/C/generic-D/legacy-D. It validates every object byte-exactly before ten
 interleaved profiles, then applies the paired task/vector 1.03 no-regression
 gate to generic D over legacy D.
 
+If the task bootstrap bound fails at ten samples, use
+`a5_harness/extend_paired_profiles.sh` to append D/DL samples 11--20 without
+rebuilding or overwriting the initial evidence.
+
 Alignment checklist:
 
 | Property | AC-U | AC-F | PTO fixture |
