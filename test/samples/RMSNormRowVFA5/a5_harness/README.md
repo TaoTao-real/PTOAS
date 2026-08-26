@@ -35,3 +35,11 @@ DL no-regression gate (paired median and 95% bootstrap upper bound <= 1.03):
 python3 paired_gate.py EXPERIMENT/results/samples.tsv \
   --output EXPERIMENT/results/paired-gate-10.json
 ```
+
+If the 10-sample gate fails, extend only the affected sizes to 20 paired
+samples without rebuilding or overwriting the accepted evidence:
+
+```bash
+ROWS_LIST="32" PROFILE_START=11 PROFILE_END=20 \
+  ./extend_paired_profiles.sh EXPERIMENT SOURCE
+```
