@@ -42,6 +42,8 @@ constexpr StringLiteral kLegacyAccumulatorStatus =
     "pto.vmi.accumulator.phase_status";
 constexpr StringLiteral kLegacyScalarStatus = "pto.vmi.scalar.phase_status";
 constexpr StringLiteral kShadowAttr = "pto.vmi.state_promotion.shadow";
+constexpr StringLiteral kVecScopeBridgeAttr =
+    "pto.vmi.state_promotion.vecscope_bridge";
 
 enum class RejectReason {
   Alias,
@@ -151,11 +153,13 @@ struct LoopCandidate {
 
 struct ForwardCandidate {
   pto::VMIvStoreOp store;
+  pto::VMIvLoadOp sourceLoad;
   pto::VMIvLoadOp load;
   StateLocation location;
   int64_t activeLanes = -1;
   bool broadcast = false;
   bool canDeleteStore = false;
+  SmallVector<Operation *, 4> crossedPipeSyncs;
 };
 
 static std::optional<int64_t> getConstantInt(Value value) {
@@ -435,6 +439,16 @@ static bool isSyncOrCall(Operation *op) {
          name == "pto.wait_flag" || name == "pto.barrier" ||
          name == "pto.barrier_all" || name == "pto.tload" ||
          name == "pto.tstore" || name == "pto.tcopy";
+}
+
+// Pipe synchronization orders surrounding work but does not itself read or
+// write UB.  Straight-line forwarding may therefore keep a proven reaching
+// VMI value across these operations.  Actual DMA/tile-memory operations,
+// calls, and unknown effects still terminate the reaching-state scan below.
+// Observable stores are retained independently by the dead-store proof.
+static bool isKnownPipeSync(Operation *op) {
+  StringRef name = op->getName().getStringRef();
+  return name == "pto.set_flag" || name == "pto.wait_flag";
 }
 
 static bool hasUnsafeEffect(Operation *scope) {
@@ -859,8 +873,16 @@ static SmallVector<ForwardCandidate, 8> analyzeStraightLine(func::FuncOp func,
     StateLocation location;
     pto::VMIvStoreOp store;
     int64_t activeLanes = -1;
+    SmallVector<Operation *, 4> crossedPipeSyncs;
   };
   SmallVector<ReachingState, 8> reaching;
+  struct ReachingLoad {
+    StateLocation location;
+    pto::VMIvLoadOp load;
+    int64_t activeLanes = -1;
+    SmallVector<Operation *, 4> crossedPipeSyncs;
+  };
+  SmallVector<ReachingLoad, 8> reachingLoads;
 
   auto processStore = [&](pto::VMIvStoreOp store) {
     AccessProof proof = analyzeStore(store);
@@ -872,8 +894,11 @@ static SmallVector<ForwardCandidate, 8> analyzeStraightLine(func::FuncOp func,
     llvm::erase_if(reaching, [&](const ReachingState &state) {
       return state.location.overlaps(*proof.location);
     });
+    llvm::erase_if(reachingLoads, [&](const ReachingLoad &state) {
+      return state.location.overlaps(*proof.location);
+    });
     reaching.push_back(
-        ReachingState{*proof.location, store, proof.activeLanes});
+        ReachingState{*proof.location, store, proof.activeLanes, {}});
   };
   auto processLoad = [&](pto::VMIvLoadOp load) {
     AccessProof proof = analyzeLoad(load);
@@ -891,13 +916,32 @@ static SmallVector<ForwardCandidate, 8> analyzeStraightLine(func::FuncOp func,
       }
       sawPartialAlias |= state.location.overlaps(*proof.location);
     }
+    ReachingLoad *foundLoad = nullptr;
     if (!found) {
+      for (ReachingLoad &state : llvm::reverse(reachingLoads)) {
+        if (state.location.sameBytes(*proof.location) &&
+            state.location.distribution == proof.location->distribution &&
+            state.load.getResult(0).getType() == load.getResult(0).getType()) {
+          foundLoad = &state;
+          break;
+        }
+        sawPartialAlias |= state.location.overlaps(*proof.location);
+      }
+    }
+    if (!found && !foundLoad) {
       if (sawPartialAlias)
         setDecision(load, false, StateFlow::StraightLine, RejectReason::Alias,
                     "partial-or-different-byte-range", emitRemarks);
+      else
+        setDecision(load, false, StateFlow::StraightLine,
+                    RejectReason::UnknownLocation, "no-reaching-store",
+                    emitRemarks);
+      reachingLoads.push_back(
+          ReachingLoad{*proof.location, load, proof.activeLanes, {}});
       return;
     }
-    Value stored = found->store.getValues().front();
+    Value stored =
+        found ? found->store.getValues().front() : foundLoad->load.getResult(0);
     bool broadcast = proof.location->distribution == "brc";
     auto storedType = dyn_cast<pto::VMIVRegType>(stored.getType());
     auto loadType = dyn_cast<pto::VMIVRegType>(load.getResult(0).getType());
@@ -912,43 +956,70 @@ static SmallVector<ForwardCandidate, 8> analyzeStraightLine(func::FuncOp func,
                   emitRemarks);
       return;
     }
-    int64_t observedLanes = broadcast ? proof.activeLanes : found->activeLanes;
+    int64_t observedLanes =
+        broadcast ? proof.activeLanes
+                  : (found ? found->activeLanes : foundLoad->activeLanes);
     if (!allConsumersRespectPrefix(load.getResult(0), observedLanes)) {
       setDecision(load, false, StateFlow::StraightLine, RejectReason::Mask,
                   "inactive-lanes-may-be-observed", emitRemarks);
       return;
     }
-    bool canDeleteStore = !hasOverlappingAllocation(func, *proof.location) &&
+    bool canDeleteStore = found &&
+                          !hasOverlappingAllocation(func, *proof.location) &&
                           !rootEscapes(func, proof.location->storageRoot);
-    candidates.push_back(ForwardCandidate{found->store, load, *proof.location,
-                                          observedLanes, broadcast,
-                                          canDeleteStore});
+    candidates.push_back(ForwardCandidate{
+        found ? found->store : pto::VMIvStoreOp{},
+        foundLoad ? foundLoad->load : pto::VMIvLoadOp{}, load, *proof.location,
+        observedLanes, broadcast, canDeleteStore,
+        found ? found->crossedPipeSyncs : foundLoad->crossedPipeSyncs});
+  };
+
+  auto recordPipeSync = [&](Operation *sync) {
+    for (ReachingState &state : reaching)
+      state.crossedPipeSyncs.push_back(sync);
+    for (ReachingLoad &state : reachingLoads)
+      state.crossedPipeSyncs.push_back(sync);
+  };
+
+  auto clearReaching = [&]() {
+    reaching.clear();
+    reachingLoads.clear();
   };
 
   std::function<void(Region &)> scanRegion = [&](Region &scope) {
     for (Block &block : scope) {
-      reaching.clear();
+      clearReaching();
       for (Operation &top : block.without_terminator()) {
         if (auto loop = dyn_cast<scf::ForOp>(top)) {
           scanRegion(loop.getRegion());
-          reaching.clear();
+          clearReaching();
+          continue;
+        }
+        if (isKnownPipeSync(&top)) {
+          recordPipeSync(&top);
           continue;
         }
         if (isSyncOrCall(&top)) {
-          reaching.clear();
+          clearReaching();
           continue;
         }
         if (auto region = dyn_cast<pto::FusionRegionOp>(top)) {
           for (Operation &nested :
                region.getBody().front().without_terminator()) {
+            if (isKnownPipeSync(&nested)) {
+              recordPipeSync(&nested);
+              continue;
+            }
             if (auto store = dyn_cast<pto::VMIvStoreOp>(nested))
               processStore(store);
             else if (auto load = dyn_cast<pto::VMIvLoadOp>(nested))
               processLoad(load);
+            else if (isa<pto::AllocTileOp, pto::TileBufAddrOp>(nested))
+              continue;
             else if (nested.getNumRegions() != 0 || isSyncOrCall(&nested) ||
                      (isa<MemoryEffectOpInterface>(nested) &&
                       !isMemoryEffectFree(&nested)))
-              reaching.clear();
+              clearReaching();
           }
           continue;
         }
@@ -959,10 +1030,10 @@ static SmallVector<ForwardCandidate, 8> analyzeStraightLine(func::FuncOp func,
         else if (top.getNumRegions() != 0) {
           for (Region &nested : top.getRegions())
             scanRegion(nested);
-          reaching.clear();
+          clearReaching();
         } else if (isa<MemoryEffectOpInterface>(top) &&
                    !isMemoryEffectFree(&top)) {
-          reaching.clear();
+          clearReaching();
         }
       }
     }
@@ -979,11 +1050,26 @@ static LogicalResult promoteStraightLine(ArrayRef<ForwardCandidate> candidates,
   DenseSet<Operation *> deadStores;
   DenseSet<Operation *> forwardedStores;
   for (ForwardCandidate candidate : candidates) {
+    // VMI layout assignment has not run yet.  For two read-only loads, defer
+    // replacement until physical VPTO types are known; only preserve the
+    // proven static pipe-event bridge for that final cleanup.  This avoids
+    // forcing one pre-layout SSA value to satisfy incompatible rearrangement
+    // and arithmetic layout contracts.
+    if (!candidate.store) {
+      for (Operation *sync : candidate.crossedPipeSyncs)
+        sync->setAttr(kVecScopeBridgeAttr, rewriter.getUnitAttr());
+      setDecision(candidate.load, true, StateFlow::StraightLine, std::nullopt,
+                  "", emitRemarks);
+      continue;
+    }
+
     Value value = candidate.store.getValues().front();
     FailureOr<Value> visible =
         makeValueVisible(value, candidate.load, rewriter, visibleValues);
     if (failed(visible))
       return failure();
+    for (Operation *sync : candidate.crossedPipeSyncs)
+      sync->setAttr(kVecScopeBridgeAttr, rewriter.getUnitAttr());
     Value replacement = *visible;
     if (candidate.broadcast) {
       rewriter.setInsertionPoint(candidate.load);

@@ -1,10 +1,12 @@
 // Copyright (c) 2026 Huawei Technologies Co., Ltd.
-// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
-// CANN Open Software License Agreement Version 2.0 (the "License").
-// Please refer to the License for details. You may not use this file except in compliance with the License.
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
-// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
-// See LICENSE in the root of the software repository for the full text of the License.
+// This program is free software, you can redistribute it and/or modify it under
+// the terms and conditions of CANN Open Software License Agreement Version 2.0
+// (the "License"). Please refer to the License for details. You may not use
+// this file except in compliance with the License. THIS SOFTWARE IS PROVIDED ON
+// AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS
+// FOR A PARTICULAR PURPOSE. See LICENSE in the root of the software repository
+// for the full text of the License.
 
 //===- PTOInferVPTOVecScope.cpp ------------------------------------------===//
 //
@@ -35,9 +37,13 @@ namespace {
 
 enum class VPTOInferenceOpClass {
   Vector,
+  Ordered,
   SafeScalar,
   Boundary,
 };
+
+constexpr StringLiteral kStatePromotionVecScopeBridgeAttr =
+    "pto.vmi.state_promotion.vecscope_bridge";
 
 struct NestedRegionSummary {
   bool hasVectorOperation = false;
@@ -100,6 +106,11 @@ static bool isVectorScopeBoundaryOperation(Operation *op) {
   return isa<pto::BarrierOp, pto::BarrierSyncOp>(op);
 }
 
+static bool isStatePromotionVecScopeBridge(Operation *op) {
+  return op->hasAttr(kStatePromotionVecScopeBridgeAttr) &&
+         isa<pto::SetFlagOp, pto::WaitFlagOp>(op);
+}
+
 static bool isPureAddressOperation(Operation *op) {
   return isa<pto::PointerCastOp, pto::CastPtrOp, pto::AddPtrOp,
              pto::TileBufAddrOp, pto::BindTileOp>(op);
@@ -143,8 +154,9 @@ static bool isSafeScalarOperation(Operation *op) {
   return isMemoryEffectFree(op);
 }
 
-static void summarizeNestedRegionForAtomicCluster(
-    Region &region, NestedRegionSummary &summary) {
+static void
+summarizeNestedRegionForAtomicCluster(Region &region,
+                                      NestedRegionSummary &summary) {
   for (Block &block : region) {
     for (Operation &op : block) {
       if (op.hasTrait<OpTrait::IsTerminator>())
@@ -154,6 +166,7 @@ static void summarizeNestedRegionForAtomicCluster(
       case VPTOInferenceOpClass::Vector:
         summary.hasVectorOperation = true;
         break;
+      case VPTOInferenceOpClass::Ordered:
       case VPTOInferenceOpClass::SafeScalar:
         break;
       case VPTOInferenceOpClass::Boundary:
@@ -191,6 +204,14 @@ static VPTOInferenceOpClass classifyOperationForInference(Operation *op) {
     return VPTOInferenceOpClass::Boundary;
   if (isForbiddenInsideInferredVectorScope(op))
     return VPTOInferenceOpClass::Boundary;
+
+  // A state-promotion proof may forward a VMI value across a static pipe
+  // event that orders unrelated DMA work.  Keep that event in the inferred
+  // vector interval so the resultless vecscope neither reorders the event nor
+  // forces the proven value back through UB.  Untagged synchronization and
+  // all barriers remain hard inference boundaries.
+  if (isStatePromotionVecScopeBridge(op))
+    return VPTOInferenceOpClass::Ordered;
 
   if (requiresVectorScope(op))
     return VPTOInferenceOpClass::Vector;
@@ -232,7 +253,9 @@ static llvm::SmallPtrSet<Operation *, 16>
 computeMovedOpsForResultlessScope(ArrayRef<Operation *> ops) {
   llvm::SmallPtrSet<Operation *, 16> movedOps;
   for (Operation *op : ops) {
-    if (classifyOperationForInference(op) == VPTOInferenceOpClass::Vector)
+    VPTOInferenceOpClass opClass = classifyOperationForInference(op);
+    if (opClass == VPTOInferenceOpClass::Vector ||
+        opClass == VPTOInferenceOpClass::Ordered)
       movedOps.insert(op);
   }
 
@@ -241,8 +264,7 @@ computeMovedOpsForResultlessScope(ArrayRef<Operation *> ops) {
     changed = false;
     for (Operation *op : llvm::reverse(ops)) {
       if (movedOps.contains(op) ||
-          classifyOperationForInference(op) !=
-              VPTOInferenceOpClass::SafeScalar)
+          classifyOperationForInference(op) != VPTOInferenceOpClass::SafeScalar)
         continue;
 
       bool hasMovedUser = false;
@@ -362,9 +384,9 @@ static void cloneSharedVectorConstantProducers(Block &block,
   }
 }
 
-static bool findEscapingMovedResult(
-    const llvm::SmallPtrSetImpl<Operation *> &movedOps,
-    EscapingMovedValue &escapingValue) {
+static bool
+findEscapingMovedResult(const llvm::SmallPtrSetImpl<Operation *> &movedOps,
+                        EscapingMovedValue &escapingValue) {
   for (Operation *op : movedOps) {
     for (Value result : op->getResults()) {
       for (Operation *user : result.getUsers()) {
@@ -397,16 +419,16 @@ emitEscapingVectorScopeValueError(const EscapingMovedValue &escapingValue) {
   if (escapingValue.user) {
     diag << "; external user is '"
          << escapingValue.user->getName().getStringRef() << "'";
-    diag.attachNote(escapingValue.user->getLoc())
-        << "external user is here";
+    diag.attachNote(escapingValue.user->getLoc()) << "external user is here";
   }
   return failure();
 }
 
-// classify which operations need to be moved into a vecscope, which can be hoisted out of the
-// vecscope, and check for any vector-scope-typed values that would escape the vecscope if we were to
-// move the candidate operations into a resultless vecscope. Returns failure if the candidate cluster
-// is not suitable for vecscope inference.
+// classify which operations need to be moved into a vecscope, which can be
+// hoisted out of the vecscope, and check for any vector-scope-typed values that
+// would escape the vecscope if we were to move the candidate operations into a
+// resultless vecscope. Returns failure if the candidate cluster is not suitable
+// for vecscope inference.
 static LogicalResult
 buildResultlessScopePlan(ArrayRef<Operation *> ops, ResultlessScopePlan &plan,
                          EscapingMovedValue &escapingValue) {
@@ -440,8 +462,7 @@ buildResultlessScopePlan(ArrayRef<Operation *> ops, ResultlessScopePlan &plan,
     changed = false;
     for (Operation *op : llvm::reverse(ops)) {
       if (movedOps.contains(op) || hoistedOps.contains(op) ||
-          classifyOperationForInference(op) !=
-              VPTOInferenceOpClass::SafeScalar)
+          classifyOperationForInference(op) != VPTOInferenceOpClass::SafeScalar)
         continue;
 
       bool feedsHoistedOp = false;
@@ -493,9 +514,8 @@ static void wrapCluster(const ResultlessScopePlan &plan, MLIRContext *context) {
 
   Block &scopeBody = scope.getBody().front();
   for (Operation *op : plan.moveOps) {
-    scopeBody.getOperations().splice(scopeBody.end(),
-                                     parentBlock->getOperations(),
-                                     Block::iterator(op));
+    scopeBody.getOperations().splice(
+        scopeBody.end(), parentBlock->getOperations(), Block::iterator(op));
   }
 }
 
@@ -569,6 +589,7 @@ static LogicalResult inferVecScopesInBlock(Block &block, MLIRContext *context) {
   for (Operation *op : ops) {
     switch (classifyOperationForInference(op)) {
     case VPTOInferenceOpClass::Vector:
+    case VPTOInferenceOpClass::Ordered:
     case VPTOInferenceOpClass::SafeScalar:
       pending.push_back(op);
       continue;
@@ -606,8 +627,7 @@ static LogicalResult inferVecScopesInRegion(Region &region,
 }
 
 struct PTOInferVPTOVecScopePass
-    : public pto::impl::PTOInferVPTOVecScopeBase<
-          PTOInferVPTOVecScopePass> {
+    : public pto::impl::PTOInferVPTOVecScopeBase<PTOInferVPTOVecScopePass> {
   void runOnOperation() override {
     func::FuncOp func = getOperation();
     if (failed(inferVecScopesInRegion(func.getBody(), &getContext())))
