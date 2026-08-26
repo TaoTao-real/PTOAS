@@ -43,11 +43,26 @@ mkdir -p "$experiment_dir/inputs/generated" "$experiment_dir/inputs/fixture" \
   "$experiment_dir/artifacts/vpto" "$experiment_dir/artifacts/profiles" \
   "$experiment_dir/logs" "$experiment_dir/results"
 
+capture_npu_health() {
+  local output=$1
+  if command -v npu-smi >/dev/null 2>&1; then
+    npu-smi info >"$output" 2>&1
+    return
+  fi
+  {
+    echo "npu-smi unavailable"
+    echo "driver_version:"
+    cat /usr/local/Ascend/driver/version.info 2>/dev/null || true
+    echo "device_nodes:"
+    ls -l /dev/davinci* /dev/davinci_manager /dev/devmm_svm 2>/dev/null || true
+  } >"$output"
+}
+
 /usr/bin/python3 --version >"$experiment_dir/logs/python-version.log" 2>&1
 /usr/bin/python3 -c 'import mlir, numpy, sys; from mlir._mlir_libs import _pto; print(sys.executable); print(sys.version); print(mlir.__path__); print(_pto.__file__); print(numpy.__file__)' \
   >"$experiment_dir/logs/python-provenance.log" 2>&1
 /usr/bin/python3 "$ptoas" --version >"$experiment_dir/logs/ptoas-version.log" 2>&1
-npu-smi info >"$experiment_dir/results/npu-health-before.txt" 2>&1
+capture_npu_health "$experiment_dir/results/npu-health-before.txt"
 
 row_args=()
 for rows in $rows_list; do
@@ -231,4 +246,4 @@ done
   "$experiment_dir/results/samples.tsv" \
   --output-tsv "$experiment_dir/results/performance-summary.tsv" \
   --output-json "$experiment_dir/results/performance-summary.json"
-npu-smi info >"$experiment_dir/results/npu-health-after.txt" 2>&1
+capture_npu_health "$experiment_dir/results/npu-health-after.txt"
