@@ -23,6 +23,7 @@ harness="$source_root/test/samples/SoftmaxDndVFA5/a5_harness"
 golden="$source_root/test/samples/SoftmaxDndVFA5/softmax_dnd_vf_golden.py"
 canonical_pto="$source_root/test/samples/SoftmaxDndVFA5/softmax_dnd_vf.pto"
 ascendc_source="$source_root/test/samples/SoftmaxDndVFA5/softmax_dnd_ascendc.cpp"
+vf_softmax_include=${VF_SOFTMAX_INCLUDE:-}
 
 test -x "$ptoas"
 test -x "$msprof"
@@ -140,6 +141,9 @@ for width in $widths_list; do
     -DASCENDC_SOURCE="$ascendc_source"
     -DSOFTMAX_INNER="$width"
   )
+  if [[ -n "$vf_softmax_include" ]]; then
+    cmake_args+=("-DVF_SOFTMAX_INCLUDE=$vf_softmax_include")
+  fi
   for variant in A B C D DL ACU ACF; do
     lower=$(printf '%s' "$variant" | tr '[:upper:]' '[:lower:]')
     symbol="softmax_dnd_b4_m16_n${width}_${lower}_${safe_tag}"

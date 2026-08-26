@@ -29,6 +29,10 @@ two FP32 accumulators for even and odd M rows and merge them only after the
 loop.  The exp result overwrites the input UB tile, followed by the required
 vector-store-to-vector-load barrier and the normalization pass.
 
+For a frozen source comparison, set `VF_SOFTMAX_INCLUDE` to a directory that
+contains the exact `vf_softmax.h` under test. The experiment manifest retains
+that header and its SHA-256 instead of silently substituting the CANN default.
+
 The PTO graph uses the same phase order and observable UB lifetime:
 
 ```text
