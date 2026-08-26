@@ -34,6 +34,8 @@ def main() -> int:
         "pto.copy_gm_to_ubuf": 3,
         "pto.copy_ubuf_to_gm": 1,
         "pto.mem_bar": 0,
+        "pto.set_flag": 2,
+        "pto.wait_flag": 2,
         **EXPECTED[args.mode],
     }
     errors: list[str] = []
@@ -46,12 +48,18 @@ def main() -> int:
     gm_loads = [m.start() for m in re.finditer(r"\bpto\.copy_gm_to_ubuf\b", text)]
     gm_stores = [m.start() for m in re.finditer(r"\bpto\.copy_ubuf_to_gm\b", text)]
     last_vstore = text.rfind("pto.vsts")
+    first_mte2_to_v = text.find('pto.set_flag[<PIPE_MTE2>, <PIPE_V>')
+    first_v_to_mte3 = text.find('pto.set_flag[<PIPE_V>, <PIPE_MTE3>')
     if first_loop < 0:
         errors.append("missing row/prefix scf.for loops")
     elif any(pos > first_loop for pos in gm_loads):
         errors.append("GM->UB copy remains inside/after vector row computation")
     if gm_stores and last_vstore >= 0 and any(pos < last_vstore for pos in gm_stores):
         errors.append("UB->GM copy occurs before the final vector write")
+    if first_loop >= 0 and not (gm_loads and max(gm_loads) < first_mte2_to_v < first_loop):
+        errors.append("missing/misordered MTE2->V staging event")
+    if gm_stores and not (last_vstore < first_v_to_mte3 < min(gm_stores)):
+        errors.append("missing/misordered V->MTE3 write-back event")
 
     residual_vmi = re.findall(
         r"^\s*(?:%[A-Za-z0-9_.$-]+\s*=\s*)?vmi\.[A-Za-z0-9_.$-]+\b",

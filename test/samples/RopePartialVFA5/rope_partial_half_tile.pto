@@ -54,6 +54,8 @@ module attributes {pto.target_arch = "a5"} {
     pto.tload ins(%input_part : !pto.partition_tensor_view<8x512xf32>) outs(%input_local : !f32_input)
     pto.tload ins(%sin_part : !pto.partition_tensor_view<8x64xf32>) outs(%sin_local : !f32_trig)
     pto.tload ins(%cos_part : !pto.partition_tensor_view<8x64xf32>) outs(%cos_local : !f32_trig)
+    pto.set_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
+    pto.wait_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
 
     scf.for %row = %c0 to %c8 step %c1 {
       %x0 = pto.subview %input_local[%row, %c448] sizes [1, 32] : !f32_input -> !f32_half
@@ -88,6 +90,8 @@ module attributes {pto.target_arch = "a5"} {
         pto.tcvt ins(%prefix {rmode = #pto<round_mode RINT>} : !f32_vl) outs(%prefix_bf16 : !bf16_vl)
       }
     }
+    pto.set_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
+    pto.wait_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
     pto.tstore ins(%output_local : !bf16_output) outs(%output_part : !pto.partition_tensor_view<8x512xbf16>)
     return
   }

@@ -78,7 +78,9 @@ Generic VMI Vector State Promotion now covers both TileOp fixtures.
   vector work entirely on UB subviews, and one full output store.  Final VPTO
   therefore has exactly three `copy_gm_to_ubuf` operations before the row loop
   and one `copy_ubuf_to_gm` after all vector writes; no GM DMA is nested in the
-  row or prefix loops.
+  row or prefix loops.  As in the manual wrapper, one `MTE2->V` event closes
+  input staging and one `V->MTE3` event closes vector production before the
+  final write-back.
 
 - HALF selects the static 32-lane `vmi_tcvt` path.  FP32-to-BF16 narrowing is
   RINT/NOSAT and state promotion forwards all multiply/add/subtract and convert
