@@ -5421,6 +5421,52 @@ def TMrgSortOp: PTO_TOp<"tmrgsort", [
   }];
 }
 
+def TChannelSplitOp : PTO_TOp<"tchannel_split", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Split an interleaved channel tile into 2 or 4 channel tiles";
+  let arguments = (ins
+    PTODpsType:$src,
+    Variadic<PTODpsType>:$dsts
+  );
+  let results = (outs);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    `ins` `(` $src `:` qualified(type($src)) `)`
+    `outs` `(` $dsts `:` qualified(type($dsts)) `)`
+    attr-dict
+  }];
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstsMutable(); }
+  }];
+}
+
+def TChannelMergeOp : PTO_TOp<"tchannel_merge", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Merge 2 or 4 channel tiles using interleaved channel order";
+  let arguments = (ins
+    Variadic<PTODpsType>:$srcs,
+    PTODpsType:$dst
+  );
+  let results = (outs);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    `ins` `(` $srcs `:` qualified(type($srcs)) `)`
+    `outs` `(` $dst `:` qualified(type($dst)) `)`
+    attr-dict
+  }];
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+  }];
+}
+
 def TMulOp: PTO_TOp<"tmul", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,

@@ -43,11 +43,26 @@ mkdir -p "$experiment_dir/inputs/generated" "$experiment_dir/inputs/fixture" \
   "$experiment_dir/artifacts/vpto" "$experiment_dir/artifacts/profiles" \
   "$experiment_dir/logs" "$experiment_dir/results"
 
+capture_npu_health() {
+  local output=$1
+  if command -v npu-smi >/dev/null 2>&1; then
+    npu-smi info >"$output" 2>&1
+    return
+  fi
+  {
+    echo "npu-smi unavailable"
+    echo "driver_version:"
+    cat /usr/local/Ascend/driver/version.info 2>/dev/null || true
+    echo "device_nodes:"
+    ls -l /dev/davinci* /dev/davinci_manager /dev/devmm_svm 2>/dev/null || true
+  } >"$output"
+}
+
 /usr/bin/python3 --version >"$experiment_dir/logs/python-version.log" 2>&1
 /usr/bin/python3 -c 'import mlir, numpy, sys; from mlir._mlir_libs import _pto; print(sys.executable); print(sys.version); print(mlir.__path__); print(_pto.__file__); print(numpy.__file__)' \
   >"$experiment_dir/logs/python-provenance.log" 2>&1
 /usr/bin/python3 "$ptoas" --version >"$experiment_dir/logs/ptoas-version.log" 2>&1
-npu-smi info >"$experiment_dir/results/npu-health-before.txt" 2>&1
+capture_npu_health "$experiment_dir/results/npu-health-before.txt"
 
 row_args=()
 for rows in $rows_list; do
@@ -79,13 +94,14 @@ common_ptoas_flags=(
 
 printf 'rows\tvariant\tscf_for\tvld\tvst\tmem_bar\tresidual_vmi_ops\n' \
   >"$experiment_dir/results/lowering-stats.tsv"
-while IFS=$'\t' read -r rows variant symbol policy mode pto_file; do
+while IFS=$'\t' read -r rows variant symbol policy mode state_mode pto_file; do
   [[ "$rows" == rows ]] && continue
   generated="$experiment_dir/inputs/generated"
   object_root="$generated/n${rows}-objects"
   mkdir -p "$object_root"
   flags=("${common_ptoas_flags[@]}" \
-    --tilelib-candidate-policy="$policy" --vmi-fusion-mode="$mode")
+    --tilelib-candidate-policy="$policy" --vmi-fusion-mode="$mode" \
+    --vmi-state-promotion-mode="$state_mode")
   /usr/bin/python3 "$ptoas" "${flags[@]}" --emit-vpto \
     "$generated/$pto_file" -o "$experiment_dir/artifacts/vpto/n${rows}-${variant}.mlir" \
     >"$experiment_dir/logs/n${rows}-${variant}-vpto.stdout" \
@@ -127,7 +143,7 @@ for rows in $rows_list; do
     -DASCENDC_SOURCE="$ascendc_source"
     -DRMSNORM_ROWS="$rows"
   )
-  for variant in A B C D; do
+  for variant in A B C D DL; do
     lower=$(printf '%s' "$variant" | tr '[:upper:]' '[:lower:]')
     symbol="rmsnorm_row_vf_n${rows}_${lower}_${safe_tag}"
     cmake_args+=("-D${variant}_KERNEL_NAME=$symbol")
@@ -176,7 +192,7 @@ run_plain() {
 }
 
 for rows in $rows_list; do
-  for variant in D ACF B ACU A C; do
+  for variant in D DL ACF B ACU A C; do
     for input_set in exact-association layout-sensitive; do
       run_plain "$rows" "$variant" "$input_set" cold 0
       run_plain "$rows" "$variant" "$input_set" nonprofile 1
@@ -212,14 +228,14 @@ run_profile() {
 }
 
 for rows in $rows_list; do
-  for variant in D ACF B ACU A C; do
+  for variant in D DL ACF B ACU A C; do
     run_plain "$rows" "$variant" "$dataset" warmup 0
   done
   for ((repeat = 1; repeat <= profile_repeats; ++repeat)); do
     if ((repeat % 2)); then
-      order=(ACU ACF A B C D)
+      order=(DL ACF D C B ACU A)
     else
-      order=(D C B A ACF ACU)
+      order=(D ACF DL A ACU B C)
     fi
     for variant in "${order[@]}"; do
       run_profile "$rows" "$variant" "$repeat"
@@ -231,4 +247,8 @@ done
   "$experiment_dir/results/samples.tsv" \
   --output-tsv "$experiment_dir/results/performance-summary.tsv" \
   --output-json "$experiment_dir/results/performance-summary.json"
-npu-smi info >"$experiment_dir/results/npu-health-after.txt" 2>&1
+/usr/bin/python3 "$harness/paired_gate.py" \
+  "$experiment_dir/results/samples.tsv" --candidate D --baseline ACF \
+  --output "$experiment_dir/results/d-vs-acf-paired-${profile_repeats}.json" \
+  >"$experiment_dir/results/d-vs-acf-paired-${profile_repeats}.stdout"
+capture_npu_health "$experiment_dir/results/npu-health-after.txt"

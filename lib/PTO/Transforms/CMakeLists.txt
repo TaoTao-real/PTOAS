@@ -52,6 +52,7 @@ add_mlir_dialect_library(PTOTransforms
   VMILayoutRematerialize.cpp
   VMILayoutSinkMaterialization.cpp
   VMIToVPTO.cpp
+  VMIVectorPressure.cpp
   PTOInferVPTOVecScope.cpp
 
   VecScopeMemBar/VecScopeMemoryFootprint.cpp
@@ -72,6 +73,7 @@ add_mlir_dialect_library(PTOTransforms
   TileFusion/PTOPlanVMIScalarPhases.cpp
   TileFusion/PTOVMIAccumulatorPromotion.cpp
   TileFusion/PTOVMIScalarPromotion.cpp
+  TileFusion/PTOVMIStatePromotion.cpp
   FoldTileBufIntrinsics.cpp
   LowerPTOToUBufOps.cpp
   PTOLowerToOpLibCalls.cpp

@@ -1,0 +1,92 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// CANN Open Software License Agreement Version 2.0
+
+// TileOp-level INTERLEAVE fixture.  The split/merge pair represents
+// vdintlv(x,x) followed by vintlv(-odd,even); all arithmetic is FP32 and the
+// only narrowing is BF16 RINT/NOSAT.
+
+!f32_half = !pto.tile_buf<vec, 1x32xf32>
+!f32_vl = !pto.tile_buf<vec, 1x64xf32>
+!bf16_vl = !pto.tile_buf<vec, 1x64xbf16>
+!f32_input = !pto.tile_buf<vec, 8x512xf32>
+!f32_trig = !pto.tile_buf<vec, 8x64xf32>
+!bf16_output = !pto.tile_buf<vec, 8x512xbf16>
+
+module attributes {pto.target_arch = "a5"} {
+  func.func @rope_partial_interleave_n8(
+      %input: !pto.ptr<f32>, %sin: !pto.ptr<f32>, %cos: !pto.ptr<f32>,
+      %output: !pto.ptr<bf16>)
+      attributes {pto.entry, pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    %c64 = arith.constant 64 : index
+    %c448 = arith.constant 448 : index
+    %c512 = arith.constant 512 : index
+    %minus_one = arith.constant -1.0 : f32
+
+    %input_addr = arith.constant 0 : i64
+    %sin_addr = arith.constant 16384 : i64
+    %cos_addr = arith.constant 18432 : i64
+    %output_addr = arith.constant 20480 : i64
+    %even_addr = arith.constant 28672 : i64
+    %odd_addr = arith.constant 28800 : i64
+    %negative_odd_addr = arith.constant 28928 : i64
+    %rotated_addr = arith.constant 29184 : i64
+    %cos_x_addr = arith.constant 29440 : i64
+    %sin_rotated_addr = arith.constant 29696 : i64
+    %out_f32_addr = arith.constant 29952 : i64
+
+    %input_view = pto.make_tensor_view %input, shape = [%c8, %c512], strides = [%c512, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<8x512xf32>
+    %sin_view = pto.make_tensor_view %sin, shape = [%c8, %c64], strides = [%c64, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<8x64xf32>
+    %cos_view = pto.make_tensor_view %cos, shape = [%c8, %c64], strides = [%c64, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<8x64xf32>
+    %output_view = pto.make_tensor_view %output, shape = [%c8, %c512], strides = [%c512, %c1] {layout = #pto.layout<nd>} : !pto.tensor_view<8x512xbf16>
+
+    %input_part = pto.partition_view %input_view, offsets = [%c0, %c0], sizes = [%c8, %c512] : !pto.tensor_view<8x512xf32> -> !pto.partition_tensor_view<8x512xf32>
+    %sin_part = pto.partition_view %sin_view, offsets = [%c0, %c0], sizes = [%c8, %c64] : !pto.tensor_view<8x64xf32> -> !pto.partition_tensor_view<8x64xf32>
+    %cos_part = pto.partition_view %cos_view, offsets = [%c0, %c0], sizes = [%c8, %c64] : !pto.tensor_view<8x64xf32> -> !pto.partition_tensor_view<8x64xf32>
+    %output_part = pto.partition_view %output_view, offsets = [%c0, %c0], sizes = [%c8, %c512] : !pto.tensor_view<8x512xbf16> -> !pto.partition_tensor_view<8x512xbf16>
+    %input_local = pto.alloc_tile addr = %input_addr : !f32_input
+    %sin_local = pto.alloc_tile addr = %sin_addr : !f32_trig
+    %cos_local = pto.alloc_tile addr = %cos_addr : !f32_trig
+    %output_local = pto.alloc_tile addr = %output_addr : !bf16_output
+    pto.tload ins(%input_part : !pto.partition_tensor_view<8x512xf32>) outs(%input_local : !f32_input)
+    pto.tload ins(%sin_part : !pto.partition_tensor_view<8x64xf32>) outs(%sin_local : !f32_trig)
+    pto.tload ins(%cos_part : !pto.partition_tensor_view<8x64xf32>) outs(%cos_local : !f32_trig)
+    pto.set_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
+    pto.wait_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
+
+    scf.for %row = %c0 to %c8 step %c1 {
+      %x = pto.subview %input_local[%row, %c448] sizes [1, 64] : !f32_input -> !f32_vl
+      %sin_tile = pto.subview %sin_local[%row, %c0] sizes [1, 64] : !f32_trig -> !f32_vl
+      %cos_tile = pto.subview %cos_local[%row, %c0] sizes [1, 64] : !f32_trig -> !f32_vl
+      %out_bf16 = pto.subview %output_local[%row, %c448] sizes [1, 64] : !bf16_output -> !bf16_vl
+
+      %even = pto.alloc_tile addr = %even_addr : !f32_half
+      %odd = pto.alloc_tile addr = %odd_addr : !f32_half
+      %negative_odd = pto.alloc_tile addr = %negative_odd_addr : !f32_half
+      %rotated = pto.alloc_tile addr = %rotated_addr : !f32_vl
+      %cos_x = pto.alloc_tile addr = %cos_x_addr : !f32_vl
+      %sin_rotated = pto.alloc_tile addr = %sin_rotated_addr : !f32_vl
+      %out_f32 = pto.alloc_tile addr = %out_f32_addr : !f32_vl
+
+      pto.tchannel_split ins(%x : !f32_vl) outs(%even, %odd : !f32_half, !f32_half)
+      pto.tmuls ins(%odd, %minus_one : !f32_half, f32) outs(%negative_odd : !f32_half)
+      pto.tchannel_merge ins(%negative_odd, %even : !f32_half, !f32_half) outs(%rotated : !f32_vl)
+      pto.tmul ins(%cos_tile, %x : !f32_vl, !f32_vl) outs(%cos_x : !f32_vl)
+      pto.tmul ins(%sin_tile, %rotated : !f32_vl, !f32_vl) outs(%sin_rotated : !f32_vl)
+      pto.tadd ins(%cos_x, %sin_rotated : !f32_vl, !f32_vl) outs(%out_f32 : !f32_vl)
+      pto.tcvt ins(%out_f32 {rmode = #pto<round_mode RINT>} : !f32_vl) outs(%out_bf16 : !bf16_vl)
+
+      scf.for %col = %c0 to %c448 step %c64 {
+        %prefix = pto.subview %input_local[%row, %col] sizes [1, 64] : !f32_input -> !f32_vl
+        %prefix_bf16 = pto.subview %output_local[%row, %col] sizes [1, 64] : !bf16_output -> !bf16_vl
+        pto.tcvt ins(%prefix {rmode = #pto<round_mode RINT>} : !f32_vl) outs(%prefix_bf16 : !bf16_vl)
+      }
+    }
+    pto.set_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
+    pto.wait_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
+    pto.tstore ins(%output_local : !bf16_output) outs(%output_part : !pto.partition_tensor_view<8x512xbf16>)
+    return
+  }
+}

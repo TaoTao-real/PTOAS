@@ -1,10 +1,12 @@
 // Copyright (c) 2026 Huawei Technologies Co., Ltd.
-// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
-// CANN Open Software License Agreement Version 2.0 (the "License").
-// Please refer to the License for details. You may not use this file except in compliance with the License.
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
-// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
-// See LICENSE in the root of the software repository for the full text of the License.
+// This program is free software, you can redistribute it and/or modify it under
+// the terms and conditions of CANN Open Software License Agreement Version 2.0
+// (the "License"). Please refer to the License for details. You may not use
+// this file except in compliance with the License. THIS SOFTWARE IS PROVIDED ON
+// AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS
+// FOR A PARTICULAR PURPOSE. See LICENSE in the root of the software repository
+// for the full text of the License.
 
 //===- PTOInferVPTOVecScope.cpp ------------------------------------------===//
 //
@@ -35,9 +37,14 @@ namespace {
 
 enum class VPTOInferenceOpClass {
   Vector,
+  HoistBefore,
+  SinkAfter,
   SafeScalar,
   Boundary,
 };
+
+constexpr StringLiteral kStatePromotionVecScopeBridgeAttr =
+    "pto.vmi.state_promotion.vecscope_bridge";
 
 struct NestedRegionSummary {
   bool hasVectorOperation = false;
@@ -54,6 +61,7 @@ struct EscapingMovedValue {
 struct ResultlessScopePlan {
   SmallVector<Operation *, 16> hoistOps;
   SmallVector<Operation *, 16> moveOps;
+  SmallVector<Operation *, 8> sinkOps;
 };
 
 static VPTOInferenceOpClass classifyOperationForInference(Operation *op);
@@ -79,11 +87,29 @@ static bool isForbiddenInsideInferredVectorScope(Operation *op) {
 static bool isCloneableMaskProducer(Operation *op) {
   return isa<pto::PsetB8Op, pto::PsetB16Op, pto::PsetB32Op, pto::PgeB8Op,
              pto::PgeB16Op, pto::PgeB32Op, pto::PltB8Op, pto::PltB16Op,
-             pto::PltB32Op>(op);
+             pto::PltB32Op, pto::PandOp>(op);
+}
+
+/// A scalar vdup is a vector constant materialization.  CSE may legally share
+/// it across otherwise independent vector clusters, but the inferred
+/// resultless vecscope form cannot carry the resulting vreg across a scope
+/// boundary.  Clone only the scalar-source form; lane-selection vdup variants
+/// depend on an existing vreg and must remain part of their original cluster.
+static bool isCloneableVectorConstantProducer(Operation *op) {
+  auto vdup = dyn_cast<pto::VdupOp>(op);
+  if (!vdup || vdup->getNumResults() != 1 ||
+      !isa<pto::VRegType>(vdup->getResult(0).getType()))
+    return false;
+  return llvm::none_of(vdup->getOperandTypes(),
+                       [](Type type) { return isa<pto::VRegType>(type); });
 }
 
 static bool isVectorScopeBoundaryOperation(Operation *op) {
   return isa<pto::BarrierOp, pto::BarrierSyncOp>(op);
+}
+
+static bool isStatePromotionVecScopeBridge(Operation *op) {
+  return op->hasAttr(kStatePromotionVecScopeBridgeAttr);
 }
 
 static bool isPureAddressOperation(Operation *op) {
@@ -129,8 +155,9 @@ static bool isSafeScalarOperation(Operation *op) {
   return isMemoryEffectFree(op);
 }
 
-static void summarizeNestedRegionForAtomicCluster(
-    Region &region, NestedRegionSummary &summary) {
+static void
+summarizeNestedRegionForAtomicCluster(Region &region,
+                                      NestedRegionSummary &summary) {
   for (Block &block : region) {
     for (Operation &op : block) {
       if (op.hasTrait<OpTrait::IsTerminator>())
@@ -140,6 +167,8 @@ static void summarizeNestedRegionForAtomicCluster(
       case VPTOInferenceOpClass::Vector:
         summary.hasVectorOperation = true;
         break;
+      case VPTOInferenceOpClass::HoistBefore:
+      case VPTOInferenceOpClass::SinkAfter:
       case VPTOInferenceOpClass::SafeScalar:
         break;
       case VPTOInferenceOpClass::Boundary:
@@ -177,6 +206,19 @@ static VPTOInferenceOpClass classifyOperationForInference(Operation *op) {
     return VPTOInferenceOpClass::Boundary;
   if (isForbiddenInsideInferredVectorScope(op))
     return VPTOInferenceOpClass::Boundary;
+
+  // A state-promotion proof may forward a VMI value across a static pipe
+  // event that orders unrelated DMA work.  Bisheng requires those events to
+  // remain outside the vector-scope carrier, so conservatively advance a
+  // proven MTE->V wait before the interval and delay a proven V->MTE set until
+  // after it.  Untagged synchronization and all barriers remain hard
+  // inference boundaries.
+  if (isStatePromotionVecScopeBridge(op)) {
+    if (isa<pto::WaitFlagOp>(op))
+      return VPTOInferenceOpClass::HoistBefore;
+    if (isa<pto::SetFlagOp>(op))
+      return VPTOInferenceOpClass::SinkAfter;
+  }
 
   if (requiresVectorScope(op))
     return VPTOInferenceOpClass::Vector;
@@ -227,8 +269,7 @@ computeMovedOpsForResultlessScope(ArrayRef<Operation *> ops) {
     changed = false;
     for (Operation *op : llvm::reverse(ops)) {
       if (movedOps.contains(op) ||
-          classifyOperationForInference(op) !=
-              VPTOInferenceOpClass::SafeScalar)
+          classifyOperationForInference(op) != VPTOInferenceOpClass::SafeScalar)
         continue;
 
       bool hasMovedUser = false;
@@ -318,9 +359,39 @@ static void cloneSharedMaskProducers(Block &block, MLIRContext *context) {
   }
 }
 
-static bool findEscapingMovedResult(
-    const llvm::SmallPtrSetImpl<Operation *> &movedOps,
-    EscapingMovedValue &escapingValue) {
+static void cloneSharedVectorConstantProducers(Block &block,
+                                               MLIRContext *context) {
+  IRRewriter rewriter(context);
+  SmallVector<Operation *, 16> ops;
+  for (Operation &op : block)
+    ops.push_back(&op);
+
+  for (Operation *op : ops) {
+    if (!isCloneableVectorConstantProducer(op))
+      continue;
+
+    OpResult result = op->getResult(0);
+    SmallVector<OpOperand *, 8> uses;
+    for (OpOperand &use : result.getUses())
+      uses.push_back(&use);
+    if (uses.size() < 2)
+      continue;
+
+    keepEarliestUseFirst(uses, block);
+    for (OpOperand *use : ArrayRef<OpOperand *>(uses).drop_front()) {
+      Operation *user = getAncestorInBlock(use->getOwner(), block);
+      if (!user)
+        continue;
+      rewriter.setInsertionPoint(user);
+      Operation *clone = rewriter.clone(*op);
+      use->set(clone->getResult(0));
+    }
+  }
+}
+
+static bool
+findEscapingMovedResult(const llvm::SmallPtrSetImpl<Operation *> &movedOps,
+                        EscapingMovedValue &escapingValue) {
   for (Operation *op : movedOps) {
     for (Value result : op->getResults()) {
       for (Operation *user : result.getUsers()) {
@@ -353,16 +424,16 @@ emitEscapingVectorScopeValueError(const EscapingMovedValue &escapingValue) {
   if (escapingValue.user) {
     diag << "; external user is '"
          << escapingValue.user->getName().getStringRef() << "'";
-    diag.attachNote(escapingValue.user->getLoc())
-        << "external user is here";
+    diag.attachNote(escapingValue.user->getLoc()) << "external user is here";
   }
   return failure();
 }
 
-// classify which operations need to be moved into a vecscope, which can be hoisted out of the
-// vecscope, and check for any vector-scope-typed values that would escape the vecscope if we were to
-// move the candidate operations into a resultless vecscope. Returns failure if the candidate cluster
-// is not suitable for vecscope inference.
+// classify which operations need to be moved into a vecscope, which can be
+// hoisted out of the vecscope, and check for any vector-scope-typed values that
+// would escape the vecscope if we were to move the candidate operations into a
+// resultless vecscope. Returns failure if the candidate cluster is not suitable
+// for vecscope inference.
 static LogicalResult
 buildResultlessScopePlan(ArrayRef<Operation *> ops, ResultlessScopePlan &plan,
                          EscapingMovedValue &escapingValue) {
@@ -396,8 +467,7 @@ buildResultlessScopePlan(ArrayRef<Operation *> ops, ResultlessScopePlan &plan,
     changed = false;
     for (Operation *op : llvm::reverse(ops)) {
       if (movedOps.contains(op) || hoistedOps.contains(op) ||
-          classifyOperationForInference(op) !=
-              VPTOInferenceOpClass::SafeScalar)
+          classifyOperationForInference(op) != VPTOInferenceOpClass::SafeScalar)
         continue;
 
       bool feedsHoistedOp = false;
@@ -421,11 +491,15 @@ buildResultlessScopePlan(ArrayRef<Operation *> ops, ResultlessScopePlan &plan,
 
   plan.hoistOps.clear();
   plan.moveOps.clear();
+  plan.sinkOps.clear();
   for (Operation *op : ops) {
-    if (hoistedOps.contains(op))
+    VPTOInferenceOpClass opClass = classifyOperationForInference(op);
+    if (hoistedOps.contains(op) || opClass == VPTOInferenceOpClass::HoistBefore)
       plan.hoistOps.push_back(op);
     if (movedOps.contains(op))
       plan.moveOps.push_back(op);
+    if (opClass == VPTOInferenceOpClass::SinkAfter)
+      plan.sinkOps.push_back(op);
   }
   return success();
 }
@@ -449,9 +523,14 @@ static void wrapCluster(const ResultlessScopePlan &plan, MLIRContext *context) {
 
   Block &scopeBody = scope.getBody().front();
   for (Operation *op : plan.moveOps) {
-    scopeBody.getOperations().splice(scopeBody.end(),
-                                     parentBlock->getOperations(),
-                                     Block::iterator(op));
+    scopeBody.getOperations().splice(
+        scopeBody.end(), parentBlock->getOperations(), Block::iterator(op));
+  }
+
+  Operation *sinkAnchor = scope;
+  for (Operation *op : plan.sinkOps) {
+    op->moveAfter(sinkAnchor);
+    sinkAnchor = op;
   }
 }
 
@@ -501,6 +580,12 @@ static LogicalResult wrapGreedySubclusters(ArrayRef<Operation *> ops,
 }
 
 static LogicalResult inferVecScopesInBlock(Block &block, MLIRContext *context) {
+  // Clone shared vreg constants first.  Their cloned operations reuse the
+  // original predicate, so run the existing mask cloning afterwards.
+  cloneSharedVectorConstantProducers(block, context);
+  cloneSharedMaskProducers(block, context);
+  // A cloned compound mask (for example pand(PAT_VL32, plt(32))) reuses its
+  // leaf predicates.  A second round separates those newly introduced uses.
   cloneSharedMaskProducers(block, context);
 
   SmallVector<Operation *, 16> pending;
@@ -519,6 +604,8 @@ static LogicalResult inferVecScopesInBlock(Block &block, MLIRContext *context) {
   for (Operation *op : ops) {
     switch (classifyOperationForInference(op)) {
     case VPTOInferenceOpClass::Vector:
+    case VPTOInferenceOpClass::HoistBefore:
+    case VPTOInferenceOpClass::SinkAfter:
     case VPTOInferenceOpClass::SafeScalar:
       pending.push_back(op);
       continue;
@@ -556,8 +643,7 @@ static LogicalResult inferVecScopesInRegion(Region &region,
 }
 
 struct PTOInferVPTOVecScopePass
-    : public pto::impl::PTOInferVPTOVecScopeBase<
-          PTOInferVPTOVecScopePass> {
+    : public pto::impl::PTOInferVPTOVecScopeBase<PTOInferVPTOVecScopePass> {
   void runOnOperation() override {
     func::FuncOp func = getOperation();
     if (failed(inferVecScopesInRegion(func.getBody(), &getContext())))

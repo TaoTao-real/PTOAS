@@ -283,6 +283,20 @@ def _vexp(source: _VectorValue, mask: _MaskValue) -> _VectorValue:
     return _vunary("vexp", source, mask)
 
 
+def _vexpdif(
+    source: _VectorValue,
+    maximum: _VectorValue,
+    mask: _MaskValue,
+) -> _VectorValue:
+    dtype = _validate_same_dtype("pto.vmi.vexpdif", source, maximum)
+    if dtype != f32:
+        raise TypeError("softmax vexpdif candidate currently requires f32 inputs")
+    _validate_mask("pto.vmi.vexpdif", mask, dtype)
+    return _wrap_vreg(
+        pto.vmi.vexpdif(source.value, maximum.value, mask.value), f32
+    )
+
+
 def _vabs(source: _VectorValue, mask: _MaskValue) -> _VectorValue:
     return _vunary("vabs", source, mask)
 
@@ -445,8 +459,18 @@ def _vreduce_add(source: _VectorValue, mask: _MaskValue) -> _VectorValue:
 def _vcvt(source: _VectorValue, dst_dtype: ScalarType) -> _VectorValue:
     if not isinstance(dst_dtype, ScalarType):
         raise TypeError("_vcvt expects a tile-template destination ScalarType")
+    kwargs = {}
+    if source.dtype == f32 and dst_dtype in (f16, bf16):
+        # Tile-level RINT + saturation OFF maps to the A5 R/NOSAT narrowing
+        # contract.  Leaving saturate unspecified defaults the VMI surface to
+        # SAT and changes Inf/NaN boundary semantics.
+        kwargs.update(rounding="R", saturate="NOSAT")
     return _wrap_vreg(
-        pto.vmi.vcvt(source.value, to_dtype=_pto_dtype(dst_dtype)),
+        pto.vmi.vcvt(
+            source.value,
+            to_dtype=_pto_dtype(dst_dtype),
+            **kwargs,
+        ),
         dst_dtype,
     )
 
@@ -585,7 +609,7 @@ def _compact_elementwise_vmi_legal(**context) -> bool:
 
 
 def _single_vl_convert_vmi_legal(**context) -> bool:
-    """Restrict VMI tcvt to one static f32-width VL per logical row.
+    """Restrict VMI tcvt to one static f32-width-or-prefix VL per row.
 
     ``emit_convert_vmi`` deliberately uses one VMI load/convert/store per
     logical block.  A wide row must remain on the ordinary PTODSL path, which
@@ -605,7 +629,8 @@ def _single_vl_convert_vmi_legal(**context) -> bool:
         return False
     if src_shape != dst_shape or src_valid != src_shape or dst_valid != dst_shape:
         return False
-    if src_shape[1] != f32.lanes:
+    logical_lanes = src_shape[1]
+    if logical_lanes not in (f32.lanes // 2, f32.lanes):
         return False
     if any(
         config is None
@@ -617,6 +642,11 @@ def _single_vl_convert_vmi_legal(**context) -> bool:
     dtype_pair = tuple(context.get("operand_dtypes", ()))
     if dtype_pair not in {
         ("bf16", "f32"),
+        ("f32", "f16"),
+        ("f32", "bf16"),
+    }:
+        return False
+    if logical_lanes != f32.lanes and dtype_pair not in {
         ("f32", "f16"),
         ("f32", "bf16"),
     }:
@@ -1642,9 +1672,9 @@ def _validate_col_reduce_tiles(
 
     Mirror of `_validate_row_reduce_tiles` but the surviving axis is the column
     dimension: src is [rows, cols] row-major, dst is [1, cols] row-major, and the
-    reduction runs across all rows. First slice only supports a single VL block
-    wide tile (cols == VL), matching the pto-isa `TColReduceInstr_NoPostUpdate`
-    one-repeat layout.
+    reduction runs across all rows.  The Softmax Dn slice supports a half-VL,
+    one-VL, or two-VL logical row.  The logical VMI value retains that width;
+    VMI layout assignment performs the physical 32/64/128-lane split.
     """
     if src.element_type != f32 or dst.element_type != f32:
         raise ValueError("col-reduce VMI candidates currently support only f32")
@@ -1653,12 +1683,18 @@ def _validate_col_reduce_tiles(
     rows, cols = src._spec.shape
     if dst._spec.shape != (1, cols):
         raise ValueError("col-reduce destination must be a row-major [1, cols] tile")
-    if cols != f32.lanes:
+    if rows % 2 != 0:
+        raise ValueError("Softmax Dn col-reduce VMI requires an even row count")
+    if cols not in {32, f32.lanes, 128}:
         raise ValueError(
-            "col-reduce VMI candidates currently support only cols == VL(f32) "
-            f"(got cols={cols}, VL={f32.lanes})"
+            "Softmax Dn col-reduce VMI supports cols in {32, 64, 128} "
+            f"(got cols={cols})"
         )
-    return CanonicalBlockMap.from_tile(src, logical_lanes=f32.lanes)
+    if (src._spec.valid_shape or src._spec.shape) != src._spec.shape or (
+        dst._spec.valid_shape or dst._spec.shape
+    ) != dst._spec.shape:
+        raise ValueError("Softmax Dn col-reduce VMI requires full-valid tiles")
+    return CanonicalBlockMap.from_tile(src, logical_lanes=cols)
 
 
 def emit_col_reduce_vmi(
@@ -1669,10 +1705,12 @@ def emit_col_reduce_vmi(
 ) -> None:
     """Emit a ColReduce (tcolmax / tcolsum / tcolmin / ...) VMI candidate.
 
-    Mirrors pto-isa `TColReduceInstr_NoPostUpdate` with a single VL block:
-      acc = vbr(InitVal)                        # VL-wide, reduce-neutral init
-      for row in 0..rows: acc = op(acc, load(row))   # runtime scf.for
-      store(acc, dst)
+    Mirrors the installed Softmax Dn manual VF association:
+      even = odd = vbr(InitVal)
+      for pair in 0..rows/2:
+        even = op(even, load(2*pair))
+        odd  = op(odd,  load(2*pair+1))
+      store(op(even, odd), dst)
 
     The accumulator stays VL-wide for the whole reduction (the column axis is
     the surviving axis). This intentionally avoids `_vreduce_max`/`vmi_vcmax`,
@@ -1707,28 +1745,67 @@ def emit_col_reduce_vmi(
 
     _prepare_tile_access(src, dst)
     full_mask = _create_mask(block_map, f32, trace=src._trace)
-    # Seed the VL-wide accumulator with the reduce-neutral identity (vbr InitVal,
-    # matching pto-isa `TColReduceInstr_NoPostUpdate`), so the loop runs c0..rows
-    # and absorbs row 0 via op(InitVal, load(0)) instead of preloading row 0.
-    # The broadcast takes the element type/lanes from `f32` directly — no dummy
-    # load needed (a vload would carry a Read memory effect and survive DCE,
-    # duplicating the row-0 read the loop itself does).
-    accumulator = _vbrc_scalar(
-        _scalar_constant(reduce_identity, f32), dtype=f32
+    accumulator_even = _vconstant(
+        reduce_identity, f32, lanes=block_map.logical_lanes
     )
-    # The whole reduction is a runtime scf.for from row 0 carrying the
-    # VL-wide accumulator; each iteration does one element-wise merge (VL
-    # stays full). Row r maps to logical block r*blocks_per_row.
-    with for_(0, block_map.rows, step=1, state={"acc": accumulator}) as loop:
-        row_block_base = index_mul(loop.iv, block_map.blocks_per_row)
-        loaded = _vload(src, block_map.coordinate(row_block_base))
-        merged = merge_op(loop.state.acc, loaded, full_mask)
-        loop.yield_state(acc=merged)
-    accumulator = loop.results[0]
-    # dst [1, cols] is a single VL block; store via linear offset to avoid the
-    # src/dst shape mismatch in CanonicalBlockCoordinate validation (src is
-    # [rows, cols], dst is [1, cols]).
+    accumulator_odd = _vconstant(
+        reduce_identity, f32, lanes=block_map.logical_lanes
+    )
+    with for_(
+        0,
+        block_map.rows // 2,
+        step=1,
+        state={"even": accumulator_even, "odd": accumulator_odd},
+    ) as loop:
+        even_row = index_mul(loop.iv, 2)
+        odd_row = index_add(even_row, 1)
+        even_value = _vload(src, block_map.coordinate(even_row))
+        odd_value = _vload(src, block_map.coordinate(odd_row))
+        loop.yield_state(
+            even=merge_op(loop.state.even, even_value, full_mask),
+            odd=merge_op(loop.state.odd, odd_value, full_mask),
+        )
+    accumulator = merge_op(loop.results[0], loop.results[1], full_mask)
     _vstore_linear(accumulator, dst, 0, full_mask)
+
+
+def col_expand_binary_vmi_legal(
+    src_shape=(),
+    src_valid_shape=(),
+    src_config=None,
+    col_values_shape=(),
+    col_values_valid_shape=(),
+    col_values_config=None,
+    dst_shape=(),
+    dst_valid_shape=(),
+    dst_config=None,
+    **_,
+) -> bool:
+    """Reject unsupported shapes before prefer-vmi selects the candidate."""
+    if len(src_shape) != 2 or src_shape != dst_shape:
+        return False
+    rows, cols = src_shape
+    return (
+        rows > 0
+        and cols in {32, f32.lanes, 128}
+        and col_values_shape == (1, cols)
+        and src_valid_shape == src_shape
+        and col_values_valid_shape == col_values_shape
+        and dst_valid_shape == dst_shape
+        and all(
+            config is not None
+            and config.b_layout == "row_major"
+            and config.s_layout == "none_box"
+            for config in (src_config, col_values_config, dst_config)
+        )
+    )
+
+
+def paired_col_expand_binary_vmi_legal(src_shape=(), **context) -> bool:
+    return (
+        col_expand_binary_vmi_legal(src_shape=src_shape, **context)
+        and src_shape[0] % 2 == 0
+    )
 
 
 def _validate_col_expand_binary_tiles(
@@ -1736,9 +1813,8 @@ def _validate_col_expand_binary_tiles(
 ) -> CanonicalBlockMap:
     """Validate tiles for a ColExpandBinary (tcolexpandsub/...) VMI candidate.
 
-    src is [rows, cols] row-major, col_values is [1, cols] row-major (one VL
-    block of surviving reduce result), dst is [rows, cols] row-major. cols must
-    equal VL(f32) so the single broadcast loads exactly one VL block.
+    src is [rows, cols] row-major, col_values is [1, cols] row-major, and dst
+    is [rows, cols] row-major.  Softmax Dn supports 32/64/128 logical lanes.
     """
     if (
         src.element_type != f32
@@ -1758,11 +1834,16 @@ def _validate_col_expand_binary_tiles(
         raise ValueError(
             "col-expand-binary col_values must be a row-major [1, cols] tile"
         )
-    if cols != f32.lanes:
+    if cols not in {32, f32.lanes, 128}:
         raise ValueError(
-            "col-expand-binary VMI candidates currently support only cols == VL(f32)"
+            "Softmax Dn col-expand VMI supports cols in {32, 64, 128}"
         )
-    return CanonicalBlockMap.from_tile(src, logical_lanes=f32.lanes)
+    if any(
+        (tile._spec.valid_shape or tile._spec.shape) != tile._spec.shape
+        for tile in (src, col_values, dst)
+    ):
+        raise ValueError("Softmax Dn col-expand VMI requires full-valid tiles")
+    return CanonicalBlockMap.from_tile(src, logical_lanes=cols)
 
 
 def emit_col_expand_binary_vmi(
@@ -1771,6 +1852,7 @@ def emit_col_expand_binary_vmi(
     dst: _TileProxy,
     *,
     binop: str,
+    paired_rows: bool = False,
 ) -> None:
     """Emit a ColExpandBinary (tcolexpandsub/add/mul/div) VMI candidate.
 
@@ -1782,6 +1864,7 @@ def emit_col_expand_binary_vmi(
         "add": _vadd,
         "mul": _vmul,
         "div": _vdiv,
+        "expdif": _vexpdif,
     }
     if binop not in binop_dispatch:
         raise ValueError(
@@ -1798,9 +1881,34 @@ def emit_col_expand_binary_vmi(
     # [1, cols] (one VL block), so the broadcast load is loop-invariant: hoist
     # it out of the row loop so a later mem2reg (Stage C) can forward the
     # ColMax result directly to the consumer without a per-row reload.
-    broadcast = _vload_linear(col_values, 0, lanes=f32.lanes)
+    broadcast = _vload_linear(col_values, 0, lanes=block_map.logical_lanes)
+    if paired_rows:
+        if block_map.rows % 2 != 0:
+            raise ValueError(
+                "paired-row col-expand VMI requires an even row count"
+            )
+        with for_(0, block_map.rows // 2, step=1) as pair:
+            even_row = index_mul(pair, 2)
+            odd_row = index_add(even_row, 1)
+            even_coordinate = block_map.coordinate(even_row)
+            odd_coordinate = block_map.coordinate(odd_row)
+            even_value = _vload(src, even_coordinate)
+            odd_value = _vload(src, odd_coordinate)
+            _vstore(
+                op_fn(even_value, broadcast, full_mask),
+                dst,
+                even_coordinate,
+                full_mask,
+            )
+            _vstore(
+                op_fn(odd_value, broadcast, full_mask),
+                dst,
+                odd_coordinate,
+                full_mask,
+            )
+        return
     with for_(0, block_map.rows, step=1) as row:
-        coordinate = block_map.coordinate(index_mul(row, block_map.blocks_per_row))
+        coordinate = block_map.coordinate(row)
         value = _vload(src, coordinate)
         result = op_fn(value, broadcast, full_mask)
         _vstore(result, dst, coordinate, full_mask)
@@ -1819,16 +1927,85 @@ def emit_convert_vmi(src: _TileProxy, dst: _TileProxy) -> None:
         raise ValueError("tcvt source and destination shapes must match")
     if src._spec.b_layout != "row_major" or dst._spec.b_layout != "row_major":
         raise ValueError("tcvt VMI candidate requires row-major tiles")
-    block_map = CanonicalBlockMap.from_tile(src, logical_lanes=f32.lanes)
+    logical_lanes = src._spec.shape[1]
+    if logical_lanes not in (f32.lanes // 2, f32.lanes):
+        raise ValueError("tcvt VMI candidate requires 32 or 64 logical lanes")
+    block_map = CanonicalBlockMap.from_tile(src, logical_lanes=logical_lanes)
 
     _prepare_tile_access(src, dst)
     dst_mask = _create_mask_lanes(
-        f32.lanes, f32.lanes, dst.element_type, trace=src._trace
+        logical_lanes, logical_lanes, dst.element_type, trace=src._trace
     )
     with for_(0, block_map.logical_block_count, step=1) as logical_block:
         coordinate = block_map.coordinate(logical_block)
         converted = _vcvt(_vload(src, coordinate), dst.element_type)
         _vstore(converted, dst, coordinate, dst_mask)
+
+
+def emit_channel_split_vmi(src: _TileProxy, dsts: Sequence[_TileProxy]) -> None:
+    channels = len(dsts)
+    if channels not in (2, 4):
+        raise ValueError("tchannel_split VMI candidate supports K=2 or K=4")
+    rows, wide_cols = src._spec.shape
+    if wide_cols != channels * dsts[0]._spec.shape[1]:
+        raise ValueError("tchannel_split requires Nx(K*C) -> K x NxC")
+    if any(
+        dst._spec.shape != (rows, wide_cols // channels)
+        or dst.element_type != src.element_type
+        for dst in dsts
+    ):
+        raise ValueError("tchannel_split requires equal channel shapes and dtypes")
+    _prepare_tile_access(src, *dsts)
+    channel_cols = wide_cols // channels
+    mask = _create_mask_lanes(
+        channel_cols, channel_cols, src.element_type, trace=src._trace
+    )
+    with for_(0, rows, step=1) as row:
+        source_offset = index_mul(row, wide_cols)
+        source = _vload_linear(src, source_offset, lanes=wide_cols)
+        results = pto.vmi.channel_split(source.value, channels=channels)
+        destination_offset = index_mul(row, channel_cols)
+        for result, dst in zip(results, dsts):
+            _vstore_linear(
+                _wrap_vreg(result, src.element_type),
+                dst,
+                destination_offset,
+                mask,
+            )
+
+
+def emit_channel_merge_vmi(srcs: Sequence[_TileProxy], dst: _TileProxy) -> None:
+    channels = len(srcs)
+    if channels not in (2, 4):
+        raise ValueError("tchannel_merge VMI candidate supports K=2 or K=4")
+    rows, channel_cols = srcs[0]._spec.shape
+    if dst._spec.shape != (rows, channels * channel_cols):
+        raise ValueError("tchannel_merge requires K x NxC -> Nx(K*C)")
+    if any(
+        src._spec.shape != (rows, channel_cols)
+        or src.element_type != dst.element_type
+        for src in srcs
+    ):
+        raise ValueError("tchannel_merge requires equal channel shapes and dtypes")
+    _prepare_tile_access(*srcs, dst)
+    wide_cols = channels * channel_cols
+    mask = _create_mask_lanes(
+        wide_cols, wide_cols, dst.element_type, trace=dst._trace
+    )
+    with for_(0, rows, step=1) as row:
+        source_offset = index_mul(row, channel_cols)
+        inputs = [
+            _vload_linear(src, source_offset, lanes=channel_cols)
+            for src in srcs
+        ]
+        merged = pto.vmi.channel_merge([value.value for value in inputs])
+        destination_offset = index_mul(row, wide_cols)
+        _vstore_linear(
+            _wrap_vreg(merged, dst.element_type),
+            dst,
+            destination_offset,
+            mask,
+        )
 
 
 def emit_scalar_fill_vmi(scalar: _Value, dst: _TileProxy) -> None:

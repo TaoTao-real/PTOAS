@@ -7,7 +7,35 @@
 # See LICENSE in the root of the software repository for the full text of the License.
 """PTODSL TileLib templates for pto.tcolexpandexpdif."""
 
+from ptodsl import pto
+
 from ._expand_binary import register_column_expand_expdif
 
 
 template_tcolexpandexpdif_f32, template_tcolexpandexpdif_f16 = register_column_expand_expdif()
+
+
+from ._vmi_common import (  # noqa: E402
+    canonical_vmi_template,
+    emit_col_expand_binary_vmi,
+    paired_col_expand_binary_vmi_legal,
+)
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="tcolexpandexpdif",
+    name="vmi_tcolexpandexpdif",
+    dtypes=(("f32", "f32", "f32"),),
+    constraints=(paired_col_expand_binary_vmi_legal,),
+)
+def vmi_tcolexpandexpdif(
+    src: pto.Tile, col_values: pto.Tile, dst: pto.Tile
+):
+    # The installed Softmax Dn VF visits even and odd M rows together and
+    # carries two reduction accumulators.  Preserve that phase header so the
+    # exp-difference producer can later fuse with tcolsum without changing the
+    # FP32 association.
+    emit_col_expand_binary_vmi(
+        src, col_values, dst, binop="expdif", paired_rows=True
+    )

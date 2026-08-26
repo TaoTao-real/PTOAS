@@ -7,6 +7,11 @@
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --tile-lib-backend=ptodsl --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=region --emit-vpto %S/../../samples/RMSNormRowVFA5/rmsnorm_row_vf.pto -o /dev/null --mlir-print-ir-after=pto-fusion-region-gen 2>&1 | FileCheck %s --check-prefix=REGION
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --tile-lib-backend=ptodsl --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=loop --emit-vpto %S/../../samples/RMSNormRowVFA5/rmsnorm_row_vf.pto -o /dev/null --mlir-print-ir-after=pto-low-level-loop-fusion 2>&1 | FileCheck %s --check-prefix=LOOP
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --tile-lib-backend=ptodsl --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --enable-vecscope-mem-bar --emit-vpto %S/../../samples/RMSNormRowVFA5/rmsnorm_row_vf.pto -o - | %python_executable %S/Inputs/rmsnorm_vf_traffic_gate.py --stage row-vf-boundary | FileCheck %s --check-prefix=FULL
+// RUN: %python_executable %S/../../samples/RMSNormRowVFA5/a5_harness/generate_pto_variants.py --source %S/../../samples/RMSNormRowVFA5/rmsnorm_row_vf.pto --output-dir %t.generic --experiment-tag generic-state-promotion --rows 1 --rows 8 --rows 32 --rows 64
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --tile-lib-backend=ptodsl --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --vmi-state-promotion-mode=generic --emit-vpto %t.generic/n1-D.pto -o /dev/null
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --tile-lib-backend=ptodsl --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --vmi-state-promotion-mode=generic --emit-vpto %t.generic/n8-D.pto -o /dev/null
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --tile-lib-backend=ptodsl --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --vmi-state-promotion-mode=generic --emit-vpto %t.generic/n32-D.pto -o /dev/null
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --tile-lib-backend=ptodsl --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --vmi-state-promotion-mode=generic --enable-vecscope-mem-bar --emit-vpto %t.generic/n64-D.pto -o - | %python_executable %S/Inputs/rmsnorm_vf_traffic_gate.py --stage row-vf-boundary | FileCheck %s --check-prefix=GENERIC
 // RUN: %python_executable %S/../../samples/RMSNormRowVFA5/rmsnorm_row_vf_golden.py | FileCheck %s --check-prefix=GOLDEN
 
 // FLOW-LABEL: func.func @rmsnorm_row_vf_n64
@@ -90,6 +95,10 @@
 // FULL: static_total_vld_vst_membar=2/1/0
 // FULL: manual_vf_boundary_vld_vst_membar=2/1/0
 // FULL: excess_vld_vst_membar=0/0/0
+// GENERIC: stage=row-vf-boundary
+// GENERIC: static_total_vld_vst_membar=2/1/0
+// GENERIC: manual_vf_boundary_vld_vst_membar=2/1/0
+// GENERIC: excess_vld_vst_membar=0/0/0
 // BASELINE: pto.tmul
 // BASELINE-SAME: pto.tilelib.impl = "vmi"
 // BASELINE: pto.trowsum

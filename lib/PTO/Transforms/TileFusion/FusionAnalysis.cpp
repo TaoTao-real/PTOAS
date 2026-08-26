@@ -463,7 +463,8 @@ static void applyShapeConstraintsForNode(
                                canonicalByValue, signatureMap, extraOutput));
     return;
   }
-  case FusionComputeFamily::ColBroadcastBinary: {
+  case FusionComputeFamily::ColBroadcastBinary:
+  case FusionComputeFamily::ColInvariantBinary: {
     // Col-expand (tcolexpandsub/add/mul/div): reads [1,cols] col_values and
     // [rows,cols] src, writes [rows,cols]. Merge src and output fully (they
     // share the [R,C] iteration domain), but constrain col_values to
@@ -491,6 +492,21 @@ static void applyShapeConstraintsForNode(
         solver.bindConstant(colInput.rows, 1);
       }
     }
+    return;
+  }
+  case FusionComputeFamily::Rearrange: {
+    SmallVector<Value, 6> values;
+    values.append(semantics.tileInputs.begin(), semantics.tileInputs.end());
+    values.append(semantics.tileOutputs.begin(), semantics.tileOutputs.end());
+    if (values.empty())
+      return;
+    ShapeValueDims anchor =
+        getValueDims(solver, dimsByValue, symbolDimByValue, canonicalByValue,
+                     signatureMap, values.front());
+    for (Value value : ArrayRef<Value>(values).drop_front())
+      mergeRows(solver, anchor,
+                getValueDims(solver, dimsByValue, symbolDimByValue,
+                             canonicalByValue, signatureMap, value));
     return;
   }
   case FusionComputeFamily::ReduceRow:
@@ -536,6 +552,7 @@ static ShapeValueDims getIterationDomainDimsForNode(
   case FusionComputeFamily::ScalarExpand:
   case FusionComputeFamily::RowBroadcastBinary:
   case FusionComputeFamily::ColBroadcastBinary:
+  case FusionComputeFamily::ColInvariantBinary:
     if (!semantics.tileOutputs.empty())
       return getValueDims(solver, dimsByValue, symbolDimByValue,
                           canonicalByValue, signatureMap,
@@ -544,6 +561,16 @@ static ShapeValueDims getIterationDomainDimsForNode(
       return getValueDims(solver, dimsByValue, symbolDimByValue,
                           canonicalByValue, signatureMap,
                           semantics.tileInputs.front());
+    break;
+  case FusionComputeFamily::Rearrange:
+    if (semantics.tileInputs.size() == 1)
+      return getValueDims(solver, dimsByValue, symbolDimByValue,
+                          canonicalByValue, signatureMap,
+                          semantics.tileInputs.front());
+    if (semantics.tileOutputs.size() == 1)
+      return getValueDims(solver, dimsByValue, symbolDimByValue,
+                          canonicalByValue, signatureMap,
+                          semantics.tileOutputs.front());
     break;
   case FusionComputeFamily::ReduceRow:
   case FusionComputeFamily::ReduceCol:
@@ -704,10 +731,17 @@ inferIterationDomainInfo(const FusionOpSemantics &semantics) {
   case FusionComputeFamily::ScalarExpand:
   case FusionComputeFamily::RowBroadcastBinary:
   case FusionComputeFamily::ColBroadcastBinary:
+  case FusionComputeFamily::ColInvariantBinary:
     return inferConsensusIterationDomain(semantics.tileOutputs);
   case FusionComputeFamily::ReduceRow:
   case FusionComputeFamily::ReduceCol:
     return inferConsensusIterationDomain(semantics.tileInputs);
+  case FusionComputeFamily::Rearrange:
+    if (semantics.tileInputs.size() == 1)
+      return inferConsensusIterationDomain(semantics.tileInputs);
+    if (semantics.tileOutputs.size() == 1)
+      return inferConsensusIterationDomain(semantics.tileOutputs);
+    return IterationDomainInfo();
   case FusionComputeFamily::Unknown:
     return IterationDomainInfo();
   }
@@ -729,8 +763,6 @@ inferPrincipalRowDomain(const FusionComputeNode &node) {
     return info;
 
   info.unprovenReason = PrincipalRowDomainUnprovenReason::UnsupportedFamily;
-  StringRef opName = node.semantics.opName;
-
   auto proveRows = [&](int64_t rows) {
     info.rows = rows;
     if (ShapedType::isDynamic(rows) || rows <= 0) {
@@ -777,35 +809,40 @@ inferPrincipalRowDomain(const FusionComputeNode &node) {
     return info;
   }
 
-  if (opName == "tcvt" || opName == "tmul") {
+  switch (node.semantics.computeFamily) {
+  case FusionComputeFamily::Elementwise:
+  case FusionComputeFamily::Convert: {
+    std::optional<std::pair<int64_t, int64_t>> shape =
+        getStaticRank2ValidShape(outputs.front());
+    if (!shape) {
+      info.unprovenReason = PrincipalRowDomainUnprovenReason::MissingRank2Tile;
+      return info;
+    }
+    if (shape->second != 1 && shape->second != 32 && shape->second != 64) {
+      info.unprovenReason =
+          PrincipalRowDomainUnprovenReason::NotOneFullVLPerRow;
+      return info;
+    }
+    for (Value value : inputs)
+      if (!requireShape(value, shape->first, shape->second))
+        return info;
+    for (Value value : outputs)
+      if (!requireShape(value, shape->first, shape->second))
+        return info;
+    proveRows(shape->first);
+    return info;
+  }
+  case FusionComputeFamily::ScalarExpand: {
     std::optional<int64_t> rows = getAnchorRows(outputs.front());
     if (!rows)
       return info;
-    for (Value value : inputs)
-      if (!requireShape(value, *rows, 64))
-        return info;
     for (Value value : outputs)
       if (!requireShape(value, *rows, 64))
         return info;
     proveRows(*rows);
     return info;
   }
-
-  if (opName == "tmuls" || opName == "tadds" || opName == "tsqrt") {
-    std::optional<int64_t> rows = getAnchorRows(outputs.front());
-    if (!rows)
-      return info;
-    for (Value value : inputs)
-      if (!requireShape(value, *rows, 1))
-        return info;
-    for (Value value : outputs)
-      if (!requireShape(value, *rows, 1))
-        return info;
-    proveRows(*rows);
-    return info;
-  }
-
-  if (opName == "trowsum") {
+  case FusionComputeFamily::ReduceRow: {
     if (inputs.empty())
       return info;
     std::optional<int64_t> rows = getAnchorRows(inputs.front());
@@ -820,31 +857,65 @@ inferPrincipalRowDomain(const FusionComputeNode &node) {
     proveRows(*rows);
     return info;
   }
-
-  if (opName == "trowexpanddiv") {
+  case FusionComputeFamily::RowBroadcastBinary: {
     if (inputs.size() != 2)
       return info;
     std::optional<int64_t> rows = getAnchorRows(outputs.front());
     if (!rows || !requireShape(inputs[0], *rows, 64) ||
-        !requireShape(inputs[1], *rows, 1) ||
-        !requireShape(outputs.front(), *rows, 64))
+        !requireShape(inputs[1], *rows, 1))
       return info;
+    for (Value value : outputs)
+      if (!requireShape(value, *rows, 64))
+        return info;
     proveRows(*rows);
     return info;
   }
-
-  if (opName == "tcolexpandmul") {
+  case FusionComputeFamily::ColInvariantBinary: {
     if (inputs.size() != 2)
       return info;
     std::optional<int64_t> rows = getAnchorRows(outputs.front());
     if (!rows || !requireShape(inputs[0], *rows, 64) ||
-        !requireShape(inputs[1], 1, 64) ||
-        !requireShape(outputs.front(), *rows, 64))
+        !requireShape(inputs[1], 1, 64))
       return info;
+    for (Value value : outputs)
+      if (!requireShape(value, *rows, 64))
+        return info;
     proveRows(*rows);
     return info;
   }
-
+  case FusionComputeFamily::Rearrange: {
+    bool isSplit = inputs.size() == 1 &&
+                   (outputs.size() == 2 || outputs.size() == 4);
+    bool isMerge = outputs.size() == 1 &&
+                   (inputs.size() == 2 || inputs.size() == 4);
+    if (!isSplit && !isMerge)
+      return info;
+    Value wideValue = isSplit ? inputs.front() : outputs.front();
+    ArrayRef<Value> narrowValues = isSplit ? outputs : inputs;
+    std::optional<std::pair<int64_t, int64_t>> wideShape =
+        getStaticRank2ValidShape(wideValue);
+    if (!wideShape) {
+      info.unprovenReason = PrincipalRowDomainUnprovenReason::MissingRank2Tile;
+      return info;
+    }
+    int64_t factor = narrowValues.size();
+    if (wideShape->second % factor != 0) {
+      info.unprovenReason =
+          PrincipalRowDomainUnprovenReason::NotOneFullVLPerRow;
+      return info;
+    }
+    int64_t narrowCols = wideShape->second / factor;
+    for (Value value : narrowValues)
+      if (!requireShape(value, wideShape->first, narrowCols))
+        return info;
+    proveRows(wideShape->first);
+    return info;
+  }
+  case FusionComputeFamily::ColBroadcastBinary:
+  case FusionComputeFamily::ReduceCol:
+  case FusionComputeFamily::Unknown:
+    return info;
+  }
   return info;
 }
 

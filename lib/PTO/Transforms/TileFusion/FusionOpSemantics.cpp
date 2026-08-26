@@ -24,12 +24,15 @@ static FusionComputeFamily getFusionComputeFamily(StringRef opName) {
       .Case("texpands", FusionComputeFamily::ScalarExpand)
       .Cases("trowexpandsub", "trowexpandmul", "trowexpanddiv",
              FusionComputeFamily::RowBroadcastBinary)
-      .Cases("tcolexpandsub", "tcolexpandadd", "tcolexpandmul",
-             "tcolexpanddiv",
+      .Cases("tcolexpandsub", "tcolexpandadd", "tcolexpanddiv",
+             "tcolexpandexpdif",
              FusionComputeFamily::ColBroadcastBinary)
+      .Case("tcolexpandmul", FusionComputeFamily::ColInvariantBinary)
       .Cases("trowsum", "trowmax", "trowmin", FusionComputeFamily::ReduceRow)
       .Cases("tcolsum", "tcolmax", "tcolmin", FusionComputeFamily::ReduceCol)
       .Case("tcvt", FusionComputeFamily::Convert)
+      .Cases("tchannel_split", "tchannel_merge",
+             FusionComputeFamily::Rearrange)
       .Default(FusionComputeFamily::Unknown);
 }
 

@@ -8,10 +8,11 @@ from pathlib import Path
 
 SUPPORTED_ROWS = (1, 8, 32, 64)
 VARIANTS = {
-    "A": ("ordinary", "off"),
-    "B": ("prefer-vmi", "off"),
-    "C": ("prefer-vmi", "loop"),
-    "D": ("prefer-vmi", "full"),
+    "A": ("ordinary", "off", "off"),
+    "B": ("prefer-vmi", "off", "off"),
+    "C": ("prefer-vmi", "loop", "off"),
+    "D": ("prefer-vmi", "full", "generic"),
+    "DL": ("prefer-vmi", "full", "legacy"),
 }
 
 
@@ -80,16 +81,16 @@ def main():
     tag = identifier(args.experiment_tag)
 
     manifest = [
-        "rows\tvariant\tkernel_symbol\tcandidate_policy\tfusion_mode\tpto"
+        "rows\tvariant\tkernel_symbol\tcandidate_policy\tfusion_mode\tstate_mode\tpto"
     ]
     for rows in rows_set:
-        for variant, (policy, mode) in VARIANTS.items():
+        for variant, (policy, mode, state_mode) in VARIANTS.items():
             symbol = "rmsnorm_row_vf_n{}_{}_{}".format(rows, variant.lower(), tag)
             path = output_dir / "n{}-{}.pto".format(rows, variant)
             path.write_text(render(source, rows, symbol))
             manifest.append(
-                "{}\t{}\t{}\t{}\t{}\t{}".format(
-                    rows, variant, symbol, policy, mode, path.name
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}".format(
+                    rows, variant, symbol, policy, mode, state_mode, path.name
                 )
             )
     (output_dir / "variants.tsv").write_text("\n".join(manifest) + "\n")

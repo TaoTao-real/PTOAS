@@ -8807,6 +8807,75 @@ struct OneToNVMIUnaryOpPattern : OpConversionPattern<SourceOp> {
   }
 };
 
+/// Lower a legacy VMI exp.  When VMILowerUnifiedToLegacy marked the op as the
+/// expansion of unified vexpdif, recover the physical A5 vexpdif instruction
+/// from the already-converted vsub parts.  Ordinary authored vexp remains a
+/// normal VexpOp and is never contracted implicitly.
+struct OneToNVMIExpOpPattern : OpConversionPattern<VMIExpOp> {
+  using OpConversionPattern<VMIExpOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(VMIExpOp op, OneToNOpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    ValueRange sourceParts = adaptor.getSource();
+    FailureOr<SmallVector<Type>> maybeResultTypes =
+        getConvertedResultTypes(op, 0, *this->getTypeConverter());
+    if (failed(maybeResultTypes))
+      return failure();
+    SmallVector<Type> resultTypes = std::move(*maybeResultTypes);
+    if (sourceParts.size() != resultTypes.size())
+      return rewriter.notifyMatchFailure(op, "physical exp arity mismatch");
+
+    auto origin = op->getAttrOfType<StringAttr>("pto.vmi.fused_origin");
+    const bool recoverExpDif = origin && origin.getValue() == "vexpdif";
+    StringAttr part =
+        op->getAttrOfType<StringAttr>("pto.vmi.vexpdif.part");
+    if (recoverExpDif && (!part || (part.getValue() != "EVEN" &&
+                                    part.getValue() != "ODD")))
+      return rewriter.notifyMatchFailure(
+          op, "vexpdif provenance requires a valid physical part");
+
+    SmallVector<Value> results;
+    results.reserve(resultTypes.size());
+    auto logicalResultType = cast<VMIVRegType>(op.getResult().getType());
+    for (auto [physicalPart, source, resultType] :
+         llvm::enumerate(sourceParts, resultTypes)) {
+      auto vregType = dyn_cast<VRegType>(resultType);
+      if (!vregType || source.getType() != resultType)
+        return rewriter.notifyMatchFailure(
+            op, "physical exp part type mismatch");
+      FailureOr<Value> mask = createLogicalActiveMaskForVReg(
+          op.getLoc(), logicalResultType,
+          static_cast<int64_t>(physicalPart), vregType, rewriter);
+      if (failed(mask))
+        return rewriter.notifyMatchFailure(
+            op, "failed to materialize exp logical active-lane mask");
+
+      if (!recoverExpDif) {
+        results.push_back(
+            rewriter.create<VexpOp>(op.getLoc(), resultType, source, *mask)
+                .getResult());
+        continue;
+      }
+
+      auto physicalSub = source.getDefiningOp<VsubOp>();
+      if (!physicalSub)
+        return rewriter.notifyMatchFailure(
+            op, "vexpdif provenance source did not lower to physical vsub");
+      results.push_back(
+          rewriter
+              .create<VexpdifOp>(op.getLoc(), resultType,
+                                  physicalSub.getLhs(), physicalSub.getRhs(),
+                                  *mask, part)
+              .getResult());
+    }
+
+    replaceOpWithFlatConvertedValues(rewriter, op, results,
+                                     *this->getTypeConverter());
+    return success();
+  }
+};
+
 template <typename SourceOp, typename TargetOp>
 struct OneToNVMIMaskBinaryOpPattern : OpConversionPattern<SourceOp> {
   using OpConversionPattern<SourceOp>::OpConversionPattern;
@@ -11879,7 +11948,7 @@ void populateVMIConversionPatterns(
       OneToNVMIUnaryOpPattern<VMIAbsFOp, VabsOp>,
       OneToNVMIUnaryOpPattern<VMIAbsIOp, VabsOp>,
       OneToNVMIUnaryOpPattern<VMISqrtOp, VsqrtOp>,
-      OneToNVMIUnaryOpPattern<VMIExpOp, VexpOp>,
+      OneToNVMIExpOpPattern,
       OneToNVMIUnaryOpPattern<VMILnOp, VlnOp>,
       OneToNVMIUnaryOpPattern<VMIReluOp, VreluOp>,
       OneToNVMIBinaryOpPattern<VMIAndIOp, VandOp>,
@@ -12093,19 +12162,21 @@ checkSupportedChannelSplitShape(VMIChannelSplitOp op,
       return fail("requires every result layout to be contiguous");
   }
 
+  unsigned sourceElementBits =
+      pto::getPTOStorageElemBitWidth(sourceType.getElementType());
+  int64_t sourceLogicalBits = sourceType.getElementCount() * sourceElementBits;
+  if (sourceElementBits == 0 || sourceLogicalBits <= 0 ||
+      sourceLogicalBits % (256 * 8) != 0)
+    return fail("requires full source logical 256-byte chunks");
   FailureOr<int64_t> sourceArity = getVMIPhysicalArity(sourceType);
-  int64_t resultArity = 0;
+  if (failed(sourceArity))
+    return fail("requires computable source physical arity");
   for (Value result : op.getResults()) {
     FailureOr<int64_t> arity =
         getVMIPhysicalArity(cast<VMIVRegType>(result.getType()));
     if (failed(arity))
       return fail("requires computable result physical arity");
-    resultArity += *arity;
   }
-  if (failed(sourceArity))
-    return fail("requires computable source physical arity");
-  if (*sourceArity != resultArity)
-    return fail("requires source and result to have the same physical arity");
 
   return success();
 }
@@ -12123,7 +12194,6 @@ checkSupportedChannelMergeShape(VMIChannelMergeOp op,
   if (channels != 2 && channels != 4)
     return fail("pto.vmi.channel_merge supports only 2 or 4 channels");
 
-  int64_t inputArity = 0;
   for (Value input : op.getInputs()) {
     auto inputType = cast<VMIVRegType>(input.getType());
     VMILayoutAttr inputLayout = inputType.getLayoutAttr();
@@ -12132,7 +12202,6 @@ checkSupportedChannelMergeShape(VMIChannelMergeOp op,
     FailureOr<int64_t> arity = getVMIPhysicalArity(inputType);
     if (failed(arity))
       return fail("requires computable input physical arity");
-    inputArity += *arity;
   }
 
   auto resultType = cast<VMIVRegType>(op.getResult().getType());
@@ -12145,11 +12214,15 @@ checkSupportedChannelMergeShape(VMIChannelMergeOp op,
     return fail("requires result layout to be contiguous or matching "
                 "deinterleaved channel layout");
 
+  unsigned resultElementBits =
+      pto::getPTOStorageElemBitWidth(resultType.getElementType());
+  int64_t resultLogicalBits = resultType.getElementCount() * resultElementBits;
+  if (resultElementBits == 0 || resultLogicalBits <= 0 ||
+      resultLogicalBits % (256 * 8) != 0)
+    return fail("requires full result logical 256-byte chunks");
   FailureOr<int64_t> resultArity = getVMIPhysicalArity(resultType);
   if (failed(resultArity))
     return fail("requires computable result physical arity");
-  if (*resultArity != inputArity)
-    return fail("requires source and result to have the same physical arity");
 
   return success();
 }

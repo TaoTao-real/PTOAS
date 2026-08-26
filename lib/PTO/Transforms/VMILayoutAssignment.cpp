@@ -1323,6 +1323,11 @@ struct LayoutSolver {
           return WalkResult::interrupt();
         return WalkResult::advance();
       }
+      if (auto fusionRegion = dyn_cast<pto::FusionRegionOp>(op)) {
+        if (failed(addFusionRegionConstraints(fusionRegion)))
+          return WalkResult::interrupt();
+        return WalkResult::advance();
+      }
       if (auto executeRegionOp = dyn_cast<scf::ExecuteRegionOp>(op)) {
         if (failed(addExecuteRegionConstraints(executeRegionOp)))
           return WalkResult::interrupt();
@@ -1423,6 +1428,23 @@ struct LayoutSolver {
                                          ifOp)))
           return failure();
       }
+    }
+    return success();
+  }
+
+  LogicalResult addFusionRegionConstraints(pto::FusionRegionOp fusionRegion) {
+    if (fusionRegion.getBody().empty())
+      return success();
+    auto yieldOp = dyn_cast<pto::YieldOp>(
+        fusionRegion.getBody().front().getTerminator());
+    if (!yieldOp)
+      return success();
+    for (auto [index, result] : llvm::enumerate(fusionRegion.getResults())) {
+      if (index >= yieldOp.getNumOperands())
+        break;
+      if (failed(uniteEquivalentValues(result, yieldOp.getOperand(index),
+                                       fusionRegion)))
+        return failure();
     }
     return success();
   }

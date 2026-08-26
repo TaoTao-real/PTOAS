@@ -1,0 +1,24 @@
+// RUN: ptoas --pto-arch=a5 --emit-pto-ir %s -o - | FileCheck %s
+
+// The strict channel-shape proof runs on the source Tile IR.  After
+// PTOViewToMemref, the subview is represented by its parent storage shape plus
+// child valid extents; that decoded form must not be rejected a second time.
+module attributes {pto.target_arch = "a5"} {
+  func.func @channel_split_decoded_subview_verifier() {
+    %c3 = arith.constant 3 : index
+    %c448 = arith.constant 448 : index
+    %input = pto.alloc_tile : !pto.tile_buf<vec, 8x512xf32>
+    %slice = pto.subview %input[%c3, %c448] sizes [1, 64] :
+      !pto.tile_buf<vec, 8x512xf32> -> !pto.tile_buf<vec, 1x64xf32>
+    %even = pto.alloc_tile : !pto.tile_buf<vec, 1x32xf32>
+    %odd = pto.alloc_tile : !pto.tile_buf<vec, 1x32xf32>
+    pto.tchannel_split ins(%slice : !pto.tile_buf<vec, 1x64xf32>)
+      outs(%even, %odd : !pto.tile_buf<vec, 1x32xf32>, !pto.tile_buf<vec, 1x32xf32>)
+    return
+  }
+}
+
+// CHECK: pto.bind_tile %{{.*}}, %c1, %c64
+// CHECK-SAME: pto.view_semantics = "subview"
+// CHECK: pto.tchannel_split
+// CHECK-SAME: memref<8x512xf32

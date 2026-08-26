@@ -15,6 +15,10 @@ using namespace PtoTestCommon;
 #error "RMSNORM_ROWS must be defined"
 #endif
 
+#ifndef RMSNORM_COLS
+#define RMSNORM_COLS 64
+#endif
+
 #define ACL_CHECK(expr)                                                        \
   do {                                                                         \
     const aclError ret = (expr);                                               \
@@ -32,7 +36,7 @@ extern "C" void RMSNORM_LAUNCH_NAME(
 
 int main() {
   constexpr size_t kRows = RMSNORM_ROWS;
-  constexpr size_t kCols = 64;
+  constexpr size_t kCols = RMSNORM_COLS;
   constexpr size_t kXBytes = kRows * kCols * sizeof(uint16_t);
   constexpr size_t kYBytes = kXBytes;
   constexpr size_t kGammaBytes = kCols * sizeof(uint16_t);

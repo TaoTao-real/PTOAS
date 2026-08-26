@@ -1105,6 +1105,53 @@ class _VMINamespace:
             ip=ip,
         )
 
+    @staticmethod
+    def channel_split(source, *, channels, loc=None, ip=None):
+        context = "pto.vmi.channel_split(...)"
+        if channels not in (2, 4):
+            raise ValueError(f"{context} supports exactly 2 or 4 channels")
+        source_type = _as_vmi_vreg_type(_type_of(source), context=context)
+        if source_type.element_count % channels:
+            raise ValueError(
+                f"{context} requires source lanes divisible by channels; "
+                f"got lanes={source_type.element_count}, channels={channels}"
+            )
+        result_type = _pto.VMIVRegType.get(
+            source_type.element_count // channels,
+            source_type.element_type,
+        )
+        return _wrap_result(
+            _generated("channel_split")(
+                [result_type] * channels, _raw(source), loc=loc, ip=ip
+            )
+        )
+
+    @staticmethod
+    def channel_merge(inputs, *, loc=None, ip=None):
+        context = "pto.vmi.channel_merge(...)"
+        raw_inputs = _raw_sequence(inputs)
+        if len(raw_inputs) not in (2, 4):
+            raise ValueError(f"{context} supports exactly 2 or 4 channels")
+        first_type = _as_vmi_vreg_type(raw_inputs[0].type, context=context)
+        for value in raw_inputs[1:]:
+            value_type = _as_vmi_vreg_type(value.type, context=context)
+            if (
+                value_type.element_count != first_type.element_count
+                or value_type.element_type != first_type.element_type
+            ):
+                raise TypeError(
+                    f"{context} requires equal channel lane counts and dtypes"
+                )
+        result_type = _pto.VMIVRegType.get(
+            first_type.element_count * len(raw_inputs),
+            first_type.element_type,
+        )
+        return _wrap_result(
+            _generated("channel_merge")(
+                result_type, raw_inputs, loc=loc, ip=ip
+            )
+        )
+
 
 def _is_vmi_vreg_type(type_obj) -> bool:
     vreg_type_cls = getattr(_pto, "VMIVRegType", None)

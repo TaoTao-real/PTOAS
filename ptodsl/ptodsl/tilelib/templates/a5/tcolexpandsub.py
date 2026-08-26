@@ -22,6 +22,7 @@ template_tcolexpandsub = register_column_expand_binary(
 
 from ._vmi_common import (  # noqa: E402
     canonical_vmi_template,
+    col_expand_binary_vmi_legal,
     emit_col_expand_binary_vmi,
 )
 
@@ -31,6 +32,7 @@ from ._vmi_common import (  # noqa: E402
     op="tcolexpandsub",
     name="vmi_tcolexpandsub",
     dtypes=(("f32", "f32", "f32"),),
+    constraints=(col_expand_binary_vmi_legal,),
 )
 def vmi_tcolexpandsub(src: pto.Tile, col_values: pto.Tile, dst: pto.Tile):
     emit_col_expand_binary_vmi(src, col_values, dst, binop="sub")

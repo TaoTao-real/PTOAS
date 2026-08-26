@@ -40,6 +40,7 @@ from ptodsl.vmi_tilelib import (
     vmi_tadd_block64,
     vmi_tcolmax,
     vmi_tcolsum,
+    vmi_tcolexpandexpdif,
     vmi_tcolexpandsub,
     vmi_tcvt,
     vmi_texpands,
@@ -587,8 +588,8 @@ def check_col_reduce_candidate() -> tuple[str, str, str]:
     the pto-isa ``TColReduceInstr_NoPostUpdate`` repeat loop — and must NOT
     statically unroll one merge per row.
 
-    Each candidate runs over a single-VL-block column tile: src is
-    [rows, VL] row-major, dst is [1, VL] row-major (the surviving column axis).
+    The Softmax Dn candidates preserve the installed VF's even/odd reduction
+    association for 32, 64, and 128 logical lanes.
     """
     col_tile_spec = {
         "kind": "tile",
@@ -623,10 +624,13 @@ def check_col_reduce_candidate() -> tuple[str, str, str]:
         "iter_args" in colmax and "!pto.vmi.vreg<64xf32>" in colmax,
         "colmax should carry a VL-wide vreg accumulator through the loop",
     )
-    expect(colmax.count("pto.vmi.vmax") == 1, "colmax should issue one VMI max inside the loop")
     expect(
-        colmax.count("pto.vmi.vload") == 1,
-        "colmax should load exactly one row per iteration inside the loop "
+        colmax.count("pto.vmi.vmax") == 3,
+        "colmax should update even/odd accumulators and merge them once",
+    )
+    expect(
+        colmax.count("pto.vmi.vload") == 2,
+        "colmax should load exactly one even and one odd row per iteration "
         "(the accumulator seed is a vbr of the identity, not a dummy vload — a "
         "vload carries a Read memory effect and cannot be DCE'd, so a dummy "
         "load would duplicate the row-0 read)",
@@ -647,7 +651,33 @@ def check_col_reduce_candidate() -> tuple[str, str, str]:
         "iter_args" in colsum and "!pto.vmi.vreg<64xf32>" in colsum,
         "colsum should carry a VL-wide vreg accumulator through the loop",
     )
-    expect(colsum.count("pto.vmi.vadd") == 1, "colsum should issue one VMI add inside the loop")
+    expect(
+        colsum.count("pto.vmi.vadd") == 3,
+        "colsum should update even/odd accumulators and merge them once",
+    )
+
+    for width in (32, 128):
+        width_tile = {
+            **col_tile_spec,
+            "shape": [32, width],
+            "valid_shape": [32, width],
+        }
+        width_reduced = {
+            **width_tile,
+            "shape": [1, width],
+            "valid_shape": [1, width],
+        }
+        text = instantiate_candidate(
+            target="a5",
+            op_name="pto.tcolsum",
+            operand_specs=[width_tile, width_reduced],
+            provider_module="ptodsl.vmi_tilelib",
+            context_attrs={},
+        ).mlir_text()
+        expect(
+            "!pto.vmi.vreg<{}xf32>".format(width) in text,
+            "colsum should retain the {}-lane logical value".format(width),
+        )
 
     # A non-binary colsum must not accept the binary 3-operand form (it has no
     # fallback path); the two-operand form is the only supported lowering.
@@ -665,7 +695,7 @@ def check_col_reduce_candidate() -> tuple[str, str, str]:
     return colmax, colsum, reduced_col_spec
 
 
-def check_col_expand_candidate() -> None:
+def check_col_expand_candidate() -> str:
     """ColExpandBinary (tcolexpandsub/add/mul/div) broadcasts a [1, VL] column
     result across every row of a [rows, VL] tile, mirroring pto-isa
     ``TColExpandBinOp`` (reload the same VL block per row, not a 1-lane vbrc).
@@ -693,7 +723,9 @@ def check_col_expand_candidate() -> None:
         "pto.tcolexpandadd": "pto.vmi.vadd",
         "pto.tcolexpandmul": "pto.vmi.vmul",
         "pto.tcolexpanddiv": "pto.vmi.vdiv",
+        "pto.tcolexpandexpdif": "pto.vmi.vexpdif",
     }
+    expdif_text = ""
     for op_name, expected_op in binops.items():
         # tcolexpanddiv is the only ColExpandBinary op that ExpandTileOp
         # decorates with a `precisionType` context attr (even at default). Real
@@ -711,12 +743,15 @@ def check_col_expand_candidate() -> None:
             provider_module="ptodsl.vmi_tilelib",
             context_attrs=ctx_attrs,
         ).mlir_text()
+        if op_name == "pto.tcolexpandexpdif":
+            expdif_text = text
         expect(text.count("scf.for") == 1, f"{op_name} should emit one runtime row loop")
         expect(expected_op in text, f"{op_name} should lower to {expected_op}")
         expect("pto.vmi.vbrc" not in text, f"{op_name} must reload the VL block, not 1-lane vbrc")
+        source_loads = 2 if op_name == "pto.tcolexpandexpdif" else 1
         expect(
-            text.count("pto.vmi.vload") == 2,
-            f"{op_name} should load one source row plus the broadcast VL block",
+            text.count("pto.vmi.vload") == source_loads + 1,
+            f"{op_name} should load its source rows plus the broadcast block",
         )
         # The broadcast VL block is loop-invariant (col_values is [1, VL]); it
         # must be hoisted out of the row loop so a later mem2reg can forward the
@@ -729,9 +764,50 @@ def check_col_expand_candidate() -> None:
             f"{op_name} should hoist the broadcast vload out of the row loop",
         )
         expect(
-            text[for_pos:].count("pto.vmi.vload") == 1,
-            f"{op_name} should keep only the source-row vload inside the loop",
+            text[for_pos:].count("pto.vmi.vload") == source_loads,
+            f"{op_name} should keep only source-row loads inside the loop",
         )
+
+    for width in (32, 128):
+        width_tile = {
+            **col_tile_spec,
+            "shape": [32, width],
+            "valid_shape": [32, width],
+        }
+        width_reduced = {
+            **width_tile,
+            "shape": [1, width],
+            "valid_shape": [1, width],
+        }
+        text = instantiate_candidate(
+            target="a5",
+            op_name="pto.tcolexpandexpdif",
+            operand_specs=[width_tile, width_reduced, width_tile],
+            provider_module="ptodsl.vmi_tilelib",
+            context_attrs={},
+        ).mlir_text()
+        expect(
+            "!pto.vmi.vreg<{}xf32>".format(width) in text,
+            "expdif should retain the {}-lane logical value".format(width),
+        )
+
+    # Non-paired column broadcasts are valid for a single RoPE row.  The
+    # even-row restriction belongs only to the paired Softmax expdif schedule.
+    one_row = {
+        **col_tile_spec,
+        "shape": [1, 64],
+        "valid_shape": [1, 64],
+    }
+    rope_mul = instantiate_candidate(
+        target="a5",
+        op_name="pto.tcolexpandmul",
+        operand_specs=[one_row, one_row, one_row],
+        provider_module="ptodsl.vmi_tilelib",
+        context_attrs={},
+    ).mlir_text()
+    expect(rope_mul.count("scf.for") == 1, "one-row RoPE mul should lower")
+    expect("pto.vmi.vmul" in rope_mul, "one-row RoPE mul should use VMI")
+    return expdif_text
 
 
 def check_tcvt_bf16_candidate() -> None:
@@ -1141,7 +1217,10 @@ def main() -> None:
     check_vmi_to_vpto_lowering("vmi_tadd_block128", wide_tadd_text, "pto.vadd")
     check_vmi_to_vpto_lowering("vmi_texp_block64", texp_text, "pto.vexp")
     check_col_reduce_candidate()
-    check_col_expand_candidate()
+    expdif_text = check_col_expand_candidate()
+    check_vmi_to_vpto_lowering(
+        "vmi_tcolexpandexpdif", expdif_text, "pto.vexpdif"
+    )
     check_tcvt_bf16_candidate()
     check_texpands_candidate()
     check_trowexpanddiv_candidate()

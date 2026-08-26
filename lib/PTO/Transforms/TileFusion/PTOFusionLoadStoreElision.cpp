@@ -23,6 +23,8 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallPtrSet.h"
 
+#include <functional>
+
 namespace mlir {
 namespace pto {
 #define GEN_PASS_DEF_PTOFUSIONLOADSTOREELISION
@@ -33,6 +35,9 @@ namespace pto {
 using namespace mlir;
 
 namespace {
+
+constexpr StringLiteral kStatePromotionVecScopeBridgeAttr =
+    "pto.vmi.state_promotion.vecscope_bridge";
 
 struct TrackedStore {
   Operation *op = nullptr;
@@ -51,6 +56,8 @@ struct FusionRegionStoreContext {
 };
 
 static bool areEquivalentValues(Value lhs, Value rhs);
+static bool isAddressScaffoldOp(Operation *op);
+static Value getCanonicalBufferAddress(Value value);
 static bool areEquivalentValueRanges(ArrayRef<Value> lhs, ArrayRef<Value> rhs) {
   return lhs.size() == rhs.size() &&
          llvm::all_of(llvm::zip(lhs, rhs), [](auto pair) {
@@ -208,6 +215,75 @@ static bool isPureNoRegionOp(Operation *op) {
   return op->getNumRegions() == 0 && isMemoryEffectFree(op);
 }
 
+static bool isStatePromotionPipeSyncBridge(Operation *op) {
+  return op->hasAttr(kStatePromotionVecScopeBridgeAttr) &&
+         isa<pto::SetFlagOp, pto::WaitFlagOp>(op);
+}
+
+/// Elide a repeated physical full-vector load across only those static pipe
+/// events that the generic VMI state proof marked as UB-transparent.  This is
+/// deliberately delayed until after VMI layout assignment: rearrangement and
+/// arithmetic users may impose different logical layouts even though they
+/// lower to the same physical VLD.  Any store, DMA, untagged synchronization,
+/// call, nested control flow, or unknown effect clears the read frontier.
+static bool elideRedundantLoadsAcrossPromotedPipeSync(func::FuncOp func) {
+  struct TrackedLoad {
+    pto::VldsOp load;
+    Value base;
+    Value offset;
+  };
+
+  SmallVector<Operation *, 8> eraseOrder;
+  std::function<void(Region &)> scanRegion = [&](Region &region) {
+    for (Block &block : region) {
+      SmallVector<TrackedLoad, 8> trackedLoads;
+      for (Operation &op : block.without_terminator()) {
+        if (auto load = dyn_cast<pto::VldsOp>(op)) {
+          if (load->getNumResults() != 1) {
+            trackedLoads.clear();
+            continue;
+          }
+          auto found = llvm::find_if(trackedLoads, [&](TrackedLoad &old) {
+            return old.load.getResult().getType() ==
+                       load.getResult().getType() &&
+                   old.load.getDistAttr() == load.getDistAttr() &&
+                   areEquivalentValues(
+                       getCanonicalBufferAddress(old.base),
+                       getCanonicalBufferAddress(load.getSource())) &&
+                   areEquivalentValues(old.offset, load.getOffset());
+          });
+          if (found != trackedLoads.end()) {
+            load.getResult().replaceAllUsesWith(found->load.getResult());
+            eraseOrder.push_back(load.getOperation());
+          } else {
+            trackedLoads.push_back(
+                TrackedLoad{load, load.getSource(), load.getOffset()});
+          }
+          continue;
+        }
+
+        if (isStatePromotionPipeSyncBridge(&op))
+          continue;
+        if (op.getNumRegions() != 0) {
+          for (Region &nested : op.getRegions())
+            scanRegion(nested);
+          trackedLoads.clear();
+          continue;
+        }
+        if (!isPureNoRegionOp(&op) && !isAddressScaffoldOp(&op) &&
+            !isa<pto::AllocTileOp>(op))
+          trackedLoads.clear();
+      }
+    }
+  };
+
+  scanRegion(func.getBody());
+  for (Operation *op : eraseOrder)
+    if (op && op->getBlock())
+      op->erase();
+  return !eraseOrder.empty();
+}
+
 static bool isSupportedLoopPreludeOp(Operation *op) {
   if (isa<pto::UvldOp>(op))
     return true;
@@ -258,7 +334,7 @@ static bool eraseDeadAddressScaffoldOps(func::FuncOp func) {
 }
 
 static bool isSupportedLeafOp(Operation *op) {
-  if (isa<pto::VldsOp, pto::VstsOp>(op))
+  if (isa<pto::VldsOp, pto::VstsOp, pto::AllocTileOp>(op))
     return true;
   if (isAddressScaffoldOp(op))
     return true;
@@ -515,8 +591,8 @@ buildFusionRegionStoreContext(pto::FusionRegionOp fusionRegion) {
 static bool isSupportedLoopRoot(scf::ForOp loop) {
   if (!loop)
     return false;
-  return isa<pto::FusionRegionOp, pto::VecScopeOp, pto::StrictVecScopeOp>(
-      loop->getParentOp());
+  return isa<pto::FusionRegionOp, pto::VecScopeOp, pto::StrictVecScopeOp,
+             func::FuncOp, scf::ForOp>(loop->getParentOp());
 }
 
 static Block *getLeafLoopBody(scf::ForOp carrierLoop) {
@@ -679,6 +755,36 @@ static bool shouldElideTailStore(
       aliasesAnyAddress(canonicalBase, context.externallyObservedAddresses))
     return false;
 
+  // Different TileLib phases commonly rebuild pointer/address scaffolding for
+  // the same static UB range.  Those equivalent pointers need not share an SSA
+  // use chain with this store's base.  Preserve the store when a later
+  // top-level phase reads or writes an equivalent address; otherwise an
+  // in-place producer such as Softmax expdif can be mistaken for dead even
+  // though the final divide loop reloads the exponent matrix.
+  bool hasLaterEquivalentAccess = false;
+  context.regionOp->walk([&](Operation *op) {
+    if (hasLaterEquivalentAccess || op == store.op)
+      return;
+    Value accessedBase;
+    if (auto load = dyn_cast<pto::VldsOp>(op))
+      accessedBase = load.getSource();
+    else if (auto otherStore = dyn_cast<pto::VstsOp>(op))
+      accessedBase = otherStore.getDestination();
+    else
+      return;
+    if (!areEquivalentValues(getCanonicalBufferAddress(accessedBase),
+                             getCanonicalBufferAddress(canonicalBase)))
+      return;
+    Operation *topLevelUser = getTopLevelAncestorInBlock(op, context.body);
+    if (!topLevelUser || topLevelUser == localScopeOp)
+      return;
+    if (localScopeOp->getBlock() == topLevelUser->getBlock() &&
+        localScopeOp->isBeforeInBlock(topLevelUser))
+      hasLaterEquivalentAccess = true;
+  });
+  if (hasLaterEquivalentAccess)
+    return false;
+
   APInt staticAddress;
   if (!matchPattern(getCanonicalBufferAddress(canonicalBase),
                     m_ConstantInt(&staticAddress)))
@@ -807,7 +913,8 @@ static bool elideLoadStoreRoundTripsInLeafBody(
       continue;
     }
 
-    if (!isPureNoRegionOp(&op) && !isAddressScaffoldOp(&op))
+    if (!isPureNoRegionOp(&op) && !isAddressScaffoldOp(&op) &&
+        !isa<pto::AllocTileOp>(op))
       trackedStores.clear();
   }
 
@@ -933,6 +1040,210 @@ static bool elideLoopInvariantPreheaderRoundTrip(func::FuncOp func) {
   return false;
 }
 
+static bool isSyncOrUnknownCall(Operation *op) {
+  if (!op)
+    return true;
+  StringRef name = op->getName().getStringRef();
+  return name == "pto.mem_bar" || name.contains("sync") ||
+         isa<func::CallOp>(op);
+}
+
+/// Forward a compact column state from one completed vector phase into the
+/// next phase of the same fusion region.  Softmax max/sum are the motivating
+/// cases: a loop returns the final column vreg, the ordinary standalone
+/// candidate materializes it in UB, and the immediately following candidate
+/// reloads exactly the same bytes before entering its own loop.
+///
+/// This deliberately does not look through a region-bearing operation between
+/// the pair.  Consequently it cannot remove the exp matrix materialization:
+/// that store is dynamic inside the exp/sum loop and its reload belongs to the
+/// later divide loop.  Only a unique, static-address, top-level VST/VLD pair
+/// separated by pure address/scalar scaffolding is eligible.
+static bool
+elideAdjacentPhaseStateRoundTrips(func::FuncOp func,
+                                  pto::FusionRegionOp fusionRegion,
+                                  const FusionRegionStoreContext &context) {
+  Block &body = fusionRegion.getBody().front();
+  SmallVector<Operation *, 8> eraseOrder;
+  bool changed = false;
+
+  auto hasUniqueMemoryPair = [&](pto::VstsOp store, pto::VldsOp load) {
+    Value address = getCanonicalBufferAddress(store.getDestination());
+    APInt staticAddress;
+    if (!address || !matchPattern(address, m_ConstantInt(&staticAddress)))
+      return false;
+    if (aliasesYieldedBuffer(store.getDestination(), context.yieldedValues) ||
+        aliasesAnyAddress(store.getDestination(),
+                          context.externallyObservedAddresses))
+      return false;
+
+    bool unique = true;
+    fusionRegion.walk([&](Operation *op) {
+      if (!unique || op == store.getOperation() || op == load.getOperation())
+        return;
+      if (isSyncOrUnknownCall(op)) {
+        unique = false;
+        return;
+      }
+      if (auto otherStore = dyn_cast<pto::VstsOp>(op)) {
+        if (areEquivalentValues(
+                getCanonicalBufferAddress(otherStore.getDestination()),
+                address))
+          unique = false;
+        return;
+      }
+      if (auto otherLoad = dyn_cast<pto::VldsOp>(op)) {
+        if (areEquivalentValues(
+                getCanonicalBufferAddress(otherLoad.getSource()), address))
+          unique = false;
+        return;
+      }
+      if (isa<pto::AllocTileOp>(op) || isAddressScaffoldOp(op) ||
+          isMemoryEffectFree(op))
+        return;
+      for (Value operand : op->getOperands()) {
+        if (areEquivalentValues(getCanonicalBufferAddress(operand), address)) {
+          unique = false;
+          return;
+        }
+      }
+    });
+    return unique;
+  };
+
+  SmallVector<Operation *, 32> topLevelOps;
+  for (Operation &op : body.without_terminator())
+    topLevelOps.push_back(&op);
+
+  for (auto [index, candidate] : llvm::enumerate(topLevelOps)) {
+    auto store = dyn_cast<pto::VstsOp>(candidate);
+    if (!store || llvm::is_contained(eraseOrder, candidate))
+      continue;
+
+    for (Operation *next :
+         ArrayRef<Operation *>(topLevelOps).drop_front(index + 1)) {
+      if (auto load = dyn_cast<pto::VldsOp>(next)) {
+        Value inferredMask = inferVPTOLoadUserMask(load);
+        if (!inferredMask ||
+            !areEquivalentValues(
+                getCanonicalBufferAddress(store.getDestination()),
+                getCanonicalBufferAddress(load.getSource())) ||
+            !areEquivalentValues(store.getOffset(), load.getOffset()) ||
+            !areEquivalentMaskValues(store.getMask(), inferredMask) ||
+            store.getValue().getType() != load.getResult().getType() ||
+            !hasUniqueMemoryPair(store, load))
+          break;
+
+        load.getResult().replaceAllUsesWith(store.getValue());
+        eraseOrder.push_back(load.getOperation());
+        eraseOrder.push_back(store.getOperation());
+        changed = true;
+        break;
+      }
+
+      // Do not cross a vector computation, control-flow phase, memory effect,
+      // sync, or unknown call.  The intended state roundtrip has only pointer
+      // casts, masks, and scalar address arithmetic between VST and VLD.
+      if (next->getNumRegions() != 0 || isSyncOrUnknownCall(next) ||
+          (!isAddressScaffoldOp(next) && !isPureNoRegionOp(next)))
+        break;
+    }
+  }
+
+  for (Operation *op : eraseOrder)
+    if (op && op->getBlock())
+      op->erase();
+  return changed;
+}
+
+static Value getConservativeStaticAddressRoot(Value buffer) {
+  Value address = getCanonicalBufferAddress(buffer);
+  while (auto add =
+             address ? address.getDefiningOp<pto::AddPtrOp>() : pto::AddPtrOp{})
+    address = getCanonicalTrackedValue(add.getPtr());
+  APInt staticAddress;
+  if (!address || !matchPattern(address, m_ConstantInt(&staticAddress)))
+    return {};
+  return address;
+}
+
+/// Remove only post-flatten static UB stores whose value is already consumed
+/// through SSA and whose address has no remaining read or non-vector observer.
+/// This is intentionally narrower than general dead-store elimination: it is
+/// the final cleanup for stores made redundant by proven state forwarding.
+static bool elideUnobservedStaticVectorStores(func::FuncOp func) {
+  bool hasFusionRegion = false;
+  func.walk([&](pto::FusionRegionOp) { hasFusionRegion = true; });
+  if (hasFusionRegion)
+    return false;
+
+  struct StoreGroup {
+    Value root;
+    SmallVector<pto::VstsOp, 4> stores;
+    bool observed = false;
+  };
+  SmallVector<StoreGroup, 4> groups;
+
+  func.walk([&](pto::VstsOp store) {
+    bool hasSSAConsumer =
+        llvm::any_of(store.getValue().getUsers(), [&](Operation *user) {
+          return user != store.getOperation() && !isa<pto::VstsOp>(user);
+        });
+    if (!hasSSAConsumer)
+      return;
+    Value root = getConservativeStaticAddressRoot(store.getDestination());
+    if (!root)
+      return;
+    auto it = llvm::find_if(groups, [&](const StoreGroup &group) {
+      return areEquivalentValues(group.root, root);
+    });
+    if (it == groups.end()) {
+      groups.push_back(StoreGroup{root, {}, false});
+      it = std::prev(groups.end());
+    }
+    it->stores.push_back(store);
+  });
+  if (groups.empty())
+    return false;
+
+  auto operationUsesRoot = [&](Operation *op, Value root) {
+    return llvm::any_of(op->getOperands(), [&](Value operand) {
+      Value operandRoot = getConservativeStaticAddressRoot(operand);
+      return operandRoot && areEquivalentValues(operandRoot, root);
+    });
+  };
+
+  func.walk([&](Operation *op) {
+    if (isa<pto::VstsOp, pto::AllocTileOp>(op) || isAddressScaffoldOp(op) ||
+        isMemoryEffectFree(op))
+      return;
+    for (StoreGroup &group : groups) {
+      if (group.observed)
+        continue;
+      if (auto load = dyn_cast<pto::VldsOp>(op)) {
+        Value root = getConservativeStaticAddressRoot(load.getSource());
+        group.observed = root && areEquivalentValues(root, group.root);
+        continue;
+      }
+      if (operationUsesRoot(op, group.root))
+        group.observed = true;
+    }
+  });
+
+  bool changed = false;
+  for (StoreGroup &group : groups) {
+    if (group.observed)
+      continue;
+    for (pto::VstsOp store : group.stores) {
+      if (store && store->getBlock()) {
+        store.erase();
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
 struct PTOFusionLoadStoreElisionPass
     : public pto::impl::PTOFusionLoadStoreElisionBase<
           PTOFusionLoadStoreElisionPass> {
@@ -945,9 +1256,22 @@ struct PTOFusionLoadStoreElisionPass
       return;
 
     bool changed = false;
+    changed |= elideRedundantLoadsAcrossPromotedPipeSync(func);
     changed |= elideLoopInvariantPreheaderRoundTrip(func);
     func.walk([&](pto::FusionRegionOp fusionRegion) {
       changed |= normalizeFusionRegionYieldFrontier(fusionRegion);
+    });
+
+    // Run before the leaf-body fixed point: phase-state forwarding exposes
+    // dead pointer scaffolding and removes the only UB hazards between the
+    // column reduction phases.
+    func.walk([&](pto::FusionRegionOp fusionRegion) {
+      std::optional<FusionRegionStoreContext> context =
+          buildFusionRegionStoreContext(fusionRegion);
+      if (!context)
+        return;
+      changed |=
+          elideAdjacentPhaseStateRoundTrips(func, fusionRegion, *context);
     });
 
     auto runElisionRound = [&]() {
@@ -977,15 +1301,19 @@ struct PTOFusionLoadStoreElisionPass
 
       auto runElisionForLeafBody = [&](Block *leafBody, Operation *scopeOp,
                                        pto::FusionRegionOp fusionRegion) {
-        if (!leafBody || !fusionRegion)
+        if (!leafBody)
           return;
 
-        auto it = regionContexts.find(fusionRegion.getOperation());
-        if (it == regionContexts.end())
-          return;
+        const FusionRegionStoreContext *context = nullptr;
+        if (fusionRegion) {
+          auto it = regionContexts.find(fusionRegion.getOperation());
+          if (it == regionContexts.end())
+            return;
+          context = &it->second;
+        }
 
         roundChanged |=
-            elideLoadStoreRoundTripsInLeafBody(*leafBody, &it->second, scopeOp);
+            elideLoadStoreRoundTripsInLeafBody(*leafBody, context, scopeOp);
       };
 
       func.walk([&](pto::VecScopeOp vecscope) {
@@ -1026,6 +1354,8 @@ struct PTOFusionLoadStoreElisionPass
       if (!roundChanged && !scaffoldChanged)
         break;
     }
+
+    changed |= elideUnobservedStaticVectorStores(func);
 
     if (!changed)
       markAllAnalysesPreserved();

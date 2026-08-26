@@ -35,6 +35,8 @@ _TEMPLATE_MODULES = {
     ("a5", "pto.tcolmin"): ".a5.tcolmin",
     ("a5", "pto.tcolprod"): ".a5.tcolprod",
     ("a5", "pto.tcolsum"): ".a5.tcolsum",
+    ("a5", "pto.tchannel_split"): ".a5.tchannel_split",
+    ("a5", "pto.tchannel_merge"): ".a5.tchannel_merge",
     ("a5", "pto.tdiv"): ".a5.tdiv",
     ("a5", "pto.tdivs"): ".a5.tdivs",
     ("a5", "pto.tcvt"): ".a5.tcvt",

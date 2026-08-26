@@ -24,6 +24,9 @@ contains one manual `__simd_vf__` scope whose outer loop iterates over rows;
 the converted gamma vector is loop invariant.  The PTO source expresses the
 same graph with whole `64x64` TileOps and no source-level row loop.
 
+The A5 matrix profiles A/B/C/D/DL/AC-U/AC-F in an interleaved order and emits
+a paired generic-D/manual-AC-F comparison for task and vector time.
+
 ## Equivalence matrix
 
 | Stage | AC-U | AC-F | PTO |

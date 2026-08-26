@@ -2966,6 +2966,27 @@ def tconcat(src0, src1, dst):
     )
 
 
+def tchannel_split(src, *dsts):
+    """``pto.tchannel_split ins(src) outs(dst0, ..., dstK)`` for K=2/4."""
+    if len(dsts) not in (2, 4):
+        raise ValueError("tchannel_split requires exactly 2 or 4 destinations")
+    _pto.tchannel_split(
+        unwrap_surface_value(src),
+        [unwrap_surface_value(dst) for dst in dsts],
+    )
+
+
+def tchannel_merge(*operands):
+    """``pto.tchannel_merge ins(src0, ..., srcK) outs(dst)`` for K=2/4."""
+    if len(operands) not in (3, 5):
+        raise ValueError("tchannel_merge requires 2 or 4 sources plus one dst")
+    *srcs, dst = operands
+    _pto.tchannel_merge(
+        [unwrap_surface_value(src) for src in srcs],
+        unwrap_surface_value(dst),
+    )
+
+
 def tmatmul(lhs, rhs, dst):
     """``pto.tmatmul ins(lhs, rhs) outs(dst)``."""
     _pto.TMatmulOp(
@@ -6250,6 +6271,7 @@ __all__ = [
     "make_tensor_view", "partition_view",
     "alloc_buffer", "alloc_tile",
     "tload", "tstore", "tmov", "tinsert", "tconcat",
+    "tchannel_split", "tchannel_merge",
     "tmatmul", "tmatmul_acc", "tmatmul_mx", "tmatmul_mx_acc", "tmatmul_mx_bias",
     "tgemv_mx", "tgemv_mx_acc", "tgemv_mx_bias",
     "tadd", "taddrelu", "tsub", "tmul", "tdiv", "tmax", "tmin",
