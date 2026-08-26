@@ -16,6 +16,11 @@ lane-wise accumulation order. It is independent from the compiler lowering.
 The final A5 acceptance compares the byte-exact BF16 output hash across AC-U,
 AC-F, and PTO A/B/C/D variants.
 
+`a5_harness/run_a5_matrix.sh` provides the compiler-migration gate for PTO
+A/B/C/generic-D/legacy-D. It validates every object byte-exactly before ten
+interleaved profiles, then applies the paired task/vector 1.03 no-regression
+gate to generic D over legacy D.
+
 Alignment checklist:
 
 | Property | AC-U | AC-F | PTO fixture |

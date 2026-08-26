@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Independent BF16 RMSNorm golden with the accepted 64-lane association."""
 
+import argparse
 import hashlib
+from pathlib import Path
 import numpy as np
 
 ROWS = 8
@@ -50,8 +52,18 @@ def rmsnorm_lane_accum(x_bits, gamma_bits):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--write-dir")
+    args = parser.parse_args()
     x_bits, gamma_bits = fixed_inputs()
     output = rmsnorm_lane_accum(x_bits, gamma_bits)
+    if args.write_dir:
+        output_dir = Path(args.write_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        x_bits.tofile(output_dir / "x.bin")
+        gamma_bits.tofile(output_dir / "gamma.bin")
+        np.zeros_like(output).tofile(output_dir / "y.init.bin")
+        output.tofile(output_dir / "golden.bin")
     print("x_sha256=" + hashlib.sha256(x_bits.tobytes()).hexdigest())
     print("gamma_sha256=" + hashlib.sha256(gamma_bits.tobytes()).hexdigest())
     print("output_sha256=" + hashlib.sha256(output.tobytes()).hexdigest())
