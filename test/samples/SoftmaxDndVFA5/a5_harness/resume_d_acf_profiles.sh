@@ -15,6 +15,8 @@ device=${ACL_DEVICE_ID:-1}
 cann_root=${ASCEND_HOME_PATH:-/data/s00454010/Ascend/cann-9.2.0}
 msprof=${MSPROF:-$cann_root/tools/profiler/bin/msprof}
 dataset=${PROFILE_DATASET:-finite-sensitive}
+profile_attempts=${PROFILE_ATTEMPTS:-3}
+profile_cooldown_seconds=${PROFILE_COOLDOWN_SECONDS:-15}
 harness="$source_root/test/samples/SoftmaxDndVFA5/a5_harness"
 samples="$experiment_dir/results/samples.tsv"
 
@@ -63,18 +65,35 @@ run_profile() {
   local width=$1 variant=$2 repeat=$3
   local fixture="$experiment_dir/inputs/fixture/n${width}/${dataset}"
   local binary="$experiment_dir/work/build/n${width}/${variant}"
-  local run_dir profile log_base digest metrics
-  run_dir=$(next_unique_path \
-    "$experiment_dir/work/runs/n${width}-${variant}-pair-resume-${repeat}")
-  profile=$(next_unique_path \
-    "$experiment_dir/artifacts/profiles-pair/n${width}/${variant}/profile-${repeat}")
-  log_base="$experiment_dir/logs/n${width}-${variant}-pair-resume-${repeat}"
-  mkdir -p "$run_dir" "$profile"
-  cp "$fixture/x.bin" "$run_dir/x.bin"
-  cp "$fixture/y.init.bin" "$run_dir/y.bin"
-  (cd "$run_dir" && timeout 300 "$msprof" \
-    --output="$profile" --application="$binary") \
-    >"${log_base}.stdout" 2>"${log_base}.stderr"
+  local run_dir profile log_base digest metrics rc attempt
+  for ((attempt = 1; attempt <= profile_attempts; ++attempt)); do
+    run_dir=$(next_unique_path \
+      "$experiment_dir/work/runs/n${width}-${variant}-pair-resume-${repeat}")
+    profile=$(next_unique_path \
+      "$experiment_dir/artifacts/profiles-pair/n${width}/${variant}/profile-${repeat}")
+    log_base="$experiment_dir/logs/n${width}-${variant}-pair-resume-${repeat}"
+    if ((attempt > 1)); then
+      log_base="${log_base}-attempt-${attempt}"
+    fi
+    mkdir -p "$run_dir" "$profile"
+    cp "$fixture/x.bin" "$run_dir/x.bin"
+    cp "$fixture/y.init.bin" "$run_dir/y.bin"
+    set +e
+    (cd "$run_dir" && timeout 300 "$msprof" \
+      --output="$profile" --application="$binary") \
+      >"${log_base}.stdout" 2>"${log_base}.stderr"
+    rc=$?
+    set -e
+    if ((rc == 0)); then
+      break
+    fi
+    printf 'profile failed: width=%s variant=%s repeat=%s attempt=%s rc=%s\n' \
+      "$width" "$variant" "$repeat" "$attempt" "$rc" >&2
+    if ((attempt == profile_attempts)); then
+      return "$rc"
+    fi
+    sleep "$profile_cooldown_seconds"
+  done
   /usr/bin/python3 "$harness/compare_output.py" \
     --actual "$run_dir/y.bin" --golden "$fixture/golden.bin" \
     --dataset "$dataset" --width "$width" >/dev/null
@@ -83,6 +102,7 @@ run_profile() {
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$width" "$variant" "$repeat" "$metrics" "$digest" "$profile" \
     >>"$samples"
+  sleep "$profile_cooldown_seconds"
 }
 
 for width in $widths_list; do
@@ -119,4 +139,3 @@ done
   --candidate D --baseline ACF \
   --output "$experiment_dir/results/d-vs-acf-paired-${profile_repeats}.json" \
   >"$experiment_dir/results/d-vs-acf-paired-${profile_repeats}.stdout"
-
