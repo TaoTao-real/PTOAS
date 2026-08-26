@@ -84,4 +84,3 @@ UB 中间状态。它证明了“跨 phase 保持 vreg”可以显著减少 VLD/
 - A5 在相同对象、输入和空闲设备上做 paired profile；task/vector median ratio
   与 bootstrap 95% upper bound 均不得超过 1.03。未完成硬件门禁前不得把默认
   从 `legacy` 切换为 `generic`。
-

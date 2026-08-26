@@ -32,4 +32,3 @@ module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
     return
   }
 }
-
