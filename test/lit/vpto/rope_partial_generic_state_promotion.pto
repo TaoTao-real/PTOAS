@@ -3,8 +3,12 @@
 
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --vmi-state-promotion-mode=generic --emit-vpto %S/../../samples/RopePartialVFA5/rope_partial_half_tile.pto -o - | FileCheck %s --check-prefix=HALF
 // RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --vmi-state-promotion-mode=generic --emit-vpto %S/../../samples/RopePartialVFA5/rope_partial_interleave_tile.pto -o - | FileCheck %s --check-prefix=INTERLEAVE
-// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --vmi-state-promotion-mode=generic --enable-insert-sync --emit-vpto %S/../../samples/RopePartialVFA5/rope_partial_half_tile.pto -o - | FileCheck %s --check-prefix=HALF
-// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --vmi-state-promotion-mode=generic --enable-insert-sync --emit-vpto %S/../../samples/RopePartialVFA5/rope_partial_interleave_tile.pto -o - | FileCheck %s --check-prefix=INTERLEAVE
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --vmi-state-promotion-mode=generic --enable-insert-sync --emit-vpto %S/../../samples/RopePartialVFA5/rope_partial_half_tile.pto -o %t.half-sync
+// RUN: FileCheck %s --check-prefix=HALF < %t.half-sync
+// RUN: %python_executable %S/Inputs/check_no_sync_in_vecscope.py %t.half-sync
+// RUN: env MLIR_PYTHON_ROOT=%mlir_python_root ptoas --pto-arch=a5 --pto-backend=vpto --pto-level=level3 --ptodsl-python-exe=%python_executable --tilelib-candidate-policy=prefer-vmi --vmi-fusion-mode=full --vmi-state-promotion-mode=generic --enable-insert-sync --emit-vpto %S/../../samples/RopePartialVFA5/rope_partial_interleave_tile.pto -o %t.interleave-sync
+// RUN: FileCheck %s --check-prefix=INTERLEAVE < %t.interleave-sync
+// RUN: %python_executable %S/Inputs/check_no_sync_in_vecscope.py %t.interleave-sync
 // RUN: %python_executable %S/../../samples/RopePartialVFA5/rope_partial_golden.py | FileCheck %s --check-prefix=GOLDEN
 
 // HALF-LABEL: func.func @rope_partial_half_n8

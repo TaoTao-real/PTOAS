@@ -37,7 +37,8 @@ namespace {
 
 enum class VPTOInferenceOpClass {
   Vector,
-  Ordered,
+  HoistBefore,
+  SinkAfter,
   SafeScalar,
   Boundary,
 };
@@ -60,6 +61,7 @@ struct EscapingMovedValue {
 struct ResultlessScopePlan {
   SmallVector<Operation *, 16> hoistOps;
   SmallVector<Operation *, 16> moveOps;
+  SmallVector<Operation *, 8> sinkOps;
 };
 
 static VPTOInferenceOpClass classifyOperationForInference(Operation *op);
@@ -107,8 +109,7 @@ static bool isVectorScopeBoundaryOperation(Operation *op) {
 }
 
 static bool isStatePromotionVecScopeBridge(Operation *op) {
-  return op->hasAttr(kStatePromotionVecScopeBridgeAttr) &&
-         isa<pto::SetFlagOp, pto::WaitFlagOp>(op);
+  return op->hasAttr(kStatePromotionVecScopeBridgeAttr);
 }
 
 static bool isPureAddressOperation(Operation *op) {
@@ -166,7 +167,8 @@ summarizeNestedRegionForAtomicCluster(Region &region,
       case VPTOInferenceOpClass::Vector:
         summary.hasVectorOperation = true;
         break;
-      case VPTOInferenceOpClass::Ordered:
+      case VPTOInferenceOpClass::HoistBefore:
+      case VPTOInferenceOpClass::SinkAfter:
       case VPTOInferenceOpClass::SafeScalar:
         break;
       case VPTOInferenceOpClass::Boundary:
@@ -206,12 +208,17 @@ static VPTOInferenceOpClass classifyOperationForInference(Operation *op) {
     return VPTOInferenceOpClass::Boundary;
 
   // A state-promotion proof may forward a VMI value across a static pipe
-  // event that orders unrelated DMA work.  Keep that event in the inferred
-  // vector interval so the resultless vecscope neither reorders the event nor
-  // forces the proven value back through UB.  Untagged synchronization and
-  // all barriers remain hard inference boundaries.
-  if (isStatePromotionVecScopeBridge(op))
-    return VPTOInferenceOpClass::Ordered;
+  // event that orders unrelated DMA work.  Bisheng requires those events to
+  // remain outside the vector-scope carrier, so conservatively advance a
+  // proven MTE->V wait before the interval and delay a proven V->MTE set until
+  // after it.  Untagged synchronization and all barriers remain hard
+  // inference boundaries.
+  if (isStatePromotionVecScopeBridge(op)) {
+    if (isa<pto::WaitFlagOp>(op))
+      return VPTOInferenceOpClass::HoistBefore;
+    if (isa<pto::SetFlagOp>(op))
+      return VPTOInferenceOpClass::SinkAfter;
+  }
 
   if (requiresVectorScope(op))
     return VPTOInferenceOpClass::Vector;
@@ -253,9 +260,7 @@ static llvm::SmallPtrSet<Operation *, 16>
 computeMovedOpsForResultlessScope(ArrayRef<Operation *> ops) {
   llvm::SmallPtrSet<Operation *, 16> movedOps;
   for (Operation *op : ops) {
-    VPTOInferenceOpClass opClass = classifyOperationForInference(op);
-    if (opClass == VPTOInferenceOpClass::Vector ||
-        opClass == VPTOInferenceOpClass::Ordered)
+    if (classifyOperationForInference(op) == VPTOInferenceOpClass::Vector)
       movedOps.insert(op);
   }
 
@@ -486,11 +491,15 @@ buildResultlessScopePlan(ArrayRef<Operation *> ops, ResultlessScopePlan &plan,
 
   plan.hoistOps.clear();
   plan.moveOps.clear();
+  plan.sinkOps.clear();
   for (Operation *op : ops) {
-    if (hoistedOps.contains(op))
+    VPTOInferenceOpClass opClass = classifyOperationForInference(op);
+    if (hoistedOps.contains(op) || opClass == VPTOInferenceOpClass::HoistBefore)
       plan.hoistOps.push_back(op);
     if (movedOps.contains(op))
       plan.moveOps.push_back(op);
+    if (opClass == VPTOInferenceOpClass::SinkAfter)
+      plan.sinkOps.push_back(op);
   }
   return success();
 }
@@ -516,6 +525,12 @@ static void wrapCluster(const ResultlessScopePlan &plan, MLIRContext *context) {
   for (Operation *op : plan.moveOps) {
     scopeBody.getOperations().splice(
         scopeBody.end(), parentBlock->getOperations(), Block::iterator(op));
+  }
+
+  Operation *sinkAnchor = scope;
+  for (Operation *op : plan.sinkOps) {
+    op->moveAfter(sinkAnchor);
+    sinkAnchor = op;
   }
 }
 
@@ -589,7 +604,8 @@ static LogicalResult inferVecScopesInBlock(Block &block, MLIRContext *context) {
   for (Operation *op : ops) {
     switch (classifyOperationForInference(op)) {
     case VPTOInferenceOpClass::Vector:
-    case VPTOInferenceOpClass::Ordered:
+    case VPTOInferenceOpClass::HoistBefore:
+    case VPTOInferenceOpClass::SinkAfter:
     case VPTOInferenceOpClass::SafeScalar:
       pending.push_back(op);
       continue;

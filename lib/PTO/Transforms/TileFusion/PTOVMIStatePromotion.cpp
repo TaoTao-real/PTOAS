@@ -447,8 +447,11 @@ static bool isSyncOrCall(Operation *op) {
 // calls, and unknown effects still terminate the reaching-state scan below.
 // Observable stores are retained independently by the dead-store proof.
 static bool isKnownPipeSync(Operation *op) {
-  StringRef name = op->getName().getStringRef();
-  return name == "pto.set_flag" || name == "pto.wait_flag";
+  if (auto wait = dyn_cast<pto::WaitFlagOp>(op))
+    return wait.getDstPipe().getPipe() == pto::PIPE::PIPE_V;
+  if (auto set = dyn_cast<pto::SetFlagOp>(op))
+    return set.getSrcPipe().getPipe() == pto::PIPE::PIPE_V;
+  return false;
 }
 
 static bool hasUnsafeEffect(Operation *scope) {
