@@ -732,156 +732,141 @@ static void printSyncEventOpCommon(OpAsmPrinter &p, Operation *op,
     p << eventAttr.getInt();
   } else {
     p << eventDyn;
-}
+  }
   p.printOptionalAttrDict(op->getAttrs(), {pipeAttrName, eventIdAttrName});
 }
 
-[[maybe_unused]] static mlir::Type parsePTOTypeAllowNoBang(mlir::OpAsmParser &parser) {
-  mlir::Type ty;
-
-  mlir::OptionalParseResult opt = parser.parseOptionalType(ty);
-
-  if (opt.has_value()) {
-    if (failed(*opt)) {
-      return mlir::Type();
-    }
-    return ty;
-  }
-
-
-  llvm::StringRef head;
-  if (failed(parser.parseKeyword(&head))) {
-    return mlir::Type();
-  }
-
-  mlir::MLIRContext *ctx = parser.getContext();
-
-  auto parseShapeElemForOpParser =
-      [&](llvm::SmallVectorImpl<int64_t> &shape, mlir::Type &elem) -> mlir::LogicalResult {
-    if (failed(parser.parseLess())) {
-      return failure();
-    }
-    if (failed(parser.parseDimensionList(shape, /*allowDynamic=*/true))) {
-      return failure();
-    }
-    if (failed(parser.parseType(elem))) {
-      return failure();
-    }
-    if (failed(parser.parseGreater())) {
-      return failure();
+static LogicalResult parsePTOShapeAndElement(OpAsmParser& parser, SmallVectorImpl<int64_t>& shape, Type& elementType)
+{
+    if (parser.parseLess() || parser.parseDimensionList(shape, /*allowDynamic=*/true) ||
+        parser.parseType(elementType) || parser.parseGreater()) {
+        return failure();
     }
     return success();
-  };
+}
 
-  if (head == "pto.tile_view") {
-    llvm::SmallVector<int64_t, 4> shape;
-    mlir::Type elem;
-    if (failed(parseShapeElemForOpParser(shape, elem))) {
-      return mlir::Type();
+static Type parseShapedPTOType(OpAsmParser& parser, StringRef head)
+{
+    SmallVector<int64_t, 4> shape;
+    Type elementType;
+    if (failed(parsePTOShapeAndElement(parser, shape, elementType))) {
+        return {};
     }
-    return mlir::pto::PartitionTensorViewType::get(ctx, shape, elem);
-  }
+    MLIRContext* context = parser.getContext();
+    if (head == "pto.tile_view") {
+        return PartitionTensorViewType::get(context, shape, elementType);
+    }
+    if (head == "pto.tile") {
+        return TileType::get(context, shape, elementType);
+    }
+    return TensorViewType::get(context, shape, elementType);
+}
 
-  if (head == "pto.tile") {
-    llvm::SmallVector<int64_t, 4> shape;
-    mlir::Type elem;
-    if (failed(parseShapeElemForOpParser(shape, elem))) {
-      return mlir::Type();
+static Type parsePtrPTOType(OpAsmParser& parser)
+{
+    Type elementType;
+    if (parser.parseLess() || parser.parseType(elementType)) {
+        return {};
     }
-    return mlir::pto::TileType::get(ctx, shape, elem);
-  }
-
-  if (head == "pto.ptr") {
-    if (failed(parser.parseLess())) {
-      return mlir::Type();
-    }
-    mlir::Type elem;
-    if (failed(parser.parseType(elem))) {
-      return mlir::Type();
-    }
-    auto memorySpace = pto::AddressSpaceAttr::get(ctx, pto::AddressSpace::GM);
+    MLIRContext* context = parser.getContext();
+    auto memorySpace = AddressSpaceAttr::get(context, AddressSpace::GM);
     if (succeeded(parser.parseOptionalComma())) {
-      StringRef memorySpaceKeyword;
-      if (failed(parser.parseKeyword(&memorySpaceKeyword))) {
-        return mlir::Type();
-      }
-      auto parsed = parsePtrAddressSpaceKeyword(memorySpaceKeyword);
-      if (!parsed) {
-        parser.emitError(parser.getCurrentLocation(),
-                         "!pto.ptr address space must be one of "
-                         "`gm|ub|mat|l1|left|l0a|right|l0b|acc|l0c|vec|bias|bt|scaling|fb`");
-        return mlir::Type();
-      }
-      memorySpace = pto::AddressSpaceAttr::get(ctx, *parsed);
+        StringRef keyword;
+        if (parser.parseKeyword(&keyword)) {
+            return {};
+        }
+        auto parsed = parsePtrAddressSpaceKeyword(keyword);
+        if (!parsed) {
+            parser.emitError(
+                parser.getCurrentLocation(), "!pto.ptr address space must be one of "
+                                             "`gm|ub|mat|l1|left|l0a|right|l0b|acc|l0c|vec|bias|bt|scaling|fb`");
+            return {};
+        }
+        memorySpace = AddressSpaceAttr::get(context, *parsed);
     }
+    if (parser.parseGreater()) {
+        return {};
+    }
+    return PtrType::get(context, elementType, memorySpace);
+}
+
+static Type parseKnownPTOType(OpAsmParser& parser, StringRef head)
+{
+    if (head == "pto.ptr") {
+        return parsePtrPTOType(parser);
+    }
+    if (head == "pto.tile_view" || head == "pto.tile" || head == "pto.tensor_view") {
+        return parseShapedPTOType(parser, head);
+    }
+    return {};
+}
+
+[[maybe_unused]] static Type parsePTOTypeAllowNoBang(OpAsmParser& parser)
+{
+    Type type;
+    OptionalParseResult optionalType = parser.parseOptionalType(type);
+    if (optionalType.has_value()) {
+        return failed(*optionalType) ? Type() : type;
+    }
+    StringRef head;
+    if (parser.parseKeyword(&head)) {
+        return {};
+    }
+    return parseKnownPTOType(parser, head);
+}
+
+mlir::Type TensorViewType::parse(::mlir::AsmParser& parser)
+{
+    SmallVector<int64_t, 4> shape;
+    Type elementType;
+    if (failed(parseShapeAndElem(parser, shape, elementType, /*allowDynamic=*/true))) {
+        return Type();
+    }
+    return TensorViewType::get(parser.getContext(), shape, elementType);
+}
+
+void TensorViewType::print(::mlir::AsmPrinter& printer) const
+{
+    printShapeAndElem(printer, getShape(), getElementType());
+}
+
+mlir::Type PtrType::parse(::mlir::AsmParser& parser)
+{
+    Type elementType;
+    if (failed(parser.parseLess()) || failed(parser.parseType(elementType))) {
+        return {};
+    }
+
+    auto memorySpace = pto::AddressSpaceAttr::get(parser.getContext(), pto::AddressSpace::GM);
+    if (succeeded(parser.parseOptionalComma())) {
+        StringRef memorySpaceKeyword;
+        if (failed(parser.parseKeyword(&memorySpaceKeyword))) {
+            return {};
+        }
+        auto parsed = parsePtrAddressSpaceKeyword(memorySpaceKeyword);
+        if (!parsed) {
+            parser.emitError(
+                parser.getCurrentLocation(), "!pto.ptr address space must be one of "
+                                             "`gm|ub|mat|l1|left|l0a|right|l0b|acc|l0c|vec|bias|bt|scaling|fb`");
+            return {};
+        }
+        memorySpace = pto::AddressSpaceAttr::get(parser.getContext(), *parsed);
+    }
+
     if (failed(parser.parseGreater())) {
-      return mlir::Type();
+        return {};
     }
-    return mlir::pto::PtrType::get(ctx, elem, memorySpace);
-  }
-
-  if (head == "pto.tensor_view") {
-    llvm::SmallVector<int64_t, 4> shape;
-    mlir::Type elem;
-    if (failed(parseShapeElemForOpParser(shape, elem))) {
-      return mlir::Type();
-    }
-    return mlir::pto::TensorViewType::get(ctx, shape, elem);
-  }
-
-  return mlir::Type();
+    return PtrType::get(parser.getContext(), elementType, memorySpace);
 }
 
-mlir::Type TensorViewType::parse(::mlir::AsmParser &parser) {
-  SmallVector<int64_t, 4> shape;
-  Type elementType;
-  if (failed(parseShapeAndElem(parser, shape, elementType, /*allowDynamic=*/true))) {
-    return Type();
-  }
-  return TensorViewType::get(parser.getContext(), shape, elementType);
-}
-
-void TensorViewType::print(::mlir::AsmPrinter &printer) const {
-  printShapeAndElem(printer, getShape(), getElementType());
-}
-
-mlir::Type PtrType::parse(::mlir::AsmParser &parser) {
-  Type elementType;
-  if (failed(parser.parseLess()) || failed(parser.parseType(elementType))) {
-    return {};
-  }
-
-  auto memorySpace =
-      pto::AddressSpaceAttr::get(parser.getContext(), pto::AddressSpace::GM);
-  if (succeeded(parser.parseOptionalComma())) {
-    StringRef memorySpaceKeyword;
-    if (failed(parser.parseKeyword(&memorySpaceKeyword))) {
-      return {};
+void PtrType::print(::mlir::AsmPrinter& printer) const
+{
+    printer << "<" << getElementType();
+    StringRef memorySpaceKeyword = printPtrAddressSpaceKeyword(getMemorySpace().getAddressSpace());
+    if (!memorySpaceKeyword.empty()) {
+        printer << ", " << memorySpaceKeyword;
     }
-    auto parsed = parsePtrAddressSpaceKeyword(memorySpaceKeyword);
-    if (!parsed) {
-      parser.emitError(parser.getCurrentLocation(),
-                       "!pto.ptr address space must be one of "
-                       "`gm|ub|mat|l1|left|l0a|right|l0b|acc|l0c|vec|bias|bt|scaling|fb`");
-      return {};
-    }
-    memorySpace = pto::AddressSpaceAttr::get(parser.getContext(), *parsed);
-  }
-
-  if (failed(parser.parseGreater())) {
-    return {};
-  }
-  return PtrType::get(parser.getContext(), elementType, memorySpace);
-}
-
-void PtrType::print(::mlir::AsmPrinter &printer) const {
-  printer << "<" << getElementType();
-  StringRef memorySpaceKeyword =
-      printPtrAddressSpaceKeyword(getMemorySpace().getAddressSpace());
-  if (!memorySpaceKeyword.empty()) {
-    printer << ", " << memorySpaceKeyword;
-  }
-  printer << ">";
+    printer << ">";
 }
 
 //===----------------------------------------------------------------------===//
@@ -891,64 +876,75 @@ void PtrType::print(::mlir::AsmPrinter &printer) const {
 // The operand order in the op follows textual input order.
 //===----------------------------------------------------------------------===//
 
-ParseResult mlir::pto::TDivSOp::parse(OpAsmParser &parser, OperationState &result) {
-  OpAsmParser::UnresolvedOperand op0, op1, dst;
-  Type ty0, ty1, dstTy;
-
-  if (parser.parseKeyword("ins") || parser.parseLParen() ||
-      parser.parseOperand(op0) || parser.parseComma() ||
-      parser.parseOperand(op1) || parser.parseColonType(ty0) ||
-      parser.parseComma() || parser.parseType(ty1) || parser.parseRParen()) {
-    return failure();
-  }
-
-  if (parser.parseKeyword("outs") || parser.parseLParen() ||
-      parser.parseOperand(dst) || parser.parseColonType(dstTy) ||
-      parser.parseRParen()) {
-    return failure();
-  }
-
-  NamedAttrList attrs;
-  if (parser.parseOptionalAttrDict(attrs)) {
-    return failure();
-  }
-
-  auto tile0 = dyn_cast<mlir::pto::TileBufType>(ty0);
-  auto tile1 = dyn_cast<mlir::pto::TileBufType>(ty1);
-  if ((tile0 && tile1) || (!tile0 && !tile1)) {
-    return parser.emitError(parser.getCurrentLocation(),
-                            "expected exactly one tile_buf operand and one scalar operand");
-  }
-
-  if (!dyn_cast<mlir::pto::TileBufType>(dstTy)) {
-    return parser.emitError(parser.getCurrentLocation(),
-                            "expected outs type to be !pto.tile_buf<...>");
-  }
-
-  // Keep textual order so later lowering can distinguish the two APIs by the
-  // first ins operand type.
-  if (parser.resolveOperand(op0, ty0, result.operands) ||
-      parser.resolveOperand(op1, ty1, result.operands)) {
-    return failure();
-  }
-
-  if (parser.resolveOperand(dst, dstTy, result.operands)) {
-    return failure();
-  }
-
-  result.addAttributes(attrs);
-  return success();
+static ParseResult parseTDivSOperands(
+    OpAsmParser& parser, OpAsmParser::UnresolvedOperand& op0, OpAsmParser::UnresolvedOperand& op1, Type& ty0, Type& ty1)
+{
+    if (parser.parseKeyword("ins") || parser.parseLParen() || parser.parseOperand(op0) || parser.parseComma() ||
+        parser.parseOperand(op1) || parser.parseColonType(ty0) || parser.parseComma() || parser.parseType(ty1) ||
+        parser.parseRParen()) {
+        return failure();
+    }
+    return success();
 }
 
-void mlir::pto::TDivSOp::print(OpAsmPrinter &p) {
-  p << " ins(";
-  p << getSrc() << ", " << getScalar() << " : "
-    << getSrc().getType() << ", " << getScalar().getType();
-  p << ") outs(" << getDst() << " : " << getDst().getType() << ")";
-
-  p.printOptionalAttrDict((*this)->getAttrs());
+static ParseResult parseTDivSResult(OpAsmParser& parser, OpAsmParser::UnresolvedOperand& dst, Type& dstType)
+{
+    if (parser.parseKeyword("outs") || parser.parseLParen() || parser.parseOperand(dst) ||
+        parser.parseColonType(dstType) || parser.parseRParen()) {
+        return failure();
+    }
+    return success();
 }
 
+static ParseResult validateTDivSTypes(OpAsmParser& parser, Type ty0, Type ty1, Type dstType)
+{
+    auto tile0 = dyn_cast<mlir::pto::TileBufType>(ty0);
+    auto tile1 = dyn_cast<mlir::pto::TileBufType>(ty1);
+    if ((tile0 && tile1) || (!tile0 && !tile1)) {
+        return parser.emitError(
+            parser.getCurrentLocation(), "expected exactly one tile_buf operand and one scalar operand");
+    }
+
+    if (!dyn_cast<mlir::pto::TileBufType>(dstType)) {
+        return parser.emitError(parser.getCurrentLocation(), "expected outs type to be !pto.tile_buf<...>");
+    }
+    return success();
+}
+
+static ParseResult resolveTDivSOperands(
+    OpAsmParser& parser, OperationState& result, OpAsmParser::UnresolvedOperand op0, OpAsmParser::UnresolvedOperand op1,
+    OpAsmParser::UnresolvedOperand dst, Type ty0, Type ty1, Type dstType)
+{
+    if (parser.resolveOperand(op0, ty0, result.operands) || parser.resolveOperand(op1, ty1, result.operands) ||
+        parser.resolveOperand(dst, dstType, result.operands)) {
+        return failure();
+    }
+    return success();
+}
+
+ParseResult mlir::pto::TDivSOp::parse(OpAsmParser& parser, OperationState& result)
+{
+    OpAsmParser::UnresolvedOperand op0, op1, dst;
+    Type ty0, ty1, dstType;
+    NamedAttrList attrs;
+    if (parseTDivSOperands(parser, op0, op1, ty0, ty1) || parseTDivSResult(parser, dst, dstType) ||
+        parser.parseOptionalAttrDict(attrs) || validateTDivSTypes(parser, ty0, ty1, dstType) ||
+        resolveTDivSOperands(parser, result, op0, op1, dst, ty0, ty1, dstType)) {
+        return failure();
+    }
+
+    result.addAttributes(attrs);
+    return success();
+}
+
+void mlir::pto::TDivSOp::print(OpAsmPrinter& p)
+{
+    p << " ins(";
+    p << getSrc() << ", " << getScalar() << " : " << getSrc().getType() << ", " << getScalar().getType();
+    p << ") outs(" << getDst() << " : " << getDst().getType() << ")";
+
+    p.printOptionalAttrDict((*this)->getAttrs());
+}
 
 //===----------------------------------------------------------------------===//
 // pto.tgather custom asm supports three PTO-ISA forms:
