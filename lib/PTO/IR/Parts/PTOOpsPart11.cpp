@@ -9,6 +9,666 @@
 // This implementation fragment is included by PTO.cpp and intentionally is
 // not listed as a separate CMake translation unit.
 
+LogicalResult StructType::verify(
+    llvm::function_ref<InFlightDiagnostic()> emitError,
+    llvm::ArrayRef<Type> fieldTypes) {
+  if (fieldTypes.empty()) {
+    return emitError() << "'!pto.struct' requires at least one field";
+  }
+  for (auto [i, f] : llvm::enumerate(fieldTypes)) {
+    if (!isStructStorable(f)) {
+      return emitError()
+             << "'!pto.struct' field " << i << " type " << f
+             << " is not scalar-storable; only i8/i16/i32/i64 (signed, "
+                "unsigned or signless), f16/bf16/f32/f64, or a nested "
+                "!pto.struct are allowed (!pto.local_array cannot be a field "
+                "because emitc.member cannot yield an array lvalue; tile_buf / "
+                "tensor_view belong to the vec/cube world)";
+    }
+  }
+  return success();
+}
+
+// =============================================================================
+// Decompose Helper (Reverse Engineering AffineMap -> Strides)
+// =============================================================================
+
+// Helper: 递归地将 Add 表达式拆解为单独的项列表
+static void flattenAddExpr(AffineExpr expr, SmallVectorImpl<AffineExpr> &terms) {
+  if (auto add = llvm::dyn_cast<AffineBinaryOpExpr>(expr)) {
+    if (add.getKind() == AffineExprKind::Add) {
+      flattenAddExpr(add.getLHS(), terms);
+      flattenAddExpr(add.getRHS(), terms);
+      return;
+    }
+  }
+  terms.push_back(expr);
+}
+
+// Helper: 从 AffineMap 中提取 Strides
+static void decomposeStridedLayout(AffineMap map, SmallVectorImpl<int64_t> &strides) {
+  // 1. 初始化
+  strides.assign(map.getNumDims(), 0);
+
+  if (map.getNumResults() != 1) {
+    return;
+  }
+
+  // 2. 摊平表达式
+  SmallVector<AffineExpr, 4> terms;
+  flattenAddExpr(map.getResult(0), terms);
+
+  // 3. 分析每一项
+  for (auto term : terms) {
+    // 情况 A: dN * Const 或 Const * dN
+    if (auto mul = llvm::dyn_cast<AffineBinaryOpExpr>(term)) {
+      if (mul.getKind() == AffineExprKind::Mul) {
+        AffineExpr lhs = mul.getLHS();
+        AffineExpr rhs = mul.getRHS();
+
+        // 尝试匹配 LHS=Dim, RHS=Const
+        if (auto dim = llvm::dyn_cast<AffineDimExpr>(lhs)) {
+          if (auto cst = llvm::dyn_cast<AffineConstantExpr>(rhs)) {
+            strides[dim.getPosition()] = cst.getValue();
+            continue;
+          }
+        }
+
+        // 尝试匹配 LHS=Const, RHS=Dim (乘法交换律)
+        if (auto dim = llvm::dyn_cast<AffineDimExpr>(rhs)) {
+          if (auto cst = llvm::dyn_cast<AffineConstantExpr>(lhs)) {
+            strides[dim.getPosition()] = cst.getValue();
+            continue;
+          }
+        }
+      }
+    }
+    // 情况 B: 单独的 dN (隐含 Stride = 1)
+    else if (auto dim = llvm::dyn_cast<AffineDimExpr>(term)) {
+      strides[dim.getPosition()] = 1;
+    }
+  }
+}
+
+// =============================================================================
+// [Critical] Strict Alignment Protocol Helper
+// =============================================================================
+// This function is the SINGLE source of truth for building the AffineMap.
+// Both the Parser and the Op Inference MUST use this exact function.
+// It ensures that the order of AffineExpr addition is:
+//   0 + (d0*str0 + d1*str1...) + (s0*str0 + s1*str1...)
+// This guarantees bitwise-identical AffineMaps for verification.
+static AffineMap buildStrictBitwiseAffineMap(MLIRContext *ctx,
+                                             ArrayRef<int64_t> strides,
+                                             bool isMultiDimSymbol) {
+  unsigned rank = strides.size();
+
+  // Step 1: Initialize with Constant(0)
+  AffineExpr totalExpr = getAffineConstantExpr(0, ctx);
+
+  // Step 2: Add Dimensions (d0*str0 + d1*str1...)
+  // Strictly in order: 0, 1, 2...
+  for (unsigned i = 0; i < rank; ++i) {
+    auto dim = getAffineDimExpr(i, ctx);
+    auto str = getAffineConstantExpr(strides[i], ctx);
+    totalExpr = totalExpr + (dim * str);
+  }
+
+  // Step 3: Add Symbols (s0*str0 + s1*str1...)
+  // Strictly in order: 0, 1, 2...
+  if (isMultiDimSymbol) {
+    for (unsigned i = 0; i < rank; ++i) {
+      auto sym = getAffineSymbolExpr(i, ctx);
+      auto str = getAffineConstantExpr(strides[i], ctx);
+      totalExpr = totalExpr + (sym * str);
+    }
+  }
+  // (Optional: handle single dynamic offset case if needed, omitted for clarity)
+
+  // numSymbols is rank if multi-dim (for offsets), else 0
+  unsigned numSymbols = isMultiDimSymbol ? rank : 0;
+  return AffineMap::get(rank, numSymbols, totalExpr);
+}
+
+
+// =============================================================================
+// Parser Implementation
+// =============================================================================
+
+// Helper for parsing [64, 1]
+static ParseResult parseStrideList(AsmParser &parser, SmallVectorImpl<int64_t> &strides) {
+  if (parser.parseLSquare()) {
+    return failure();
+  }
+  do {
+    int64_t stride;
+    if (parser.parseInteger(stride)) {
+      return failure();
+    }
+    strides.push_back(stride);
+  } while (succeeded(parser.parseOptionalComma()));
+  if (parser.parseRSquare()) {
+    return failure();
+  }
+  return success();
+}
+
+// The custom attribute parser for: strided<[64, 1], offset: [?, ?]>
+[[maybe_unused]] static ParseResult parseStridedLayout(AsmParser &parser, Attribute &layout) {
+  if (parser.parseLess()) {
+    return failure();
+  }
+
+  // 1. Parse Strides
+  SmallVector<int64_t> strides;
+  if (parseStrideList(parser, strides)) {
+    return failure();
+  }
+
+  bool isMultiDim = false;
+  unsigned numSymbols = 0;
+
+  // 2. Parse Offset
+  if (succeeded(parser.parseOptionalComma())) {
+    if (parser.parseKeyword("offset") || parser.parseColon()) {
+      return failure();
+    }
+
+    // Check for multi-dim syntax: [?, ?]
+    if (succeeded(parser.parseOptionalLSquare())) {
+      isMultiDim = true;
+      do {
+        if (parser.parseQuestion()) {
+          return failure();
+        }
+        numSymbols++;
+      } while (succeeded(parser.parseOptionalComma()));
+      if (parser.parseRSquare()) {
+        return failure();
+      }
+    } else {
+      // Fallback for old scalar syntax '?'
+      if (parser.parseOptionalQuestion()) { /* handle single scalar */ }
+    }
+  }
+
+  if (parser.parseGreater()) {
+    return failure();
+  }
+
+  // 3. Validation
+  if (isMultiDim && numSymbols != strides.size()) {
+    return parser.emitError(parser.getCurrentLocation(),
+                            "Number of offset symbols must match rank");
+  }
+
+  // 4. [CALL SHARED BUILDER]
+  // Delegate to the strict builder
+  MLIRContext *ctx = parser.getContext();
+  AffineMap map = buildStrictBitwiseAffineMap(ctx, strides, isMultiDim);
+
+  layout = AffineMapAttr::get(map);
+  return success();
+}
+
+// =============================================================================
+// Printer Implementation
+// =============================================================================
+
+[[maybe_unused]] static void printLayout(AsmPrinter &printer, Attribute layoutAttr) {
+  if (!layoutAttr) {
+    return;
+  }
+  auto mapAttr = llvm::dyn_cast<AffineMapAttr>(layoutAttr);
+  if (!mapAttr) { printer << ", " << layoutAttr; return; }
+
+  AffineMap map = mapAttr.getValue();
+  if (map.isIdentity()) {
+    return;
+  }
+
+  // 1. [核心修改] 反解 Strides
+  SmallVector<int64_t> strides;
+  decomposeStridedLayout(map, strides);
+
+  printer << ", strided<[";
+  // 2. 打印真实的 strides
+  llvm::interleaveComma(strides, printer);
+  printer << "]";
+
+  // Print Offset: [?, ?]
+  unsigned numSyms = map.getNumSymbols();
+  if (numSyms > 0) {
+    printer << ", offset: [";
+    for (unsigned i = 0; i < numSyms; ++i) {
+      printer << "?";
+      if (i < numSyms - 1) {
+        printer << ", ";
+      }
+    }
+    printer << "]";
+  }
+  printer << ">";
+}
+
+// ---- TileBuf ---
+
+
+// Tile subview 相关实现
+
+// =============================================================================
+// Op Interface Implementation: SubViewOp
+// =============================================================================
+
+ParseResult mlir::pto::SubViewOp::parse(OpAsmParser &parser,
+                                        OperationState &result) {
+  OpAsmParser::UnresolvedOperand source;
+  SmallVector<OpAsmParser::UnresolvedOperand, 4> offsets;
+  SmallVector<OpAsmParser::UnresolvedOperand, 2> valids;
+  Type sourceTy;
+  Type resultTy;
+  bool hasExplicitResultTy = false;
+
+  if (parser.parseOperand(source) || parser.parseLSquare() ||
+      parser.parseOperandList(offsets) || parser.parseRSquare() ||
+      parser.parseKeyword("sizes")) {
+    return failure();
+  }
+
+  ArrayAttr sizesAttr;
+  if (parser.parseAttribute(sizesAttr, "sizes", result.attributes)) {
+    return failure();
+  }
+
+  if (succeeded(parser.parseOptionalKeyword("valid"))) {
+    OpAsmParser::UnresolvedOperand vrow, vcol;
+    if (parser.parseLSquare() || parser.parseOperand(vrow) || parser.parseComma() ||
+        parser.parseOperand(vcol) || parser.parseRSquare()) {
+      return failure();
+    }
+    valids.push_back(vrow);
+    valids.push_back(vcol);
+  }
+
+  if (parser.parseOptionalAttrDict(result.attributes) ||
+      parser.parseColonType(sourceTy)) {
+    return failure();
+  }
+
+  if (succeeded(parser.parseOptionalArrow())) {
+    if (parser.parseType(resultTy)) {
+      return failure();
+    }
+    hasExplicitResultTy = true;
+  }
+
+  if (parser.resolveOperand(source, sourceTy, result.operands)) {
+    return failure();
+  }
+
+  Type indexTy = parser.getBuilder().getIndexType();
+  if (parser.resolveOperands(offsets, indexTy, result.operands)) {
+    return failure();
+  }
+  if (!valids.empty() &&
+      parser.resolveOperands(valids, indexTy, result.operands)) {
+    return failure();
+  }
+
+  int32_t hasValid = valids.empty() ? 0 : 1;
+  result.addAttribute(
+      "operandSegmentSizes",
+      parser.getBuilder().getDenseI32ArrayAttr(
+          {1, static_cast<int32_t>(offsets.size()), hasValid, hasValid}));
+
+  if (hasExplicitResultTy) {
+    result.addTypes(resultTy);
+    return success();
+  }
+
+  SmallVector<Type> inferredReturnTypes;
+  DictionaryAttr attrs = result.attributes.getDictionary(parser.getContext());
+  if (failed(SubViewOp::inferReturnTypes(
+          parser.getContext(), std::nullopt, result.operands, attrs, nullptr,
+          RegionRange(), inferredReturnTypes))) {
+    return parser.emitError(parser.getCurrentLocation(),
+                            "failed to infer pto.subview result type");
+  }
+  result.addTypes(inferredReturnTypes);
+  return success();
+}
+
+void mlir::pto::SubViewOp::print(OpAsmPrinter &printer) {
+  printer << " " << getSource() << "[";
+  printer.printOperands(getOffsets());
+  printer << "] sizes " << getSizes();
+  if (getValidRow()) {
+    printer << " valid [" << getValidRow() << ", " << getValidCol() << "]";
+  }
+  printer.printOptionalAttrDict((*this)->getAttrs(),
+                                /*elidedAttrs=*/{"operandSegmentSizes",
+                                                 "sizes"});
+  printer << " : " << getSource().getType() << " -> " << getResult().getType();
+}
+
+// The inferred result type derives valid_shape from `sizes` (or the explicit
+// valid operands). With the operand omitted the result type is authoritative for
+// the valid extent (any static value, including the v=0 no-op-replay marker or a
+// partial valid), so accept a static declared valid that differs from the
+// size-inferred one here; SubViewOp::verify() enforces the precise per-path rule
+// (operand clamping vs the [0, size] range). Only a dynamic declared valid that
+// disagrees with the inferred extent is incompatible -- it needs an explicit
+// operand to supply the runtime value. Every other difference (shape, element
+// type, address space, config) is still rejected as the default check would.
+bool SubViewOp::isCompatibleReturnTypes(TypeRange lhs, TypeRange rhs) {
+  if (lhs.size() != rhs.size()) {
+    return false;
+  }
+  for (auto [inferred, declared] : llvm::zip(lhs, rhs)) {
+    if (inferred == declared) {
+      continue;
+    }
+    auto inferredTb = dyn_cast<TileBufType>(inferred);
+    auto declaredTb = dyn_cast<TileBufType>(declared);
+    if (!inferredTb || !declaredTb) {
+      return false;
+    }
+    if (inferredTb.getShape() != declaredTb.getShape() ||
+        inferredTb.getElementType() != declaredTb.getElementType() ||
+        inferredTb.getMemorySpace() != declaredTb.getMemorySpace() ||
+        inferredTb.getConfigAttr() != declaredTb.getConfigAttr()) {
+      return false;
+    }
+    auto inferredValid = inferredTb.getValidShape();
+    auto declaredValid = declaredTb.getValidShape();
+    if (inferredValid.size() != declaredValid.size()) {
+      return false;
+    }
+    for (auto [inferredDim, declaredDim] : llvm::zip(inferredValid, declaredValid)) {
+      // Any static declared valid extent is accepted in place of the inferred
+      // one; only a dynamic declared valid that disagrees is incompatible.
+      if (inferredDim != declaredDim && declaredDim == ShapedType::kDynamic) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+LogicalResult SubViewOp::inferReturnTypes(
+    MLIRContext *context, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
+  // 1. 获取 Source Type
+  if (operands.empty()) {
+    return failure();
+  }
+  auto sourceType = llvm::dyn_cast<TileBufType>(operands[0].getType());
+  if (!sourceType) {
+    return failure();
+  }
+
+  // 2. 获取 subview 逻辑窗口（sizes）
+  ArrayAttr sizeAttr;
+  if (properties) {
+    const auto *prop = properties.as<SubViewOp::Properties *>();
+    if (prop) {
+      sizeAttr = prop->sizes;
+    }
+  }
+  if (!sizeAttr && attributes) {
+    sizeAttr = attributes.getAs<ArrayAttr>("sizes");
+  }
+  if (!sizeAttr) {
+    return failure();
+  }
+
+  SmallVector<int64_t> subviewShape;
+  for (auto attr : sizeAttr) {
+    int64_t dim = llvm::cast<IntegerAttr>(attr).getInt();
+    subviewShape.push_back(dim);
+  }
+
+  // Design: subview 的结果 tile 类型显式表达逻辑子窗口 shape（sizes）。
+  ArrayRef<int64_t> parentShape = sourceType.getShape();
+  if (subviewShape.size() != parentShape.size()) {
+    return failure();
+  }
+
+  // Derive valid shape from explicit valid_row/valid_col when provided.
+  // Otherwise default to subview shape (no parent valid-shape inheritance).
+  SmallVector<int64_t> validShape;
+  constexpr int64_t kDynamicValidDim = -1;
+  int64_t rank = static_cast<int64_t>(subviewShape.size());
+  Value explicitVRow;
+  Value explicitVCol;
+
+  // Robustly decode optional valid operands using AttrSizedOperandSegments:
+  //   [source, offsets..., valid_row?, valid_col?]
+  if (attributes) {
+    if (auto segAttr =
+            attributes.getAs<DenseI32ArrayAttr>("operandSegmentSizes")) {
+      ArrayRef<int32_t> segs = segAttr.asArrayRef();
+      if (segs.size() == 4) {
+        int32_t srcSeg = segs[0];
+        int32_t offSeg = segs[1];
+        int32_t vRowSeg = segs[2];
+        int32_t vColSeg = segs[3];
+        if (srcSeg == 1 && offSeg >= 0 && (vRowSeg == 0 || vRowSeg == 1) &&
+            (vColSeg == 0 || vColSeg == 1)) {
+          size_t idx = static_cast<size_t>(srcSeg + offSeg);
+          if (vRowSeg == 1 && idx < operands.size()) {
+            explicitVRow = operands[idx++];
+          }
+          if (vColSeg == 1 && idx < operands.size()) {
+            explicitVCol = operands[idx];
+          }
+        }
+      }
+    }
+  }
+
+  // Fallback for legacy callers that may not provide operandSegmentSizes.
+  if (!explicitVRow && !explicitVCol && rank == 2) {
+    size_t expectedWithoutValid = static_cast<size_t>(1 + rank);
+    if (operands.size() >= expectedWithoutValid + 2) {
+      explicitVRow = operands[expectedWithoutValid];
+      explicitVCol = operands[expectedWithoutValid + 1];
+    }
+  }
+
+  for (size_t i = 0, e = subviewShape.size(); i < e; ++i) {
+    int64_t vdim = subviewShape[i];
+    Value explicitV = (i == 0) ? explicitVRow : (i == 1 ? explicitVCol : Value());
+    if (explicitV) {
+      auto cst = getConstIndexValue(explicitV);
+      vdim = cst ? std::min<int64_t>(*cst, subviewShape[i]) : kDynamicValidDim;
+    }
+    validShape.push_back(vdim);
+  }
+
+  // 3. 继承 Config (若为空使用默认)
+  auto cfg = sourceType.getConfigAttr();
+  if (!cfg) {
+    cfg = TileBufConfigAttr::getDefault(context);
+  }
+
+  // 4. 构建 Result Type
+  auto canonicalValidShape = canonicalizeTileBufValidShape(validShape);
+  auto resultType = TileBufType::get(
+      context, subviewShape, sourceType.getElementType(),
+      sourceType.getMemorySpace(), canonicalValidShape, cfg);
+
+  inferredReturnTypes.push_back(resultType);
+  return success();
+}
+
+// =============================================================================
+// SubViewOp verifier
+// =============================================================================
+static bool getConstIndex(Value v, int64_t &out) {
+  if (auto cOp = v.getDefiningOp<arith::ConstantIndexOp>()) {
+    out = cOp.value();
+    return true;
+  }
+  if (auto cInt = v.getDefiningOp<arith::ConstantIntOp>()) {
+    out = cInt.value();
+    return true;
+  }
+  if (auto cOp = v.getDefiningOp<arith::ConstantOp>()) {
+    if (auto ia = dyn_cast<IntegerAttr>(cOp.getValue())) {
+      out = ia.getInt();
+      return true;
+    }
+  }
+  if (auto castOp = v.getDefiningOp<arith::IndexCastOp>()) {
+    return getConstIndex(castOp.getIn(), out);
+  }
+  if (auto extOp = v.getDefiningOp<arith::ExtSIOp>()) {
+    return getConstIndex(extOp.getIn(), out);
+  }
+  if (auto extOp = v.getDefiningOp<arith::ExtUIOp>()) {
+    return getConstIndex(extOp.getIn(), out);
+  }
+  if (auto truncOp = v.getDefiningOp<arith::TruncIOp>()) {
+    return getConstIndex(truncOp.getIn(), out);
+  }
+  return false;
+}
+
+static LogicalResult computeInnerShape(TileBufConfigAttr cfg, Type elemTy,
+                                       int64_t &innerRows, int64_t &innerCols,
+                                       bool &boxed, int32_t &bl, int32_t &sl) {
+  auto readBLayoutI32 = [](Attribute attr, int32_t &out) -> bool {
+    if (auto a = dyn_cast<BLayoutAttr>(attr)) {
+      out = static_cast<int32_t>(a.getValue());
+      return true;
+    }
+    if (auto a = dyn_cast<IntegerAttr>(attr)) {
+      out = static_cast<int32_t>(a.getInt());
+      return true;
+    }
+    return false;
+  };
+  auto readSLayoutI32 = [](Attribute attr, int32_t &out) -> bool {
+    if (auto a = dyn_cast<SLayoutAttr>(attr)) {
+      out = static_cast<int32_t>(a.getValue());
+      return true;
+    }
+    if (auto a = dyn_cast<IntegerAttr>(attr)) {
+      out = static_cast<int32_t>(a.getInt());
+      return true;
+    }
+    return false;
+  };
+  bl = 0;
+  sl = 0;
+  int32_t fr = 512;
+  (void)readBLayoutI32(cfg.getBLayout(), bl);
+  (void)readSLayoutI32(cfg.getSLayout(), sl);
+  if (auto attr = dyn_cast<IntegerAttr>(cfg.getSFractalSize())) {
+    fr = static_cast<int32_t>(attr.getInt());
+  }
+
+  boxed = (sl != 0);
+  if (!boxed) {
+    innerRows = 1;
+    innerCols = 1;
+    return success();
+  }
+
+  int64_t elemBytes = static_cast<int64_t>(getElemByteSize(elemTy));
+  if (elemBytes <= 0) {
+    return failure();
+  }
+
+  if (fr == 1024) {
+    innerRows = 16;
+    innerCols = 16;
+    return success();
+  }
+  if (fr == 32) {
+    innerRows = 16;
+    innerCols = 2;
+    return success();
+  }
+  if (fr == 512) {
+    if (sl == 1) {
+      innerRows = 16;
+      innerCols = 32 / elemBytes;
+      return success();
+    }
+    if (sl == 2) {
+      innerRows = 32 / elemBytes;
+      innerCols = 16;
+      return success();
+    }
+  }
+  return failure();
+}
+
+struct SubViewInfo {
+  int64_t sizeR = 0, sizeC = 0;
+  int64_t offR = 0, offC = 0;
+  bool offRConst = false, offCConst = false;
+};
+
+static LogicalResult verifySubViewSizesAndOffsets(SubViewOp op,
+                                                  SubViewInfo &info) {
+  auto sizesAttr = op.getSizes();
+  if (!sizesAttr || sizesAttr.size() != 2) {
+    return op.emitOpError("subview expects 2D sizes");
+  }
+  info.sizeR = cast<IntegerAttr>(sizesAttr[0]).getInt();
+  info.sizeC = cast<IntegerAttr>(sizesAttr[1]).getInt();
+  if (info.sizeR <= 0 || info.sizeC <= 0) {
+    return op.emitOpError("subview sizes must be positive");
+  }
+  if (op.getOffsets().size() != 2) {
+    return op.emitOpError("subview expects 2D offsets");
+  }
+
+  info.offRConst = getConstIndex(op.getOffsets()[0], info.offR);
+  info.offCConst = getConstIndex(op.getOffsets()[1], info.offC);
+  if (info.offRConst && info.offR < 0) {
+    return op.emitOpError("subview offsets must be non-negative");
+  }
+  if (info.offCConst && info.offC < 0) {
+    return op.emitOpError("subview offsets must be non-negative");
+  }
+  return success();
+}
+
+static LogicalResult verifySubViewValidBounds(SubViewOp op, int64_t sizeR,
+                                              int64_t sizeC) {
+  bool hasValidRow = static_cast<bool>(op.getValidRow());
+  bool hasValidCol = static_cast<bool>(op.getValidCol());
+  if (hasValidRow != hasValidCol) {
+    return op.emitOpError(
+        "subview expects valid_row and valid_col to be both present or both absent");
+  }
+
+  if (hasValidRow) {
+    int64_t vRow = 0, vCol = 0;
+    if (getConstIndex(op.getValidRow(), vRow)) {
+      if (vRow < 0) {
+        return op.emitOpError("valid_row must be non-negative when constant");
+      }
+      if (vRow > sizeR) {
+        return op.emitOpError("valid_row must be <= subview row size");
+      }
+    }
+    if (getConstIndex(op.getValidCol(), vCol)) {
+      if (vCol < 0) {
+        return op.emitOpError("valid_col must be non-negative when constant");
+      }
+      if (vCol > sizeC) {
+        return op.emitOpError("valid_col must be <= subview col size");
+      }
+    }
+  }
+  return success();
+}
 static LogicalResult verifySubViewShapeAndConfig(SubViewOp op, TileBufType srcTy,
                                                  TileBufType dstTy, int64_t sizeR,
                                                  int64_t sizeC) {
@@ -982,561 +1642,4 @@ void TTransOp::getEffects(
     PTO_ADD_WRITE(tmp[0]);
   }
   PTO_ADD_WRITE(getDstMutable());
-}
-
-void TPrintOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
-  PTO_ADD_READ(getSrcMutable());
-  if (!getTmpMutable().empty()) {
-    PTO_ADD_WRITE(getTmpMutable()[0]);
-  }
-  PTO_ADD_WRITE(getSrcMutable());
-}
-
-#undef PTO_DEFINE_TERNARY_EFFECTS
-#undef PTO_DEFINE_BINARY_EFFECTS
-#undef PTO_DEFINE_UNARY_EFFECTS
-#undef PTO_ADD_WRITE
-#undef PTO_ADD_READ
-
-// === TMatmulOp ===
-// Read: lhs, rhs, (bias), Write: dst
-void TMatmulOp::getEffects(SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
-  // Singleton -> 直接取地址
-  addEffect(effects, &getLhsMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getRhsMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
-}
-
-// === TMatmulAccOp ===
-// Read: acc_in, lhs, rhs, Write: dst
-void TMatmulAccOp::getEffects(SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
-  addEffect(effects, &getAccInMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getLhsMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getRhsMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
-}
-
-// === TMatmulBiasOp ===
-// Read: a, b, bias, Write: dst
-void TMatmulBiasOp::getEffects(SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
-  addEffect(effects, &getAMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getBMutable(), MemoryEffects::Read::get());
-  // 这里的 bias 是必选的 AnyType:$bias，所以是 Singleton
-  addEffect(effects, &getBiasMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
-}
-
-// === TGemvOp ===
-// Read: lhs, rhs, Write: dst
-void TGemvOp::getEffects(SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
-  addEffect(effects, &getLhsMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getRhsMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
-}
-
-// === TGemvAccOp ===
-// Read: acc_in, lhs, rhs, Write: dst
-void TGemvAccOp::getEffects(SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
-  addEffect(effects, &getAccInMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getLhsMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getRhsMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
-}
-
-// === TGemvBiasOp ===
-// Read: a, b, bias, Write: dst
-void TGemvBiasOp::getEffects(SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
-  addEffect(effects, &getAMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getBMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getBiasMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
-}
-
-// === TGemvMxOp ===
-// Read: a, a_scale, b, b_scale, Write: dst
-void TGemvMxOp::getEffects(SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
-  addEffect(effects, &getAMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getAScaleMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getBMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getBScaleMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
-}
-
-// === TGemvMxAccOp ===
-// Read: c_in, a, a_scale, b, b_scale, Write: dst
-void TGemvMxAccOp::getEffects(SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
-  addEffect(effects, &getCInMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getAMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getAScaleMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getBMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getBScaleMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
-}
-
-// === TGemvMxBiasOp ===
-// Read: a, a_scale, b, b_scale, bias, Write: dst
-void TGemvMxBiasOp::getEffects(SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
-  addEffect(effects, &getAMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getAScaleMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getBMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getBScaleMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getBiasMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
-}
-
-// === TMatmulOp ===
-void TMatmulMxOp::getEffects(SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
-  addEffect(effects, &getAMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getAScaleMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getBMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getBScaleMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
-}
-
-// === TMatmulAccMxOp ===
-// Read: acc_in, lhs, rhs, Write: dst
-void TMatmulMxAccOp::getEffects(SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
-  addEffect(effects, &getCInMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getAMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getAScaleMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getBMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getBScaleMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
-}
-
-// === TMatmulBiasMxOp ===
-// Read: a, b, bias, Write: dst
-void TMatmulMxBiasOp::getEffects(SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
-  addEffect(effects, &getAMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getAScaleMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getBMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getBScaleMutable(), MemoryEffects::Read::get());
-  // 这里的 bias 是必选的 AnyType:$bias，所以是 Singleton
-  addEffect(effects, &getBiasMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
-}
-
-static bool isInsideSectionCube(Operation *op) {
-  return op->getParentOfType<pto::SectionCubeOp>() != nullptr;
-}
-
-static bool isInsideSectionVector(Operation *op) {
-  return op->getParentOfType<pto::SectionVectorOp>() != nullptr;
-}
-
-static bool isInsideTileOpHelper(Operation *op) {
-  auto funcOp = op->getParentOfType<func::FuncOp>();
-  return funcOp && funcOp->hasAttr("pto.tileop.helper");
-}
-
-static std::optional<FunctionKernelKind>
-getEnclosingFunctionKernelKind(Operation *op) {
-  auto funcOp = op->getParentOfType<func::FuncOp>();
-  if (!funcOp) {
-    return std::nullopt;
-  }
-
-  auto kernelKindAttr =
-      funcOp->getAttrOfType<FunctionKernelKindAttr>(
-          FunctionKernelKindAttr::name);
-  if (!kernelKindAttr) {
-    return std::nullopt;
-  }
-
-  return kernelKindAttr.getKernelKind();
-}
-
-static bool isInsideSectionOrAttributedKernel(Operation *op) {
-  return isInsideSectionCube(op) || isInsideSectionVector(op) ||
-         isInsideTileOpHelper(op) || getEnclosingFunctionKernelKind(op).has_value();
-}
-
-static LogicalResult verifySplitAttr(Operation *op, int64_t split) {
-  if (split < 0 || split > 4) {
-    return op->emitOpError("expects 'split' to be 0, 1, 2, 3, or 4");
-  }
-  return success();
-}
-
-static bool isOddSplit(int64_t split) {
-  return split == 3 || split == 4;
-}
-
-static bool isInsideCubeKernelOrSection(Operation *op) {
-  if (isInsideSectionCube(op)) {
-    return true;
-  }
-  auto kernelKind = getEnclosingFunctionKernelKind(op);
-  return kernelKind && *kernelKind == FunctionKernelKind::Cube;
-}
-
-static bool isInsideVectorKernelOrSection(Operation *op) {
-  if (isInsideSectionVector(op)) {
-    return true;
-  }
-  auto kernelKind = getEnclosingFunctionKernelKind(op);
-  return kernelKind && *kernelKind == FunctionKernelKind::Vector;
-}
-
-static LogicalResult verifyFrontendKernelKind(Operation *op,
-                                              FunctionKernelKind expected,
-                                              StringRef kernelName) {
-  if (isInsideTileOpHelper(op)) {
-    return success();
-  }
-  if (isInsideSectionCube(op)) {
-    if (expected == FunctionKernelKind::Cube) {
-      return success();
-    }
-    return op->emitOpError("must be inside a ")
-           << kernelName << " kernel function or section";
-  }
-  if (isInsideSectionVector(op)) {
-    if (expected == FunctionKernelKind::Vector) {
-      return success();
-    }
-    return op->emitOpError("must be inside a ")
-           << kernelName << " kernel function or section";
-  }
-
-  std::optional<FunctionKernelKind> kernelKind =
-      getEnclosingFunctionKernelKind(op);
-  if (!kernelKind || *kernelKind != expected) {
-    return op->emitOpError("must be inside a ")
-           << kernelName << " kernel function or section";
-  }
-  return success();
-}
-
-static ParseResult parseFrontendInitializePipeOp(OpAsmParser &parser,
-                                                 OperationState &result) {
-  NamedAttrList attrs;
-  bool sawId = false;
-  bool sawDirMask = false;
-  bool sawSlotSize = false;
-  bool sawSlotNum = false;
-  bool sawLocalSlotNum = false;
-  bool sawNoSplit = false;
-  bool sawAccPushEpilogue = false;
-
-  if (parser.parseLBrace()) {
-    return failure();
-  }
-
-  while (failed(parser.parseOptionalRBrace())) {
-    StringRef keyword;
-    if (parser.parseKeyword(&keyword) || parser.parseEqual()) {
-      return failure();
-    }
-
-    if (keyword == "id") {
-      if (sawId) {
-        return parser.emitError(parser.getCurrentLocation(),
-                                "duplicate 'id' clause");
-      }
-      IntegerAttr idAttr;
-      if (parser.parseAttribute(idAttr, parser.getBuilder().getI32Type(), "id",
-                                attrs)) {
-        return failure();
-      }
-      sawId = true;
-    } else if (keyword == "dir_mask") {
-      if (sawDirMask) {
-        return parser.emitError(parser.getCurrentLocation(),
-                                "duplicate 'dir_mask' clause");
-      }
-      IntegerAttr dirMaskAttr;
-      if (parser.parseAttribute(dirMaskAttr, parser.getBuilder().getI8Type(),
-                                "dir_mask", attrs)) {
-        return failure();
-      }
-      sawDirMask = true;
-    } else if (keyword == "slot_size") {
-      if (sawSlotSize) {
-        return parser.emitError(parser.getCurrentLocation(),
-                                "duplicate 'slot_size' clause");
-      }
-      IntegerAttr slotSizeAttr;
-      if (parser.parseAttribute(slotSizeAttr, parser.getBuilder().getI32Type(),
-                                "slot_size", attrs)) {
-        return failure();
-      }
-      sawSlotSize = true;
-    } else if (keyword == "slot_num") {
-      if (sawSlotNum) {
-        return parser.emitError(parser.getCurrentLocation(),
-                                "duplicate 'slot_num' clause");
-      }
-      IntegerAttr slotNumAttr;
-      if (parser.parseAttribute(slotNumAttr, parser.getBuilder().getI32Type(),
-                                "slot_num", attrs)) {
-        return failure();
-      }
-      sawSlotNum = true;
-    } else if (keyword == "local_slot_num") {
-      if (sawLocalSlotNum) {
-        return parser.emitError(parser.getCurrentLocation(),
-                                "duplicate 'local_slot_num' clause");
-      }
-      IntegerAttr localSlotNumAttr;
-      if (parser.parseAttribute(localSlotNumAttr, parser.getBuilder().getI32Type(),
-                                "local_slot_num", attrs)) {
-        return failure();
-      }
-      sawLocalSlotNum = true;
-    } else if (keyword == "nosplit") {
-      if (sawNoSplit) {
-        return parser.emitError(parser.getCurrentLocation(),
-                                "duplicate 'nosplit' clause");
-      }
-      BoolAttr noSplitAttr;
-      if (parser.parseAttribute(noSplitAttr, "nosplit", attrs)) {
-        return failure();
-      }
-      sawNoSplit = true;
-    } else if (keyword == "acc_push_epilogue") {
-      if (sawAccPushEpilogue) {
-        return parser.emitError(parser.getCurrentLocation(),
-                                "duplicate 'acc_push_epilogue' clause");
-      }
-      AccPushEpilogueAttr accPushEpilogueAttr;
-      if (parser.parseAttribute(accPushEpilogueAttr, "acc_push_epilogue",
-                                attrs)) {
-        return failure();
-      }
-      sawAccPushEpilogue = true;
-    } else {
-      return parser.emitError(parser.getCurrentLocation())
-             << "unexpected keyword '" << keyword << "'";
-    }
-
-    if (succeeded(parser.parseOptionalRBrace())) {
-      break;
-    }
-    if (parser.parseComma()) {
-      return failure();
-    }
-  }
-
-  if (!sawDirMask) {
-    return parser.emitError(parser.getNameLoc(), "expected 'dir_mask' clause");
-  }
-  if (!sawSlotSize) {
-    return parser.emitError(parser.getNameLoc(), "expected 'slot_size' clause");
-  }
-  if (!sawId) {
-    attrs.set("id", parser.getBuilder().getI32IntegerAttr(0));
-  }
-
-  OpAsmParser::UnresolvedOperand gmSlotBuffer;
-  OpAsmParser::UnresolvedOperand gmSlotTensor;
-  OpAsmParser::UnresolvedOperand c2vConsumerBuf;
-  OpAsmParser::UnresolvedOperand v2cConsumerBuf;
-  Type gmSlotBufferTy;
-  Type gmSlotTensorTy;
-  Type c2vConsumerBufTy;
-  Type v2cConsumerBufTy;
-  bool hasGmSlotBuffer = false;
-  bool hasGmSlotTensor = false;
-  bool hasC2vConsumerBuf = false;
-  bool hasV2cConsumerBuf = false;
-
-  if (parser.parseLParen()) {
-    return failure();
-  }
-  while (failed(parser.parseOptionalRParen())) {
-    StringRef keyword;
-    if (parser.parseKeyword(&keyword) || parser.parseEqual()) {
-      return failure();
-    }
-
-    if (keyword == "gm_slot_buffer") {
-      if (hasGmSlotBuffer) {
-        return parser.emitError(parser.getCurrentLocation(),
-                                "duplicate 'gm_slot_buffer' operand");
-      }
-      if (parser.parseOperand(gmSlotBuffer) ||
-          parser.parseColonType(gmSlotBufferTy)) {
-        return failure();
-      }
-      hasGmSlotBuffer = true;
-    } else if (keyword == "gm_slot_tensor") {
-      if (hasGmSlotTensor) {
-        return parser.emitError(parser.getCurrentLocation(),
-                                "duplicate 'gm_slot_tensor' operand");
-      }
-      if (parser.parseOperand(gmSlotTensor) ||
-          parser.parseColonType(gmSlotTensorTy)) {
-        return failure();
-      }
-      hasGmSlotTensor = true;
-    } else if (keyword == "c2v_consumer_buf") {
-      if (hasC2vConsumerBuf) {
-        return parser.emitError(parser.getCurrentLocation(),
-                                "duplicate 'c2v_consumer_buf' operand");
-      }
-      if (parser.parseOperand(c2vConsumerBuf) ||
-          parser.parseColonType(c2vConsumerBufTy)) {
-        return failure();
-      }
-      hasC2vConsumerBuf = true;
-    } else if (keyword == "v2c_consumer_buf") {
-      if (hasV2cConsumerBuf) {
-        return parser.emitError(parser.getCurrentLocation(),
-                                "duplicate 'v2c_consumer_buf' operand");
-      }
-      if (parser.parseOperand(v2cConsumerBuf) ||
-          parser.parseColonType(v2cConsumerBufTy)) {
-        return failure();
-      }
-      hasV2cConsumerBuf = true;
-    } else {
-      return parser.emitError(parser.getCurrentLocation())
-             << "unexpected initialize_pipe operand '" << keyword << "'";
-    }
-
-    if (succeeded(parser.parseOptionalRParen())) {
-      break;
-    }
-    if (parser.parseComma()) {
-      return failure();
-    }
-  }
-
-  if (parser.parseOptionalAttrDict(attrs)) {
-    return failure();
-  }
-
-  result.addAttributes(attrs);
-  result.addAttribute("operandSegmentSizes",
-                      parser.getBuilder().getDenseI32ArrayAttr(
-                          {hasGmSlotBuffer ? 1 : 0, hasGmSlotTensor ? 1 : 0,
-                           hasC2vConsumerBuf ? 1 : 0,
-                           hasV2cConsumerBuf ? 1 : 0}));
-  if (hasGmSlotBuffer &&
-      parser.resolveOperand(gmSlotBuffer, gmSlotBufferTy, result.operands)) {
-    return failure();
-  }
-  if (hasGmSlotTensor &&
-      parser.resolveOperand(gmSlotTensor, gmSlotTensorTy, result.operands)) {
-    return failure();
-  }
-  if (hasC2vConsumerBuf &&
-      parser.resolveOperand(c2vConsumerBuf, c2vConsumerBufTy, result.operands)) {
-    return failure();
-  }
-  if (hasV2cConsumerBuf &&
-      parser.resolveOperand(v2cConsumerBuf, v2cConsumerBufTy, result.operands)) {
-    return failure();
-  }
-  return success();
-}
-
-template <typename InitOpT>
-static void printFrontendInitializePipeOp(InitOpT op, OpAsmPrinter &p) {
-  p << " {";
-  bool needsComma = false;
-  auto printClause = [&](StringRef keyword, auto value) {
-    if (needsComma) {
-      p << ", ";
-    }
-    p << keyword << " = " << value;
-    needsComma = true;
-  };
-
-  printClause("id", op.getId());
-  printClause("dir_mask", static_cast<int32_t>(op.getDirMask()));
-  printClause("slot_size", op.getSlotSize());
-  if (auto slotNumAttr = op.getSlotNumAttr()) {
-    printClause("slot_num", slotNumAttr.getInt());
-  }
-  if (auto localSlotNumAttr = op.getLocalSlotNumAttr()) {
-    printClause("local_slot_num", localSlotNumAttr.getInt());
-  }
-  if (auto noSplitAttr = op.getNosplitAttr()) {
-    printClause("nosplit", noSplitAttr.getValue() ? "true" : "false");
-  }
-  if (auto accPushEpilogueAttr = op.getAccPushEpilogueAttr()) {
-    printClause("acc_push_epilogue", accPushEpilogueAttr);
-  }
-  p << "}";
-
-  p << "(";
-  bool needsOperandComma = false;
-  auto printOperandClause = [&](StringRef keyword, Value value) {
-    if (needsOperandComma) {
-      p << ", ";
-    }
-    p << keyword << " = " << value << " : " << value.getType();
-    needsOperandComma = true;
-  };
-  if (op.getGmSlotBuffer()) {
-    printOperandClause("gm_slot_buffer", op.getGmSlotBuffer());
-  }
-  if (op.getGmSlotTensor()) {
-    printOperandClause("gm_slot_tensor", op.getGmSlotTensor());
-  }
-  if (op.getC2vConsumerBuf()) {
-    printOperandClause("c2v_consumer_buf", op.getC2vConsumerBuf());
-  }
-  if (op.getV2cConsumerBuf()) {
-    printOperandClause("v2c_consumer_buf", op.getV2cConsumerBuf());
-  }
-  p << ")";
-  p.printOptionalAttrDict(
-      op->getAttrs(),
-      /*elidedAttrs=*/{"id", "dir_mask", "slot_size", "slot_num",
-                       "local_slot_num", "acc_push_epilogue",
-                       "nosplit", "operandSegmentSizes"});
-}
-
-static std::optional<uint64_t>
-getStaticElementCount(ArrayRef<int64_t> shape) {
-  uint64_t count = 1;
-  for (int64_t dim : shape) {
-    if (dim == ShapedType::kDynamic || dim < 0) {
-      return std::nullopt;
-    }
-    count *= static_cast<uint64_t>(dim);
-  }
-  return count;
-}
-
-static bool isSameOrHalfSlotByteSize(uint64_t tensorBytes, uint64_t slotBytes) {
-  return tensorBytes == slotBytes || tensorBytes * 2 == slotBytes;
-}
-
-static LogicalResult verifyFrontendGlobalSlotTensor(Operation *op, Value tensor,
-                                                    int8_t dirMask,
-                                                    int32_t slotSize) {
-  (void)dirMask;
-  auto tvTy = dyn_cast<TensorViewType>(tensor.getType());
-  if (!tvTy) {
-    return op->emitOpError("expects 'gm_slot_tensor' to be !pto.tensor_view");
-  }
-
-  ArrayRef<int64_t> shape = tvTy.getShape();
-  if (shape.empty()) {
-    return op->emitOpError(
-        "expects 'gm_slot_tensor' to describe one slot entry tensor");
-  }
-
-  if (auto elemCount = getStaticElementCount(shape)) {
-    uint64_t elemBytes = getElemByteSize(tvTy.getElementType());
-    if (elemBytes != 0) {
-      uint64_t tensorBytes = *elemCount * elemBytes;
-      if (!isSameOrHalfSlotByteSize(tensorBytes,
-                                    static_cast<uint64_t>(slotSize))) {
-        return op->emitOpError()
-               << "expects 'slot_size' to equal gm_slot_tensor byte size "
-                  "or twice gm_slot_tensor byte size for split GlobalTensor "
-                  "entries (got slot_size = "
-               << slotSize << ", gm_slot_tensor byte size = " << tensorBytes
-               << ")";
-      }
-    }
-  }
-
-  return success();
 }

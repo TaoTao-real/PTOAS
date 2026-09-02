@@ -9,6 +9,538 @@
 // This implementation fragment is included by PTO.cpp and intentionally is
 // not listed as a separate CMake translation unit.
 
+static LogicalResult verifyInternalOddSplitSupport(Operation *op,
+                                                   Value pipeHandle,
+                                                   int64_t split,
+                                                   bool producerSide) {
+  if (!isOddSplit(split)) {
+    return success();
+  }
+
+  bool isCubeSide = isInsideCubeKernelOrSection(op);
+  bool isVectorSide = isInsideVectorKernelOrSection(op);
+  bool isC2VSide = producerSide ? isCubeSide : isVectorSide;
+  bool isV2CSide = producerSide ? isVectorSide : isCubeSide;
+  int8_t directionMask = isC2VSide ? 1 : (isV2CSide ? 2 : 0);
+  if (isV2CSide && getTargetArch(op) == PTOArch::A5) {
+    return op->emitOpError(
+        "supports odd V2C split modes (split = 3 or 4) only on a2/a3");
+  }
+  auto initOp = pipeHandle.getDefiningOp<InitializeL2G2LPipeOp>();
+  Value consumerBuffer;
+  if (initOp && directionMask != 0) {
+    consumerBuffer = directionMask == 2 && initOp.getDirMask() == 3
+                         ? initOp.getPeerLocalAddr()
+                         : initOp.getLocalAddr();
+  }
+  if (!initOp || directionMask == 0 ||
+      (initOp.getDirMask() & directionMask) == 0 || !consumerBuffer) {
+    return op->emitOpError(
+        "supports odd split modes (split = 3 or 4) only for a "
+        "pto.initialize_l2g2l_pipe whose dir_mask enables the operation "
+        "direction and provides its local consumer buffer");
+  }
+  return success();
+}
+
+static bool getTensorLikeElementAndShape(Type ty, Type &elementType,
+                                         ArrayRef<int64_t> &shape) {
+  if (auto tvTy = dyn_cast<TensorViewType>(ty)) {
+    elementType = tvTy.getElementType();
+    shape = tvTy.getShape();
+    return true;
+  }
+  return false;
+}
+
+static LogicalResult verifyTensorEntryMatchesInternalPipeInit(Operation *op,
+                                                              Value pipeHandle,
+                                                              Type entryTy) {
+  auto entryViewTy = dyn_cast<TensorViewType>(entryTy);
+  if (!entryViewTy) {
+    return success();
+  }
+
+  auto initOp = pipeHandle.getDefiningOp<InitializeL2G2LPipeOp>();
+  if (!initOp) {
+    return op->emitOpError()
+           << "expects !pto.tensor_view pipe entry to use a pipe produced by "
+              "pto.initialize_l2g2l_pipe";
+  }
+  if (initOp.getLocalAddr()) {
+    return op->emitOpError()
+           << "expects !pto.tensor_view pipe entry to use global-only "
+              "pto.initialize_l2g2l_pipe without local_addr";
+  }
+
+  Type slotElementType;
+  ArrayRef<int64_t> slotShape;
+  if (!getTensorLikeElementAndShape(initOp.getGmAddr().getType(),
+slotElementType, slotShape)) {
+    return op->emitOpError()
+           << "expects !pto.tensor_view pipe entry to use "
+              "pto.initialize_l2g2l_pipe gm_addr with tensor_view slot type";
+  }
+
+  if (slotElementType != entryViewTy.getElementType()) {
+    return op->emitOpError()
+           << "expects pipe entry element type to match initialize_l2g2l_pipe "
+              "gm_addr element type";
+  }
+  if (slotShape.size() != static_cast<size_t>(entryViewTy.getRank())) {
+    return op->emitOpError()
+           << "expects pipe entry rank to match initialize_l2g2l_pipe gm_addr "
+              "rank";
+  }
+
+  ArrayRef<int64_t> entryShape = entryViewTy.getShape();
+  for (auto [idx, entryDim] : llvm::enumerate(entryShape)) {
+    int64_t slotDim = slotShape[idx];
+    if (slotDim == ShapedType::kDynamic ||
+        entryDim == ShapedType::kDynamic || slotDim == entryDim) {
+      continue;
+    }
+    return op->emitOpError()
+           << "expects pipe entry dimension " << idx
+           << " to match initialize_l2g2l_pipe gm_addr dimension "
+           << slotDim;
+  }
+
+  if (auto entryElemCount = getStaticElementCount(entryShape)) {
+    uint64_t elemBytes = getElemByteSize(entryViewTy.getElementType());
+    uint64_t entryBytes = *entryElemCount * elemBytes;
+    if (elemBytes != 0) {
+      int8_t split = 0;
+      if (auto alloc = dyn_cast<TAllocOp>(op)) {
+        split = alloc.getSplit();
+      } else if (auto push = dyn_cast<TPushOp>(op)) {
+        split = push.getSplit();
+      } else if (auto pop = dyn_cast<TPopOp>(op)) {
+        split = pop.getSplit();
+      } else if (auto free = dyn_cast<TFreeOp>(op)) {
+        split = free.getSplit();
+      }
+
+      uint64_t slotBytes = static_cast<uint64_t>(initOp.getSlotSize());
+      bool isSplitEntry = split != 0;
+      bool byteSizeMatches =
+          entryBytes == slotBytes || (isSplitEntry && entryBytes * 2 == slotBytes);
+      if (!byteSizeMatches) {
+        return op->emitOpError()
+               << "expects pipe entry byte size to match initialize_l2g2l_pipe "
+                  "slot_size"
+               << (isSplitEntry ? " or half slot_size for split entries" : "")
+               << " (got entry byte size = " << entryBytes
+               << ", slot_size = " << initOp.getSlotSize() << ")";
+      }
+    }
+  }
+
+  return success();
+}
+
+LogicalResult BuildAsyncSessionOp::verify() {
+  Type scratchTy = getScratch().getType();
+  if (!isa<pto::TileBufType>(scratchTy)) {
+    return emitOpError("expects scratch to be tile_buf type");
+  }
+
+  auto scratchSpace = getPTOMemorySpaceEnum(scratchTy);
+  if (!scratchSpace || *scratchSpace != pto::AddressSpace::VEC) {
+    return emitOpError("expects scratch to be in vec address space");
+  }
+
+  auto scratchShape = getShapeVec(scratchTy);
+  if (scratchShape.empty() || scratchShape.size() > 2) {
+    return emitOpError("expects scratch to be rank-1 or rank-2");
+  }
+  for (int64_t dim : scratchShape) {
+    if (dim == ShapedType::kDynamic) {
+      return emitOpError("expects scratch to have a static shape");
+    }
+  }
+
+  auto scratchBytes = getStaticByteSize(scratchTy);
+  if (!scratchBytes) {
+    return emitOpError("expects scratch byte size to be statically known");
+  }
+  if (*scratchBytes < sizeof(uint64_t)) {
+    return emitOpError("expects scratch to provide at least 8 bytes");
+  }
+
+  auto workspaceTy = dyn_cast<pto::PtrType>(getWorkspace().getType());
+  if (!workspaceTy) {
+    return emitOpError("expects workspace to be !pto.ptr type");
+  }
+  Type workspaceElemTy = workspaceTy.getElementType();
+  if (!isByteIntegerType(workspaceElemTy)) {
+    return emitOpError("expects workspace element type to be an 8-bit integer");
+  }
+
+  if (auto syncIdAttr = getSyncIdAttr()) {
+    int64_t syncId = syncIdAttr.getInt();
+    if (syncId < 0 || syncId > 7) {
+      return emitOpError("expects sync_id in range [0, 7]");
+    }
+  }
+  if (auto blockBytesAttr = getBlockBytesAttr()) {
+    if (blockBytesAttr.getInt() <= 0) {
+      return emitOpError("expects block_bytes to be greater than 0");
+    }
+  }
+  if (auto commBlockOffsetAttr = getCommBlockOffsetAttr()) {
+    if (commBlockOffsetAttr.getInt() < 0) {
+      return emitOpError("expects comm_block_offset to be non-negative");
+    }
+  }
+  if (auto queueNumAttr = getQueueNumAttr()) {
+    if (queueNumAttr.getInt() <= 0) {
+      return emitOpError("expects queue_num to be greater than 0");
+    }
+  }
+  if (auto channelGroupIdxAttr = getChannelGroupIdxAttr()) {
+    APInt value = channelGroupIdxAttr.getValue();
+    if (value.isNegative()) {
+      return emitOpError("expects channel_group_idx to be non-negative");
+    }
+    if (value.ugt(UINT32_MAX)) {
+      return emitOpError("expects channel_group_idx to fit in uint32");
+    }
+  }
+
+  return success();
+}
+
+static LogicalResult verifyAsyncTransferOp(Operation *op, Value dst, Value src) {
+  Type dstElemTy = getElemTy(dst.getType());
+  Type srcElemTy = getElemTy(src.getType());
+  if (!dstElemTy || !srcElemTy) {
+    return op->emitOpError("expects src and dst to have element types");
+  }
+  if (dstElemTy != srcElemTy) {
+    return op->emitOpError("expects src and dst to have the same element type");
+  }
+  if (failed(verifyAsyncFlatContiguous1DGMViewLike(op, dst, "dst")) ||
+      failed(verifyAsyncFlatContiguous1DGMViewLike(op, src, "src"))) {
+    return failure();
+  }
+  if (getShapeVec(dst.getType()) != getShapeVec(src.getType())) {
+    return op->emitOpError("expects src and dst to have the same static shape");
+  }
+  return success();
+}
+
+LogicalResult TPutAsyncOp::verify() {
+  return verifyAsyncTransferOp(getOperation(), getDst(), getSrc());
+}
+
+LogicalResult TGetAsyncOp::verify() {
+  return verifyAsyncTransferOp(getOperation(), getDst(), getSrc());
+}
+
+LogicalResult TPutOp::verify() {
+  if (failed(verifyCommGlobalLike(
+          *this, getDst(), "dst",
+          CommGlobalShapePolicy::AllowDynamicPartitionView)) ||
+      failed(verifyCommGlobalLike(
+          *this, getSrc(), "src",
+          CommGlobalShapePolicy::AllowDynamicPartitionView)) ||
+      failed(verifyCommStagingTileLike(*this, getPing(), "ping")) ||
+      failed(verifyCommPingPongSameType(*this, getPing(), getPong(), "ping",
+                                        "pong"))) {
+    return failure();
+  }
+  if (getElemTy(getDst().getType()) != getElemTy(getSrc().getType())) {
+    return emitOpError("expects src and dst to have the same element type");
+  }
+  if (getShapeVec(getDst().getType()) != getShapeVec(getSrc().getType())) {
+    return emitOpError(
+        "expects src and dst to have the same static/dynamic shape signature");
+  }
+  if (getElemTy(getPing().getType()) != getElemTy(getSrc().getType())) {
+    return emitOpError("expects staging tile element type to match src/dst");
+  }
+  return success();
+}
+
+LogicalResult TGetOp::verify() {
+  if (failed(verifyCommGlobalLike(
+          *this, getDst(), "dst",
+          CommGlobalShapePolicy::AllowDynamicPartitionView)) ||
+      failed(verifyCommGlobalLike(
+          *this, getSrc(), "src",
+          CommGlobalShapePolicy::AllowDynamicPartitionView)) ||
+      failed(verifyCommStagingTileLike(*this, getPing(), "ping")) ||
+      failed(verifyCommPingPongSameType(*this, getPing(), getPong(), "ping",
+                                        "pong"))) {
+    return failure();
+  }
+  if (getElemTy(getDst().getType()) != getElemTy(getSrc().getType())) {
+    return emitOpError("expects src and dst to have the same element type");
+  }
+  if (getShapeVec(getDst().getType()) != getShapeVec(getSrc().getType())) {
+    return emitOpError(
+        "expects src and dst to have the same static/dynamic shape signature");
+  }
+  if (getElemTy(getPing().getType()) != getElemTy(getSrc().getType())) {
+    return emitOpError("expects staging tile element type to match src/dst");
+  }
+  return success();
+}
+
+LogicalResult TNotifyOp::verify() {
+  if (failed(verifyCommSignalLike(*this, getSignal(), "signal"))) {
+    return failure();
+  }
+  auto valueTy = dyn_cast<IntegerType>(getValue().getType());
+  if (!valueTy || valueTy.getWidth() != 32) {
+    return emitOpError("expects value to be i32");
+  }
+  return success();
+}
+
+LogicalResult TWaitOp::verify() {
+  if (failed(verifyCommSignalLike(*this, getSignal(), "signal"))) {
+    return failure();
+  }
+  auto cmpTy = dyn_cast<IntegerType>(getCmpValue().getType());
+  if (!cmpTy || cmpTy.getWidth() != 32) {
+    return emitOpError("expects cmp_value to be i32");
+  }
+  return success();
+}
+
+LogicalResult TTestOp::verify() {
+  if (failed(verifyCommSignalLike(*this, getSignal(), "signal"))) {
+    return failure();
+  }
+  auto cmpTy = dyn_cast<IntegerType>(getCmpValue().getType());
+  if (!cmpTy || cmpTy.getWidth() != 32) {
+    return emitOpError("expects cmp_value to be i32");
+  }
+  return success();
+}
+
+static LogicalResult verifySyncAllGmWorkspace(Operation *op, Value workspace,
+                                              StringRef name) {
+  Type ty = workspace.getType();
+  Type elemType;
+  SmallVector<int64_t, 4> shape;
+  if (auto ptrTy = dyn_cast<pto::PtrType>(ty)) {
+    if (ptrTy.getMemorySpace().getAddressSpace() != pto::AddressSpace::GM) {
+      return op->emitOpError() << "expects " << name
+                               << " to be in GM address space";
+    }
+    elemType = ptrTy.getElementType();
+  } else if (isa<pto::TensorViewType, pto::PartitionTensorViewType>(ty)) {
+    elemType = getElemTy(ty);
+    shape = getShapeVec(ty);
+  } else {
+    return op->emitOpError()
+           << "expects " << name
+           << " to be a GM ptr/tensor_view/partition_view";
+  }
+
+  auto elemTy = dyn_cast<IntegerType>(elemType);
+  if (!elemTy || elemTy.getWidth() != 32) {
+    return op->emitOpError() << "expects " << name << " element type to be i32";
+  }
+
+  // A pointer does not carry capacity metadata. It is lowered as the fixed
+  // 16 x i32 workspace required by PTO-ISA; allocation size remains a runtime
+  // responsibility.
+  if (isa<pto::PtrType>(ty)) {
+    return success();
+  }
+
+  if (shape.empty()) {
+    return op->emitOpError() << "expects " << name << " to have rank >= 1";
+  }
+  for (int64_t dim : shape) {
+    if (dim != ShapedType::kDynamic && dim <= 0) {
+      return op->emitOpError() << "expects " << name << " shape to be positive";
+    }
+  }
+
+  constexpr int64_t kMinWorkspaceElements = 16;
+  if (!llvm::is_contained(shape, ShapedType::kDynamic)) {
+    int64_t staticCapacity = 1;
+    for (int64_t dim : shape) {
+      int64_t product = 0;
+      if (llvm::MulOverflow(staticCapacity, dim, product)) {
+        staticCapacity = std::numeric_limits<int64_t>::max();
+        break;
+      }
+      staticCapacity = product;
+    }
+    if (staticCapacity < kMinWorkspaceElements) {
+      return op->emitOpError()
+             << "expects " << name << " to contain at least "
+             << kMinWorkspaceElements
+             << " i32 elements (64 bytes), but static capacity is "
+             << staticCapacity;
+    }
+  }
+
+  return success();
+}
+
+LogicalResult SyncAllOp::verify() {
+  bool hasGm = static_cast<bool>(getGmWorkspace());
+  auto mode = getMode().getValue();
+
+  if (mode == pto::SyncAllMode::Hard) {
+    if (hasGm || getUsedCores()) {
+      return emitOpError(
+          "expects hard syncall to have no gm_workspace or used_cores");
+    }
+    return success();
+  }
+
+  if (!hasGm) {
+    return emitOpError("expects soft syncall to provide gm_workspace");
+  }
+  if (failed(verifySyncAllGmWorkspace(getOperation(), getGmWorkspace(),
+                                      "gm_workspace"))) {
+    return failure();
+  }
+
+  return success();
+}
+
+LogicalResult TBroadcastOp::verify() {
+  if (failed(verifyCommGlobalLike(*this, getSrc(), "src")) ||
+      failed(verifyCommStagingTileLike(*this, getPing(), "ping")) ||
+      failed(verifyCommPingPongSameType(*this, getPing(), getPong(), "ping",
+                                        "pong")) ||
+      failed(verifyCommGlobalGroup(*this, getGroup(), "group"))) {
+    return failure();
+  }
+  if (getRoot() >= static_cast<uint32_t>(getGroup().size())) {
+    return emitOpError("expects root to index into group operands");
+  }
+  if (getSrc().getType() != getGroup().front().getType()) {
+    return emitOpError("expects src type to match group member type");
+  }
+  if (getElemTy(getPing().getType()) != getElemTy(getSrc().getType())) {
+    return emitOpError("expects staging tile element type to match src");
+  }
+  return success();
+}
+
+LogicalResult CommTGatherOp::verify() {
+  if (failed(verifyCommGlobalLike(*this, getDst(), "dst")) ||
+      failed(verifyCommStagingTileLike(*this, getPing(), "ping")) ||
+      failed(verifyCommPingPongSameType(*this, getPing(), getPong(), "ping",
+                                        "pong")) ||
+      failed(verifyCommGlobalGroup(*this, getGroup(), "group"))) {
+    return failure();
+  }
+  if (getRoot() >= static_cast<uint32_t>(getGroup().size())) {
+    return emitOpError("expects root to index into group operands");
+  }
+  if (getElemTy(getDst().getType()) != getElemTy(getGroup().front().getType())) {
+    return emitOpError("expects dst element type to match group member type");
+  }
+  if (getElemTy(getPing().getType()) != getElemTy(getDst().getType())) {
+    return emitOpError("expects staging tile element type to match dst");
+  }
+  return success();
+}
+
+LogicalResult CommTScatterOp::verify() {
+  if (failed(verifyCommGlobalLike(*this, getSrc(), "src")) ||
+      failed(verifyCommStagingTileLike(*this, getPing(), "ping")) ||
+      failed(verifyCommPingPongSameType(*this, getPing(), getPong(), "ping",
+                                        "pong")) ||
+      failed(verifyCommGlobalGroup(*this, getGroup(), "group"))) {
+    return failure();
+  }
+  if (getRoot() >= static_cast<uint32_t>(getGroup().size())) {
+    return emitOpError("expects root to index into group operands");
+  }
+  if (getElemTy(getSrc().getType()) != getElemTy(getGroup().front().getType())) {
+    return emitOpError("expects src element type to match group member type");
+  }
+  if (getElemTy(getPing().getType()) != getElemTy(getSrc().getType())) {
+    return emitOpError("expects staging tile element type to match src");
+  }
+  return success();
+}
+
+LogicalResult TReduceOp::verify() {
+  if (failed(verifyCommGlobalLike(*this, getDst(), "dst")) ||
+      failed(verifyCommStagingTileLike(*this, getAcc(), "acc")) ||
+      failed(verifyCommStagingTileLike(*this, getRecvPing(), "recv_ping")) ||
+      failed(verifyCommPingPongSameType(*this, getRecvPing(), getRecvPong(),
+                                        "recv_ping", "recv_pong")) ||
+      failed(verifyCommGlobalGroup(*this, getGroup(), "group"))) {
+    return failure();
+  }
+  if (getRoot() >= static_cast<uint32_t>(getGroup().size())) {
+    return emitOpError("expects root to index into group operands");
+  }
+  if (getElemTy(getDst().getType()) != getElemTy(getGroup().front().getType())) {
+    return emitOpError("expects dst element type to match group member type");
+  }
+  if (getAcc().getType() != getRecvPing().getType()) {
+    return emitOpError("expects acc and recv_ping to have identical types");
+  }
+  if (getElemTy(getAcc().getType()) != getElemTy(getDst().getType())) {
+    return emitOpError("expects accumulator/receive tiles to match dst element type");
+  }
+  return success();
+}
+
+LogicalResult AicInitializePipeOp::verify() {
+  if (failed(verifyFrontendInitCommon(*this, FunctionKernelKind::Cube, "cube"))) {
+    return failure();
+  }
+
+  auto accPushEpilogue = getAccPushEpilogueAttr();
+  if (!accPushEpilogue) {
+    return success();
+  }
+
+  auto peerConsumerInitOr = lookupFixpipePeerConsumerInit(*this);
+  if (failed(peerConsumerInitOr)) {
+    return emitOpError()
+           << "expects peer consumer function to contain a matching "
+              "aiv_initialize_pipe with the same consumer buffer contract";
+  }
+
+  Operation *peerConsumerInit = *peerConsumerInitOr;
+  auto peerAccPushEpilogue = getAccPushEpilogueFromInitOp(peerConsumerInit);
+  if (!peerAccPushEpilogue) {
+    return emitOpError()
+           << "expects peer consumer pipe init to also have "
+              "'acc_push_epilogue' for fixpipe contract consistency";
+  }
+
+  if (peerAccPushEpilogue.getLayout() != accPushEpilogue.getLayout()) {
+    return emitOpError()
+           << "expects acc_push_epilogue.layout to match peer consumer "
+           << "(producer has " << stringifyFixpipeLayout(accPushEpilogue.getLayout())
+           << ", consumer has " << stringifyFixpipeLayout(peerAccPushEpilogue.getLayout())
+           << ")";
+  }
+  if (peerAccPushEpilogue.getQuant() != accPushEpilogue.getQuant()) {
+    return emitOpError()
+           << "expects acc_push_epilogue.quant to match peer consumer "
+           << "(producer has " << stringifyFixpipeQuant(accPushEpilogue.getQuant())
+           << ", consumer has " << stringifyFixpipeQuant(peerAccPushEpilogue.getQuant())
+           << ")";
+  }
+  if (peerAccPushEpilogue.getRelu() != accPushEpilogue.getRelu()) {
+    return emitOpError()
+           << "expects acc_push_epilogue.relu to match peer consumer "
+           << "(producer has " << stringifyFixpipeRelu(accPushEpilogue.getRelu())
+           << ", consumer has " << stringifyFixpipeRelu(peerAccPushEpilogue.getRelu())
+           << ")";
+  }
+
+  return success();
+}
 LogicalResult AivInitializePipeOp::verify() {
   if (failed(verifyFrontendInitCommon(*this, FunctionKernelKind::Vector, "vector"))) {
     return failure();
@@ -1203,553 +1735,4 @@ void ThreadfenceBlockOp::getEffects(
                        SideEffects::DefaultResource::get());
   effects.emplace_back(MemoryEffects::Write::get(),
                        SideEffects::DefaultResource::get());
-}
-
-LogicalResult KeepOp::verify() {
-  if (failed(verifySimtKeepResumeCommon(getOperation(), getSlot()))) {
-    return failure();
-  }
-  if (!isSupportedSimtKeepResumeType(getPayload().getType())) {
-    return emitOpError()
-           << "supports integer scalar payloads up to 64 bits and "
-              "f16/bf16/f32 payloads";
-  }
-  if (failed(verifySimtKeepResumeSlotRange(*this))) {
-    return failure();
-  }
-
-  Block *block = getOperation()->getBlock();
-  bool insideSection =
-      getOperation()->getParentOfType<SectionSimtOp>() != nullptr;
-  Operation *lastPayloadOp = nullptr;
-  if (insideSection) {
-    if (!block->empty()) {
-      lastPayloadOp = &block->back();
-    }
-  } else {
-    Operation *terminator = block->getTerminator();
-    if (isa<func::ReturnOp>(terminator)) {
-      lastPayloadOp = terminator->getPrevNode();
-    }
-  }
-  if (!lastPayloadOp) {
-    return emitOpError(
-        "must be placed in the SIMT epilogue before func.return or the end "
-        "of pto.section.simt");
-  }
-
-  Operation *cur = lastPayloadOp;
-  while (cur && isa<SyncthreadsOp>(cur)) {
-    cur = cur->getPrevNode();
-  }
-  Operation *lastKeep = cur;
-  if (!lastKeep || !isa<KeepOp>(lastKeep)) {
-    return emitOpError()
-           << "must be placed in the SIMT epilogue before func.return; only "
-              "'pto.syncthreads' may appear between the final 'pto.keep' group "
-              "and func.return or the end of pto.section.simt";
-  }
-
-  Operation *firstKeep = lastKeep;
-  while (Operation *prev = firstKeep->getPrevNode()) {
-    if (!isa<KeepOp>(prev)) {
-      break;
-    }
-    firstKeep = prev;
-  }
-  if (!isOpInRange(getOperation(), firstKeep, lastKeep)) {
-    return emitOpError()
-           << "must be in the contiguous SIMT keep epilogue group immediately "
-              "before optional 'pto.syncthreads' and func.return or the end "
-              "of pto.section.simt";
-  }
-  if (failed(verifyUniqueKeepGroupSlots(*this, firstKeep, lastKeep))) {
-    return failure();
-  }
-  return success();
-}
-
-LogicalResult ResumeOp::verify() {
-  if (failed(verifySimtKeepResumeCommon(getOperation(), getSlot()))) {
-    return failure();
-  }
-  if (!isSupportedSimtKeepResumeType(getResult().getType())) {
-    return emitOpError()
-           << "supports integer scalar results up to 64 bits and "
-              "f16/bf16/f32 results";
-  }
-  if (failed(verifySimtKeepResumeSlotRange(*this))) {
-    return failure();
-  }
-  Block *block = getOperation()->getBlock();
-  Operation *first = getFirstNonConstantLikeOp(block);
-  if (!first || !isa<ResumeOp>(first)) {
-    return emitOpError()
-           << "must be in the contiguous SIMT resume prologue group after "
-              "constant-like operations";
-  }
-
-  bool found = false;
-  for (Operation *cur = first; cur; cur = cur->getNextNode()) {
-    if (!isa<ResumeOp>(cur)) {
-      break;
-    }
-    if (cur == getOperation()) {
-      found = true;
-      break;
-    }
-  }
-  if (!found) {
-    return emitOpError()
-           << "must be in the contiguous SIMT resume prologue group after "
-              "constant-like operations";
-  }
-  if (failed(verifyUniqueResumeGroupSlots(*this, first))) {
-    return failure();
-  }
-  return success();
-}
-
-void BuildAsyncSessionOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  addEffect(effects, &getScratchMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getWorkspaceMutable(), MemoryEffects::Read::get());
-  addEffect(effects, getOperation()->getOpResult(0), MemoryEffects::Write::get());
-}
-
-void TPutAsyncOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
-  addEffect(effects, &getSrcMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getSessionMutable(), MemoryEffects::Read::get());
-  addEffect(effects, getOperation()->getOpResult(0), MemoryEffects::Write::get());
-}
-
-void TGetAsyncOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
-  addEffect(effects, &getSrcMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getSessionMutable(), MemoryEffects::Read::get());
-  addEffect(effects, getOperation()->getOpResult(0), MemoryEffects::Write::get());
-}
-
-void TPutOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
-  addEffect(effects, &getSrcMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getPingMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getPingMutable(), MemoryEffects::Write::get());
-  if (getPong()) {
-    auto pongRange = getPongMutable();
-    if (auto it = pongRange.begin(); it != pongRange.end()) {
-      addEffect(effects, &*it, MemoryEffects::Read::get());
-      addEffect(effects, &*it, MemoryEffects::Write::get());
-    }
-  }
-}
-
-void TGetOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
-  addEffect(effects, &getSrcMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getPingMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getPingMutable(), MemoryEffects::Write::get());
-  if (getPong()) {
-    auto pongRange = getPongMutable();
-    if (auto it = pongRange.begin(); it != pongRange.end()) {
-      addEffect(effects, &*it, MemoryEffects::Read::get());
-      addEffect(effects, &*it, MemoryEffects::Write::get());
-    }
-  }
-}
-
-void TNotifyOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  addEffect(effects, &getSignalMutable(), MemoryEffects::Write::get());
-  addEffect(effects, &getValueMutable(), MemoryEffects::Read::get());
-}
-
-void TWaitOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  addEffect(effects, &getSignalMutable(), MemoryEffects::Write::get());
-  addEffect(effects, &getCmpValueMutable(), MemoryEffects::Read::get());
-}
-
-void TTestOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  addEffect(effects, &getSignalMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getCmpValueMutable(), MemoryEffects::Read::get());
-  addEffect(effects, getOperation()->getOpResult(0), MemoryEffects::Write::get());
-}
-
-void TBroadcastOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  addEffect(effects, &getSrcMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getPingMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getPingMutable(), MemoryEffects::Write::get());
-  if (getPong()) {
-    auto pongRange = getPongMutable();
-    if (auto it = pongRange.begin(); it != pongRange.end()) {
-      addEffect(effects, &*it, MemoryEffects::Read::get());
-      addEffect(effects, &*it, MemoryEffects::Write::get());
-    }
-  }
-  for (OpOperand &operand : getGroupMutable()) {
-    addEffect(effects, &operand, MemoryEffects::Write::get());
-  }
-}
-
-void CommTGatherOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
-  addEffect(effects, &getPingMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getPingMutable(), MemoryEffects::Write::get());
-  if (getPong()) {
-    auto pongRange = getPongMutable();
-    if (auto it = pongRange.begin(); it != pongRange.end()) {
-      addEffect(effects, &*it, MemoryEffects::Read::get());
-      addEffect(effects, &*it, MemoryEffects::Write::get());
-    }
-  }
-  for (OpOperand &operand : getGroupMutable()) {
-    addEffect(effects, &operand, MemoryEffects::Read::get());
-  }
-}
-
-void CommTScatterOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  addEffect(effects, &getSrcMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getPingMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getPingMutable(), MemoryEffects::Write::get());
-  if (getPong()) {
-    auto pongRange = getPongMutable();
-    if (auto it = pongRange.begin(); it != pongRange.end()) {
-      addEffect(effects, &*it, MemoryEffects::Read::get());
-      addEffect(effects, &*it, MemoryEffects::Write::get());
-    }
-  }
-  for (OpOperand &operand : getGroupMutable()) {
-    addEffect(effects, &operand, MemoryEffects::Write::get());
-  }
-}
-
-void TReduceOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  addEffect(effects, &getDstMutable(), MemoryEffects::Write::get());
-  addEffect(effects, &getAccMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getAccMutable(), MemoryEffects::Write::get());
-  addEffect(effects, &getRecvPingMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getRecvPingMutable(), MemoryEffects::Write::get());
-  if (getRecvPong()) {
-    auto recvPongRange = getRecvPongMutable();
-    if (auto it = recvPongRange.begin(); it != recvPongRange.end()) {
-      addEffect(effects, &*it, MemoryEffects::Read::get());
-      addEffect(effects, &*it, MemoryEffects::Write::get());
-    }
-  }
-  for (OpOperand &operand : getGroupMutable()) {
-    addEffect(effects, &operand, MemoryEffects::Read::get());
-  }
-}
-
-void WaitAsyncEventOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  addEffect(effects, &getEventMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getSessionMutable(), MemoryEffects::Read::get());
-  addEffect(effects, getOperation()->getOpResult(0), MemoryEffects::Write::get());
-}
-
-void TestAsyncEventOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  addEffect(effects, &getEventMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getSessionMutable(), MemoryEffects::Read::get());
-  addEffect(effects, getOperation()->getOpResult(0), MemoryEffects::Write::get());
-}
-
-void InitializeL2G2LPipeOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  addEffect(effects, &getGmAddrMutable(), MemoryEffects::Read::get());
-  auto localAddr = getLocalAddrMutable();
-  if (!localAddr.empty()) {
-    addEffect(effects, &*localAddr.begin(), MemoryEffects::Read::get());
-  }
-  auto peerLocalAddr = getPeerLocalAddrMutable();
-  if (!peerLocalAddr.empty()) {
-    addEffect(effects, &*peerLocalAddr.begin(), MemoryEffects::Read::get());
-  }
-  addEffect(effects, getOperation()->getOpResult(0), MemoryEffects::Write::get());
-}
-
-void InitializeL2LPipeOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  addEffect(effects, &getLocalAddrMutable(), MemoryEffects::Read::get());
-  addEffect(effects, getOperation()->getOpResult(0), MemoryEffects::Write::get());
-}
-
-void TPushOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  addEffect(effects, &getTileMutable(), MemoryEffects::Read::get());
-  auto aivSubblockId = getAivSubblockidMutable();
-  if (!aivSubblockId.empty()) {
-    addEffect(effects, &*aivSubblockId.begin(), MemoryEffects::Read::get());
-  }
-  addEffect(effects, &getPipeHandleMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getPipeHandleMutable(), MemoryEffects::Write::get());
-  effects.emplace_back(MemoryEffects::Read::get(),
-                       SideEffects::DefaultResource::get());
-  effects.emplace_back(MemoryEffects::Write::get(),
-                       SideEffects::DefaultResource::get());
-
-  if (auto pipeId = getFrontendPipeIdFromHandle(getPipeHandle())) {
-    auto accPushEpilogue =
-        getAccPushEpilogueFromInitOp(getPipeHandle().getDefiningOp());
-    if (accPushEpilogue &&
-        (isScalarFixpipeQuant(accPushEpilogue.getQuant()) ||
-         isVectorFixpipeQuant(accPushEpilogue.getQuant()))) {
-      effects.emplace_back(MemoryEffects::Read::get(),
-                           getFixpipeQuantStateIdAttr(getOperation(), *pipeId),
-                           FixpipeQuantStateResource::get());
-    }
-  }
-}
-
-void TPushToAivOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  addEffect(effects, &getTileMutable(), MemoryEffects::Read::get());
-
-  auto funcOp = getOperation()->getParentOfType<func::FuncOp>();
-  if (!funcOp) {
-    return;
-  }
-
-  auto initOr = lookupFrontendInitOpById(getOperation(), funcOp, getId());
-  if (failed(initOr)) {
-    return;
-  }
-
-  auto aicInit = dyn_cast<AicInitializePipeOp>(*initOr);
-  if (!aicInit) {
-    return;
-  }
-
-  auto accPushEpilogue = aicInit.getAccPushEpilogueAttr();
-  if (!accPushEpilogue) {
-    return;
-  }
-
-  auto quant = accPushEpilogue.getQuant();
-  if (isScalarFixpipeQuant(quant) || isVectorFixpipeQuant(quant)) {
-    effects.emplace_back(MemoryEffects::Read::get(),
-                         getFixpipeQuantStateIdAttr(getOperation(), getId()),
-                         FixpipeQuantStateResource::get());
-  }
-}
-
-void TAllocOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  addEffect(effects, &getEntryMutable(), MemoryEffects::Write::get());
-  addEffect(effects, &getPipeHandleMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getPipeHandleMutable(), MemoryEffects::Write::get());
-}
-
-void TPopOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  addEffect(effects, &getPipeHandleMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getPipeHandleMutable(), MemoryEffects::Write::get());
-  auto aivSubblockId = getAivSubblockidMutable();
-  if (!aivSubblockId.empty()) {
-    addEffect(effects, &*aivSubblockId.begin(), MemoryEffects::Read::get());
-  }
-  addEffect(effects, &getTileMutable(), MemoryEffects::Write::get());
-}
-
-void TFreeOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  auto entry = getEntryMutable();
-  if (!entry.empty()) {
-    addEffect(effects, &*entry.begin(), MemoryEffects::Read::get());
-  }
-  addEffect(effects, &getPipeHandleMutable(), MemoryEffects::Read::get());
-  addEffect(effects, &getPipeHandleMutable(), MemoryEffects::Write::get());
-}
-
-void SetQuantScalarOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  addEffect(effects, &getScaleMutable(), MemoryEffects::Read::get());
-  effects.emplace_back(MemoryEffects::Write::get(),
-                       getFixpipeQuantStateIdAttr(getOperation(), getId()),
-                       FixpipeQuantStateResource::get());
-}
-
-void SetQuantVectorOp::getEffects(
-    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
-        &effects) {
-  addEffect(effects, &getScalingTileMutable(), MemoryEffects::Read::get());
-  effects.emplace_back(MemoryEffects::Write::get(),
-                       getFixpipeQuantStateIdAttr(getOperation(), getId()),
-                       FixpipeQuantStateResource::get());
-}
-
-static constexpr const char kConvertRoundingKeywords[] = "r/a/f/c/z/o/h";
-
-static ParseResult parseConvertRounding(OpAsmParser &parser,
-                                        RoundingAttr &roundingAttr) {
-  StringRef roundingKeyword;
-  if (parser.parseKeyword("round") || parser.parseLParen() ||
-      parser.parseKeyword(&roundingKeyword) || parser.parseRParen()) {
-    return failure();
-  }
-  std::optional<Rounding> rounding = symbolizeRounding(roundingKeyword);
-  if (!rounding) {
-    return parser.emitError(parser.getCurrentLocation())
-           << "expected convert rounding to be one of "
-           << kConvertRoundingKeywords;
-  }
-  roundingAttr = RoundingAttr::get(parser.getContext(), *rounding);
-  return success();
-}
-
-static void printConvertRounding(OpAsmPrinter &printer, Operation *op,
-                                 RoundingAttr rounding) {
-  printer << "round(" << stringifyRounding(rounding.getValue()) << ")";
-}
-
-static ParseResult parseConvertSaturation(OpAsmParser &parser,
-                                          SaturationAttr &saturationAttr) {
-  StringRef saturationKeyword;
-  if (parser.parseKeyword(&saturationKeyword)) {
-    return failure();
-  }
-  std::optional<Saturation> saturation =
-      symbolizeSaturation(saturationKeyword);
-  if (!saturation) {
-    return parser.emitError(parser.getCurrentLocation())
-           << "expected convert saturation to be sat or nosat";
-  }
-  saturationAttr = SaturationAttr::get(parser.getContext(), *saturation);
-  return success();
-}
-
-static void printConvertSaturation(OpAsmPrinter &printer, Operation *op,
-                                   SaturationAttr saturation) {
-  printer << stringifySaturation(saturation.getValue());
-}
-
-static ParseResult parseSignedness(OpAsmParser &parser,
-                                   SignednessAttr &signedness) {
-  StringRef signednessKeyword;
-  if (parser.parseKeyword(&signednessKeyword)) {
-    return failure();
-  }
-  std::optional<Signedness> parsed = symbolizeSignedness(signednessKeyword);
-  if (!parsed) {
-    return parser.emitError(parser.getCurrentLocation())
-           << "expected signedness to be signed or unsigned";
-  }
-  signedness = SignednessAttr::get(parser.getContext(), *parsed);
-  return success();
-}
-
-static void printSignedness(OpAsmPrinter &printer, Operation *op,
-                            SignednessAttr signedness) {
-  printer << stringifySignedness(signedness.getValue());
-}
-
-static OptionalParseResult parseOptionalSignedness(OpAsmParser &parser,
-                                                   SignednessAttr &signedness) {
-  if (succeeded(parser.parseOptionalKeyword("signed"))) {
-    signedness = SignednessAttr::get(parser.getContext(), Signedness::Signed);
-    return success();
-  }
-  if (succeeded(parser.parseOptionalKeyword("unsigned"))) {
-    signedness =
-        SignednessAttr::get(parser.getContext(), Signedness::Unsigned);
-    return success();
-  }
-  return std::nullopt;
-}
-
-static void printOptionalSignedness(OpAsmPrinter &printer, Operation *op,
-                                    SignednessAttr signedness) {
-  printer << stringifySignedness(signedness.getValue());
-}
-
-static constexpr const char kLdL2CacheKeywords[] =
-    "nmfv/nmlv/nmprs/nmpref/nakeep/naclean/nadrop/idsfv/idslv/idsprs/"
-    "idspref/exfv/exlv/exprs/expref";
-
-static constexpr const char kStL2CacheKeywords[] =
-    "nmfv/nmlv/nmprs/nmred/naci/napw/napi/nared/wbhfv/wbhlv/wbhprs/"
-    "wbhred/wtsfv/wtslv/wtsprs/wtsred";
-
-static ParseResult parseL1Cache(OpAsmParser &parser, L1CacheAttr &l1cache) {
-  if (failed(parser.parseOptionalKeyword("l1cache"))) {
-    l1cache = L1CacheAttr::get(parser.getContext(), L1Cache::Cache);
-    return success();
-  }
-
-  StringRef keyword;
-  if (parser.parseLParen() || parser.parseKeyword(&keyword) ||
-      parser.parseRParen()) {
-    return failure();
-  }
-  std::optional<L1Cache> parsed = symbolizeL1Cache(keyword);
-  if (!parsed) {
-    return parser.emitError(parser.getCurrentLocation())
-           << "expected memory l1cache to be cache or uncache";
-  }
-  l1cache = L1CacheAttr::get(parser.getContext(), *parsed);
-  return success();
-}
-
-static void printL1Cache(OpAsmPrinter &printer, Operation *op,
-                         L1CacheAttr l1cache) {
-  if (!l1cache) {
-    return;
-  }
-  printer << "l1cache(" << stringifyL1Cache(l1cache.getValue()) << ")";
-}
-
-static ParseResult parseLdL2Cache(OpAsmParser &parser,
-                                  LdL2CacheAttr &l2cache) {
-  if (failed(parser.parseOptionalKeyword("l2cache"))) {
-    l2cache = LdL2CacheAttr::get(parser.getContext(), LdL2Cache::NMFV);
-    return success();
-  }
-
-  StringRef keyword;
-  if (parser.parseLParen() || parser.parseKeyword(&keyword) ||
-      parser.parseRParen()) {
-    return failure();
-  }
-  std::optional<LdL2Cache> parsed = symbolizeLdL2Cache(keyword);
-  if (!parsed) {
-    return parser.emitError(parser.getCurrentLocation())
-           << "expected load L2 cache control to be one of "
-           << kLdL2CacheKeywords;
-  }
-  l2cache = LdL2CacheAttr::get(parser.getContext(), *parsed);
-  return success();
 }
