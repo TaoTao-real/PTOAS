@@ -1443,11 +1443,11 @@ std::string layoutToEmitCString(mlir::pto::Layout layout) {
   return "pto::Layout::ND";
 }
 
-Value loadEmitCVariableIfNeeded(OpBuilder &builder, Location loc,
-                                       Value value) {
-  (void)builder;
-  (void)loc;
-  return value;
+Value loadEmitCVariableIfNeeded(const OpBuilder& builder, Location loc, Value value)
+{
+    (void)builder;
+    (void)loc;
+    return value;
 }
 
 Value makeEmitCIntConstant(ConversionPatternRewriter &rewriter,
