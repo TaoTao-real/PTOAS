@@ -27,6 +27,10 @@ LogicalResult MadMxRawOp::verify() {
                            getDst().getType());
 }
 
+// ODS OpInterface methods have generated non-const declarations.
+// NOLINTNEXTLINE(readability-make-member-function-const)
 bool MadMxRawOp::isMadMxFamily() { return true; }
+// NOLINTNEXTLINE(readability-make-member-function-const)
 bool MadMxRawOp::hasBiasOperand() { return false; }
+// NOLINTNEXTLINE(readability-make-member-function-const)
 Value MadMxRawOp::getBiasOrNull() { return {}; }

@@ -10,7 +10,6 @@
 //===- VMIToVPTOConversionInternals.inc - VMIToVPTO internals -*- C++ -*-===//
 //===----------------------------------------------------------------------===//
 
-
 std::optional<std::string> getX2MemoryDistToken(Type elementType,
                                                 StringRef prefix);
 std::optional<std::string> getDenseLaneStrideLoadDistToken(VMIVRegType type);
@@ -1870,5 +1869,3 @@ struct VMIStatefulReadContract {
   int64_t remainder;
   VMIStatefulOffsetRange offsetRange;
 };
-
-
