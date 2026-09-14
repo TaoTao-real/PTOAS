@@ -45,7 +45,6 @@ llvm::FailureOr<int64_t> getDenseLaneStride(mlir::Type type);
 mlir::LogicalResult verifyAllSameVRegShapeAndLayout(mlir::Operation *op, llvm::ArrayRef<mlir::pto::VMIVRegType> types, bool requireSameElement);
 mlir::LogicalResult verifyAllSameVRegShapeAndLayoutPresence( mlir::Operation *op, llvm::ArrayRef<mlir::pto::VMIVRegType> types, bool requireSameElement);
 mlir::LogicalResult verifyFloatUnaryVRegOp(mlir::Operation *op, mlir::pto::VMIVRegType source, mlir::pto::VMIVRegType result);
-mlir::LogicalResult verifyFloatTernaryVRegOp(mlir::Operation *op, mlir::pto::VMIVRegType lhs, mlir::pto::VMIVRegType rhs, mlir::pto::VMIVRegType acc, mlir::pto::VMIVRegType result);
 mlir::LogicalResult verifyAllSameMaskShapeLayoutAndGranularity(mlir::Operation *op, llvm::ArrayRef<mlir::pto::VMIMaskType> types);
 mlir::LogicalResult verifyMaskMatchesData(mlir::Operation *op, mlir::pto::VMIMaskType maskType, mlir::pto::VMIVRegType dataType);
 bool isUBBackedMemoryType(mlir::Type type);

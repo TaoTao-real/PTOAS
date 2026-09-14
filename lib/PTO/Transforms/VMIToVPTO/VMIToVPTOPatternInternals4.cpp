@@ -1040,65 +1040,6 @@ public:
   }
 };
 
-struct OneToNVMIFmaOpPattern : OneToNOpConversionPattern<VMIFmaOp> {
-  using OneToNOpConversionPattern<VMIFmaOp>::OneToNOpConversionPattern;
-
-private:
-  FailureOr<Value> lowerPart(VMIFmaOp op, Value lhs, Value rhs, Value acc,
-                             Type resultType,
-                             OneToNPatternRewriter &rewriter) const {
-    auto vregType = dyn_cast<VRegType>(resultType);
-    const bool invalidPart =
-        !vregType || lhs.getType() != resultType || rhs.getType() != resultType ||
-        acc.getType() != resultType;
-    if (invalidPart) {
-      (void)rewriter.notifyMatchFailure(
-          op, "fma requires matching physical vreg parts");
-      return failure();
-    }
-    FailureOr<Value> mask =
-        createAllTrueMaskForVReg(op.getLoc(), vregType, rewriter);
-    if (failed(mask)) {
-      (void)rewriter.notifyMatchFailure(op,
-                                        "unsupported element type for fma");
-      return failure();
-    }
-    return rewriter
-        .create<VmulaOp>(op.getLoc(), resultType, acc, lhs, rhs, *mask)
-        .getResult();
-  }
-
-public:
-  LogicalResult
-  matchAndRewrite(VMIFmaOp op, OpAdaptor adaptor,
-                  OneToNPatternRewriter &rewriter) const override {
-    ValueRange lhsParts = adaptor.getLhs();
-    ValueRange rhsParts = adaptor.getRhs();
-    ValueRange accParts = adaptor.getAcc();
-    FailureOr<SmallVector<Type>> maybe_resultTypes =
-        getConvertedResultTypesOrFailure(op, *this->getTypeConverter());
-    if (failed(maybe_resultTypes)) {
-      return failure();
-    }
-    SmallVector<Type> resultTypes = std::move(*maybe_resultTypes);
-    const bool invalidArity =
-        lhsParts.size() != rhsParts.size() ||
-        lhsParts.size() != accParts.size() ||
-        lhsParts.size() != resultTypes.size();
-    if (invalidArity) {
-      return rewriter.notifyMatchFailure(op, "fma physical arity mismatch");
-    }
-
-    return lowerPointwisePhysicalParts(
-        op, resultTypes, "fma physical arity mismatch", rewriter,
-        [&](int64_t index, Type resultType) -> FailureOr<Value> {
-          return lowerPart(op, lhsParts[index], rhsParts[index], accParts[index],
-                           resultType, rewriter);
-        },
-        *this->getTypeConverter());
-  }
-};
-
 struct OneToNVMIVexpdifOpPattern : OneToNOpConversionPattern<VMIVexpdifOp> {
   using OneToNOpConversionPattern<VMIVexpdifOp>::OneToNOpConversionPattern;
 

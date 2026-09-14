@@ -1465,8 +1465,13 @@ private:
         op.getLoc(), active, resultVMIType.getElementCount(), rewriter);
     results.reserve(resultTypes.size());
     for (int64_t part = 0; part < factor; ++part) {
-      Value remaining = createPartitionActiveLanes(op.getLoc(), activeI32,
-                                                   factor, part, rewriter);
+      FailureOr<Value> partitioned = createLayoutPartitionActiveLanes(
+          op.getLoc(), activeI32, resultVMIType, part, rewriter);
+      if (failed(partitioned)) {
+        return rewriter.notifyMatchFailure(
+            op, "failed to partition dynamic create_mask active lanes");
+      }
+      Value remaining = *partitioned;
       for (int64_t chunk = 0; chunk < chunksPerPart; ++chunk) {
         Type resultType = resultTypes[part * chunksPerPart + chunk];
         FailureOr<std::pair<Value, Value>> maskAndRemaining =

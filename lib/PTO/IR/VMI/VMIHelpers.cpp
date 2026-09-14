@@ -738,19 +738,6 @@ LogicalResult verifyFloatUnaryVRegOp(Operation *op, VMIVRegType source,
                                          /*requireSameElement=*/true);
 }
 
-LogicalResult verifyFloatTernaryVRegOp(Operation *op, VMIVRegType lhs,
-                                              VMIVRegType rhs, VMIVRegType acc,
-                                              VMIVRegType result) {
-  if (failed(verifyBF16x2ComputeElementType(op, lhs.getElementType()))) {
-    return failure();
-  }
-  if (!isVMIFloatLikeType(lhs.getElementType())) {
-    return op->emitOpError("requires floating-point-like VMI element type");
-  }
-  return verifyAllSameVRegShapeAndLayout(op, {lhs, rhs, acc, result},
-                                         /*requireSameElement=*/true);
-}
-
 LogicalResult
 verifyAllSameMaskShapeLayoutAndGranularity(Operation *op,
                                            ArrayRef<VMIMaskType> types) {

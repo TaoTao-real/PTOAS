@@ -1888,5 +1888,3 @@ static FailureOr<SmallVector<Value>> materializeLaneStrideResultList(
   }
   return results;
 }
-
-

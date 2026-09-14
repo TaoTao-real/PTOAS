@@ -611,43 +611,48 @@ static void populateVMIStructuralAndMemoryPatterns(
 
 static void populateVMIArithmeticPatterns(
     VMIToVPTOTypeConverter &typeConverter, RewritePatternSet &patterns) {
-  patterns.add<OneToNVMIBinaryOpPattern<VMIAddFOp, VaddOp>,
-      OneToNVMIBinaryOpPattern<VMIAddIOp, VaddOp>,
-      OneToNVMICarryOutputOpPattern<VMIVaddcOp, VaddcOp>,
+  patterns.add<OneToNVMICarryOutputOpPattern<VMIVaddcOp, VaddcOp>,
       OneToNVMICarryOutputOpPattern<VMIVsubcOp, VsubcOp>,
       OneToNVMICarryInputOpPattern<VMIVaddcsOp, VaddcsOp>,
       OneToNVMICarryInputOpPattern<VMIVsubcsOp, VsubcsOp>,
-      OneToNVMIBinaryOpPattern<VMISubFOp, VsubOp>,
-      OneToNVMIBinaryOpPattern<VMISubIOp, VsubOp>,
-      OneToNVMIBinaryOpPattern<VMIMulFOp, VmulOp>,
-      OneToNVMIBinaryOpPattern<VMIMulIOp, VmulOp>,
+      OneToNUnifiedMaskedOpPattern<VMIVaddOp, VaddOp>,
+      OneToNUnifiedMaskedOpPattern<VMIVsubOp, VsubOp>,
+      OneToNUnifiedMaskedOpPattern<VMIVmulOp, VmulOp>,
+      OneToNUnifiedMaskedOpPattern<VMIVdivOp, VdivOp>,
+      OneToNUnifiedMaskedOpPattern<VMIVminOp, VminOp>,
+      OneToNUnifiedMaskedOpPattern<VMIVmaxOp, VmaxOp>,
+      // The dual-form bitwise ops reach this pass only from a hand-built
+      // pipeline that skips `-vmi-lower-unified-to-legacy`; the standard
+      // pipeline feeds the vreg-interface forms below instead.
+      OneToNUnifiedMaskedOpPattern<VMIVandOp, VandOp>,
+      OneToNUnifiedMaskedOpPattern<VMIVorOp, VorOp>,
+      OneToNUnifiedMaskedOpPattern<VMIVxorOp, VxorOp>,
+      // Vreg-interface forms produced by the dual-form split in
+      // `-vmi-lower-unified-to-legacy`; they keep the governed mask.
+      OneToNUnifiedMaskedOpPattern<VMIAndIOp, VandOp>,
+      OneToNUnifiedMaskedOpPattern<VMIOrIOp, VorOp>,
+      OneToNUnifiedMaskedOpPattern<VMIXOrIOp, VxorOp>,
+      OneToNUnifiedMaskedOpPattern<VMINotOp, VnotOp>,
+      OneToNUnifiedMaskedOpPattern<VMIVshlOp, VshlOp>,
+      OneToNUnifiedMaskedOpPattern<VMIVshrOp, VshrOp>,
+      OneToNUnifiedMaskedOpPattern<VMIVnegOp, VnegOp>,
+      OneToNUnifiedMaskedOpPattern<VMIVsqrtOp, VsqrtOp>,
+      OneToNUnifiedMaskedOpPattern<VMIVexpOp, VexpOp>,
+      OneToNUnifiedMaskedOpPattern<VMIVlnOp, VlnOp>,
+      OneToNUnifiedMaskedOpPattern<VMIVreluOp, VreluOp>,
+      OneToNUnifiedMaskedOpPattern<VMIVnotOp, VnotOp>,
+      OneToNUnifiedMaskedOpPattern<VMIVmulaOp, VmulaOp>,
+      OneToNUnifiedMaskedOpPattern<VMIVaxpyOp, VaxpyOp>,
+      OneToNUnifiedMaskedOpPattern<VMIVlreluOp, VlreluOp>,
+      OneToNUnifiedMaskedOpPattern<VMIVpreluOp, VpreluOp>,
+      OneToNUnifiedMaskedOpPattern<VMIVabsOp, VabsOp>,
       OneToNVMIVecScalarOpPattern<VMIAddSOp, VaddsOp>,
       OneToNVMIVecScalarOpPattern<VMIMulSOp, VmulsOp>,
       OneToNVMIVecScalarOpPattern<VMIMaxSOp, VmaxsOp>,
       OneToNVMIVecScalarOpPattern<VMIMinSOp, VminsOp>,
       OneToNVMIVecScalarOpPattern<VMIShlSOp, VshlsOp>,
       OneToNVMIVecScalarOpPattern<VMIShrSOp, VshrsOp>, OneToNVMIVmullOpPattern,
-      OneToNVMIFmaOpPattern, OneToNVMIVexpdifOpPattern,
-      OneToNVMIBinaryOpPattern<VMIDivFOp, VdivOp>,
-      OneToNVMIBinaryOpPattern<VMIMinFOp, VminOp>,
-      OneToNVMIBinaryOpPattern<VMIMinIOp, VminOp>,
-      OneToNVMIBinaryOpPattern<VMIMaxFOp, VmaxOp>,
-      OneToNVMIBinaryOpPattern<VMIMaxIOp, VmaxOp>,
-      OneToNVMIUnaryOpPattern<VMINegFOp, VnegOp>,
-      OneToNVMIUnaryOpPattern<VMINegIOp, VnegOp>,
-      OneToNVMIUnaryOpPattern<VMIAbsFOp, VabsOp>,
-      OneToNVMIUnaryOpPattern<VMIAbsIOp, VabsOp>,
-      OneToNVMIUnaryOpPattern<VMISqrtOp, VsqrtOp>,
-      OneToNVMIUnaryOpPattern<VMIExpOp, VexpOp>,
-      OneToNVMIUnaryOpPattern<VMILnOp, VlnOp>,
-      OneToNVMIUnaryOpPattern<VMIReluOp, VreluOp>,
-      OneToNVMIBinaryOpPattern<VMIAndIOp, VandOp>,
-      OneToNVMIBinaryOpPattern<VMIOrIOp, VorOp>,
-      OneToNVMIBinaryOpPattern<VMIXOrIOp, VxorOp>,
-      OneToNVMIShiftOpPattern<VMIShLIOp, VshlOp>,
-      OneToNVMIShiftOpPattern<VMIShRUIOp, VshrOp>,
-      OneToNVMIShiftOpPattern<VMIShRSIOp, VshrOp>,
-      OneToNVMIUnaryOpPattern<VMINotOp, VnotOp>,
+      OneToNVMIVexpdifOpPattern,
       OneToNVMICmpOpPattern<VMICmpFOp>, OneToNVMICmpOpPattern<VMICmpIOp>,
       OneToNVMISelectOpPattern, OneToNVMIVselrOpPattern,
       OneToNVMIActivePrefixIndexOpPattern,
@@ -981,8 +986,6 @@ LogicalResult checkSupportedBitcastShape(VMIBitcastOp op, std::string *reason) {
   }
   return success();
 }
-
-
 
 struct ChannelShapePlan {
   int64_t channels;
@@ -1905,4 +1908,3 @@ static FailureOr<VmullShapePlan> buildVmullShapePlan(
   }
   return VmullShapePlan{aType, logical->layout, *aArity};
 }
-
