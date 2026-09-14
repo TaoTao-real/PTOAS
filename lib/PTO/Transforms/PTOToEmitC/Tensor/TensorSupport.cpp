@@ -75,7 +75,7 @@ std::string saturationModeTok(mlir::pto::SaturationModeAttr attr) {
   case SM::ON:  return "SaturationMode::ON";
   case SM::OFF: return "SaturationMode::OFF";
   }
-  return "SaturationMode::OFF";
+  return "SaturationMode::ON";
 }
 
 //===----------------------------------------------------------------------===//
