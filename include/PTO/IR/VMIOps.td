@@ -552,6 +552,12 @@ def VMIGroupBroadcastOp : VMI_Op<"group_broadcast"> {
 class VMIHistogramOp<string mnemonic, string summaryText>
     : VMI_Op<mnemonic> {
   let summary = summaryText;
+  let description = [{
+    Accumulates counts from logical byte source lanes selected by the mask.
+    Source and mask lengths match; the accumulator independently selects
+    128 or 256 ui16 bins. PTODSL restricts public source/mask lengths to
+    1/2/4/8/64/128/256. Internal IR retains general logical lengths.
+  }];
   let arguments = (ins VMI_VRegTypeConstraint:$acc,
                        VMI_VRegTypeConstraint:$source,
                        VMI_MaskTypeConstraint:$mask);
@@ -1703,7 +1709,11 @@ def VMIVscatterOp : VMI_Op<"vscatter", [DeclareOpInterfaceMethods<MemoryEffectsO
   let summary = "VMI logical masked indexed scatter";
   let description = [{
     Scatters elements to UB memory using an index vector.
-    Inactive lanes are controlled by pmode.
+    Inactive and padding lanes do not write memory. The direct path supports
+    partial contiguous B32/B16 chunks. B8 values and logical b8 masks are
+    expanded together to B16 hardware request slots (128 requests per chunk).
+    PTODSL requires matching value/index/mask lane counts in
+    1/2/4/8/64/128/256; internal IR retains general logical lengths.
 
     Example:
     ```

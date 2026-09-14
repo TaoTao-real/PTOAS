@@ -584,7 +584,43 @@ struct MaskGranularitySolver {
     return success();
   }
 
+  // Unconstrained predicates used by histogram/scatter should start in the
+  // common consumer granularity. Falling back to b32 introduces an unnecessary
+  // b32-to-b8 conversion, whose deinterleaved carrier cannot represent short
+  // vectors. Preserve concrete producers and all mixed-granularity decisions.
+  void preferHistogramScatterGranularity() {
+    struct Preference {
+      StringRef granularity;
+      bool conflict = false;
+      bool histogramOrScatter = false;
+    };
+    llvm::DenseMap<unsigned, Preference> preferences;
+    for (const MaskUseRequest &request : maskUseRequests) {
+      unsigned rootId = findMask(maskIds.lookup(request.operand->get()));
+      if (!maskNodes[rootId].granularity.empty()) {
+        continue;
+      }
+      Preference &preference = preferences[rootId];
+      if (preference.granularity.empty()) {
+        preference.granularity = request.granularity;
+      } else if (preference.granularity != request.granularity) {
+        preference.conflict = true;
+      }
+      preference.histogramOrScatter =
+          preference.histogramOrScatter ||
+          isa<VMIScatterOp, VMIVdhistOp, VMIVchistOp>(
+              request.operand->getOwner());
+    }
+    for (const auto &entry : preferences) {
+      const Preference &preference = entry.second;
+      if (preference.histogramOrScatter && !preference.conflict) {
+        maskNodes[entry.first].granularity = preference.granularity.str();
+      }
+    }
+  }
+
   void rewriteMaskTypes() {
+    preferHistogramScatterGranularity();
     for (MaskNode &node : maskNodes) {
       MaskNode &root = maskNodes[findMask(maskIds.lookup(node.value))];
       StringRef granularity =

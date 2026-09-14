@@ -128,6 +128,47 @@ struct OneToNVMIStrideStoreOpPattern
   }
 };
 
+LogicalResult lowerByteScatter(VMIScatterOp op, Value destination,
+                              ValueRange valueParts, ValueRange indicesParts,
+                              ValueRange maskParts,
+                              PatternRewriter &rewriter) {
+  auto valueType = cast<VMIVRegType>(op.getValue().getType());
+  auto indicesType = cast<VMIVRegType>(op.getIndices().getType());
+  auto maskType = cast<VMIMaskType>(op.getMask().getType());
+  if (valueParts.empty()) {
+    return failure();
+  }
+  SmallVector<Type> requestTypes(indicesParts.size(),
+                                 valueParts.front().getType());
+  FailureOr<SmallVector<Value>> requests = materializeContiguousToLaneStride(
+      op, valueParts, requestTypes, valueType.getElementType(), 2, rewriter);
+  auto requestMaskType = VMIMaskType::get(
+      op.getContext(), maskType.getElementCount(), "b16",
+      maskType.getLayoutAttr());
+  FailureOr<SmallVector<Value>> requestMasks =
+      materializeAdjacentMaskGranularityConversion(
+          op, maskType, requestMaskType, maskParts, rewriter);
+  if (failed(requests) || failed(requestMasks) ||
+      requestMasks->size() != indicesParts.size()) {
+    return rewriter.notifyMatchFailure(op, "failed to expand byte scatter requests");
+  }
+
+  for (auto [index, parts] : llvm::enumerate(
+           llvm::zip_equal(*requests, indicesParts, *requestMasks))) {
+    auto [value, indices, mask] = parts;
+    // An index chunk describes 128 requests, including for byte scatter.
+    FailureOr<Value> validMask = createMaskedStorePredicate(
+        op.getLoc(), indicesType, index, mask,
+        cast<VRegType>(indices.getType()), rewriter);
+    if (failed(validMask)) {
+      return rewriter.notifyMatchFailure(op, "failed to mask byte scatter padding");
+    }
+    rewriter.create<VscatterOp>(op.getLoc(), value, destination, indices,
+                                *validMask);
+  }
+  return success();
+}
+
 struct OneToNVMIScatterOpPattern : OneToNOpConversionPattern<VMIScatterOp> {
   using OneToNOpConversionPattern<VMIScatterOp>::OneToNOpConversionPattern;
 
@@ -144,23 +185,36 @@ struct OneToNVMIScatterOpPattern : OneToNOpConversionPattern<VMIScatterOp> {
     ValueRange valueParts = adaptor.getValue();
     ValueRange indicesParts = adaptor.getIndices();
     ValueRange maskParts = adaptor.getMask();
-    bool invalidArity = valueParts.size() != indicesParts.size() ||
-                        valueParts.size() != maskParts.size();
-    if (invalidArity) {
+    auto valueType = cast<VMIVRegType>(op.getValue().getType());
+    if (pto::getPTOStorageElemBitWidth(valueType.getElementType()) == 8) {
+      if (failed(lowerByteScatter(op, *destination, valueParts, indicesParts,
+                                  maskParts, rewriter))) {
+        return failure();
+      }
+      rewriter.eraseOp(op);
+      return success();
+    }
+    if (valueParts.size() != indicesParts.size() ||
+        valueParts.size() != maskParts.size()) {
       return rewriter.notifyMatchFailure(op, "scatter physical arity mismatch");
     }
 
-    for (auto [value, indices, mask] :
-         llvm::zip_equal(valueParts, indicesParts, maskParts)) {
-      bool invalidTypes = !isa<VRegType>(value.getType()) ||
-                          !isa<VRegType>(indices.getType()) ||
-                          !isa<MaskType>(mask.getType());
-      if (invalidTypes) {
+    for (auto [index, parts] : llvm::enumerate(
+             llvm::zip_equal(valueParts, indicesParts, maskParts))) {
+      auto [value, indices, mask] = parts;
+      if (!isa<VRegType>(value.getType()) ||
+          !isa<VRegType>(indices.getType()) || !isa<MaskType>(mask.getType())) {
         return rewriter.notifyMatchFailure(
             op, "scatter physical part type mismatch");
       }
+      FailureOr<Value> validMask = createMaskedStorePredicate(
+          op.getLoc(), valueType, index, mask,
+          cast<VRegType>(value.getType()), rewriter);
+      if (failed(validMask)) {
+        return rewriter.notifyMatchFailure(op, "failed to mask scatter padding");
+      }
       rewriter.create<VscatterOp>(op.getLoc(), value, *destination, indices,
-                                  mask);
+                                  *validMask);
     }
 
     rewriter.eraseOp(op);

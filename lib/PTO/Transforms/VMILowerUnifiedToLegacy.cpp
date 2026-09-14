@@ -40,8 +40,9 @@
 //   vload  → dispatch by dist_mode/group/block_stride to
 //            load / deinterleave_load / group_broadcast_load{num_groups=1} / ...
 //   vstore → dispatch to store / masked_store / interleave_store / group_store / ...
-//   Continuous 1/2/4/8-lane values alias unit-stride
-//   group_slot_load/group_store operations.
+//   Continuous short vloads stay dense: how few elements a load touches is a
+//   lowering choice VMIToVPTO makes from the physical footprint, not a group
+//   packet.  Compact stores still alias group_store (see isCompactGroupCount).
 //   Skipped: dist_mode "unpack" (physical widening, no legacy equivalent).
 //
 // Category C4 — static mask creation (3 ops):
@@ -303,6 +304,10 @@ static bool isAllActiveSeed(Value seed) {
   return false;
 }
 
+// A compact store still aliases a unit-stride group_store: unlike a load, the
+// group_store lowering is where packing a `slots = 1` group product into one
+// carrier lives, and a group reduce of 2 or 4 groups produces exactly such a
+// multi-part value.  Only the load side of the alias is removed here.
 static bool isCompactGroupCount(int64_t count) {
   return count == kSingleGroupCount || count == mlir::pto::kValue2 ||
          count == mlir::pto::kValue4 || count == mlir::pto::kValue8;
@@ -532,25 +537,18 @@ static LogicalResult lowerBlockStrideLoad(VMIvLoadOp op,
   return success();
 }
 
+// A continuous vload is a dense access whatever its length.  Short vectors are
+// not group packets: how few elements a load touches is a property of the
+// physical access VMIToVPTO plans for it, not of the logical lane layout, so
+// the length must not change which legacy op -- and therefore which layout
+// contract -- the value carries.
 static LogicalResult lowerContinuousLoad(VMIvLoadOp op,
                                          OpBuilder &builder) {
-  Location loc = op.getLoc();
   auto resultType = cast<VMIVRegType>(op.getResults().front().getType());
-  int64_t numGroups = resultType.getElementCount();
-  Value replacement;
-  if (isCompactGroupCount(numGroups)) {
-    Value unitStride = builder.create<arith::ConstantIndexOp>(loc, 1);
-    replacement = builder
-                      .create<VMIGroupSlotLoadOp>(
-                          loc, resultType, op.getSource(), op.getOffset(),
-                          unitStride, builder.getI64IntegerAttr(numGroups))
-                      .getResult();
-  } else {
-    replacement = builder
-                      .create<VMILoadOp>(loc, resultType, op.getSource(),
-                                         op.getOffset())
-                      .getResult();
-  }
+  Value replacement = builder
+                          .create<VMILoadOp>(op.getLoc(), resultType,
+                                             op.getSource(), op.getOffset())
+                          .getResult();
   op.getResults().front().replaceAllUsesWith(replacement);
   return success();
 }

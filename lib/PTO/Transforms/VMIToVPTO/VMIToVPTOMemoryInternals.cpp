@@ -303,6 +303,33 @@ checkSupportedLoadShape(VMIVRegType type, Value source, Type sourceType,
   return success();
 }
 
+// Keep preflight diagnostics consistent with the bounded block selection.
+// A non-aligned source may still use the existing stateful sequence when its
+// complete physical read envelope is proven; a raw pointer carries no extent.
+LogicalResult checkSupportedContiguousLoadAddress(VMILoadOp op,
+                                                  std::string *reason) {
+  auto type = cast<VMIVRegType>(op.getResult().getType());
+  if (pto::getVMIContiguousLoadBlockCount(type) == 0 ||
+      type.getElementCount() == 1 ||
+      isKnownAddressAligned(op.getSource(), op.getOffset(),
+                            type.getElementType(), pto::kVMIVCGBlockBytes)) {
+    return success();
+  }
+  VMIMemorySafeReadProof proof =
+      computeSafeStatefulReadProof(op.getSource(), op.getOffset(), type);
+  if (proof.proven) {
+    return success();
+  }
+  if (reason) {
+    *reason =
+        (Twine("bounded contiguous load requires a provably 32-byte-aligned ") +
+         "effective address for pto.vsldb, including single-block reads; " +
+         "no safe unaligned full-read fallback: " + proof.reason)
+            .str();
+  }
+  return failure();
+}
+
 LogicalResult checkSupportedDeinterleaveLoadShape(
     VMIDeinterleaveLoadOp op,
     std::string *reason) {
@@ -1297,7 +1324,7 @@ checkSupportedGatherShape(VMIGatherOp op, std::string *reason) {
 
 LogicalResult checkSupportedScatterPhysicalShape(
     VMIVRegType valueType, VMIVRegType indicesType, VMIMaskType maskType,
-    bool requiresFullChunks, std::string *reason) {
+    std::string *reason) {
   auto fail = [&reason](const Twine &message) -> LogicalResult {
     if (reason) {
       *reason = message.str();
@@ -1312,25 +1339,25 @@ LogicalResult checkSupportedScatterPhysicalShape(
   if (!hasPhysicalArity) {
     return fail("requires computable physical arity");
   }
-  if (*valueArity != *indicesArity || *valueArity != *maskArity) {
-    return fail("requires value, indices, and mask to have the same physical "
-                "arity");
+  const bool isByte =
+      pto::getPTOStorageElemBitWidth(valueType.getElementType()) == 8;
+  if (*valueArity != *maskArity || (!isByte && *valueArity != *indicesArity)) {
+    return fail("requires matching value/mask physical arity and one index "
+                "chunk per scatter request group");
   }
-  if (!requiresFullChunks) {
-    return success();
-  }
-  std::string valueReason;
-  std::string indicesReason;
-  std::string maskReason;
-  if (failed(checkFullDataPhysicalChunks(valueType, &valueReason))) {
-    return fail(Twine("value requires full physical chunks; ") + valueReason);
-  }
-  if (failed(checkFullDataPhysicalChunks(indicesType, &indicesReason))) {
-    return fail(Twine("indices require full physical chunks; ") +
-                indicesReason);
-  }
-  if (failed(checkFullVMIPhysicalChunks(maskType, &maskReason))) {
-    return fail(Twine("mask requires full physical chunks; ") + maskReason);
+  if (isByte) {
+    // The op verifier already requires equal logical value/index lane counts.
+    // Defend the physical contract as well: B8 scatter uses 16-bit indices,
+    // so each index chunk describes 128 requests, even for a partial group.
+    // Equal chunk counts alone do not replace the logical lane-count check.
+    constexpr int64_t requestsPerIndexChunk = mlir::pto::kValue128;
+    int64_t expectedIndicesArity =
+        llvm::divideCeil(valueType.getElementCount(), requestsPerIndexChunk);
+    if (*indicesArity != expectedIndicesArity) {
+      return fail(Twine("requires one index chunk per 128 byte-scatter requests; ") +
+                  "expected " + Twine(expectedIndicesArity) + ", got " +
+                  Twine(*indicesArity));
+    }
   }
   return success();
 }
@@ -1358,6 +1385,10 @@ checkScatterLayoutAndDestination(VMIScatterOp op, VMIVRegType valueType,
   if (nonContiguousLayout) {
     return fail("requires contiguous value, indices, and mask layouts");
   }
+  if (valueLayout.getLaneStride() != 1 ||
+      indicesLayout.getLaneStride() != 1 || maskLayout.getLaneStride() != 1) {
+    return fail("requires unit-stride value, indices, and mask layouts");
+  }
   if (!isa<PtrType>(op.getDestination().getType())) {
     return fail("requires !pto.ptr destination because pto.vscatter is "
                 "pointer-only");
@@ -1382,7 +1413,7 @@ checkScatterElementContract(VMIVRegType valueType, VMIVRegType indicesType,
     return fail("requires signless or unsigned integer indices");
   }
   bool isB8Scatter = valueBits == 8 && indexElementType.getWidth() == 16 &&
-                     maskType.getGranularity() == "b16";
+                     maskType.getGranularity() == "b8";
   bool isB16Scatter = valueBits == 16 && indexElementType.getWidth() == 16 &&
                       maskType.getGranularity() == "b16";
   bool isB32Scatter = valueBits == 32 && indexElementType.getWidth() == 32 &&
@@ -1391,8 +1422,8 @@ checkScatterElementContract(VMIVRegType valueType, VMIVRegType indicesType,
   if (unsupportedContract) {
     return fail("requires either 32-bit values with 32-bit indices and b32 "
                 "mask, 16-bit values with 16-bit indices and b16 "
-                "mask, or 8-bit values with 16-bit indices and b16 "
-                "mask");
+                "mask, or 8-bit values with 16-bit indices and b8 "
+                "logical mask");
   }
   return success();
 }
@@ -1423,7 +1454,7 @@ checkSupportedScatterShape(VMIScatterOp op, std::string *reason) {
   }
 
   return checkSupportedScatterPhysicalShape(types.value, types.indices,
-                                            types.mask, true, reason);
+                                            types.mask, reason);
 }
 
 LogicalResult

@@ -366,8 +366,8 @@ static std::optional<WalkResult> verifySupportedVMIScatterOp(Operation *op) {
     return verifySupportedShapeOp(
         scatter, checkSupportedScatterShape,
         "pto.vmi.scatter lowers through pto.vscatter only with a UB pointer "
-        "destination, contiguous full physical chunks, 32-bit value elements, "
-        "i32 indices, and b32 masks (");
+        "destination, unit-stride contiguous layouts, and matching "
+        "value/index/mask physical shapes (");
   }
   return std::nullopt;
 }
@@ -492,6 +492,11 @@ std::optional<WalkResult> verifySupportedVMIStructuredLoadOp(Operation *op) {
 std::optional<WalkResult> verifySupportedVMIMemoryLoadOp(
     Operation *op, bool enableStableGatherMaskedLoad) {
   if (auto load = dyn_cast<VMILoadOp>(op)) {
+    std::string reason;
+    if (failed(checkSupportedContiguousLoadAddress(load, &reason))) {
+      load.emitError() << kVMIDiagUnsupportedPrefix << reason;
+      return WalkResult::interrupt();
+    }
     return emitMemoryUnsupported(
         op, "pto.vmi.load", cast<VMIVRegType>(load.getResult().getType()),
         load.getSource(), getConstantIndexValue(load.getOffset()));

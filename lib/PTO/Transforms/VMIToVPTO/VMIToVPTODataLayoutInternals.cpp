@@ -182,15 +182,13 @@ materializeSimpleDataLayoutConversion(
     return forwardIdentityLayoutParts(op, sourceParts, resultTypes, rewriter);
   }
 
-  bool oneLaneContiguousToGroup =
-      sourceLayout.isContiguous() && sourceLayout.getLaneStride() == 1 &&
-      resultLayout.isGroupSlots() && resultLayout.getNumGroups() == 1 &&
-      resultLayout.getSlots() == 1;
-  bool oneLaneGroupToContiguous =
-      sourceLayout.isGroupSlots() && sourceLayout.getNumGroups() == 1 &&
-      sourceLayout.getSlots() == 1 && resultLayout.isContiguous() &&
-      resultLayout.getLaneStride() == 1;
-  if (oneLaneContiguousToGroup || oneLaneGroupToContiguous) {
+  // A compact group packet and a dense value share the same carrier lanes.
+  FailureOr<int64_t> carrierLanes = getDataLanesPerPart(sourceVMIElementType);
+  const bool singleCarrierAlias =
+      succeeded(carrierLanes) &&
+      isVMISingleCarrierGroupSlotAlias(sourceLayout, resultLayout,
+                                       *carrierLanes);
+  if (singleCarrierAlias) {
     return forwardIdentityLayoutParts(op, sourceParts, resultTypes, rewriter);
   }
 
