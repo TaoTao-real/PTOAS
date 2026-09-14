@@ -225,7 +225,7 @@ static ParseResult parseNumGroupsLayoutFields(AsmParser &parser,
   return success();
 }
 
-Attribute VMILayoutAttr::parse(AsmParser &odsParser, Type) {
+Attribute VMILayoutAttr::parse(AsmParser &odsParser, Type odsType) {
   SMLoc loc = odsParser.getCurrentLocation();
   StringRef kind;
   int64_t factor = 1;
