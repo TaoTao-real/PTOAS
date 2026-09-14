@@ -142,7 +142,6 @@ private:
                                 const CompoundInstanceElement *frontCompound,
                                 DepBaseMemInfoPairVec &depBaseMemInfosVec,
                                 const std::optional<unsigned> &forEndIndex);
-  
  
   // --- Utility Methods ---
  

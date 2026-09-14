@@ -10,6 +10,16 @@
 //===- VMIToVPTOPatternInternals4.inc - VMIToVPTO internals -*- C++ -*-===//
 //===----------------------------------------------------------------------===//
 
+constexpr unsigned kVMIAddressConstantBitWidth = 16;
+constexpr unsigned kByteElementBitWidth = 8;
+constexpr int64_t kByteScatterLaneStride = 2;
+constexpr unsigned kCarryElementBitWidth = 32;
+constexpr unsigned kVmullLaneCount = 64;
+constexpr unsigned kVmullElementBitWidth = 32;
+constexpr unsigned kMaxInterleaveCarrierBitWidth = 32;
+constexpr int64_t kInterleaveFactor = 2;
+constexpr unsigned kPairResultCount = 2;
+
 struct OneToNVMIStrideLoadOpPattern
     : OneToNOpConversionPattern<VMIStrideLoadOp> {
   using OneToNOpConversionPattern<VMIStrideLoadOp>::OneToNOpConversionPattern;
@@ -59,7 +69,8 @@ public:
         op, adaptor.getBlockStride(),
         "stride_load block_stride must convert to one value", rewriter);
     FailureOr<Value> repeatStride = Value(
-        rewriter.create<arith::ConstantIntOp>(op.getLoc(), 0, 16));
+        rewriter.create<arith::ConstantIntOp>(
+            op.getLoc(), 0, kVMIAddressConstantBitWidth));
     bool invalidOperands = failed(source) || failed(offset) ||
                            failed(blockStride) || failed(repeatStride);
     if (invalidOperands) {
@@ -95,7 +106,8 @@ struct OneToNVMIStrideStoreOpPattern
         op, adaptor.getBlockStride(),
         "stride_store block_stride must convert to one value", rewriter);
     FailureOr<Value> repeatStride = Value(
-        rewriter.create<arith::ConstantIntOp>(op.getLoc(), 0, 16));
+        rewriter.create<arith::ConstantIntOp>(
+            op.getLoc(), 0, kVMIAddressConstantBitWidth));
     bool failedOperands = failed(destination) || failed(offset) ||
                           failed(blockStride) || failed(repeatStride);
     if (failedOperands) {
@@ -141,7 +153,8 @@ LogicalResult lowerByteScatter(VMIScatterOp op, Value destination,
   SmallVector<Type> requestTypes(indicesParts.size(),
                                  valueParts.front().getType());
   FailureOr<SmallVector<Value>> requests = materializeContiguousToLaneStride(
-      op, valueParts, requestTypes, valueType.getElementType(), 2, rewriter);
+      op, valueParts, requestTypes, valueType.getElementType(),
+      kByteScatterLaneStride, rewriter);
   auto requestMaskType = VMIMaskType::get(
       op.getContext(), maskType.getElementCount(), "b16",
       maskType.getLayoutAttr());
@@ -156,7 +169,8 @@ LogicalResult lowerByteScatter(VMIScatterOp op, Value destination,
   for (auto [index, parts] : llvm::enumerate(
            llvm::zip_equal(*requests, indicesParts, *requestMasks))) {
     auto [value, indices, mask] = parts;
-    // An index chunk describes 128 requests, including for byte scatter.
+    // An index chunk describes the complete request group, including for byte
+    // scatter.
     FailureOr<Value> validMask = createMaskedStorePredicate(
         op.getLoc(), indicesType, index, mask,
         cast<VRegType>(indices.getType()), rewriter);
@@ -186,7 +200,10 @@ struct OneToNVMIScatterOpPattern : OneToNOpConversionPattern<VMIScatterOp> {
     ValueRange indicesParts = adaptor.getIndices();
     ValueRange maskParts = adaptor.getMask();
     auto valueType = cast<VMIVRegType>(op.getValue().getType());
-    if (pto::getPTOStorageElemBitWidth(valueType.getElementType()) == 8) {
+    const bool isByteElement =
+        pto::getPTOStorageElemBitWidth(valueType.getElementType()) ==
+        kByteElementBitWidth;
+    if (isByteElement) {
       if (failed(lowerByteScatter(op, *destination, valueParts, indicesParts,
                                   maskParts, rewriter))) {
         return failure();
@@ -281,7 +298,8 @@ private:
         IsMaskResult ? "physical mask binary arity mismatch"
                      : "physical binary arity mismatch",
         rewriter,
-        [&](int64_t index, Type resultType) -> FailureOr<Value> {
+        [this, op, lhsParts, rhsParts,
+         &rewriter](int64_t index, Type resultType) -> FailureOr<Value> {
           return lowerBinaryPart(op, lhsParts[index], rhsParts[index],
                                  resultType, rewriter);
         },
@@ -403,9 +421,11 @@ private:
           op, "physical vector-scalar arity mismatch");
     }
 
+    const Location opLoc = op.getLoc();
     return lowerPointwisePhysicalParts(
         op, resultTypes, "physical vector-scalar arity mismatch", rewriter,
-        [&](int64_t index, Type resultType) -> FailureOr<Value> {
+        [op, opLoc, sourceParts, scalar, maskParts,
+         &rewriter](int64_t index, Type resultType) -> FailureOr<Value> {
           auto vregType = dyn_cast<VRegType>(resultType);
           auto maskType = dyn_cast<MaskType>(maskParts[index].getType());
           const bool hasMismatchedPartType =
@@ -416,7 +436,7 @@ private:
                 op, "physical vector-scalar part type mismatch");
           }
           return rewriter
-              .create<TargetOp>(op.getLoc(), resultType, sourceParts[index],
+              .create<TargetOp>(opLoc, resultType, sourceParts[index],
                                 scalar, maskParts[index])
               .getResult();
         },
@@ -492,7 +512,8 @@ private:
                              ? dyn_cast<IntegerType>(dataType.getElementType())
                              : IntegerType();
       const bool invalidPart =
-          !dataType || !integerType || integerType.getWidth() != 32 ||
+          !dataType || !integerType ||
+          integerType.getWidth() != kCarryElementBitWidth ||
           !isa<MaskType>(mask.getType()) || !isa<MaskType>(carryType) ||
           !cast<MaskType>(carryType).isB32() || lhs.getType() != resultType ||
           rhs.getType() != resultType;
@@ -515,9 +536,10 @@ public:
     ValueRange maskParts = adaptor.getMask();
     return lowerCarryResultParts(
         op, rewriter, *this->getTypeConverter(),
-        [&](ArrayRef<Type> resultTypes, ArrayRef<Type> carryTypes,
-            SmallVectorImpl<Value> &results,
-            SmallVectorImpl<Value> &carries) {
+        [this, op, lhsParts, rhsParts, maskParts,
+         &rewriter](ArrayRef<Type> resultTypes, ArrayRef<Type> carryTypes,
+                    SmallVectorImpl<Value> &results,
+                    SmallVectorImpl<Value> &carries) {
           return lowerParts(op, lhsParts, rhsParts, maskParts, resultTypes,
                             carryTypes, results, carries, rewriter);
         });
@@ -554,7 +576,8 @@ private:
                              ? dyn_cast<IntegerType>(dataType.getElementType())
                              : IntegerType();
       const bool invalidPart =
-          !dataType || !integerType || integerType.getWidth() != 32 ||
+          !dataType || !integerType ||
+          integerType.getWidth() != kCarryElementBitWidth ||
           !isa<MaskType>(carryIn.getType()) || !isa<MaskType>(mask.getType()) ||
           !isa<MaskType>(carryType) ||
           !cast<MaskType>(carryIn.getType()).isB32() ||
@@ -581,9 +604,10 @@ public:
     ValueRange maskParts = adaptor.getMask();
     return lowerCarryResultParts(
         op, rewriter, *this->getTypeConverter(),
-        [&](ArrayRef<Type> resultTypes, ArrayRef<Type> carryTypes,
-            SmallVectorImpl<Value> &results,
-            SmallVectorImpl<Value> &carries) {
+        [this, op, lhsParts, rhsParts, carryInParts, maskParts,
+         &rewriter](ArrayRef<Type> resultTypes, ArrayRef<Type> carryTypes,
+                    SmallVectorImpl<Value> &results,
+                    SmallVectorImpl<Value> &carries) {
           return lowerParts(op, lhsParts, rhsParts, carryInParts, maskParts,
                             resultTypes, carryTypes, results, carries,
                             rewriter);
@@ -603,7 +627,8 @@ private:
     auto dataType = dyn_cast<VRegType>(lowType);
     auto maskType = dyn_cast<MaskType>(mask.getType());
     const bool invalidShape =
-        !dataType || dataType.getElementCount() != 64 || lowType != highType ||
+        !dataType || dataType.getElementCount() != kVmullLaneCount ||
+        lowType != highType ||
         lhs.getType() != lowType || rhs.getType() != lowType;
     if (invalidShape) {
       return rewriter.notifyMatchFailure(
@@ -611,7 +636,7 @@ private:
     }
     auto elementType = dyn_cast<IntegerType>(dataType.getElementType());
     const bool invalidElementType =
-        !elementType || elementType.getWidth() != 32 ||
+        !elementType || elementType.getWidth() != kVmullElementBitWidth ||
         (!elementType.isSignless() && !elementType.isUnsigned());
     if (invalidElementType) {
       return rewriter.notifyMatchFailure(
@@ -788,10 +813,10 @@ private:
     bool matchingOutputs = fact.highLayout == fact.lowLayout;
     bool vintlv = std::is_same_v<SourceOp, VMIVintlvOp> && inputFactor > 0 &&
                   matchingInputs && matchingOutputs &&
-                  outputFactor == 2 * inputFactor;
+                  outputFactor == kInterleaveFactor * inputFactor;
     bool vdintlv = std::is_same_v<SourceOp, VMIVdintlvOp> && inputFactor > 0 &&
                    matchingInputs && matchingOutputs &&
-                   inputFactor == 2 * outputFactor;
+                   inputFactor == kInterleaveFactor * outputFactor;
     if (!vintlv && !vdintlv) {
       return std::nullopt;
     }
@@ -860,7 +885,8 @@ private:
     int64_t laneStride = fact.lhsLayout.getLaneStride();
     int64_t carrierBits = static_cast<int64_t>(elementBits) * laneStride;
     bool invalidCarrier = elementBits == 0 || laneStride <= 1 ||
-                          carrierBits <= 0 || carrierBits > 32;
+                          carrierBits <= 0 ||
+                          carrierBits > kMaxInterleaveCarrierBitWidth;
     if (invalidCarrier) {
       return rewriter.notifyMatchFailure(
           op, "invalid lane-stride interleave carrier width");
@@ -872,7 +898,7 @@ private:
     if (failed(pair)) {
       return failure();
     }
-    SmallVector<Value, 2> results = {pair->first, pair->second};
+    SmallVector<Value, kPairResultCount> results = {pair->first, pair->second};
     return lowerBinaryPhysicalResults(op, results, rewriter,
                                       *this->getTypeConverter());
   }
@@ -882,7 +908,7 @@ private:
                                    int64_t inputFactor) const {
     int64_t safeInputFactor = inputFactor > 0 ? inputFactor : 1;
     size_t groupChunks = lhsParts.size() / safeInputFactor;
-    size_t halfGroupChunks = groupChunks / 2;
+    size_t halfGroupChunks = groupChunks / kInterleaveFactor;
     for (int64_t group = 0; group < inputFactor; ++group) {
       size_t offset = group * groupChunks;
       llvm::append_range(results, lhsParts.slice(offset, halfGroupChunks));
@@ -902,12 +928,12 @@ private:
     int64_t safeInputFactor = inputFactor > 0 ? inputFactor : 1;
     size_t groupChunks = lhsParts.size() / safeInputFactor;
     for (int64_t group = 0; group < outputFactor; ++group) {
-      size_t offset = 2 * group * groupChunks;
+      size_t offset = kInterleaveFactor * group * groupChunks;
       llvm::append_range(results, lhsParts.slice(offset, groupChunks));
       llvm::append_range(results, rhsParts.slice(offset, groupChunks));
     }
     for (int64_t group = 0; group < outputFactor; ++group) {
-      size_t offset = (2 * group + 1) * groupChunks;
+      size_t offset = (kInterleaveFactor * group + 1) * groupChunks;
       llvm::append_range(results, lhsParts.slice(offset, groupChunks));
       llvm::append_range(results, rhsParts.slice(offset, groupChunks));
     }
@@ -949,7 +975,8 @@ private:
     results.reserve(lhsParts.size() + rhsParts.size());
     if (zeroCopyVintlv) {
       bool invalidGroupCount =
-          lhsParts.empty() || lhsParts.size() % (2 * safeInputFactor) != 0;
+          lhsParts.empty() ||
+          lhsParts.size() % (kInterleaveFactor * safeInputFactor) != 0;
       if (invalidGroupCount) {
         return rewriter.notifyMatchFailure(
             op, "zero-copy vintlv expects input groups with even chunk count");
@@ -1001,7 +1028,8 @@ private:
     auto interleave = rewriter.create<TargetOp>(
         op.getLoc(), lowTypes.front(), highTypes.front(), lhsParts.front(),
         rhsParts.front());
-    SmallVector<Value, 2> results = {interleave.getLow(), interleave.getHigh()};
+    SmallVector<Value, kPairResultCount> results = {interleave.getLow(),
+                                                   interleave.getHigh()};
     return lowerBinaryPhysicalResults(op, results, rewriter,
                                       *this->getTypeConverter());
   }
@@ -1115,7 +1143,8 @@ private:
                          ValueRange maxParts, ValueRange maskParts,
                          ArrayRef<Type> resultTypes,
                          OneToNPatternRewriter &rewriter) const {
-    const bool invalidArity = resultTypes.size() != 2 * xParts.size();
+    const bool invalidArity =
+        resultTypes.size() != kInterleaveFactor * xParts.size();
     if (invalidArity) {
       return rewriter.notifyMatchFailure(
           op, "f16 vexpdif requires EVEN/ODD f32 result parts");
@@ -1244,7 +1273,8 @@ private:
         IsMaskResult ? "physical mask unary arity mismatch"
                      : "physical unary arity mismatch",
         rewriter,
-        [&](int64_t index, Type resultType) -> FailureOr<Value> {
+        [this, op, sourceParts,
+         &rewriter](int64_t index, Type resultType) -> FailureOr<Value> {
           return lowerPart(op, sourceParts[index], resultType, rewriter);
         },
         *this->getTypeConverter());
@@ -1255,9 +1285,12 @@ public:
       SourceOp op,
       typename OneToNOpConversionPattern<SourceOp>::OpAdaptor adaptor,
       OneToNPatternRewriter &rewriter) const override {
+    ValueRange sourceParts = adaptor.getSource();
     return lowerWithConvertedResultTypes(
-        op, 0, *this->getTypeConverter(), [&](ArrayRef<Type> resultTypes) {
-          return lowerParts(op, adaptor.getSource(), resultTypes, rewriter);
+        op, 0, *this->getTypeConverter(),
+        [this, op, sourceParts,
+         &rewriter](ArrayRef<Type> resultTypes) {
+          return lowerParts(op, sourceParts, resultTypes, rewriter);
         });
   }
 };
@@ -1404,7 +1437,8 @@ public:
 
     return lowerPointwisePhysicalParts(
         op, resultTypes, "physical select arity mismatch", rewriter,
-        [&](int64_t index, Type resultType) -> FailureOr<Value> {
+        [this, op, maskParts, trueParts, falseParts,
+         &rewriter](int64_t index, Type resultType) -> FailureOr<Value> {
           return lowerPart(op, maskParts[index], trueParts[index],
                            falseParts[index], resultType, rewriter);
         },
@@ -1698,7 +1732,7 @@ template <typename ReduceOp>
 static LogicalResult lowerReduceAddParts(
     ReduceOp op, ValueRange sourceParts, ValueRange maskParts,
     VRegType resultType, MaskType maskType, StringRef firstLaneDiagnostic,
-    OneToNPatternRewriter &rewriter, TypeConverter &typeConverter) {
+    OneToNPatternRewriter &rewriter, TypeConverter *typeConverter) {
   FailureOr<Value> combined = combineEquivalentMaskedParts<VaddOp>(
       op.getLoc(), sourceParts, maskParts, resultType, rewriter);
   if (succeeded(combined)) {
@@ -1707,7 +1741,7 @@ static LogicalResult lowerReduceAddParts(
                                          maskParts.front())
                         .getResult();
     replaceOpWithFlatConvertedValues(rewriter, op, SmallVector<Value>{reduced},
-                                     typeConverter);
+                                     *typeConverter);
     return success();
   }
 
@@ -1720,7 +1754,7 @@ static LogicalResult lowerReduceAddParts(
   if (singlePart) {
     replaceOpWithFlatConvertedValues(rewriter, op,
                                      SmallVector<Value>{accumulator},
-                                     typeConverter);
+                                     *typeConverter);
     return success();
   }
   FailureOr<Value> firstLaneMask =
@@ -1740,7 +1774,7 @@ static LogicalResult lowerReduceAddParts(
   }
   replaceOpWithFlatConvertedValues(rewriter, op,
                                    SmallVector<Value>{accumulator},
-                                   typeConverter);
+                                   *typeConverter);
   return success();
 }
 
@@ -1767,7 +1801,7 @@ struct OneToNVMIReduceAddIOpPattern
     return lowerReduceAddParts(
         op, sourceParts, maskParts, plan->resultType, plan->maskType,
         "failed to create reduce_addi first-lane mask", rewriter,
-        *this->getTypeConverter());
+        this->getTypeConverter());
   }
 };
 
@@ -1794,7 +1828,7 @@ struct OneToNVMIReduceAddFOpPattern
     return lowerReduceAddParts(
         op, sourceParts, maskParts, plan->resultType, plan->maskType,
         "failed to create reduce_addf first-lane mask", rewriter,
-        *this->getTypeConverter());
+        this->getTypeConverter());
   }
 };
 
@@ -1830,7 +1864,7 @@ classifyGroupReduceLoweringPlan(VMIVRegType sourceType, VMIMaskType maskType,
   case VMIGroupBlockClass::FullPartMultiple:
     bool deinterleavedSource =
         fact->sourceLayout && fact->sourceLayout.isDeinterleaved() &&
-        fact->sourceLayout.getFactor() == 2;
+        fact->sourceLayout.getFactor() == kInterleaveFactor;
     if (deinterleavedSource) {
       return GroupReduceLoweringPlan::FullDeinterleaved2VcaddRows;
     }
