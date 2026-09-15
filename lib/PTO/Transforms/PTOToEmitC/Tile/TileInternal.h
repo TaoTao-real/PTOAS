@@ -13,7 +13,11 @@ std::string buildReinterpretCastTileTypeString(MemRefType resMrTy, Type elemTy, 
 Value reinterpretCastBaseAddress(ConversionPatternRewriter &rewriter, Location loc, Value source, pto::AddressSpace as, StringRef elemTok, Type u64Ty);
 void assignTileAddress(ConversionPatternRewriter &rewriter, Location loc, MLIRContext *ctx, Value tile, Value addr);
 FailureOr<Value> createEmitCTileVariable(ConversionPatternRewriter &rewriter, Location loc, const TypeConverter *typeConverter, pto::TileBufType tileTy, bool initializeDynamicValidToShape = false);
-std::pair<SmallVector<Value, 5>, SmallVector<Value, 5>> buildRuntime5DValues(ConversionPatternRewriter &rewriter, Location loc, ValueRange runtimeShape, ValueRange runtimeStrides, int64_t shift);
+std::pair<SmallVector<Value, mlir::pto::kValue5>,
+          SmallVector<Value, mlir::pto::kValue5>>
+buildRuntime5DValues(ConversionPatternRewriter &rewriter, Location loc,
+                     ValueRange runtimeShape, ValueRange runtimeStrides,
+                     int64_t shift);
 
 
 template <typename OpTy>
