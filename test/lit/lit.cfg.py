@@ -45,6 +45,7 @@ config.ptoir_test_tools_dir = os.path.join(config.ptoir_obj_root,
                                            'tools/pto-test-opt')
 
 config.substitutions.append(('%PATH%', config.environment['PATH']))
+config.substitutions.append(('%ptoas_python', '"' + config.python_executable + '"'))
 config.substitutions.append(('%shlibext', config.llvm_shlib_ext))
 
 if getattr(config, 'pto_enable_vfsim_costmodel', False):
