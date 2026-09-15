@@ -61,7 +61,7 @@ def build(variant, output):
     include, library = toolkit / "aarch64-linux/include", toolkit / "aarch64-linux/lib64"
     output.mkdir(parents=True, exist_ok=False)
     common = [compiler, "-std=c++17", "-O2", "-fPIC", "-I" + str(include)]
-    compile_args = common + ["-xcce", "-fenable-matrix", "--cce-aicore-enable-tl",
+    compile_args = common + ["-xcce", "-fenable-matrix",
                             "--cce-aicore-arch=dav-c310", "-DREGISTER_BASE",
                             "-mllvm", "-cce-aicore-stack-size=0x8000",
                             "-mllvm", "-cce-aicore-function-stack-size=0x8000",

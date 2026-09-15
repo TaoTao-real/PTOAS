@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import signal
 import subprocess
@@ -97,9 +98,7 @@ def run_one(args, case, variant, seed, repeat, stage):
         shutil.copyfile(path, runtime / path.name)
     command = [str(binary / "runner"), str(args.device), str(case["count"]), str(runtime)]
     if stage == "profile":
-        application = " ".join(command)
-        if any(" " in token for token in command):
-            raise ValueError("msprof application paths must have no whitespace")
+        application = shlex.join(command)
         command = [shutil.which("msprof") or "msprof", "--application=" + application,
                    "--output=" + str(runtime / "profile"), "--aic-mode=task-based", "--aic-metrics=PipeUtilization"]
     write(runtime / "command.json", command)
