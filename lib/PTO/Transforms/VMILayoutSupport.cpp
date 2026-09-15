@@ -40,6 +40,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/CommandLine.h"
 
 namespace mlir {
@@ -107,6 +108,7 @@ static llvm::cl::opt<bool> preferLaneStrideNarrowing(
 } // namespace
 
 #include "VMILayoutSupportQueryHelpers.inc"
+#include "VMILayoutSupportGroupCapabilities.inc"
 
 static VMIGroupBroadcastLoadDirectFact materializeGroupBroadcastLoadDirectFact(
     const GroupBroadcastLoadDirectPattern &pattern,
@@ -211,7 +213,8 @@ VMILayoutSupport::getPreferredGroupReduceLayoutFact(VMIVRegType sourceType,
   }
 
   for (const GroupReduceLayoutPattern &pattern : kGroupReduceLayoutPatterns) {
-    if (!matchesGroupBlockPattern(pattern.block, *key)) {
+    if (!matchesGroupBlockPattern(pattern.block, *key) ||
+        !isExecutableGroupReducePattern(pattern, *key)) {
       continue;
     }
     return materializeGroupReduceLayoutFact(sourceType.getContext(), pattern,
@@ -249,7 +252,8 @@ VMILayoutSupport::getGroupReduceLayoutFactForLayouts(
   }
 
   for (const GroupReduceLayoutPattern &pattern : kGroupReduceLayoutPatterns) {
-    if (!matchesGroupBlockPattern(pattern.block, *key)) {
+    if (!matchesGroupBlockPattern(pattern.block, *key) ||
+        !isExecutableGroupReducePattern(pattern, *key)) {
       continue;
     }
     VMIGroupReduceLayoutFact candidate = materializeGroupReduceLayoutFact(
@@ -290,7 +294,8 @@ VMILayoutSupport::getGroupReduceLayoutFactsForLayout(
 
   SmallVector<VMIGroupReduceLayoutFact, mlir::pto::kValue4> facts;
   for (const GroupReduceLayoutPattern &pattern : kGroupReduceLayoutPatterns) {
-    if (!matchesGroupBlockPattern(pattern.block, *key)) {
+    if (!matchesGroupBlockPattern(pattern.block, *key) ||
+        !isExecutableGroupReducePattern(pattern, *key)) {
       continue;
     }
     VMIGroupReduceLayoutFact candidate = materializeGroupReduceLayoutFact(

@@ -110,6 +110,7 @@ struct GroupBlockClassPattern {
 };
 
 static constexpr GroupBlockClassPattern kGroupBlockClassPatterns[] = {
+    {gbCompact(), VMIGroupBlockClass::Compact},
     {gb(1, 4), VMIGroupBlockClass::QuarterBlock},
     {gb(1, 2), VMIGroupBlockClass::HalfBlock},
     {gb(1), VMIGroupBlockClass::OneBlock},
@@ -137,6 +138,8 @@ static constexpr GroupReduceLayoutPattern kGroupReduceLayoutPatterns[] = {
     {gbFull(), c(), gs(1)},
     {gbFull(2), d(2), gs(1)},
     {gbFull(4), d(4), gs(1)},
+    // Dense fallback for one-carrier groups, including eight-bit widening.
+    {gbCompact(), c(), gs(8)},
 };
 
 struct PreferredCastLayoutPattern {
@@ -535,6 +538,8 @@ struct GroupBroadcastLayoutPattern {
 };
 
 static constexpr GroupBroadcastLayoutPattern kGroupBroadcastLayoutPatterns[] = {
+    {gbCompact(), gs(8), c()},
+    {gbCompact(), gs(1), c()},
     {gb(1, 4), gs(8), ls(4)},
     {gb(1, 2), gs(8), ls(2)},
     {gb(1), gs(8), c()},

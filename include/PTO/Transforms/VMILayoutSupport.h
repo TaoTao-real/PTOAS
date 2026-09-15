@@ -134,6 +134,7 @@ struct VMIBitcastLayoutFact {
 };
 
 enum class VMIGroupBlockClass {
+  Compact,
   QuarterBlock,
   HalfBlock,
   OneBlock,
@@ -374,6 +375,23 @@ public:
   getHighPriorityGroupStoreLayoutFact(VMIGroupStoreOp op,
                                       VMIVRegType valueType,
                                       std::string *reason = nullptr) const;
+
+  LogicalResult getGroupOperationShapeSupport(Operation *op,
+                                               std::string *reason = nullptr) const;
+
+  // Shape-only capability checks for diagnostics before layout assignment.
+  // Assigned source layouts are respected; lowering checks the full fact again.
+  LogicalResult getGroupReduceShapeSupport(VMIVRegType sourceType,
+                                           int64_t numGroups,
+                                           std::string *reason = nullptr) const;
+  FailureOr<VMIGroupBroadcastLayoutFact>
+  getPreferredGroupBroadcastLayoutFact(VMIVRegType resultType, int64_t numGroups,
+                                       std::string *reason = nullptr) const;
+  VMILayoutAttr getPreferredGroupBroadcastResultLayout(
+      VMIVRegType resultType, int64_t numGroups) const;
+  LogicalResult getGroupBroadcastShapeSupport(VMIVRegType resultType,
+                                              int64_t numGroups,
+                                              std::string *reason = nullptr) const;
 
   FailureOr<VMIGroupReduceLayoutFact>
   getPreferredGroupReduceLayoutFact(VMIVRegType sourceType, int64_t numGroups,

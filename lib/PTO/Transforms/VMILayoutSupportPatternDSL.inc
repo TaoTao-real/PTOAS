@@ -49,6 +49,7 @@ struct LayoutPattern {
 };
 
 enum class GroupBlockPatternKind {
+  Compact,
   Ratio,
   FullPartMultiple,
 };
@@ -271,6 +272,11 @@ static constexpr GroupMemoryPattern memContiguous() {
 
 static constexpr GroupMemoryPattern memBlockAligned() {
   return {GroupMemoryPatternKind::BlockAligned};
+}
+
+// Dense logical vectors that fit in the compact eight-result packet.
+static constexpr GroupBlockPattern gbCompact() {
+  return {GroupBlockPatternKind::Compact, mlir::pto::kValue8, 1};
 }
 
 static constexpr GroupBlockPattern gb(int64_t numerator) {
