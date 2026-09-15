@@ -47,7 +47,6 @@ struct ArithUnsignedBitwiseBinaryToEmitC : public OpConversionPattern<ArithOp> {
       return failure();
     auto [loc, dstTy] = *prologue;
     const unsigned bitWidth = getScalarIntOrIndexBitWidth(op.getType());
-
     if (bitWidth == 1) {
       rewriter.replaceOpWithNewOp<EmitCOp>(op, dstTy, adaptor.getLhs(),
                                            adaptor.getRhs());

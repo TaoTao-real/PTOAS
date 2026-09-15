@@ -901,8 +901,9 @@ private:
       return success();
     }
 
+    constexpr unsigned kSignlessI32BitWidth = 32;
     auto intAttr = dyn_cast<IntegerAttr>(attr);
-    if (!intAttr || !intAttr.getType().isSignlessInteger(mlir::pto::kValue32)) {
+    if (!intAttr || !intAttr.getType().isSignlessInteger(kSignlessI32BitWidth)) {
       return func.emitError()
              << "'" << attrName
              << "' must be a signless i32 integer attribute";

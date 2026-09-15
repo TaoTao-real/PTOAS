@@ -269,7 +269,7 @@ static void planVPTOLLVMCall(Location loc, StringRef calleeName,
 template <typename CopyOp>
 static FailureOr<StringRef> getCopyOpCallee(CopyOp op,
                                             const std::string &march,
-                                            bool hasPadding) {
+                                            [[maybe_unused]] bool hasPadding) {
   if constexpr (std::is_same_v<CopyOp, pto::CopyGmToUbufOp>) {
     return buildCopyGmToUbCallee(op.getContext(), op.getSource().getType(),
                                  march, hasPadding);
