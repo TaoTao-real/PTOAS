@@ -1,0 +1,70 @@
+# coding=utf-8
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+# CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
+
+"""Reject ambiguous profiling boundaries before reporting diagnostic latency."""
+import csv
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+
+SAMPLE = Path(__file__).resolve().parents[3] / "samples" / "CVCostModel"
+sys.path.insert(0, str(SAMPLE))
+from summarize_runtime import duration, summarize
+
+
+class TimingBoundaryTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="pto-timing-test-")
+        self.root = Path(self.temporary.name)
+        (self.root / "profile").mkdir()
+        self.row = {"Op Name": "fixed", "Task Type": "MIX_AIC", "Device_id": "0",
+                    "Block Num": "1", "Mix Block Num": "2", "Task Duration(us)": "12.5"}
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def save(self, rows):
+        with (self.root / "profile" / "op_summary.csv").open("w", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=list(self.row))
+            writer.writeheader()
+            writer.writerows(rows)
+
+    def test_whole_mixed_kernel(self):
+        self.save([self.row])
+        self.assertEqual(duration(self.root, "fixed", 0)["duration_us"], 12.5)
+
+    def test_unknown_and_nonfinite_timing(self):
+        for value in ("nan", "inf", "0", "-1", "N/A"):
+            self.save([dict(self.row, **{"Task Duration(us)": value})])
+            with self.assertRaises(ValueError):
+                duration(self.root, "fixed", 0)
+
+    def test_partial_or_multiple_tasks_rejected(self):
+        for rows in ([self.row, self.row], [dict(self.row, **{"Task Type": "AI_VECTOR_CORE"})],
+                     [dict(self.row, **{"Mix Block Num": "1"})]):
+            self.save(rows)
+            with self.assertRaises(ValueError):
+                duration(self.root, "fixed", 0)
+
+    def test_two_baselines_and_overlap(self):
+        def bucket(values):
+            return dict(samples=[dict(duration_us=v) for v in values])
+        groups = {("case", "serial"): bucket([20, 21, 19, 20, 20]),
+                  ("case", "p0"): bucket([10, 11, 9, 10, 10]),
+                  ("case", "p2"): bucket([10, 10, 10, 10, 10])}
+        row = next(r for r in summarize(groups) if r["variant"] == "p2")
+        self.assertEqual(row["ratio_to_serial"], 0.5)
+        self.assertEqual(row["ratio_to_p0"], 1.0)
+        self.assertEqual(row["comparison_to_p0"], "cannot_reliably_distinguish")
+
+
+if __name__ == "__main__":
+    unittest.main()
