@@ -224,7 +224,7 @@ coverage returns `latency.value=null`; known per-operation estimates remain diag
 |---|---|---|
 | G1 | Package/plan identity, ownership, mappings, schedule binding | Executable contract and subprocess tests |
 | G2 | Provenance, actual layout/budget, completion-safe reuse, final dependency/FIFO/sync constraints and artifact consistency all verified | Bounded A5 completion/layout checker emits pass/fail/unknown; acceptance is candidate-specific |
-| G3 | Independent golden, runtime bounds and deadlock validation | Device harness supplied; only frozen matrix execution can promote G3 |
+| G3 | Independent golden, runtime bounds and deadlock validation | Frozen 32x32 fixed matrix passes 282 runs on A5; broader workloads unvalidated |
 | G4 | Same-workload predictions, paired measurements and explicit policy | Evidence validator supplied; no automatic enablement or certification claimed |
 
 For the supported transformation, every necessary G2 check must pass; unknown is not pass.
@@ -239,7 +239,7 @@ sample count, mean speedup, worst paired regression, prediction error and numeri
 It binds the exact input, candidate artifact, model, device and measurement environment. It
 does not run hardware, authenticate a measurement producer, or certify unmeasured workloads.
 Synthetic contract tests for this validator are not performance evidence. Automatic consumption
-of certificates and broader certified workload ranges remain disabled pending real G3/G4 runs.
+of certificates remains disabled pending G4; the fixed 32x32 G3 result does not certify broader workloads.
 
 The first TileSim adapter runs actual TileOp cost functions on operations from this package.
 It preserves stable buffer provenance into the legacy DSL/MIR/event/liveness path and excludes
@@ -289,3 +289,13 @@ remain separately bound target evidence; this profile does not certify arbitrary
 The harness stops at the first runtime failure, preserves evidence and collects diagnostic
 performance only after complete G3. G4, general memory-reuse search, full M01–M12 coverage and
 model consumption/reevaluation remain pending; existing historical evidence is not relabeled.
+
+Frozen runtime commit `20ae930a4` passed all 282 G3 executions (47 legal variants, three seeds,
+two orders) on `ptoas-a5-52`, device 0, actual SOC `Ascend950PR_9589`. Three insufficient-slot
+configurations were rejected before execution. Distinct allocation ranges do not overlap in this
+board matrix: cross-buffer address reuse has compiler tests only. No G4 certificate is issued.
+
+Diagnostic timing collected 130 measured samples plus 26 warmups on the same G3 objects.
+All candidate ranges overlap their serial and P0 controls: no reliable performance ranking
+is established. See the [fixed-candidate record](ptoas-costmodel-fixed-g2-g3-20260915.md) for
+per-candidate results, provenance and retained raw evidence. This is calibration data, not G4.

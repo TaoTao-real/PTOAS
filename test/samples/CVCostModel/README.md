@@ -159,3 +159,24 @@ physical overlap and borrowed-release obligations. It currently requires N<=pipe
 no local/backing address overlap, supported FP32 tile operations, and compatible installed PTO
 headers. Unknown batched FIFO reuse or unmodeled operations remain `unknown`. Its layout
 coverage ends at final PTO; target compiler transformations must be checked in device evidence.
+
+
+After copying the complete performance evidence locally, validate every saved input/output
+and the profiler task boundary, then summarize into a fresh directory:
+
+```bash
+python test/samples/CVCostModel/summarize_runtime.py \
+  --experiment /local/performance-experiment \
+  --matrix /local/correctness-experiment/inputs/matrix \
+  --output /local/new-timing-summary
+llvm-lit -v build/test/lit --filter 'cv_costmodel_(g2|runtime).pto$'
+```
+
+The summary requires exactly one matching `MIX_AIC` task per profile, one AIC and two AIVs,
+one warmup and five finite positive durations. It rejects missing/extra tasks and stale evidence.
+Overlapping observed timing ranges are reported as `cannot_reliably_distinguish`; non-overlap
+is only a diagnostic difference, not a certified ranking. See the
+[2026-09-15 fixed-candidate acceptance record](../../../docs/designs/ptoas-costmodel-fixed-g2-g3-20260915.md).
+The source freeze for that device campaign is `20ae930a4`; later summary/tests/docs commits
+must not be presented as a rebuilt device campaign. Archived artifacts are immutable;
+replay in a new experiment with a matching source/toolchain and freshly built executables.
