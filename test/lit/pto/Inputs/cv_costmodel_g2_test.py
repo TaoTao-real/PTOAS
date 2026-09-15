@@ -134,6 +134,30 @@ class FeedbackTest(unittest.TestCase):
         self.assertEqual({u["core"] for u in usage}, {"AIV0", "AIV1"})
         self.assertTrue(all(u["union_reserved_bytes"] == row["reserved_bytes"] for u in usage))
 
+    def test_native_legal_reuse_keeps_identities(self):
+        from ptoas._cv_ir import attr
+        prepare_case(self.root, 1, False, "reuse-proof")
+        case = self.root / "basic-n1"
+        package = read_package(case / "package")
+        candidate = read_json(case / "p0" / "candidate.json")
+        text = (case / "p0" / "lowered.pto").read_text()
+        with ir.Context() as context:
+            pto.register_dialect(context, load=True)
+            module = ir.Module.parse(text)
+            locals_ = [op for op in walk(module.operation) if op.name == "pto.alloc_tile"
+                       and str(attr(op, "pto.costmodel.buffer_id", "")).startswith("vector.")]
+            first, last = locals_[0], locals_[-1]
+            last.operands[0] = first.operands[0]
+            memory = physical_memory(module, package, candidate)
+            report = verify_completion(module, package, candidate, memory)
+            a, c = attr(first, "pto.costmodel.buffer_id"), attr(last, "pto.costmodel.buffer_id")
+        self.assertEqual(report["status"], "pass")
+        rows = [r for r in memory["allocations"] if r["source_buffer_id"] in (a, c)]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["offset_bytes"], rows[1]["offset_bytes"])
+        usage = _usage(rows, package["target"]["compiler_budget"])
+        self.assertTrue(all(u["union_reserved_bytes"] == rows[0]["reserved_bytes"] for u in usage))
+
     def test_feedback_tamper_rejected(self):
         verify_artifacts(self.variant)
         path = self.variant / "validation_report.json"
