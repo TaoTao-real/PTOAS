@@ -157,6 +157,22 @@ class FeedbackTest(unittest.TestCase):
         validation = read_json(self.root / "tiny-out" / "validation_report.json")
         self.assertIn("NATIVE_LAYOUT_OVERFLOW", {e["code"] for e in validation["completion"]["unresolved"]})
 
+    def test_native_library_changes_compiler_identity(self):
+        from types import SimpleNamespace
+        from ptoas import _cv_compile
+        root = self.root / "identity-test"
+        libraries = root / "mlir" / "_mlir_libs"
+        libraries.mkdir(parents=True)
+        core = root / "_core.so"
+        core.write_bytes(b"unchanged-python-entry")
+        backend = libraries / "libPTOASCompiler.so"
+        backend.write_bytes(b"backend-v1")
+        with patch.object(_cv_compile, "ensure_core", return_value=SimpleNamespace(__file__=str(core))):
+            before = _cv_compile.compiler_identity()
+            backend.write_bytes(b"backend-v2")
+            after = _cv_compile.compiler_identity()
+        self.assertNotEqual(before["fingerprint"], after["fingerprint"])
+
     def test_empty_compile_without_model(self):
         source = self.root / "empty.pto"
         source.write_text(source_text(0))

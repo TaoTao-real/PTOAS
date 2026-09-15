@@ -24,6 +24,14 @@ from ptoas.mlir import ir
 from pto_costmodel.wire import encode, fingerprint, read_text
 
 
+def compiler_identity():
+    core = Path(ensure_core().__file__).resolve()
+    libraries = core.parent / "mlir" / "_mlir_libs"
+    paths = [core] + sorted(p for p in libraries.iterdir() if p.suffix in (".so", ".dylib", ".dll"))
+    components = {str(p.relative_to(core.parent)): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
+    return dict(fingerprint=fingerprint(components), components=components)
+
+
 def compile_candidate(graph, package, candidate, report, serial=False):
     text, trace = (serial_baseline if serial else materialize)(graph, package, candidate)
     with tempfile.TemporaryDirectory(prefix="pto-cv-compile-") as tmp:
@@ -43,12 +51,15 @@ def compile_candidate(graph, package, candidate, report, serial=False):
                   performance_certification="not_run", automatic_application=False,
                   re_evaluation_required=True)
     report["candidate_artifact_fingerprint"] = hashlib.sha256(generated.encode("utf-8")).hexdigest()
-    report["compiler_binary_fingerprint"] = hashlib.sha256(Path(ensure_core().__file__).read_bytes()).hexdigest()
+    compiler = compiler_identity()
+    report["compiler_binary_fingerprint"] = compiler["fingerprint"]
+    report["compiler_components"] = compiler["components"]
     report["native_flags"] = flags
     report["lowered_operation_counts"] = summary
     binding = dict(identity=package["identity"], candidate_id=candidate["candidate_id"],
                    schedule_fingerprint=candidate["schedule"]["fingerprint"],
                    compiler_binary_fingerprint=report["compiler_binary_fingerprint"],
+                   compiler_components=compiler["components"],
                    cpp_fingerprint=report["candidate_artifact_fingerprint"],
                    final_ir_fingerprint=hashlib.sha256(lowered.encode("utf-8")).hexdigest(), native_flags=flags)
     memory["binding"] = binding

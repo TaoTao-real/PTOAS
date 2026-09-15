@@ -114,6 +114,7 @@ def main():
 def source_provenance():
     import ptoas
     from ptoas._loader import ensure_core
+    from ptoas._cv_compile import compiler_identity
     root = Path(__file__).resolve().parents[3]
     def git(*args):
         return subprocess.run(["git", "-C", str(root), *args], capture_output=True,
@@ -123,7 +124,7 @@ def source_provenance():
     binary = Path(ensure_core().__file__)
     return dict(commit=git("rev-parse", "HEAD").strip(), dirty=bool(git("status", "--porcelain")),
                 source_fingerprint=hashlib.sha256(encode(files).encode()).hexdigest(),
-                compiler_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(), compiler_path=str(binary),
+                compiler_identity=compiler_identity(), compiler_path=str(binary),
                 python=sys.executable, python_version=sys.version, ptoas_path=str(ptoas.__file__),
                 runtime_tools={name: files["test/samples/CVCostModel/" + name]
                                for name in ("runtime_main.cpp", "build_runtime.py", "run_runtime.py")})
