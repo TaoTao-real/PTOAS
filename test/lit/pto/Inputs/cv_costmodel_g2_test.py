@@ -99,6 +99,16 @@ class FeedbackTest(unittest.TestCase):
                     break
         self.assertEqual(self.verify(wrong_slot)["status"], "fail")
 
+    def test_wrong_transaction_split_rejected(self):
+        def wrong_split(module):
+            for op in walk(module.operation):
+                if op.name == "pto.tpush":
+                    op.attributes["split"] = ir.IntegerAttr.get(ir.IntegerType.get_signless(8), 0)
+                    break
+        report = self.verify(wrong_split)
+        self.assertEqual(report["status"], "fail")
+        self.assertIn("TRANSACTION_MAPPING", {e["code"] for e in report["unresolved"]})
+
     def test_reuse_wait_cycle_rejected(self):
         candidate = deepcopy(self.candidate)
         raw = next(v for v in candidate["schedule"]["buffer_versions"] if v["readers"])

@@ -178,6 +178,7 @@ def verify_completion(module, package, candidate, memory):
         if edge["kind"] in ("pipe", "fifo_capacity"):
             graph.edge(edge["source"], edge["target"], "A5_L2L_" + edge["kind"])
     _operand_mapping(package, events, found, errors)
+    _transaction_mapping(package, found, errors)
     proofs = []
     for version in candidate["schedule"]["buffer_versions"]:
         for reader in version["readers"]:
@@ -186,7 +187,8 @@ def verify_completion(module, package, candidate, memory):
     _storage_hazards(events, memory, found, graph, proofs, errors)
     if not graph.acyclic():
         errors.append(dict(code="COMPLETION_CYCLE"))
-    invalid = {"VERSION_MAPPING", "LIVE_STORAGE_OVERLAP", "COMPLETION_CYCLE", "NATIVE_LAYOUT_OVERFLOW"}
+    invalid = {"VERSION_MAPPING", "TRANSACTION_MAPPING", "LIVE_STORAGE_OVERLAP",
+               "COMPLETION_CYCLE", "NATIVE_LAYOUT_OVERFLOW"}
     status = "fail" if any(e["code"] in invalid for e in errors) else "unknown" if errors else "pass"
     return dict(status=status, semantic_profile="a5_l2l_tile_entry_v1",
                 obligations=proofs, edges=graph.evidence, unresolved=errors,
@@ -231,6 +233,18 @@ def _obligation(graph, source, target, kind, proofs, errors):
         proofs.append(result)
     else:
         errors.append(dict(code="UNPROVEN_COMPLETION", **result))
+
+
+def _transaction_mapping(package, found, errors):
+    transactions = {t["op_id"]: t for t in package["program"]["transactions"]}
+    for key, op in found.items():
+        transaction = transactions.get(key.split("@")[0])
+        if transaction is None:
+            continue
+        owner = op.operands[-1].owner
+        if (op.name != "pto." + transaction["action"] or attr(op, "split") != transaction["split"]
+                or attr(owner, "pto.costmodel.pipe_id") != transaction["pipe_id"]):
+            errors.append(dict(code="TRANSACTION_MAPPING", event=key))
 
 
 def _release_obligations(package, candidate, graph, proofs, errors):
