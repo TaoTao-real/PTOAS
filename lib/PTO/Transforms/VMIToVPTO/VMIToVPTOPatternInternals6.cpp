@@ -328,12 +328,32 @@ private:
       ArrayRef<Type> resultTypes, VRegType sourceType, unsigned sourceBits,
       unsigned resultBits, VMILayoutAttr sourceLayout,
       VMILayoutAttr resultLayout, OneToNPatternRewriter &rewriter) const {
+    // The carrier view of each declared layout drives the plan, exactly as in
+    // pto.vmi.extf: a single-carrier group-slot packet whose stride is the
+    // widening factor, or a packet that keeps one group at lane 0 of every
+    // part, selects the same source lanes as the dense lane-strided form and
+    // forwards the physical part unchanged.
+    VMILayoutAttr sourceView =
+        getVMICastDenseCarrierView(sourceLayout, sourceType.getElementType());
+    VMILayoutAttr resultView =
+        resultVRegTypes.empty()
+            ? VMILayoutAttr()
+            : getVMICastDenseCarrierView(
+                  resultLayout, resultVRegTypes.front().getElementType());
+    unsigned pairWidth = static_cast<unsigned>(kPairWidth);
+    unsigned quadWidth = static_cast<unsigned>(kQuadWidth);
+    bool evenRadix = resultBits == sourceBits * pairWidth &&
+                     sourceView.getLaneStride() == kPairWidth;
+    bool quadRadix = resultBits == sourceBits * quadWidth &&
+                     sourceView.getLaneStride() == kQuadWidth;
+    bool sourceSelectsPartLanes =
+        sourceView &&
+        (evenRadix || quadRadix ||
+         isVMISingleGroupPerPartPacket(sourceLayout));
     bool denseLaneExtension =
-        sourceLayout && resultLayout && sourceLayout.isContiguous() &&
-        resultLayout.isContiguous() && resultLayout.getLaneStride() == 1 &&
-        ((resultBits == sourceBits * 2 && sourceLayout.getLaneStride() == 2) ||
-         (resultBits == sourceBits * 4 && sourceLayout.getLaneStride() == 4)) &&
-        resultTypes.size() == sourceParts.size();
+        sourceView && resultView && sourceView.isContiguous() &&
+        resultView.isContiguous() && resultView.getLaneStride() == 1 &&
+        sourceSelectsPartLanes && resultTypes.size() == sourceParts.size();
     if (denseLaneExtension) {
       StringRef part = resultBits == sourceBits * 2 ? StringRef("EVEN")
                                                     : StringRef("P0");
@@ -1314,8 +1334,15 @@ static FailureOr<NarrowFpToIntPlan> buildNarrowFpToIntPlan(
   }
   int64_t factor = sourceBits / resultBits;
   VMILayoutAttr resultLayout = resultVMIType.getLayoutAttr();
-  int64_t resultLaneStride = resultLayout && resultLayout.isContiguous()
-                                 ? resultLayout.getLaneStride()
+  // The narrowing result lane stride comes from the carrier view of the
+  // declared result layout: a single-carrier group-slot packet with slots = 1
+  // or with the narrowing factor as its lane stride places its groups exactly
+  // where the dense lane-strided result does, so the same converted lane
+  // ordering applies and the physical part is forwarded unchanged.
+  VMILayoutAttr resultView = getVMICastDenseCarrierView(
+      resultLayout, resultVMIType.getElementType());
+  int64_t resultLaneStride = resultView && resultView.isContiguous()
+                                 ? resultView.getLaneStride()
                                  : 1;
   bool invalidResultLaneStride =
       resultLaneStride <= 0 || factor % resultLaneStride != 0;
@@ -1323,6 +1350,12 @@ static FailureOr<NarrowFpToIntPlan> buildNarrowFpToIntPlan(
     return rewriter.notifyMatchFailure(op, unsupportedLaneStrideDiagnostic);
   }
   int64_t sourceFactor = factor / resultLaneStride;
+  if (isVMISingleGroupPerPartPacket(resultLayout)) {
+    // One group per result part is fed by one source part: the part family maps
+    // source lane 0 to result lane 0 whatever the narrowing radix, so a packet
+    // pair like this narrows 1:1 per part instead of merging source parts.
+    sourceFactor = 1;
+  }
   bool invalidSourceArity =
       sourceParts.size() != sourceFactor * physicalResultTypes.size();
   if (invalidSourceArity) {
@@ -1369,11 +1402,29 @@ private:
       OneToNPatternRewriter &rewriter) const {
     VMILayoutAttr sourceLayout = sourceVMIType.getLayoutAttr();
     VMILayoutAttr resultLayout = resultVMIType.getLayoutAttr();
+    // Same carrier-view plan as pto.vmi.extf: a single-carrier group-slot
+    // packet with the widening factor as its lane stride, or a packet with one
+    // group per part, is the dense lane-strided carrier in every respect the
+    // part selection depends on.
+    VMILayoutAttr sourceView =
+        getVMICastDenseCarrierView(sourceLayout, sourceType.getElementType());
+    VMILayoutAttr resultView =
+        resultTypes.empty()
+            ? VMILayoutAttr()
+            : getVMICastDenseCarrierView(resultLayout,
+                                         resultTypes.front().getElementType());
+    bool packedRadix = sourceBits == kElementBits16 &&
+                       sourceView.getLaneStride() == kPairWidth;
+    bool quadRadix = sourceBits == kElementBits8 &&
+                     sourceView.getLaneStride() == kQuadWidth;
+    bool sourceSelectsPartLanes =
+        sourceView &&
+        (packedRadix || quadRadix ||
+         isVMISingleGroupPerPartPacket(sourceLayout));
     bool denseOneToOne =
-        sourceLayout && resultLayout && sourceLayout.isContiguous() &&
-        resultLayout.isContiguous() && resultLayout.getLaneStride() == 1 &&
-        ((sourceBits == 16 && sourceLayout.getLaneStride() == 2) ||
-         (sourceBits == 8 && sourceLayout.getLaneStride() == 4)) &&
+        sourceView && resultView && sourceView.isContiguous() &&
+        resultView.isContiguous() && resultView.getLaneStride() == 1 &&
+        sourceSelectsPartLanes &&
         physicalResultTypes.size() == sourceParts.size();
     if (denseOneToOne) {
       return lowerDenseWiden(op, sourceParts, resultTypes, sourceType,

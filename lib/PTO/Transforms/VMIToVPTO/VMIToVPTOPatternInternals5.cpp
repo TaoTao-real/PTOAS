@@ -1471,6 +1471,49 @@ private:
     return success();
   }
 
+  /// Dense lane-stride widening plan.  `applies` is set when each declared
+  /// layout describes the same carrier as its dense lane-strided form, and
+  /// `part` is then the vcvt part that selects the source lanes.  Planning from
+  /// the carrier view of a single-carrier group-slot packet -- rather than from
+  /// its declared form -- is what lets a packet source or result take the same
+  /// one-vcvt plan as its dense counterpart, with the physical part forwarded
+  /// unchanged and no pack, zip or shuffle implied.
+  struct ExtFDenseLaneStridePlan {
+    bool applies = false;
+    StringRef part;
+  };
+
+  static ExtFDenseLaneStridePlan buildDenseLaneStridePlan(
+      const ExtFPhysicalPlan &plan, VMILayoutAttr sourceLayout,
+      VMILayoutAttr resultLayout, size_t sourcePartCount) {
+    unsigned sourceBits =
+        pto::getPTOStorageElemBitWidth(plan.sourceType.getElementType());
+    VMILayoutAttr sourceView = getVMICastDenseCarrierView(
+        sourceLayout, plan.sourceType.getElementType());
+    VMILayoutAttr resultView = getVMICastDenseCarrierView(
+        resultLayout, plan.resultTypes.front().getElementType());
+    int64_t widenFactor = 0;
+    if (sourceBits == kElementBits16) {
+      widenFactor = kPairWidth;
+    } else if (sourceBits == kElementBits8) {
+      widenFactor = kQuadWidth;
+    }
+    // A packet that keeps one group per part (slots = 1) only fills lane 0,
+    // which every part family maps to result lane 0, so it widens 1:1 per part
+    // like the dense lane-strided form.
+    bool sourceSelectsLanes =
+        sourceView && widenFactor != 0 &&
+        (sourceView.getLaneStride() == widenFactor ||
+         isVMISingleGroupPerPartPacket(sourceLayout));
+    bool applies = sourceView && resultView && sourceView.isContiguous() &&
+                   resultView.isContiguous() &&
+                   resultView.getLaneStride() == 1 && sourceSelectsLanes &&
+                   plan.resultTypes.size() == sourcePartCount;
+    StringRef part =
+        sourceBits == kElementBits16 ? StringRef("EVEN") : StringRef("P0");
+    return ExtFDenseLaneStridePlan{applies, part};
+  }
+
   struct ExtFFactorPlan {
     ArrayRef<StringRef> parts;
     int64_t factor;
@@ -1514,20 +1557,16 @@ private:
     // physical-noop VbitcastOp, mirroring the source-side reinterpret in
     // OneToNVMITruncFOpPattern (viewVcvtSource).
     ResultViewPlan viewPlan = buildResultViewPlan(plan.resultTypes, rewriter);
-    bool denseLaneStrideExtension =
-        sourceLayout && resultLayout && sourceLayout.isContiguous() &&
-        resultLayout.isContiguous() && resultLayout.getLaneStride() == 1 &&
-        ((sourceBits == 16 && sourceLayout.getLaneStride() == 2) ||
-         (sourceBits == 8 && sourceLayout.getLaneStride() == 4)) &&
-        plan.resultTypes.size() == sourceParts.size();
-    if (denseLaneStrideExtension) {
-      StringRef part = sourceBits == 16 ? StringRef("EVEN") : StringRef("P0");
+    ExtFDenseLaneStridePlan laneStridePlan =
+        buildDenseLaneStridePlan(plan, sourceLayout, resultLayout,
+                                 sourceParts.size());
+    if (laneStridePlan.applies) {
       FailureOr<Value> mask = createSeedMask(op, plan.sourceType, rewriter);
       if (failed(mask)) {
         return failure();
       }
       return lowerLaneStride(op, rewriter, sourceParts, plan.resultTypes, *mask,
-                             part, viewPlan.isPackedBF16x2,
+                             laneStridePlan.part, viewPlan.isPackedBF16x2,
                              viewPlan.vcvtResultType);
     }
 

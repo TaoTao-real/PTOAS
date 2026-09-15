@@ -32,6 +32,36 @@ namespace mlir::pto {
 /// lanes are 0..G-1.
 bool isVMISingleCarrierGroupSlots(VMILayoutAttr layout, int64_t lanesPerPart);
 
+/// Same as isVMISingleCarrierGroupSlots with the lane stride spelled out: the
+/// packet places logical lane i at {part 0, chunk i / S, lane (i % S) * LS}.
+///
+/// A lane stride other than 1 is only meaningful for sub-32-bit elements, whose
+/// several values share one carrier lane; a 32-bit element already fills a
+/// carrier lane.  The supported strides therefore follow the packable carrier
+/// chain (32 -> 16 -> 8): stride 2 up to 16-bit elements, stride 4 up to 8-bit.
+///
+/// Only the slot widths the lowering builds qualify (one or eight group slots
+/// per part): a packet with more slots spreads its groups over several carriers
+/// and is hand-written IR that no producer emits.
+bool isVMISingleCarrierGroupSlotsWithStride(VMILayoutAttr layout,
+                                            int64_t lanesPerPart,
+                                            int64_t laneStride);
+
+/// True when a dense value and a single-carrier group packet differ in lane
+/// stride, so the carrier identity cannot bridge them directly and the dense
+/// lane stride has to be normalized through a contiguous intermediate first.
+/// Kept next to the single-carrier predicate so the ensure_layout query and the
+/// materializer agree on which pairs are supported.
+/// `elementType` bounds the bridge to the shapes the dense lane-stride
+/// materialization covers (8/16-bit elements; lane stride 4 only for 8-bit).
+/// One of the two strides also has to be the unit stride, because the dense
+/// lane-stride materialization moves between the unit stride and a strided form
+/// only; two non-unit strides would need two such moves.
+bool needsVMIDenseLaneStrideGroupSlotBridge(VMILayoutAttr sourceLayout,
+                                            VMILayoutAttr resultLayout,
+                                            Type elementType,
+                                            int64_t lanesPerPart);
+
 /// True when a group-slot packet and a dense contiguous vector describe exactly
 /// the same physical lanes of a single carrier, so converting between them is a
 /// pure register forward with no pack/zip/shuffle.  Symmetric in `lhs`/`rhs`:
