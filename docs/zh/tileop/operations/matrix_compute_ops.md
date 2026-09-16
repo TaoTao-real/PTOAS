@@ -1,8 +1,8 @@
 # 矩阵计算操作
 
-本节描述了 PTO ISA 中全部矩阵计算操作的指令名称、签名和语义。矩阵计算操作在 Cube（矩阵）流水线上执行，用于完成矩阵乘法（TMATMUL）和矩阵-向量乘法（TGEMV）。所有操作均采用"目标传递风格"（Destination-Passing Style, DPS）：操作本身不产生 SSA 返回值，而是直接将结果写入预先分配好的目标 `tile_buf`。
+本节描述了 PTO ISA 中全部矩阵计算操作的指令名称、签名和语义。矩阵计算操作在 Cube（矩阵）流水线上执行，用于完成矩阵乘法（TMATMUL）和矩阵-向量乘法（TGEMV）。所有操作均采用"目标传递风格"（Destination-Passing Style，DPS）：操作本身不产生 SSA 返回值，而是直接将结果写入预先分配好的目标 `tile_buf`。
 
-这一类操作通常具有如下装配形式：
+这一类操作通常具有如下汇编形式：
 
 ```mlir
  pto.op ins(%lhs, %rhs : !pto.tile_buf<...>, !pto.tile_buf<...>)

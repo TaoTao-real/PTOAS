@@ -33,7 +33,7 @@ pto.addptr <ptr>, <offset> : !pto.ptr<elementType> -> !pto.ptr<elementType>
 **语义：**
 
 ```text
-result = ptr + offset  // offset is in elements, not bytes
+result = ptr + offset  // offset is in elements, not Bytes
 ```
 
 **参数：**
