@@ -1305,6 +1305,23 @@ def VMILowerUnifiedToLegacy : Pass<"vmi-lower-unified-to-legacy", "ModuleOp"> {
   let dependentDialects = ["mlir::pto::PTODialect"];
 }
 
+def VMIExpandImplicitEnsureLayouts
+    : Pass<"vmi-expand-implicit-ensure-layouts", "ModuleOp"> {
+  let summary = "Expand implicit E2B group_broadcast_load layout conversions";
+  let description = [{
+    Rewrites each group_broadcast_load whose materialized result layout is
+    contiguous but that direct E2B lowering can serve with a deinterleaved
+    (d2/d4) result layout. The load result vreg is retyped to the E2B
+    deinterleaved layout and an ensure_layout d2/d4 -> contiguous is inserted
+    immediately after the load, so vmi-to-vpto lowers the broadcast as a
+    single E2B packet per part and converts to contiguous internally instead
+    of failing or falling back to the slower vselr broadcast path.
+  }];
+  let constructor = "mlir::pto::createVMIExpandImplicitEnsureLayoutsPass()";
+  let dependentDialects = ["mlir::func::FuncDialect",
+                           "mlir::pto::PTODialect"];
+}
+
 def VMIToVPTO : Pass<"vmi-to-vpto", "ModuleOp"> {
   let summary = "Convert layout-assigned VMI IR to physical VPTO IR";
   let description = [{

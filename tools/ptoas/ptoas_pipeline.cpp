@@ -965,6 +965,13 @@ static void appendVMISemanticPipeline(OpPassManager &pm) {
   pm.addPass(createCSEPass());
   pm.addPass(pto::createVMILegalizeArithSelectPass());
   pm.addPass(pto::createPTOValidateVMILayoutIRPass());
+  // The layout solver selects E2B as a lowering preference, so a
+  // group_broadcast_load may still carry a contiguous result layout at this
+  // point. Make the preference explicit before vmi-to-vpto: retype the load
+  // result to the direct E2B d2/d4 layout and insert an ensure_layout
+  // d2/d4 -> contiguous right after it. Without this, vmi-to-vpto cannot
+  // lower the multi-part contiguous E2B form as a single packet per part.
+  pm.addPass(pto::createVMIExpandImplicitEnsureLayoutsPass());
   pm.addPass(pto::createVMIToVPTOPass());
   pm.addPass(pto::createVPTOStatefulStreamFusionPass());
 }
