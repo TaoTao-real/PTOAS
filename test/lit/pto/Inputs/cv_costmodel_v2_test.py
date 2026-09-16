@@ -153,6 +153,30 @@ class ExchangeV2Test(unittest.TestCase):
         result["candidates"][0]["schedule_fingerprint"] = "wrong"
         self.reject("SCHEDULE", validate_result, result, self.package, candidates)
 
+    def test_tilesim_selection_extension_is_strictly_bound(self):
+        candidates, _ = search_candidates(self.package, [0, 1])
+        result = evaluate(self.package, make_request(self.package, candidates))
+        ranking = []
+        for index, row in enumerate(result["candidates"]):
+            row["coverage"] = dict(status="complete", operations="complete", communication="complete",
+                                   approximations=[], unsupported=[])
+            row["latency"] = dict(value=10.0 - index, unit="us")
+            candidate = candidates[index]
+            ranking.append(dict(rank=index + 1, candidate_id=row["candidate_id"],
+                predicted_latency_us=row["latency"]["value"],
+                total_memory_bytes=sum(value for spaces in row["resources"]["per_core"].values()
+                                       for value in spaces.values()),
+                preload_count=row["configuration"]["preload_count"],
+                effective_preload=candidate["schedule"]["effective_preload"]))
+        result["extensions"] = {"tilesim.selection.v1": dict(schema_version="tilesim.selection.v1",
+            recommended_candidate_id=ranking[-1]["candidate_id"], action="optimize",
+            baseline_candidate_id=ranking[0]["candidate_id"], predicted_gain=0.1,
+            recommendation_threshold=0.02, tie_threshold=0.005, ranking=ranking, rejected=[],
+            tie_break=["total_memory_bytes", "effective_preload", "candidate_id"])}
+        validate_result(result, self.package, candidates)
+        result["extensions"]["tilesim.selection.v1"]["ranking"][0]["candidate_id"] = "unknown"
+        self.reject("SELECTION", validate_result, result, self.package, candidates)
+
     def test_partial_model_cannot_claim_latency(self):
         candidates, _ = search_candidates(self.package, [0])
         request = make_request(self.package, candidates)
@@ -304,6 +328,23 @@ class ExchangeV2Test(unittest.TestCase):
         self.assertEqual(certify(policy, evidence)["status"], "not_certified")
         evidence["correctness"]["deadlock_free"] = False
         self.reject("CORRECTNESS", certify, policy, evidence)
+
+    def test_paired_bootstrap_certification_is_reproducible(self):
+        from pto_costmodel.certification import certify
+        policy = dict(minimum_samples=3, minimum_speedup=0.02, maximum_regression=0.02,
+                      maximum_prediction_error=0.1, confidence_level=0.95,
+                      bootstrap_resamples=1000, bootstrap_seed=20260916,
+                      absolute_tolerance=0, relative_tolerance=0)
+        evidence = dict(identity=self.package["identity"], candidate_id="fixture", schedule_fingerprint="fixture",
+                        model=model_info(), device="synthetic", measurement_environment="unit_test",
+                        baseline_artifact_fingerprint="fixture_base", candidate_artifact_fingerprint="fixture_opt",
+                        predicted_latency_us=8, baseline_us=[10, 10, 10], candidate_us=[8, 8, 8],
+                        runner_revision="fixture", correctness=dict(golden_fingerprint="fixture", passed=True,
+                            absolute_tolerance=0, relative_tolerance=0, deadlock_free=True, bounds_checked=True))
+        first = certify(policy, evidence)
+        second = certify(policy, evidence)
+        self.assertEqual(first, second)
+        self.assertGreater(first["metrics"]["bootstrap_confidence_interval"][0], 0)
 
 
 if __name__ == "__main__":

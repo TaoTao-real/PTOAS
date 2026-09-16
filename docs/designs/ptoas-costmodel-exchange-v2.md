@@ -215,8 +215,10 @@ is never reused as a prediction cache entry.
 Malformed packages, stale identities, unsupported required capabilities and protocol violations
 terminate a request. Search can discard capacity-infeasible candidates, but a specifically
 selected invalid plan fails. No optimization is automatically enabled without certification.
-The current automatic selection remains the baseline with an explicit reason. Partial model
-coverage returns `latency.value=null`; known per-operation estimates remain diagnostic evidence.
+Without a recognized selection extension the existing behavior remains baseline with an explicit
+reason. The optional `tilesim.selection.v1` extension binds a complete ranking and frozen candidate;
+PTOAS validates and records it but does not automatically apply it. Partial model coverage returns
+`latency.value=null` and cannot participate in selection.
 
 ## Verification levels and current limitations
 
@@ -225,7 +227,7 @@ coverage returns `latency.value=null`; known per-operation estimates remain diag
 | G1 | Package/plan identity, ownership, mappings, schedule binding | Executable contract and subprocess tests |
 | G2 | Provenance, actual layout/budget, completion-safe reuse, final dependency/FIFO/sync constraints and artifact consistency all verified | Bounded A5 completion/layout checker emits pass/fail/unknown; acceptance is candidate-specific |
 | G3 | Independent golden, runtime bounds and deadlock validation | Frozen 32x32 fixed matrix passes 282 runs on A5; broader workloads unvalidated |
-| G4 | Same-workload predictions, paired measurements and explicit policy | Evidence validator supplied; no automatic enablement or certification claimed |
+| G4 | Same-workload predictions, paired measurements and explicit policy | Paired A/B harness and bootstrap evidence validator supplied; certification remains exact-workload only |
 
 For the supported transformation, every necessary G2 check must pass; unknown is not pass.
 Compiler success, source-order liveness and set/wait counts are insufficient individually or
@@ -243,11 +245,13 @@ of certificates remains disabled pending G4; the fixed 32x32 G3 result does not 
 
 The first TileSim adapter runs actual TileOp cost functions on operations from this package.
 It preserves stable buffer provenance into the legacy DSL/MIR/event/liveness path and excludes
-borrowed, backing and model-temporary storage from local-slot recommendations. Its direct
-package path currently reports operation estimates and compiler minimum slot requirements.
-It explicitly reports missing L2L signal/free timing, uncalibrated negation/layout cost proxies,
-and A5 target differences; it cannot yet produce a complete optimized-program latency or a
-timed-liveness-derived slot recommendation. No hand-written FA graph substitutes for the input.
+borrowed, backing and model-temporary storage from local-slot recommendations. For the fixed static
+four-stage micro, it lowers stage instances and dependencies to TileSim MIR, expands two AIV lanes,
+and uses `EventEvaluator` for candidate makespan. L2L transfer cost uses the A5 `davidV100`
+L0C→UB and UB→L1 bandwidth curves; pop/free are synchronization/lifecycle events. Negation and
+layout mappings remain visible approximations. This complete coverage claim does not extend beyond
+the fixed micro, and slot counts remain compiler-proven minima. No hand-written FA graph substitutes
+for the input.
 
 The original FA source referenced by the model repository is still a second fixture to obtain.
 Generalized multi-axis/recursive/dynamic inputs and local scheduling require new capabilities,

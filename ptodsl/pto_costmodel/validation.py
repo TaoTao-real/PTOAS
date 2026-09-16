@@ -10,10 +10,11 @@
 
 """Candidate integrity, FIFO progress, and conservative aggregate budgets."""
 from collections import deque
+import math
 
 from pto_costmodel.contract import candidate_id, envelope, metric, validate_model
 from pto_costmodel.schedule import build_schedule
-from pto_costmodel.wire import fields, require
+from pto_costmodel.wire import fields, integer, require
 
 
 def prepare_candidate(package, config):
@@ -83,6 +84,59 @@ def validate_result(result, package, candidates):
     for row in result["candidates"]:
         _validate_row(row, expected, seen)
     require(seen == set(expected), "MISSING_CANDIDATE", "model omitted candidate results")
+    selection = result.get("extensions", {}).get("tilesim.selection.v1")
+    if selection is not None:
+        _validate_selection(selection, result["candidates"], expected)
+
+
+def _validate_selection(selection, rows, expected):
+    fields(selection, ("schema_version", "recommended_candidate_id", "action", "baseline_candidate_id",
+                       "predicted_gain", "recommendation_threshold", "tie_threshold", "ranking", "rejected",
+                       "tie_break"))
+    require(selection["schema_version"] == "tilesim.selection.v1", "SELECTION", "unknown selection version")
+    require(selection["action"] in ("baseline", "optimize"), "SELECTION", "unknown selection action")
+    require(selection["recommended_candidate_id"] in expected
+            and selection["baseline_candidate_id"] in expected, "SELECTION", "unknown selected candidate")
+    require(type(selection["predicted_gain"]) in (int, float) and math.isfinite(selection["predicted_gain"]),
+            "SELECTION", "predicted gain must be finite")
+    for key in ("recommendation_threshold", "tie_threshold"):
+        require(type(selection[key]) in (int, float) and math.isfinite(selection[key]) and selection[key] >= 0,
+                "SELECTION", f"invalid {key}")
+    require(selection["recommendation_threshold"] == 0.02 and selection["tie_threshold"] == 0.005,
+            "SELECTION", "unexpected selection policy")
+    require(selection["tie_break"] == ["total_memory_bytes", "effective_preload", "candidate_id"],
+            "SELECTION", "unexpected tie-break policy")
+    require(isinstance(selection["ranking"], list) and isinstance(selection["rejected"], list),
+            "SELECTION", "ranking/rejected must be arrays")
+    fields_by_id = {row["candidate_id"]: row for row in rows}
+    ranked = set()
+    for index, item in enumerate(selection["ranking"]):
+        fields(item, ("rank", "candidate_id", "predicted_latency_us", "total_memory_bytes",
+                      "preload_count", "effective_preload"))
+        key = item["candidate_id"]
+        require(item["rank"] == index + 1 and key in expected and key not in ranked,
+                "SELECTION", "invalid/duplicate ranking entry")
+        ranked.add(key)
+        require(fields_by_id[key]["latency"] == dict(value=item["predicted_latency_us"], unit="us")
+                and fields_by_id[key]["configuration"]["preload_count"] == item["preload_count"],
+                "SELECTION", "ranking does not match evaluated candidate")
+        integer(item["total_memory_bytes"], "selection memory")
+        integer(item["effective_preload"], "selection effective preload")
+    rejected = set()
+    for item in selection["rejected"]:
+        fields(item, ("candidate_id", "reason"))
+        require(item["candidate_id"] in expected and item["candidate_id"] not in rejected,
+                "SELECTION", "invalid/duplicate rejected candidate")
+        require(isinstance(item["reason"], str) and item["reason"], "SELECTION", "missing rejection reason")
+        rejected.add(item["candidate_id"])
+    require(ranked.isdisjoint(rejected) and ranked | rejected == set(expected),
+            "SELECTION", "selection must classify every candidate")
+    chosen = fields_by_id[selection["recommended_candidate_id"]]
+    baseline = fields_by_id[selection["baseline_candidate_id"]]
+    require(chosen["coverage"]["status"] == "complete" and chosen["latency"]["value"] is not None,
+            "SELECTION", "selected candidate is not fully modeled")
+    require(selection["action"] != "baseline" or selection["recommended_candidate_id"] == selection["baseline_candidate_id"],
+            "SELECTION", "baseline action must retain the baseline candidate")
 
 
 def validate_request(request, package):

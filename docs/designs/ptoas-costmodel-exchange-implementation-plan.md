@@ -1,6 +1,6 @@
 # PTOAS × Cost Model 实施与验收计划
 
-状态：实施中；2026-09-15 固定候选 G2/G3 工具落地，正式 G3 矩阵通过，诊断性能采样完成。
+状态：实施中；2026-09-16 已实现固定 micro 的 TileSim 候选计时、冻结选择和配对 A/B 工具；新设备验收待运行。
 
 设计依据：[交换协议 ADR](ptoas-costmodel-exchange-v2.md)、[v1 契约](ptoas-cv-costmodel-exchange-v1.md)
 及 [CV 流水设计 #1292](https://github.com/hw-native-sys/PTOAS/pull/1292)。
@@ -21,7 +21,7 @@
 |---|---|---|
 | v1、2.0 输入与计划接口，真实 TileSim 进程往返 | 12 项基础回归、38 项 v1、31 项 v2 契约测试通过 | 已获得双方正式 G1 签收 |
 | 静态候选展开、原生多槽分配、内存规划和同步插入 | 受限候选原生编译通过 | 地址复用及异步生命周期已完整验证 |
-| TileSim 操作级计算和 provenance 路径 | 相关测试 214 通过；7 项因可选 torch 缺失跳过 | 完整通信计时和直接输入包的计时槽数搜索已经完成 |
+| TileSim 固定 micro 全候选计时和 provenance 路径 | MIR/EventEvaluator、双 AIV、L2L 带宽、确定性选择测试通过 | 已泛化到真实 FA、动态输入或额外槽搜索 |
 | 外部认证证据验证器 | 合成契约测试 | 已取得设备正确性或性能认证 |
 
 现状：本地 G1 往返通过；受限 G2 来源、布局及完成顺序检查已落地。冻结提交 `20ae930a4` 的
@@ -129,3 +129,14 @@ M07 有界规划试跑、M09 反馈计时消费、完整 B2/B3 模型重评和 G
 
 逐候选 G2/G3、诊断性能表及证据身份见 [本轮验收记录](ptoas-costmodel-fixed-g2-g3-20260915.md)。
 已完成受限来源/完成检查、同次编译反馈、固定设备输入与 G3；完整反馈重评、通用复用证明和 G4 仍未完成。
+
+## 2026-09-16 固定推荐 A/B 增量
+
+- TileSim 将显式 stage schedule 降成 MIR，使用 channel 表达核间依赖和每核 stage 顺序，
+  由现有 planner/EventEvaluator 计算候选端到端时延；vector stage 同时展开 AIV0/AIV1。
+- `tilesim.selection.v1` 固定 0.5% tie、2% 推荐门槛和 memory/Pe/ID 顺序。PTOAS 对 ranking、
+  candidate、latency、configuration 和 baseline 做严格绑定，并保存 `selected-plan.json`。
+- `prepare_ab.py` 在测量前冻结模型结果并生成 A/P0/B；`run_ab.py` 实施三种子 G3、20 个
+  AB/BA block 和 P0 诊断；`summarize_ab.py` 实施固定种子 bootstrap 与 10% 预测误差门槛。
+- 旧 adapter 无该扩展时保持原行为；旧 certification policy 不带 paired 字段时保持原算法。
+  新工具尚未构成设备结果，必须在干净提交和全新私有实验中运行后再更新验收结论。

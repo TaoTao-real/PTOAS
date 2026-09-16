@@ -55,7 +55,8 @@ The [implementation plan](../../../docs/designs/ptoas-costmodel-exchange-impleme
 tracks the memory-reuse contract and post-compile feedback. Explicit compilation now produces
 `memory_plan.json` and `validation_report.json` from the same native invocation as the C++.
 G2 completion checking is restricted to the declared static A5 profile; unknown conditions do not pass.
-Model feedback consumption and G4 certification remain future work.
+PTOAS consumes the optional `tilesim.selection.v1` ranking, freezes the selected Plan, and rejects
+selection/configuration/schedule mismatches. Paired exact-workload certification remains opt-in.
 
 ```bash
 ptoas costmodel v2 export four_stage_serial.pto --profile a5_profile.json --output package-v2
@@ -78,9 +79,10 @@ The output includes materialized PTO, native C++, lowering IR, a trace, and an a
 Compilation explicitly runs level2 memory planning and `--enable-insert-sync`.
 Existing plans from the package with unknown aliasing must not be reused after changing bindings.
 
-The result contains one complete `plan-N.json` per evaluated candidate. Unsupported timing remains
-`null`, known per-operation estimates stay in evidence, and automatic selection remains the baseline
-until real correctness and performance certification is available. `--cache` stores predictions by
+The result contains one complete `plan-N.json` per evaluated candidate. When an adapter returns
+`tilesim.selection.v1`, PTOAS also writes `selected-plan.json` and a frozen selection report. Unsupported
+timing remains `null` and cannot be selected. Selection still does not automatically apply a candidate.
+`--cache` stores predictions by
 request and model fingerprints; it does not cache hardware measurements.
 
 ```bash
@@ -180,3 +182,27 @@ is only a diagnostic difference, not a certified ranking. See the
 The source freeze for that device campaign is `20ae930a4`; later summary/tests/docs commits
 must not be presented as a rebuilt device campaign. Archived artifacts are immutable;
 replay in a new experiment with a matching source/toolchain and freshly built executables.
+
+## Frozen TileSim A/B acceptance
+
+`prepare_ab.py` is the separate acceptance path for `basic/crossing × N=4/8`. It invokes TileSim
+before any device measurement, freezes `tilesim.selection.v1`, and emits A (serial), P0 (unrolled),
+and B only when the model predicts at least 2% improvement. A baseline decision never fabricates B.
+
+```bash
+python test/samples/CVCostModel/prepare_ab.py \
+  --tilesim-root /path/to/tilesim --tilesim-python /path/to/python \
+  --output /path/to/fresh-matrix
+python test/samples/CVCostModel/run_ab.py --mode build \
+  --matrix /experiment/inputs/matrix --artifacts /experiment/artifacts \
+  --experiment /experiment --soc ACTUAL_SOC
+python test/samples/CVCostModel/run_ab.py --mode correctness \
+  --matrix /experiment/inputs/matrix --artifacts /experiment/artifacts \
+  --experiment /experiment --device 0 --soc ACTUAL_SOC
+```
+
+After matching G3 evidence, `run_ab.py --mode performance --g3-report ...` collects 20 AB/BA
+paired blocks per optimized workload and five P0 diagnostic samples. `summarize_ab.py` requires
+one matching `MIX_AIC` task per run, reproduces the 10,000-resample bootstrap with seed 20260916,
+and reports benefit separately from prediction-error certification. Baseline-retained workloads
+produce no A/B performance samples and are reported as `BASELINE_RETAINED`.

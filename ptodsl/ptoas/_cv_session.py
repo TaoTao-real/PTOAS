@@ -68,8 +68,19 @@ def run_model(path, adapter, output, preloads=None, config=None, cache=None):
                   input_identity=package["identity"], model=result["model"], prediction_cache_hit=cache_hit)
     files = {"request.json": encode(request), "result.json": encode(result),
              "capabilities.json": encode(capabilities), "selection_report.json": encode(report)}
+    plans = {}
     for index, candidate in enumerate(candidates):
-        files[f"plan-{index}.json"] = encode(plan_from_result(package, candidate, result["model"], fingerprint(result)))
+        plan = plan_from_result(package, candidate, result["model"], fingerprint(result))
+        plans[candidate["candidate_id"]] = plan
+        files[f"plan-{index}.json"] = encode(plan)
+    selection = result.get("extensions", {}).get("tilesim.selection.v1")
+    if selection is not None:
+        selected_id = selection["recommended_candidate_id"]
+        report.update(status="frozen_recommendation", selected=selected_id,
+                      action=selection["action"], reason="tilesim.selection.v1",
+                      selection=selection, result_fingerprint=fingerprint(result))
+        files["selected-plan.json"] = encode(plans[selected_id])
+        files["selection_report.json"] = encode(report)
     publish(output, files)
     if cache is not None:
         key = fingerprint(dict(request=request, model=result["model"]))
