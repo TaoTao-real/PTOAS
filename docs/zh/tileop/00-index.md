@@ -40,6 +40,7 @@
     - [PTO 存储模型](memory_model/storage_model.md)
     - [Tile 分配](memory_model/tile_allocation.md)
     - [Reserved Buffer](memory_model/reserved_buffers.md)
+    - [地址规划模型](memory_model/address_planning.md)
 
 - [操作](operations/resource_binding_ops.md)
     - [资源绑定操作](operations/resource_binding_ops.md)

@@ -243,7 +243,7 @@ result = source[offsets : offsets + sizes]
 
 - **实现检查（A2A3/A5）**
   - `offsets` 和 `sizes` 的计数必须与`source` 匹配。
-  - 纯操作（无副作用）。
+  - 操作在 ODS 中正式声明 `Pure`，只创建逻辑视图，不读写底层数据。
 
 **示例：**
 
