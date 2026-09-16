@@ -396,7 +396,7 @@ For each element (i, j):
   - `src0`、`src1` 和 `dst` 应具有相同的 `validRow/validCol`。
 
 - **实现检查（A5）**
-  - tile 元素类型必须为 `i32`、`i16`、`i8`、`f32` 或 `f16`。
+  - tile 元素类型必须为 `i32`、`i16`、`i8`、`f32`、`f16` 或 `bf16`。
   - tile 必须使用行优先布局 (`blayout=row_major`)。
   - 有效区域必须在静态 tile 形状范围内。
   - `src0`、`src1` 和 `dst` 应具有相同的 `validRow/validCol`。

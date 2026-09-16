@@ -312,8 +312,12 @@ pto.tmatmul.mx.acc ins(<acc_in>, <lhs>, <lhs_scale>, <rhs>, <rhs_scale> :
 **语义：**
 
 ```text
+k_group = floor(k / 32)
+
 For each (i, j):
-    dst[i, j] = acc_in[i, j] + sum_k (lhs[i, k] * lhs_scale[i, k]) * (rhs[k, j] * rhs_scale[k, j])
+    dst[i, j] = acc_in[i, j] +
+        sum_k (lhs[i, k] * lhs_scale[i, k_group]) *
+              (rhs[k, j] * rhs_scale[k_group, j])
 ```
 
 **参数：**
@@ -381,8 +385,12 @@ pto.tmatmul.mx.bias ins(<lhs>, <lhs_scale>, <rhs>, <rhs_scale>, <bias> :
 **语义：**
 
 ```text
+k_group = floor(k / 32)
+
 For each (i, j):
-    dst[i, j] = sum_k (lhs[i, k] * lhs_scale[i, k]) * (rhs[k, j] * rhs_scale[k, j]) + bias[i, j]
+    dst[i, j] =
+        sum_k (lhs[i, k] * lhs_scale[i, k_group]) *
+              (rhs[k, j] * rhs_scale[k_group, j]) + bias[i, j]
 ```
 
 **参数：**
@@ -403,7 +411,7 @@ For each (i, j):
 - **实现检查（A5）**
   - `lhs`、`rhs`、`lhs_scale`、`rhs_scale`、`dst` 的约束与 `pto.tmatmul.mx` 相同。
   - `bias` 元素类型必须为 `f32`。
-  - `bias` 必须使用 `loc=bias` 和 `rows=1`。
+  - `bias` 必须使用 `loc=bias`、`rows=1` 和 `blayout=row_major`。
   - 运行时约束与 `pto.tmatmul.mx` 相同。
 
 **示例：**
@@ -627,13 +635,18 @@ pto.tgemv.bias ins(%lhs, %rhs, %bias :
 pto.tgemv.mx ins(<lhs>, <lhs_scale>, <rhs>, <rhs_scale> :
                  <lhs_type>, <lhs_scale_type>, <rhs_type>, <rhs_scale_type>)
              outs(<dst> : <dst_type>)
+             {accPhase = <phase>}
 ```
 
 **语义：**
 
 ```text
+k_group = floor(k / 32)
+
 For each (i, j):
-    dst[i, j] = sum_k (lhs[i, k] * lhs_scale[i, k]) * (rhs[k, j] * rhs_scale[k, j])
+    dst[i, j] =
+        sum_k (lhs[i, k] * lhs_scale[i, k_group]) *
+              (rhs[k, j] * rhs_scale[k_group, j])
 // lhs 的 rows（即 m）必须为 1；缩放 tile 配置目标定义的量化行为
 ```
 
@@ -648,6 +661,13 @@ For each (i, j):
 | `dst` | `pto.tile_buf` | 目标累加器 tile buffer（`loc=acc`） |
 
 **返回值：** 无。以 DPS 的形式写入 `dst`。
+
+**属性：**
+
+- `accPhase` — 累加阶段控制。默认值为 `unspecified`。
+  - `#pto<acc_phase unspecified>` — 默认行为，由实现决定累加策略
+  - `#pto<acc_phase partial>` — 部分累加，结果为中间值，后续还会继续累加
+  - `#pto<acc_phase final>` — 最终累加，标记本次为最后一次累加
 
 **约束：**
 
@@ -689,13 +709,18 @@ pto.tgemv.mx.acc ins(<acc_in>, <lhs>, <lhs_scale>, <rhs>, <rhs_scale> :
                      <acc_in_type>, <lhs_type>, <lhs_scale_type>,
                      <rhs_type>, <rhs_scale_type>)
                  outs(<dst> : <dst_type>)
+                 {accPhase = <phase>}
 ```
 
 **语义：**
 
 ```text
+k_group = floor(k / 32)
+
 For each (i, j):
-    dst[i, j] = acc_in[i, j] + sum_k (lhs[i, k] * lhs_scale[i, k]) * (rhs[k, j] * rhs_scale[k, j])
+    dst[i, j] = acc_in[i, j] +
+        sum_k (lhs[i, k] * lhs_scale[i, k_group]) *
+              (rhs[k, j] * rhs_scale[k_group, j])
 ```
 
 **参数：**
@@ -710,6 +735,13 @@ For each (i, j):
 | `dst` | `pto.tile_buf` | 目标累加器 tile buffer（`loc=acc`） |
 
 **返回值：** 无。以 DPS 的形式写入 `dst`。
+
+**属性：**
+
+- `accPhase` — 累加阶段控制。默认值为 `unspecified`。
+  - `#pto<acc_phase unspecified>` — 默认行为，由实现决定累加策略
+  - `#pto<acc_phase partial>` — 部分累加，结果为中间值，后续还会继续累加
+  - `#pto<acc_phase final>` — 最终累加，标记本次为最后一次累加
 
 **约束：**
 
@@ -758,8 +790,12 @@ pto.tgemv.mx.bias ins(<lhs>, <lhs_scale>, <rhs>, <rhs_scale>, <bias> :
 **语义：**
 
 ```text
+k_group = floor(k / 32)
+
 For each (i, j):
-    dst[i, j] = sum_k (lhs[i, k] * lhs_scale[i, k]) * (rhs[k, j] * rhs_scale[k, j]) + bias[i, j]
+    dst[i, j] =
+        sum_k (lhs[i, k] * lhs_scale[i, k_group]) *
+              (rhs[k, j] * rhs_scale[k_group, j]) + bias[i, j]
 ```
 
 **参数：**
@@ -782,7 +818,7 @@ For each (i, j):
 - **实现检查（A5）**
   - `lhs`、`rhs`、`lhs_scale`、`rhs_scale`、`dst` 的约束与 `pto.tgemv.mx` 相同。
   - `bias` 元素类型必须为 `f32`。
-  - `bias` 必须使用 `loc=bias` 和 `rows=1`。
+  - `bias` 必须使用 `loc=bias`、`rows=1` 和 `blayout=row_major`。
   - 运行时约束与 `pto.tgemv.mx` 相同。
 
 **示例：**

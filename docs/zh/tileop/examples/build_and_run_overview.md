@@ -20,6 +20,8 @@
 
 - [https://gitcode.com/cann/pto-isa](https://gitcode.com/cann/pto-isa)
 
+本文档中 `pto-isa` 头文件统一写作 `#include <pto/pto-inst.hpp>`（`pto-isa` 推荐的统一入口头形式）；CANN 提供的头文件按 CANN 惯例写作 `#include "acl/acl.h"`。注意 `ptoas` 自身生成的 C++ 会输出 `#include "pto/pto-inst.hpp"` 的引号形式，两者指向同一个头文件，可互换使用。
+
 ## 第一步：使用 ptoas 生成 kernel C++
 
 典型命令如下：
@@ -40,7 +42,7 @@ ptoas input.pto --pto-arch=a3 --enable-insert-sync -o input_kernel.cpp
 典型形态如下：
 
 ```cpp
-#include "pto/pto-inst.hpp"
+#include <pto/pto-inst.hpp>
 using namespace pto;
 
 __global__ AICORE void kernel_name(__gm__ float* a, __gm__ float* b, __gm__ float* c) {
