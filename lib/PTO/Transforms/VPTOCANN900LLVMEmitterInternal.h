@@ -345,6 +345,9 @@ struct LowpPayloadABI {
   StringRef intrinsicElementFragment;
 };
 
+LLVM::LLVMArrayType getVPTOLocalArrayStorageType(pto::LocalArrayType arrayType, Builder &builder);
+FailureOr<Value> getVPTOLocalArrayElementAddress(ConversionPatternRewriter &rewriter, Location loc, Value root,
+                                                 pto::LocalArrayType arrayType, ValueRange indices);
 Value getI1Constant(OpBuilder &builder, Location loc, bool value);
 bool isMxElementType(Type ty);
 std::string getMadMxElementFragment(Type type);

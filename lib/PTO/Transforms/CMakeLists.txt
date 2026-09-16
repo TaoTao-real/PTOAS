@@ -137,7 +137,6 @@ add_mlir_dialect_library(PTOTransforms
   InsertSync/InsertSyncDebug.cpp
   PTOMaterializeImplicitTmp.cpp
   Lowering/PTORematerializeFixpipeVectorQuant.cpp
-  Passes/PTOValidateIntToPtrUses.cpp
   TileOp/TileLibService.cpp
   Support/SoftLibService.cpp
   InsertTemplateAttributes.cpp
@@ -244,6 +243,7 @@ add_mlir_dialect_library(PTOTransforms
   Lowering/PTOCanonicalizeIR.cpp
   Lowering/BufferizableOpInterfaceImpl.cpp
   Lowering/ConvertToPTOOp.cpp
+  Lowering/PTOLowerGenericOps.cpp
   Passes/PTOAssignDefaultFrontendPipeIdPass.cpp
   Lowering/PTOLowerFrontendPipeOpsPass.cpp
   Passes/PTOInferValidatePipeInitPass.cpp
@@ -288,9 +288,11 @@ add_mlir_dialect_library(PTOTransforms
   PTOIR
   MLIRAnalysis
   MLIRIR
+  MLIRLLVMDialect
   MLIRPass
   MLIRFuncDialect
   MLIRMemRefDialect
+  MLIRMathDialect
   MLIRArithDialect
   MLIRAffineDialect
   MLIREmitCDialect
@@ -307,6 +309,7 @@ add_mlir_dialect_library(PTOTransforms
   MLIRSCFDialect
   MLIRSCFToControlFlow
   MLIRConvertToLLVMPass
+  MLIRMathToLLVM
   MLIRTargetLLVMIRExport
   MLIRToLLVMIRTranslationRegistration
   PRIVATE

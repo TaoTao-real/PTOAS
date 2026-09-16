@@ -217,7 +217,14 @@ classifyRawSectionCarrierOp(Operation *op) {
 }
 
 static bool isPipeLikeOp(Operation *op) {
-  return op && isa<OpPipeInterface>(op);
+  auto pipeOp = dyn_cast_or_null<OpPipeInterface>(op);
+  if (!pipeOp) {
+    return false;
+  }
+  // PIPE_S is shared by cube and vector cores. Scalar memory operations need
+  // the interface for synchronization, but cannot determine a function's
+  // physical kernel kind by themselves.
+  return pipeOp.getPipe() != PIPE::PIPE_S;
 }
 
 static bool isRawVPTOVectorTransientType(Type type) {
@@ -588,6 +595,22 @@ enum class FunctionKindCacheState : uint8_t {
   InProgress = 3,
 };
 
+static void accountInferredSectionKind(std::optional<InferredSectionKind> kind,
+                                        Operation *op, bool recordAmbiguous,
+                                        ModuleKindSummary &summary) {
+  if (!kind.has_value()) {
+    if (recordAmbiguous) {
+      summary.ambiguousOps.push_back(op);
+    }
+    return;
+  }
+  if (*kind == InferredSectionKind::Vector) {
+    ++summary.vectorCount;
+  } else {
+    ++summary.cubeCount;
+  }
+}
+
 static void inspectModuleKindOperation(Operation *op,
                                        ModuleKindSummary &summary) {
   if (!op) {
@@ -600,28 +623,15 @@ static void inspectModuleKindOperation(Operation *op,
     return;
   }
 
-  if (isRawSectionCarrierOp(op)) {
-    if (std::optional<InferredSectionKind> kind =
-            classifyRawSectionCarrierOp(op)) {
-      if (*kind == InferredSectionKind::Vector) {
-        ++summary.vectorCount;
-      } else {
-        ++summary.cubeCount;
-}
-    } else {
-      summary.ambiguousOps.push_back(op);
-    }
+  if (isTileLikeOp(op)) {
+    accountInferredSectionKind(classifyTileOp(op), op,
+                               /*recordAmbiguous=*/true, summary);
+  } else if (isRawSectionCarrierOp(op)) {
+    accountInferredSectionKind(classifyRawSectionCarrierOp(op), op,
+                               /*recordAmbiguous=*/true, summary);
   } else if (isPipeLikeOp(op)) {
-    if (std::optional<InferredSectionKind> kind =
-            classifyWholeFunctionPipeOp(op)) {
-      if (*kind == InferredSectionKind::Vector) {
-        ++summary.vectorCount;
-      } else {
-        ++summary.cubeCount;
-}
-    } else if (isTileLikeOp(op)) {
-      summary.ambiguousOps.push_back(op);
-    }
+    accountInferredSectionKind(classifyWholeFunctionPipeOp(op), op,
+                               /*recordAmbiguous=*/false, summary);
   } else if (isRawVPTOVectorLikeOp(op)) {
     ++summary.vectorCount;
   }

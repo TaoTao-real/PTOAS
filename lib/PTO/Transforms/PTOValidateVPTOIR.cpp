@@ -978,7 +978,7 @@ private:
 
           constant.emitOpError()
               << "does not support directly constructed FP8 constants in "
-                 "the VPTO backend; produce FP8 values with pto.convert";
+                 "the VPTO backend; produce FP8 values with pto.ftof";
           return WalkResult::interrupt();
         });
     return constantWalkResult.wasInterrupted() ? failure() : success();

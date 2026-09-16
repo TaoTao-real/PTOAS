@@ -117,7 +117,8 @@ from ._ops import (             # noqa: F401
     vtrc, vprelu, vintlv, vdintlv, vselr,
     chistv2,
     vci, vaddc, vsubc, vaddcs, vsubcs, vmull, vbitsort, vmrgsort4,
-    load_scalar, store_scalar, print,
+    ld_dev, st_dev,
+    print,
     vadds, vsubs, vmuls, vmaxs, vmins, vlrelu, vands, vors, vxors,
     vaxpy, vaddrelu, vsubrelu,
     vmula, vmadd,
@@ -154,7 +155,7 @@ from ._ops import (             # noqa: F401
     atomic_and, atomic_or, atomic_xor, atomic_cas,
     prmt, mulhi, mul_i32toi64,
     absf, sqrt, exp, log, sin, cos, pow, ceil, floor, rint, round,
-    fmin, fmax, fma, convert,
+    fma,
     syncthreads, threadfence, threadfence_block, trap, keep, resume,
     pipe_barrier,
     get_buf, rls_buf,
@@ -175,11 +176,50 @@ from ._control_flow import (    # noqa: F401
 # ── All-reduce ─────────────────────────────────────────────────────────────────
 from ._allreduce import simt_allreduce_max, simt_allreduce_min, simt_allreduce_sum  # noqa: F401
 
+# ── Scalar value and memory surface ──────────────────────────────────────────
+#
+# Keep the implementation in one internal module while exposing one public
+# namespace: ``pto.*``. These helpers preserve common scalar operations as PTO
+# dialect ops until PTOAS legalizes them to arith/math/LLVM after scope validation;
+# memory helpers select PTO-pointer or LLVM stack-memory access from the address
+# value passed to ``load`` / ``store``.
+from ._scalar import (         # noqa: F401,E402
+    add,
+    addui_extended,
+    bitcast,
+    cast,
+    ceildiv,
+    cmp,
+    div,
+    exp,
+    floordiv,
+    load,
+    log,
+    maximum,
+    minimum,
+    mul,
+    mul_extended,
+    neg,
+    rem,
+    select,
+    shl,
+    shr,
+    sqrt,
+    store,
+    sub,
+)
+from . import _scalar as _scalar_namespace
+
 # ── Decorator ─────────────────────────────────────────────────────────────────
 from ._jit import jit, KernelHandle, merge_jit_modules      # noqa: F401
 from ._func import func  # noqa: F401
 from ._subkernels import cube, simd, simt, tileop     # noqa: F401
 from ._pipe_namespace import pipe  # noqa: F401
+
+# pto.max / pto.min / pto.abs keep their builtin names on the public DSL surface,
+# so bind them from the implementation module instead of importing the names.
+for _builtin_named in ('max', 'min', 'abs'):
+    globals()[_builtin_named] = getattr(_scalar_namespace, _builtin_named)
 
 # ── Shorthand dtype aliases ───────────────────────────────────────────────────
 def gm_ptr(elem):

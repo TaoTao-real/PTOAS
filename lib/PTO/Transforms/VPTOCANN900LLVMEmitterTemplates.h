@@ -294,36 +294,51 @@ template <> inline FailureOr<StringRef> buildShuffleCallee<pto::ShuffleBflyOp>(M
 template <typename ReduxOp>
 FailureOr<StringRef> buildReduxCallee(MLIRContext *context, Type valueType, Attribute signednessAttr);
 
-template <>
-inline FailureOr<StringRef> buildReduxCallee<pto::ReduxAddOp>(MLIRContext *context, Type valueType,
-                                                              Attribute signednessAttr) {
+inline FailureOr<StringRef> buildReduxCalleeImpl(MLIRContext *context, Type valueType,
+                                                 Attribute signednessAttr, StringRef kind) {
   std::string elem = getReduxIntrinsicTypeFragment(valueType, signednessAttr);
   if (elem.empty()) {
     return failure();
   }
-  return StringAttr::get(context, "llvm.hivm.redux.add." + elem).getValue();
+  std::string name = "llvm.hivm.redux." + kind.str() + "." + elem;
+  return StringAttr::get(context, name).getValue();
 }
 
 template <>
-inline FailureOr<StringRef> buildReduxCallee<pto::ReduxMaxOp>(MLIRContext *context, Type valueType,
-                                                              Attribute signednessAttr) {
-  std::string elem = getReduxIntrinsicTypeFragment(valueType, signednessAttr);
-  if (elem.empty()) {
-    return failure();
-  }
-  return StringAttr::get(context, "llvm.hivm.redux.max." + elem).getValue();
+inline FailureOr<StringRef> buildReduxCallee<pto::ReduxAddIOp>(MLIRContext *context, Type valueType,
+                                                               Attribute signednessAttr) {
+  return buildReduxCalleeImpl(context, valueType, signednessAttr, "add");
 }
 
 template <>
-inline FailureOr<StringRef> buildReduxCallee<pto::ReduxMinOp>(MLIRContext *context, Type valueType,
-                                                              Attribute signednessAttr) {
-  std::string elem = getReduxIntrinsicTypeFragment(valueType, signednessAttr);
-  if (elem.empty()) {
-    return failure();
-  }
-  return StringAttr::get(context, "llvm.hivm.redux.min." + elem).getValue();
+inline FailureOr<StringRef> buildReduxCallee<pto::ReduxAddFOp>(MLIRContext *context, Type valueType,
+                                                               Attribute signednessAttr) {
+  return buildReduxCalleeImpl(context, valueType, signednessAttr, "add");
 }
 
+template <>
+inline FailureOr<StringRef> buildReduxCallee<pto::ReduxMaxIOp>(MLIRContext *context, Type valueType,
+                                                               Attribute signednessAttr) {
+  return buildReduxCalleeImpl(context, valueType, signednessAttr, "max");
+}
+
+template <>
+inline FailureOr<StringRef> buildReduxCallee<pto::ReduxMaxFOp>(MLIRContext *context, Type valueType,
+                                                               Attribute signednessAttr) {
+  return buildReduxCalleeImpl(context, valueType, signednessAttr, "max");
+}
+
+template <>
+inline FailureOr<StringRef> buildReduxCallee<pto::ReduxMinIOp>(MLIRContext *context, Type valueType,
+                                                               Attribute signednessAttr) {
+  return buildReduxCalleeImpl(context, valueType, signednessAttr, "min");
+}
+
+template <>
+inline FailureOr<StringRef> buildReduxCallee<pto::ReduxMinFOp>(MLIRContext *context, Type valueType,
+                                                               Attribute signednessAttr) {
+  return buildReduxCalleeImpl(context, valueType, signednessAttr, "min");
+}
 
 
 template <typename AtomicOp>

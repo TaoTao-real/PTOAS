@@ -9,13 +9,13 @@
 
 """ptodsl – PTO MLIR DSL package."""
 
-from importlib import import_module
+__all__ = ["pto"]
 
-__all__ = ["pto", "scalar"]
+from importlib import import_module
 
 
 def __getattr__(name):
-    if name in {"pto", "scalar"}:
+    if name == "pto":
         module = import_module(f".{name}", __name__)
         globals()[name] = module
         return module

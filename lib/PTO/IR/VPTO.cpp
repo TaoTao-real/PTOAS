@@ -536,10 +536,11 @@ static LogicalResult verifyConvertControls(Operation *op, Type srcType,
   return op->emitOpError() << "unsupported conversion type pair";
 }
 
-LogicalResult ConvertOp::verify() {
-  return verifyConvertControls(getOperation(), getSrc().getType(),
-                               getDst().getType(), getRounding(),
-                               getSaturation(), getSignednessAttr());
+LogicalResult mlir::pto::verifySimtConversionControls(
+    Operation *op, Type srcType, Type dstType, pto::Rounding rounding,
+    pto::Saturation saturation, Attribute signednessAttr) {
+  return verifyConvertControls(op, srcType, dstType, rounding, saturation,
+                               signednessAttr);
 }
 
 LogicalResult verifyNotNestedInVecScope(Operation *op,
