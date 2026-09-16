@@ -1,6 +1,8 @@
 # PTOAS × Cost Model 实施与验收计划
 
-状态：实施中；2026-09-16 已实现固定 micro 的 TileSim 候选计时、冻结选择和配对 A/B 工具；新设备验收待运行。
+状态：实施中；2026-09-16 已实现固定 micro 的 TileSim 候选计时、冻结选择和配对 A/B 工具，
+并在 A5 完成冻结推荐后的 G2/G3 验收。四个 workload 均因预测收益低于 2% 保留 baseline，
+因此本轮没有 B 产物或配对性能样本，未签发 G4。
 
 设计依据：[交换协议 ADR](ptoas-costmodel-exchange-v2.md)、[v1 契约](ptoas-cv-costmodel-exchange-v1.md)
 及 [CV 流水设计 #1292](https://github.com/hw-native-sys/PTOAS/pull/1292)。
@@ -29,6 +31,12 @@
 配置被编译器拒绝。130 个诊断性能样本完成，无法可靠区分收益；G4 未认证，默认自动优化关闭。
 当前 `conservative_no_reuse` 超预算仍直接报错；完整反馈重评未实现。多槽来源已保留到同次编译的
 最终 PTO 报告，不扩大为任意 Bisheng 降低与地址复用均已证明。
+
+2026-09-16 的冻结推荐验收使用 PTOAS `170e78a2b`、TileSim `0ea5ba8f5` 和输入摘要
+`1c85de81...6034`。TileSim 对 N=4/8 的最好候选分别只预测 0.730%/0.739% 收益，低于固定
+2% 门槛，`basic/crossing × N=4/8` 均返回 `BASELINE_RETAINED`。PTOAS 只生成 A/P0，八个
+产物通过 G2；A5 39 主机设备 0 上的 48 次 G3 全部通过。按冻结协议不生成伪造 B，也不采集
+A/B profiler 数据，故该结果证明了“无足够收益时正确保留基线”，不构成性能收益或预测误差认证。
 
 ## 近期阶段：来源、内存契约与 G2 门槛
 
@@ -139,4 +147,6 @@ M07 有界规划试跑、M09 反馈计时消费、完整 B2/B3 模型重评和 G
 - `prepare_ab.py` 在测量前冻结模型结果并生成 A/P0/B；`run_ab.py` 实施三种子 G3、20 个
   AB/BA block 和 P0 诊断；`summarize_ab.py` 实施固定种子 bootstrap 与 10% 预测误差门槛。
 - 旧 adapter 无该扩展时保持原行为；旧 certification policy 不带 paired 字段时保持原算法。
-  新工具尚未构成设备结果，必须在干净提交和全新私有实验中运行后再更新验收结论。
+  新工具已在干净冻结提交和全新私有实验中完成本轮 baseline-retained 验收；结果见
+  [固定推荐 A/B 验收记录](ptoas-costmodel-ab-acceptance-20260916.md)。只有未来冻结选择返回
+  optimize 时，才进入 20 个 AB/BA block 和预测误差认证。

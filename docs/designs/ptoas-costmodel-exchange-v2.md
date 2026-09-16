@@ -226,8 +226,8 @@ PTOAS validates and records it but does not automatically apply it. Partial mode
 |---|---|---|
 | G1 | Package/plan identity, ownership, mappings, schedule binding | Executable contract and subprocess tests |
 | G2 | Provenance, actual layout/budget, completion-safe reuse, final dependency/FIFO/sync constraints and artifact consistency all verified | Bounded A5 completion/layout checker emits pass/fail/unknown; acceptance is candidate-specific |
-| G3 | Independent golden, runtime bounds and deadlock validation | Frozen 32x32 fixed matrix passes 282 runs on A5; broader workloads unvalidated |
-| G4 | Same-workload predictions, paired measurements and explicit policy | Paired A/B harness and bootstrap evidence validator supplied; certification remains exact-workload only |
+| G3 | Independent golden, runtime bounds and deadlock validation | Frozen 32x32 fixed matrix passes 282 runs; frozen-selection A/P0 matrix passes another 48 runs on A5; broader workloads unvalidated |
+| G4 | Same-workload predictions, paired measurements and explicit policy | Paired A/B harness and bootstrap evidence validator supplied; the first frozen selection retained baseline, so no certificate was applicable |
 
 For the supported transformation, every necessary G2 check must pass; unknown is not pass.
 Compiler success, source-order liveness and set/wait counts are insufficient individually or
@@ -303,3 +303,17 @@ Diagnostic timing collected 130 measured samples plus 26 warmups on the same G3 
 All candidate ranges overlap their serial and P0 controls: no reliable performance ranking
 is established. See the [fixed-candidate record](ptoas-costmodel-fixed-g2-g3-20260915.md) for
 per-candidate results, provenance and retained raw evidence. This is calibration data, not G4.
+
+## Frozen selection acceptance (2026-09-16)
+
+PTOAS `170e78a2b` and TileSim `0ea5ba8f5` froze recommendations for
+`basic/crossing × N=4/8` before device execution. The best P=1 candidates predicted only
+0.730% (N=4) and 0.739% (N=8) improvement over P=0. Both values are below the protocol's
+2% recommendation threshold, so all four workloads returned `BASELINE_RETAINED`.
+
+PTOAS therefore emitted only A and P0, as required by the protocol. All eight artifacts passed
+candidate-specific G2 and all 48 three-seed/two-order G3 executions passed on `ptoas-a5-39`,
+device 0, actual SOC `Ascend950DT_9592`. The matching performance experiment contains no A/B
+samples because there is no B. It does not issue a benefit result or G4 certificate. See the
+[frozen selection acceptance record](ptoas-costmodel-ab-acceptance-20260916.md) for identities,
+predictions, evidence boundaries and archived experiment locations.
