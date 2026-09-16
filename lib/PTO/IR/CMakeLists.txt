@@ -113,7 +113,6 @@ add_mlir_dialect_library(PTOIR
   VPTO/dma/VPTOVldsx2.cpp
   VPTO/dma/VPTOVsts.cpp
   VPTO/dma/VPTOVstsx2.cpp
-  VPTO/mad/VPTOMad.cpp
   VPTO/mad/VPTOMadOp.cpp
   VPTO/mad/VPTOMadAccOp.cpp
   VPTO/mad/VPTOMadBiasOp.cpp
@@ -217,7 +216,6 @@ add_mlir_dialect_library(PTOIR
   VPTO/vecop/datamov/VPTOVstar.cpp
   VPTO/vecop/datamov/VPTOVsunpack.cpp
   VPTO/vecop/datamov/VPTOVtrc.cpp
-  VPTO/vecop/datamov/VPTOVtranspose.cpp
   VPTO/vecop/datamov/VPTOVusqz.cpp
   VPTO/vecop/datamov/VPTOVzunpack.cpp
   VPTO/vecop/mulred/VPTOMulI32ToI64.cpp

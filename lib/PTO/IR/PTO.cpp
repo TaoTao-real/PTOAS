@@ -10,44 +10,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "PTO/IR/PTO.h"
-#include "PTO/IR/PTOLayoutUtils.h"
-#include "PTO/IR/PTOMultiBuffer.h"
-#include "PTO/IR/PTOSyncUtils.h"
-#include "PTO/IR/PTOTypeUtils.h"
 
-#include "mlir/AsmParser/AsmParser.h"
-#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/LLVMIR/LLVMTypes.h"
-#include "mlir/IR/Builders.h"
-#include "mlir/IR/BuiltinTypeInterfaces.h"
-#include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/DialectImplementation.h"
-#include "mlir/IR/OpImplementation.h"
 #include "mlir/Interfaces/InferIntRangeInterface.h"
-#include "mlir/IR/TypeUtilities.h"
-#include "mlir/IR/Value.h"
-#include "mlir/IR/AsmState.h"
-#include "mlir/IR/SymbolTable.h"
-#include "mlir/IR/Types.h"
-#include "mlir/Interfaces/SideEffectInterfaces.h"
-#include "mlir/Support/LLVM.h"
-#include "mlir/Transforms/InliningUtils.h"
-#include "mlir/Parser/Parser.h"
-#include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/TypeSwitch.h"
-#include "llvm/Support/MathExtras.h"
-#include "mlir/IR/AffineExpr.h"
-#include "mlir/IR/AffineMap.h"
-#include "mlir/Dialect/Utils/StaticValueUtils.h"
-#include "llvm/Support/ErrorHandling.h"
-
-#include <algorithm>
-#include <limits>
-#include <numeric>
-#include <optional>
-#include <tuple>
 
 // PTO IR implementation is grouped by semantic responsibility. The files
 // remain textual fragments to preserve declaration order and internal linkage.

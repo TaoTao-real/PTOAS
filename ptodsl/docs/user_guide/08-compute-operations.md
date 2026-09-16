@@ -2431,9 +2431,6 @@ even_lanes, odd_lanes = pto.vdintlv(packed_low, packed_high)
 | Index generation | `vci` |
 | Rearrangement | `vsqz`, `vintlv`, `vdintlv` |
 
-`pto.vtranspose` is documented in the data-movement chapter because it operates directly on
-UB pointers rather than on `VRegType` values.
-
 ---
 
 ## 8.3 Cube compute (L3 — `@pto.tileop`)

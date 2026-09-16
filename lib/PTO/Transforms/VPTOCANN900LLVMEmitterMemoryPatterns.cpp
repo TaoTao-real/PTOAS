@@ -6,6 +6,9 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
+#include "VPTOCANN900LLVMEmitterConfigTemplates.h"
+#include "VPTOCANN900LLVMEmitterPredicateTemplates.h"
+#include "VPTOCANN900LLVMEmitterScalarTemplates.h"
 #include "VPTOCANN900LLVMEmitterTemplates.h"
 
 namespace mlir::pto::detail {
@@ -99,7 +102,7 @@ public:
       : OpConversionPattern<PredicateMaskOp>(typeConverter, context), state(state) {}
 
   LogicalResult matchAndRewrite(PredicateMaskOp op, typename PredicateMaskOp::Adaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+                                ConversionPatternRewriter &rewriter) const override { // NOLINT(readability-non-const-parameter): MLIR OpConversionPattern base signature.
     Type resultType = this->getTypeConverter()->convertType(op.getResult().getType());
     if (!resultType) {
       return rewriter.notifyMatchFailure(op, "failed to convert predicate-mask result type");
@@ -131,7 +134,7 @@ public:
       : OpConversionPattern<ReorderOp>(typeConverter, context), state(state) {}
 
   LogicalResult matchAndRewrite(ReorderOp op, typename ReorderOp::Adaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
+                                ConversionPatternRewriter &rewriter) const override { // NOLINT(readability-non-const-parameter): MLIR OpConversionPattern base signature.
     SmallVector<Type> resultTypes;
     if (failed(this->getTypeConverter()->convertTypes(op->getResultTypes(), resultTypes))) {
       return rewriter.notifyMatchFailure(op, "failed to convert predicate-pair-reorder result types");
@@ -1529,56 +1532,6 @@ private:
   LoweringState &state;
 };
 
-class LowerVtransposeOpPattern final
-    : public OpConversionPattern<pto::VtransposeOp> {
-public:
-  explicit LowerVtransposeOpPattern(const VPTOTypeConverter &typeConverter,
-                                    MLIRContext *context, LoweringState &state)
-      : OpConversionPattern<pto::VtransposeOp>(typeConverter, context),
-        state(state) {}
-
-  LogicalResult matchAndRewrite(pto::VtransposeOp op,
-                                pto::VtransposeOp::Adaptor adaptor,
-                                ConversionPatternRewriter &rewriter) const override {
-    auto destinationType =
-        dyn_cast<LLVM::LLVMPointerType>(adaptor.getDestination().getType());
-    auto sourceType =
-        dyn_cast<LLVM::LLVMPointerType>(adaptor.getSource().getType());
-    if (!destinationType || !sourceType) {
-      return rewriter.notifyMatchFailure(
-          op, "unexpected converted vtranspose pointer types");
-    }
-
-    FailureOr<SmallVector<Value, 2>> pointers = reinterpretPointerOperands(
-        op, {adaptor.getDestination(), adaptor.getSource()},
-        {static_cast<unsigned>(pto::AddressSpace::VEC),
-         static_cast<unsigned>(pto::AddressSpace::VEC)});
-    if (failed(pointers)) {
-      return rewriter.notifyMatchFailure(
-          op, "failed to normalize vtranspose UB pointers");
-    }
-
-    FailureOr<StringRef> calleeName =
-        buildVtransposeCallee(op.getContext(), op);
-    if (failed(calleeName)) {
-      return rewriter.notifyMatchFailure(op, "unsupported vtranspose signature");
-    }
-
-    auto funcType = rewriter.getFunctionType(
-        TypeRange{(*pointers)[0].getType(), (*pointers)[1].getType()},
-        TypeRange{});
-    rewriter.create<func::CallOp>(
-        op.getLoc(), *calleeName, TypeRange{},
-        ValueRange{(*pointers)[0], (*pointers)[1]});
-    state.plannedDecls.push_back(PlannedDecl{calleeName->str(), funcType});
-    rewriter.eraseOp(op);
-    return success();
-  }
-
-private:
-  LoweringState &state;
-};
-
 void populateVPTOVectorMemoryPatterns(const VPTOTypeConverter &typeConverter, RewritePatternSet &patterns,
                                       LoweringState &state) {
   patterns
@@ -1598,8 +1551,7 @@ void populateVPTOVectorMemoryPatterns(const VPTOTypeConverter &typeConverter, Re
            LowerVsstbOpPattern, LowerVstsx2OpPattern, LowerVstarOpPattern, LowerVstasOpPattern, LowerVgather2OpPattern,
            LowerVgather2BcOpPattern, LowerVgatherbOpPattern, LowerVscatterOpPattern, LowerVaxpyOpPattern,
            LowerVmulscvtOpPattern, LowerVciOpPattern, LowerVexpdifOpPattern, LowerVbitsortOpPattern,
-           LowerVmrgsort4OpPattern, LowerVtransposeOpPattern, LowerPstuOpPattern,
-           LowerVstusOpPattern, LowerVsturOpPattern>(
+           LowerVmrgsort4OpPattern, LowerPstuOpPattern, LowerVstusOpPattern, LowerVsturOpPattern>(
           typeConverter, patterns.getContext(), state);
 }
 
