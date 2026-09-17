@@ -67,5 +67,10 @@ fi
 
 LOG_HEAD "Build ${REPOSITORY_NAME}."
 cd ${WORKSPACE}/ || exit 1
+
+# 原缓存不生效，增加增加2个环境变量配置
+export CMAKE_C_COMPILER_LAUNCHER=/tmp/codearts/cloudcache/xcache
+export CMAKE_CXX_COMPILER_LAUNCHER=/tmp/codearts/cloudcache/xcache
+
 LOG_DO bash build.sh --pkg --cann_3rd_lib_path=${ASCEND_3RD_LIB_PATH}
 DP_ASSERT_EQUAL "$?" "0" "Build pto-as failed"
