@@ -414,7 +414,7 @@ bool isOnePointStoreDist(StringRef dist) {
   return contract && contract->isOnePointStore();
 }
 
-VPTOTypeConverter::VPTOTypeConverter(MLIRContext *context) {
+VPTOTypeConverter::VPTOTypeConverter(const MLIRContext *context) {
   (void)context;
   addConversion([](Type type) { return type; });
   addConversion([](Type type) -> Type {

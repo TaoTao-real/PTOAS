@@ -43,9 +43,9 @@ void MadMxAccOp::print(OpAsmPrinter &p) {
   printMadSemanticOpNoBias(p, *this, /*allowTf32Mode=*/false);
 }
 
-bool MadMxAccOp::isMadMxFamily() { return true; }
-bool MadMxAccOp::hasBiasOperand() { return false; }
-bool MadMxAccOp::readsAccumulator() { return true; }
-bool MadMxAccOp::supportsTf32Mode() { return false; }
-Value MadMxAccOp::getBiasOrNull() { return {}; }
-Attribute MadMxAccOp::getTf32ModeAttr() { return {}; }
+bool MadMxAccOp::isMadMxFamily() const { return true; }
+bool MadMxAccOp::hasBiasOperand() const { return false; }
+bool MadMxAccOp::readsAccumulator() const { return true; }
+bool MadMxAccOp::supportsTf32Mode() const { return false; }
+Value MadMxAccOp::getBiasOrNull() const { return {}; }
+Attribute MadMxAccOp::getTf32ModeAttr() const { return {}; }

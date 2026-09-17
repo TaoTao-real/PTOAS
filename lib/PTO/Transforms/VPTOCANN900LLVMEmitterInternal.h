@@ -113,7 +113,7 @@ FailureOr<Value> packLoopSize(Operation *anchor, Value loop2, Value loop1);
 
 class VPTOTypeConverter final : public TypeConverter {
 public:
-  explicit VPTOTypeConverter(MLIRContext *context);
+  explicit VPTOTypeConverter(const MLIRContext *context);
 };
 
 namespace ubuf {

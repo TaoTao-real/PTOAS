@@ -33,8 +33,8 @@ void MadAccOp::print(OpAsmPrinter &p) {
   printMadSemanticOpNoBias(p, *this, /*allowTf32Mode=*/true);
 }
 
-bool MadAccOp::isMadMxFamily() { return false; }
-bool MadAccOp::hasBiasOperand() { return false; }
-bool MadAccOp::readsAccumulator() { return true; }
-bool MadAccOp::supportsTf32Mode() { return true; }
-Value MadAccOp::getBiasOrNull() { return {}; }
+bool MadAccOp::isMadMxFamily() const { return false; }
+bool MadAccOp::hasBiasOperand() const { return false; }
+bool MadAccOp::readsAccumulator() const { return true; }
+bool MadAccOp::supportsTf32Mode() const { return true; }
+Value MadAccOp::getBiasOrNull() const { return {}; }

@@ -44,14 +44,9 @@ void MadMxBiasOp::print(OpAsmPrinter &p) {
   printMadSemanticOpWithBias(p, *this, /*allowTf32Mode=*/false);
 }
 
-// NOLINTNEXTLINE(readability-make-member-function-const): ODS-generated interface callback has a non-const signature.
-bool MadMxBiasOp::isMadMxFamily() { return true; }
-// NOLINTNEXTLINE(readability-make-member-function-const): ODS-generated interface callback has a non-const signature.
-bool MadMxBiasOp::hasBiasOperand() { return true; }
-// NOLINTNEXTLINE(readability-make-member-function-const): ODS-generated interface callback has a non-const signature.
-bool MadMxBiasOp::readsAccumulator() { return false; }
-// NOLINTNEXTLINE(readability-make-member-function-const): ODS-generated interface callback has a non-const signature.
-bool MadMxBiasOp::supportsTf32Mode() { return false; }
+bool MadMxBiasOp::isMadMxFamily() const { return true; }
+bool MadMxBiasOp::hasBiasOperand() const { return true; }
+bool MadMxBiasOp::readsAccumulator() const { return false; }
+bool MadMxBiasOp::supportsTf32Mode() const { return false; }
 Value MadMxBiasOp::getBiasOrNull() { return getBias(); }
-// NOLINTNEXTLINE(readability-make-member-function-const): ODS-generated interface callback has a non-const signature.
-Attribute MadMxBiasOp::getTf32ModeAttr() { return {}; }
+Attribute MadMxBiasOp::getTf32ModeAttr() const { return {}; }

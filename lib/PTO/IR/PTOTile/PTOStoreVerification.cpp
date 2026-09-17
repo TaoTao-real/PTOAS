@@ -15,12 +15,12 @@ static LogicalResult verifyTStoreA2Acc(TStoreOp op,
     return failure();
   auto shape = srcTile.getShape();
   if (shape[1] != ShapedType::kDynamic &&
-      (shape[1] < 1 || shape[1] > 4095))
+      (shape[1] < 1 || shape[1] > 4095))  // 4095: A2/A3 architecture limit
     return op.emitOpError(
         "expects A2/A3 acc tstore src cols to be in [1, 4095]");
   auto valid = srcTile.getValidShape();
   if (valid[1] != ShapedType::kDynamic &&
-      (valid[1] < 0 || valid[1] > 4095))
+      (valid[1] < 0 || valid[1] > 4095))  // 4095: A2/A3 architecture limit
     return op.emitOpError(
         "expects A2/A3 acc tstore src valid_shape[1] to be in [0, 4095]");
   return success();
@@ -67,7 +67,7 @@ static LogicalResult verifyTStoreA5Vec(TStoreOp op,
 
 static LogicalResult verifyTStoreA5Acc(TStoreOp op, Type srcElem,
                                        Type dstElem) {
-  if (!(srcElem.isInteger(32) || srcElem.isF32()))
+  if (!(srcElem.isInteger(mlir::pto::kValue32) || srcElem.isF32()))
     return op.emitOpError(
         "expects A5 acc tstore src element type to be i32 or f32");
   if (op.getPreQuantScalar() &&
@@ -75,7 +75,7 @@ static LogicalResult verifyTStoreA5Acc(TStoreOp op, Type srcElem,
     return op.emitOpError(
         "expects A5 acc preQuantScalar tstore dst type to be i8/ui8/f16/bf16/f32/hif8/f8E4M3");
   if (!op.getPreQuantScalar() && !op.getFp() &&
-      !(dstElem.isInteger(32) || dstElem.isF32() || dstElem.isF16() ||
+      !(dstElem.isInteger(mlir::pto::kValue32) || dstElem.isF32() || dstElem.isF16() ||
         dstElem.isBF16()))
     return op.emitOpError(
         "expects A5 acc tstore dst element type to be i32/f32/f16/bf16");
@@ -107,8 +107,8 @@ LogicalResult TStoreOp::verify() {
         "expects fp and preQuantScalar to be mutually exclusive");
   if (hasFp && getStPhase() != pto::STPhase::Unspecified)
     return emitOpError("expects fp form to use the default stPhase");
-  auto verifyA2A3 = [&]() { return verifyTStoreA2A3(*this); };
-  auto verifyA5 = [&]() { return verifyTStoreA5(*this); };
+  auto verifyA2A3 = [this]() { return verifyTStoreA2A3(*this); };
+  auto verifyA5 = [this]() { return verifyTStoreA5(*this); };
   return dispatchVerifierByArch(getOperation(), verifyA2A3, verifyA5);
 }
 
@@ -155,26 +155,26 @@ static Type getElemTy(Type ty) {
   return Type();
 }
 
-static SmallVector<int64_t, 4> getShapeVec(Type ty) {
-  SmallVector<int64_t, 4> s;
+static SmallVector<int64_t, mlir::pto::kValue4> getShapeVec(Type ty) {
+  SmallVector<int64_t, mlir::pto::kValue4> s;
   if (auto tt = mlir::dyn_cast<RankedTensorType>(ty)) {
-    return SmallVector<int64_t, 4>(tt.getShape().begin(), tt.getShape().end());
+    return SmallVector<int64_t, mlir::pto::kValue4>(tt.getShape().begin(), tt.getShape().end());
   }
   if (auto tv = mlir::dyn_cast<pto::TensorViewType>(ty)) {
-    return SmallVector<int64_t, 4>(tv.getShape().begin(), tv.getShape().end());
+    return SmallVector<int64_t, mlir::pto::kValue4>(tv.getShape().begin(), tv.getShape().end());
   }
   if (auto tb = mlir::dyn_cast<pto::TileBufType>(ty)) {
-    return SmallVector<int64_t, 4>(tb.getShape().begin(), tb.getShape().end());
+    return SmallVector<int64_t, mlir::pto::kValue4>(tb.getShape().begin(), tb.getShape().end());
   }
   if (auto tv = mlir::dyn_cast<pto::PartitionTensorViewType>(ty)) {
-    return SmallVector<int64_t, 4>(tv.getShape().begin(), tv.getShape().end());
+    return SmallVector<int64_t, mlir::pto::kValue4>(tv.getShape().begin(), tv.getShape().end());
   }
   return {};
 }
 
-static SmallVector<int64_t, 4> getValidShapeVec(Type ty) {
+static SmallVector<int64_t, mlir::pto::kValue4> getValidShapeVec(Type ty) {
   if (auto tb = dyn_cast<pto::TileBufType>(ty)) {
-    return SmallVector<int64_t, 4>(tb.getValidShape().begin(), tb.getValidShape().end());
+    return SmallVector<int64_t, mlir::pto::kValue4>(tb.getValidShape().begin(), tb.getValidShape().end());
   }
   return getShapeVec(ty);
 }
@@ -197,9 +197,9 @@ static std::optional<pto::BLayout> getTileBufBLayout(Type ty) {
   return std::nullopt;
 }
 
-static SmallVector<int64_t, 4> getLogicalTileExtentVec(Type ty,
+static SmallVector<int64_t, mlir::pto::kValue4> getLogicalTileExtentVec(Type ty,
                                                        bool useValidShape) {
-  SmallVector<int64_t, 4> dims =
+  SmallVector<int64_t, mlir::pto::kValue4> dims =
       useValidShape ? getValidShapeVec(ty) : getShapeVec(ty);
   if (!isTileLikeType(ty) || dims.size() != 2) {
     return dims;
@@ -221,7 +221,7 @@ static SmallVector<int64_t, mlir::pto::kValue4> getValidShapeVec(Value value) {
   return valid;
 }
 
-static SmallVector<int64_t, 4> getMatmulLogicalShapeVec(Type ty) {
+static SmallVector<int64_t, mlir::pto::kValue4> getMatmulLogicalShapeVec(Type ty) {
   auto shape = getShapeVec(ty);
   auto valid = getValidShapeVec(ty);
   if (!isa<pto::TileBufType>(ty) || shape.size() != valid.size()) {
@@ -241,14 +241,14 @@ static bool isByteIntegerType(Type ty) {
   return intTy && intTy.getWidth() == 8;
 }
 
-static FailureOr<SmallVector<int64_t, 4>> getGlobalLikeShape(
+static FailureOr<SmallVector<int64_t, mlir::pto::kValue4>> getGlobalLikeShape(
     Operation *op, Type ty, StringRef name) {
   if (!isa<pto::TensorViewType, pto::PartitionTensorViewType>(ty)) {
     op->emitOpError()
         << "expects " << name << " to be a tensor_view or partition_view";
     return failure();
   }
-  SmallVector<int64_t, 4> shape = getShapeVec(ty);
+  SmallVector<int64_t, mlir::pto::kValue4> shape = getShapeVec(ty);
   if (shape.empty()) {
     op->emitOpError() << "expects " << name << " to have rank >= 1";
     return failure();

@@ -16,8 +16,8 @@ mlir::LogicalResult mlir::pto::TPowSOp::verify() {
     return failure();
 
   // Same dtype matrix as TPowOp; see comment in TPowOp::verify.
-  bool isIntElem = elem->isInteger(32) || elem->isInteger(16) ||
-                   elem->isInteger(8);
+  bool isIntElem = elem->isInteger(mlir::pto::kValue32) || elem->isInteger(mlir::pto::kValue16) ||
+                   elem->isInteger(mlir::pto::kValue8);
   if (failed(verifyTPowSElemType(*this, *elem, isIntElem))) {
     return failure();
   }

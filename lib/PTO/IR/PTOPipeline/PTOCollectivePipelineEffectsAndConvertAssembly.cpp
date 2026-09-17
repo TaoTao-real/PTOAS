@@ -264,7 +264,7 @@ parseOptionalSaturation(OpAsmParser &parser, SaturationAttr &saturationAttr) {
   return success();
 }
 
-static void printOptionalSaturation(OpAsmPrinter &printer, Operation *op,
+static void printOptionalSaturation(OpAsmPrinter &printer, const Operation *op,
                                     SaturationAttr saturation) {
   bool isEnabled =
       saturation && saturation.getValue() != Saturation::Disable;
@@ -288,7 +288,7 @@ static ParseResult parseSignedness(OpAsmParser &parser,
   return success();
 }
 
-static void printSignedness(OpAsmPrinter &printer, Operation *op,
+static void printSignedness(OpAsmPrinter &printer, const Operation *op,
                             SignednessAttr signedness) {
   (void)op;
   printer << stringifySignedness(signedness.getValue());
@@ -363,7 +363,7 @@ static OptionalParseResult parseOptionalSignedness(OpAsmParser &parser,
   return std::nullopt;
 }
 
-static void printOptionalSignedness(OpAsmPrinter &printer, Operation *op,
+static void printOptionalSignedness(OpAsmPrinter &printer, const Operation *op,
                                     SignednessAttr signedness) {
   (void)op;
   printer << stringifySignedness(signedness.getValue());

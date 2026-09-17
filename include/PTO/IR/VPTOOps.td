@@ -2087,10 +2087,7 @@ def PTO_VnotOp : PTO_UnaryVecOp<"vnot">;
 def PTO_VcaddOp : PTO_UnaryVecOp<"vcadd">;
 
 def PTO_MadOp : PTO_CubeMicroOp<"mad", [
-    DeclareOpInterfaceMethods<PTO_MadSemanticOpInterface, [
-      "isMadMxFamily", "hasBiasOperand", "readsAccumulator",
-      "supportsTf32Mode", "getBiasOrNull"
-    ]>,
+    DeclareOpInterfaceMethods<PTO_MadSemanticOpInterface>,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
@@ -2107,16 +2104,23 @@ def PTO_MadOp : PTO_CubeMicroOp<"mad", [
     UnitAttr:$n_dir
   );
   let results = (outs);
+
+  // Same-named accessors as the semantic interface methods, but const: the
+  // interface only needs the value, so the op-side definition is a const query.
+  let extraClassDeclaration = [{
+    bool isMadMxFamily() const;
+    bool hasBiasOperand() const;
+    bool readsAccumulator() const;
+    bool supportsTf32Mode() const;
+    ::mlir::Value getBiasOrNull() const;
+  }];
 
   let hasVerifier = 1;
   let hasCustomAssemblyFormat = 1;
 }
 
 def PTO_MadAccOp : PTO_CubeMicroOp<"mad_acc", [
-    DeclareOpInterfaceMethods<PTO_MadSemanticOpInterface, [
-      "isMadMxFamily", "hasBiasOperand", "readsAccumulator",
-      "supportsTf32Mode", "getBiasOrNull"
-    ]>,
+    DeclareOpInterfaceMethods<PTO_MadSemanticOpInterface>,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
@@ -2133,16 +2137,23 @@ def PTO_MadAccOp : PTO_CubeMicroOp<"mad_acc", [
     UnitAttr:$n_dir
   );
   let results = (outs);
+
+  // Same-named accessors as the semantic interface methods, but const: the
+  // interface only needs the value, so the op-side definition is a const query.
+  let extraClassDeclaration = [{
+    bool isMadMxFamily() const;
+    bool hasBiasOperand() const;
+    bool readsAccumulator() const;
+    bool supportsTf32Mode() const;
+    ::mlir::Value getBiasOrNull() const;
+  }];
 
   let hasVerifier = 1;
   let hasCustomAssemblyFormat = 1;
 }
 
 def PTO_MadBiasOp : PTO_CubeMicroOp<"mad_bias", [
-    DeclareOpInterfaceMethods<PTO_MadSemanticOpInterface, [
-      "isMadMxFamily", "hasBiasOperand", "readsAccumulator",
-      "supportsTf32Mode", "getBiasOrNull"
-    ]>,
+    DeclareOpInterfaceMethods<PTO_MadSemanticOpInterface, ["getBiasOrNull"]>,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
@@ -2161,15 +2172,21 @@ def PTO_MadBiasOp : PTO_CubeMicroOp<"mad_bias", [
   );
   let results = (outs);
 
+  // Same-named accessors as the semantic interface methods, but const: the
+  // interface only needs the value, so the op-side definition is a const query.
+  let extraClassDeclaration = [{
+    bool isMadMxFamily() const;
+    bool hasBiasOperand() const;
+    bool readsAccumulator() const;
+    bool supportsTf32Mode() const;
+  }];
+
   let hasVerifier = 1;
   let hasCustomAssemblyFormat = 1;
 }
 
 def PTO_MadMxOp : PTO_CubeMicroOp<"mad_mx", [
-    DeclareOpInterfaceMethods<PTO_MadSemanticOpInterface, [
-      "isMadMxFamily", "hasBiasOperand", "readsAccumulator",
-      "supportsTf32Mode", "getBiasOrNull", "getTf32ModeAttr"
-    ]>,
+    DeclareOpInterfaceMethods<PTO_MadSemanticOpInterface>,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
@@ -2185,16 +2202,24 @@ def PTO_MadMxOp : PTO_CubeMicroOp<"mad_mx", [
     UnitAttr:$n_dir
   );
   let results = (outs);
+
+  // Same-named accessors as the semantic interface methods, but const: the
+  // interface only needs the value, so the op-side definition is a const query.
+  let extraClassDeclaration = [{
+    bool isMadMxFamily() const;
+    bool hasBiasOperand() const;
+    bool readsAccumulator() const;
+    bool supportsTf32Mode() const;
+    ::mlir::Value getBiasOrNull() const;
+    ::mlir::Attribute getTf32ModeAttr() const;
+  }];
 
   let hasVerifier = 1;
   let hasCustomAssemblyFormat = 1;
 }
 
 def PTO_MadMxAccOp : PTO_CubeMicroOp<"mad_mx_acc", [
-    DeclareOpInterfaceMethods<PTO_MadSemanticOpInterface, [
-      "isMadMxFamily", "hasBiasOperand", "readsAccumulator",
-      "supportsTf32Mode", "getBiasOrNull", "getTf32ModeAttr"
-    ]>,
+    DeclareOpInterfaceMethods<PTO_MadSemanticOpInterface>,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
@@ -2211,15 +2236,23 @@ def PTO_MadMxAccOp : PTO_CubeMicroOp<"mad_mx_acc", [
   );
   let results = (outs);
 
+  // Same-named accessors as the semantic interface methods, but const: the
+  // interface only needs the value, so the op-side definition is a const query.
+  let extraClassDeclaration = [{
+    bool isMadMxFamily() const;
+    bool hasBiasOperand() const;
+    bool readsAccumulator() const;
+    bool supportsTf32Mode() const;
+    ::mlir::Value getBiasOrNull() const;
+    ::mlir::Attribute getTf32ModeAttr() const;
+  }];
+
   let hasVerifier = 1;
   let hasCustomAssemblyFormat = 1;
 }
 
 def PTO_MadMxBiasOp : PTO_CubeMicroOp<"mad_mx_bias", [
-    DeclareOpInterfaceMethods<PTO_MadSemanticOpInterface, [
-      "isMadMxFamily", "hasBiasOperand", "readsAccumulator",
-      "supportsTf32Mode", "getBiasOrNull", "getTf32ModeAttr"
-    ]>,
+    DeclareOpInterfaceMethods<PTO_MadSemanticOpInterface, ["getBiasOrNull"]>,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
@@ -2237,14 +2270,22 @@ def PTO_MadMxBiasOp : PTO_CubeMicroOp<"mad_mx_bias", [
   );
   let results = (outs);
 
+  // Same-named accessors as the semantic interface methods, but const: the
+  // interface only needs the value, so the op-side definition is a const query.
+  let extraClassDeclaration = [{
+    bool isMadMxFamily() const;
+    bool hasBiasOperand() const;
+    bool readsAccumulator() const;
+    bool supportsTf32Mode() const;
+    ::mlir::Attribute getTf32ModeAttr() const;
+  }];
+
   let hasVerifier = 1;
   let hasCustomAssemblyFormat = 1;
 }
 
 def PTO_MadRawOp : PTO_CubeMicroOp<"mad_raw", [
-    DeclareOpInterfaceMethods<PTO_MadRawOpInterface, [
-      "isMadMxFamily", "hasBiasOperand", "getBiasOrNull"
-    ]>,
+    DeclareOpInterfaceMethods<PTO_MadRawOpInterface>,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
@@ -2254,6 +2295,14 @@ def PTO_MadRawOp : PTO_CubeMicroOp<"mad_raw", [
     I64:$xt
   );
   let results = (outs);
+
+  // Same-named accessors as the semantic interface methods, but const: the
+  // interface only needs the value, so the op-side definition is a const query.
+  let extraClassDeclaration = [{
+    bool isMadMxFamily() const;
+    bool hasBiasOperand() const;
+    ::mlir::Value getBiasOrNull() const;
+  }];
 
   let hasVerifier = 1;
 
@@ -2263,9 +2312,7 @@ def PTO_MadRawOp : PTO_CubeMicroOp<"mad_raw", [
 }
 
 def PTO_MadBiasRawOp : PTO_CubeMicroOp<"mad_bias_raw", [
-    DeclareOpInterfaceMethods<PTO_MadRawOpInterface, [
-      "isMadMxFamily", "hasBiasOperand", "getBiasOrNull"
-    ]>,
+    DeclareOpInterfaceMethods<PTO_MadRawOpInterface, ["getBiasOrNull"]>,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
@@ -2276,6 +2323,13 @@ def PTO_MadBiasRawOp : PTO_CubeMicroOp<"mad_bias_raw", [
     I64:$xt
   );
   let results = (outs);
+
+  // Same-named accessors as the semantic interface methods, but const: the
+  // interface only needs the value, so the op-side definition is a const query.
+  let extraClassDeclaration = [{
+    bool isMadMxFamily() const;
+    bool hasBiasOperand() const;
+  }];
 
   let hasVerifier = 1;
 
@@ -2285,9 +2339,7 @@ def PTO_MadBiasRawOp : PTO_CubeMicroOp<"mad_bias_raw", [
 }
 
 def PTO_MadMxRawOp : PTO_CubeMicroOp<"mad_mx_raw", [
-    DeclareOpInterfaceMethods<PTO_MadRawOpInterface, [
-      "isMadMxFamily", "hasBiasOperand", "getBiasOrNull"
-    ]>,
+    DeclareOpInterfaceMethods<PTO_MadRawOpInterface>,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
@@ -2298,6 +2350,14 @@ def PTO_MadMxRawOp : PTO_CubeMicroOp<"mad_mx_raw", [
   );
   let results = (outs);
 
+  // Same-named accessors as the semantic interface methods, but const: the
+  // interface only needs the value, so the op-side definition is a const query.
+  let extraClassDeclaration = [{
+    bool isMadMxFamily() const;
+    bool hasBiasOperand() const;
+    ::mlir::Value getBiasOrNull() const;
+  }];
+
   let hasVerifier = 1;
 
   let assemblyFormat = [{
@@ -2306,9 +2366,7 @@ def PTO_MadMxRawOp : PTO_CubeMicroOp<"mad_mx_raw", [
 }
 
 def PTO_MadMxBiasRawOp : PTO_CubeMicroOp<"mad_mx_bias_raw", [
-    DeclareOpInterfaceMethods<PTO_MadRawOpInterface, [
-      "isMadMxFamily", "hasBiasOperand", "getBiasOrNull"
-    ]>,
+    DeclareOpInterfaceMethods<PTO_MadRawOpInterface, ["getBiasOrNull"]>,
     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
   ]> {
   let arguments = (ins
@@ -2319,6 +2377,13 @@ def PTO_MadMxBiasRawOp : PTO_CubeMicroOp<"mad_mx_bias_raw", [
     I64:$xt
   );
   let results = (outs);
+
+  // Same-named accessors as the semantic interface methods, but const: the
+  // interface only needs the value, so the op-side definition is a const query.
+  let extraClassDeclaration = [{
+    bool isMadMxFamily() const;
+    bool hasBiasOperand() const;
+  }];
 
   let hasVerifier = 1;
 

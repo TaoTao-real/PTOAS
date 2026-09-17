@@ -313,7 +313,7 @@ static Value getSubviewValidOperand(pto::SubViewOp op,
 static LogicalResult resolveTileNativeSubviews(ModuleOp module,
                                                MLIRContext *ctx) {
   SmallVector<pto::SubViewOp, mlir::pto::kValue16> subviews;
-  module.walk([&](pto::SubViewOp op) { subviews.push_back(op); });
+  module.walk([&subviews](pto::SubViewOp op) { subviews.push_back(op); });
   for (pto::SubViewOp op : subviews) {
     IRRewriter rewriter(ctx);
     rewriter.setInsertionPoint(op);
@@ -395,7 +395,7 @@ static LogicalResult getMultiTileAddresses(pto::AllocMultiTileOp alloc,
 static LogicalResult resolveTileNativeMultiGets(ModuleOp module,
                                                 MLIRContext *ctx) {
   SmallVector<pto::MultiTileGetOp, mlir::pto::kValue8> getOps;
-  module.walk([&](pto::MultiTileGetOp op) { getOps.push_back(op); });
+  module.walk([&getOps](pto::MultiTileGetOp op) { getOps.push_back(op); });
 
   for (pto::MultiTileGetOp op : getOps) {
     auto alloc = op.getSource().getDefiningOp<pto::AllocMultiTileOp>();
@@ -438,7 +438,7 @@ static LogicalResult resolveTileNativeMultiGets(ModuleOp module,
   }
 
   SmallVector<pto::AllocMultiTileOp, mlir::pto::kValue8> allocs;
-  module.walk([&](pto::AllocMultiTileOp op) { allocs.push_back(op); });
+  module.walk([&allocs](pto::AllocMultiTileOp op) { allocs.push_back(op); });
   for (pto::AllocMultiTileOp alloc : allocs) {
     if (!alloc.getResult().use_empty()) {
       return alloc.emitError(

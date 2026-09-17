@@ -196,7 +196,7 @@ static bool collectPersistentRelatedOps(
     func::FuncOp func, llvm::SmallSetVector<Operation *, mlir::pto::kValue32> &relatedOps,
     SmallVector<LLVM::AllocaOp, mlir::pto::kValue4> &persistentAllocas) {
   bool foundPersistent = false;
-  func.walk([&](LLVM::AllocaOp allocaOp) {
+  func.walk([&foundPersistent, &persistentAllocas, &relatedOps](LLVM::AllocaOp allocaOp) {
     if (!allocaOp->hasAttr(pto::kPersistentAttrName)) {
       return;
     }
@@ -221,7 +221,7 @@ static bool collectPersistentRelatedOps(
 
 /// A loop whose body contains a pto.section.simt region is only promoted
 /// when a persistent GEP inside it actually depends on the loop's induction
-/// variable:
+/// variable.
 ///  - no dependency (e.g. a tile loop that only moves data while the
 ///    fragment is indexed by lane constants, the RMSNorm shape): unrolling
 ///    would clone the whole section once per iteration, the SIMT outlining
