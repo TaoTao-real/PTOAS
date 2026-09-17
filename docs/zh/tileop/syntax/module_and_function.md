@@ -39,7 +39,7 @@ module attributes {
 - `--pto-arch=a3`
 - `--pto-arch=a5`
 
-用户在编写 `module` 时，不需要再额外通过模块属性重复声明目标设备信息。
+用户在编写 `module` 时，不需要再通过模块属性重复声明目标设备信息。
 
 ## `func.func`
 

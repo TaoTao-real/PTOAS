@@ -198,7 +198,7 @@ For each element (i, j) in tile valid region:
 | ---- | ---- | ----------- |
 | `src` | `pto.tile_buf` | 源 tile buffer，位置为 `vec`、`mat` 或 `acc` |
 | `dst` | `pto.partition_tensor_view<...>` | 目标全局内存分区视图 |
-| `preQuantScalar` | `i64` （可选） | 量化前的标量值（仅在特定类型组合下使用） |
+| `preQuantScalar` | `i64`（可选）| 量化前的标量值（仅在特定类型组合下使用） |
 
 **返回值：** 无。以 DPS 的形式写入 `dst`。
 
@@ -653,8 +653,8 @@ For each element (i, j):
 | ---- | ---- | ----------- |
 | `src` | `pto.tile_buf` | 源 tile buffer，位置为 `mat`、`vec` 或 `acc` |
 | `dst` | `pto.tile_buf` | 目标 tile buffer，位置为 `left`、`right`、`bias`、`scaling` 等 |
-| `fp` | `pto.tile_buf<loc=scaling>` （可选） | 浮点精度缓冲区，仅在特定转换中使用 |
-| `preQuantScalar` | `i64` （可选） | 量化前的标量值 |
+| `fp` | `pto.tile_buf<loc=scaling>`（可选）| 浮点精度缓冲区，仅在特定转换中使用 |
+| `preQuantScalar` | `i64`（可选）| 量化前的标量值 |
 
 **返回值：** 无。以 DPS 的形式写入 `dst`。
 

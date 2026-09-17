@@ -1,6 +1,6 @@
 # 重排与转换操作
 
-本节描述了 PTO ISA 中用于 Tile 形状重解释、拼接、子区域提取与插入、类型转换、量化与反量化、以及填充处理的操作指令族。所有操作均作用于本地缓冲区（`tile_buf`，位于 `loc=vec` 或 `loc=mat` 空间），采用“目标传递风格”（Destination-Passing Style, DPS）：操作本身不产生 SSA 返回值，而是直接将结果写入预先分配好的目标 `tile_buf`。
+本节描述了 PTO ISA 中用于 Tile 形状重解释、拼接、子区域提取与插入、类型转换、量化与反量化、以及填充处理的操作指令族。所有操作均作用于本地缓冲区（`tile_buf`，通常位于 `loc=vec` 或 `loc=mat` 空间；`pto.textract` 等操作可使用 `loc=left/right`，`pto.textract_fp`/`pto.tinsert_fp` 可能使用 `loc=acc`），采用“目标传递风格”（Destination-Passing Style，DPS）：操作本身不产生 SSA 返回值，而是直接将结果写入预先分配好的目标 `tile_buf`。
 
 这一类操作通常具有如下装配形式：
 

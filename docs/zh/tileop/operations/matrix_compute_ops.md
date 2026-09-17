@@ -1,6 +1,6 @@
 # 矩阵计算操作
 
-本节描述了 PTO ISA 中全部矩阵计算操作的指令名称、签名和语义。矩阵计算操作在 Cube（矩阵）流水线上执行，用于完成矩阵乘法（TMATMUL）和矩阵-向量乘法（TGEMV）。所有操作均采用"目标传递风格"（Destination-Passing Style，DPS）：操作本身不产生 SSA 返回值，而是直接将结果写入预先分配好的目标 `tile_buf`。
+本节描述了 PTO ISA 中全部矩阵计算操作的指令名称、签名和语义。矩阵计算操作在 Cube（矩阵）流水线上执行，用于完成矩阵乘法（TMATMUL）和矩阵-向量乘法（TGEMV）。所有操作均采用“目标传递风格”（Destination-Passing Style，DPS）：操作本身不产生 SSA 返回值，而是直接将结果写入预先分配好的目标 `tile_buf`。
 
 这一类操作通常具有如下汇编形式：
 
@@ -16,7 +16,7 @@
 - 目标累加器 tile 位于 `loc=acc`（L0C 缓冲区）
 - 形状约束：`lhs.rows == dst.rows`，`lhs.cols == rhs.rows`，`rhs.cols == dst.cols`
 - 所有操作在矩阵流水线（`PIPE_M`）上执行
-- **(A5)** 布局约束：`lhs.blayout=col_major, lhs.slayout=row_major`；`rhs.blayout=row_major, rhs.slayout=col_major`；`dst.blayout=col_major, dst.slayout=row_major`。A2A3 不在 IR 层面强制校验 `blayout`/`slayout`
+- **（A5）** 布局约束：`lhs.blayout=col_major, lhs.slayout=row_major`；`rhs.blayout=row_major, rhs.slayout=col_major`；`dst.blayout=col_major, dst.slayout=row_major`。A2A3 不在 IR 层面强制校验 `blayout`/`slayout`
 
 ---
 
@@ -88,7 +88,7 @@ For each (i, j):
 ```mlir
 pto.tmatmul ins(%lhs, %rhs :
                 !pto.tile_buf<loc=left, dtype=f16, rows=32, cols=32,
-                    v_row=32, v_col=32, blayout=row_major,
+                    v_row=32, v_col=32, blayout=col_major,
                     slayout=row_major, fractal=512, pad=0>,
                 !pto.tile_buf<loc=right, dtype=f16, rows=32, cols=32,
                     v_row=32, v_col=32, blayout=row_major,
@@ -148,7 +148,7 @@ pto.tmatmul.acc ins(%acc_in, %lhs, %rhs :
                         v_row=32, v_col=32, blayout=col_major,
                         slayout=row_major, fractal=1024, pad=0>,
                     !pto.tile_buf<loc=left, dtype=f16, rows=32, cols=32,
-                        v_row=32, v_col=32, blayout=row_major,
+                        v_row=32, v_col=32, blayout=col_major,
                         slayout=row_major, fractal=512, pad=0>,
                     !pto.tile_buf<loc=right, dtype=f16, rows=32, cols=32,
                         v_row=32, v_col=32, blayout=row_major,
@@ -212,7 +212,7 @@ For each (i, j):
 ```mlir
 pto.tmatmul.bias ins(%lhs, %rhs, %bias :
                      !pto.tile_buf<loc=left, dtype=f16, rows=32, cols=32,
-                         v_row=32, v_col=32, blayout=row_major,
+                         v_row=32, v_col=32, blayout=col_major,
                          slayout=row_major, fractal=512, pad=0>,
                      !pto.tile_buf<loc=right, dtype=f16, rows=32, cols=32,
                          v_row=32, v_col=32, blayout=row_major,

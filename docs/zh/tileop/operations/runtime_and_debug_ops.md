@@ -250,7 +250,7 @@ printf(format_str, scalar)
 | Name | Type | Description |
 | ---- | ---- | ----------- |
 | `format_str` | `StrAttr` | 编译时字符串属性，包含格式控制符（如 `%+08.3f`） |
-| `scalar` | `ScalarType` (signless integer / float) | 运行时标量值，类型必须为整数或浮点数 |
+| `scalar` | `ScalarType`（signless integer / float）| 运行时标量值，类型必须为整数或浮点数 |
 
 **返回值：** 无。本操作为调试输出，不产生返回值。
 
