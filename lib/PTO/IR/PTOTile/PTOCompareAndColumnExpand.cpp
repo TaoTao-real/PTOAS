@@ -154,7 +154,7 @@ static bool isSupportedTColExpandElem(Type elemTy, PTOArch targetArch,
   if (!allowIntegerTypes) {
     return false;
   }
-  if (elemTy.isInteger(mlir::pto::kValue16) || elemTy.isInteger(32)) {
+  if (elemTy.isInteger(mlir::pto::kValue16) || elemTy.isInteger(mlir::pto::kValue32)) {
       return true;
   }
   return targetArch == PTOArch::A5 && elemTy.isInteger(mlir::pto::kValue8);

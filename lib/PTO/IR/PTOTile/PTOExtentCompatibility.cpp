@@ -219,7 +219,8 @@ static LogicalResult verifyMGatherMScatterIdxTile(Operation *op, Type ty,
 }
 
 static bool isA5TLoadStoreTransferElemType(Type ty) {
-    return ty.isInteger(mlir::pto::kValue8) || ty.isInteger(16) || ty.isInteger(32) ||
+    return ty.isInteger(mlir::pto::kValue8) || ty.isInteger(mlir::pto::kValue16) ||
+           ty.isInteger(mlir::pto::kValue32) ||
            ty.isInteger(mlir::pto::kValue64) || ty.isF16() || ty.isBF16() || ty.isF32() || isPTOLowPrecisionType(ty);
 }
 

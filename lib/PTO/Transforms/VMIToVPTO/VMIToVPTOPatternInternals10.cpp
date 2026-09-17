@@ -197,13 +197,13 @@ private:
   FailureOr<ExtFFactorPlan> buildFactorPlan(
       VMIExtFOp op, unsigned sourceBits, size_t sourcePartCount,
       size_t resultPartCount, OneToNPatternRewriter &rewriter) const {
-      if (sourceBits == mlir::pto::kValue16 && resultPartCount == 2 * sourcePartCount) {
+      if (sourceBits == mlir::pto::kValue16 && resultPartCount == kPairWidth * sourcePartCount) {
           static constexpr StringRef kEvenOddParts[] = {"EVEN", "ODD"};
-          return ExtFFactorPlan{ArrayRef<StringRef>(kEvenOddParts), 2};
+          return ExtFFactorPlan{ArrayRef<StringRef>(kEvenOddParts), kPairWidth};
       }
-      if (sourceBits == mlir::pto::kValue8 && resultPartCount == 4 * sourcePartCount) {
+      if (sourceBits == mlir::pto::kValue8 && resultPartCount == kQuadWidth * sourcePartCount) {
           static constexpr StringRef kPacked4Parts[] = {"P0", "P1", "P2", "P3"};
-          return ExtFFactorPlan{ArrayRef<StringRef>(kPacked4Parts), 4};
+          return ExtFFactorPlan{ArrayRef<StringRef>(kPacked4Parts), kQuadWidth};
       }
     return rewriter.notifyMatchFailure(
         op, "unsupported physical extf source/result width relation");
@@ -425,7 +425,7 @@ private:
     }
     unsigned sourceBits =
         pto::getPTOStorageElemBitWidth(sourceType->getElementType());
-    if (sourceBits != mlir::pto::kValue32 && sourceBits != 16) {
+    if (sourceBits != mlir::pto::kValue32 && sourceBits != mlir::pto::kValue16) {
         return rewriter.notifyMatchFailure(op, "truncf source bit width must be 32 or 16");
     }
     FailureOr<SmallVector<VRegType>> resultVRegTypes =

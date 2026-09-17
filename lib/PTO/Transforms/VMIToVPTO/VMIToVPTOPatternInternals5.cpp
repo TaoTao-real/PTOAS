@@ -219,8 +219,8 @@ private:
     auto integerType = dyn_cast<IntegerType>(logicalType.getElementType());
     bool twoWideParts = integerType && integerType.getWidth() == mlir::pto::kValue8 &&
                         logicalType.getElementCount() > mlir::pto::kValue128;
-    SmallVector<std::pair<Value, Value>, 2> inputs;
-    for (int64_t part = 0; part < (twoWideParts ? 2 : 1); ++part) {
+    SmallVector<std::pair<Value, Value>, mlir::pto::kValue2> inputs;
+    for (int64_t part = 0; part < (twoWideParts ? mlir::pto::kValue2 : 1); ++part) {
       auto input = prepareCompactReduction(op, sourceParts.front(),
                                            maskParts.front(), part, rewriter);
       if (failed(input)) {
