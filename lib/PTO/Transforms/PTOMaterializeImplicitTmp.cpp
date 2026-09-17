@@ -19,8 +19,10 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/TypeSwitch.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <cassert>
+#include <limits>
 
 using namespace mlir;
 
@@ -262,6 +264,89 @@ static FailureOr<pto::TileBufType> makeA5PlaceholderTmpType(
   }
   int64_t cols = std::max<int64_t>(1, 32 / *elemBytes);
   return makeVecTmpType(ctx, {1, cols}, elementType, {1, cols});
+}
+
+static FailureOr<pto::TileBufType> makeTGatherCompareTmpType(
+    pto::TGatherOp op, MLIRContext *ctx) {
+  auto shape = getShapeVec(op.getSrc().getType());
+  bool hasStaticShape = shape.size() == mlir::pto::kValue2 && shape[0] > 0 && shape[1] > 0;
+  if (!hasStaticShape) {
+    return failure();
+  }
+  constexpr int64_t kTmpElementBytes = 4;
+  constexpr int64_t kConversionAlignment = 256;
+  constexpr int64_t kMaskRowAlignment = 32;
+  constexpr int64_t kPayloadBytesPerTmpElement = kTmpElementBytes - 1;
+  constexpr int64_t kMaxSize = std::numeric_limits<int64_t>::max();
+  constexpr int64_t kMaxRows = (kMaxSize - (kConversionAlignment - 1)) / kTmpElementBytes;
+  if (shape[0] > kMaxRows || shape[1] > kMaxSize / kTmpElementBytes / shape[0]) {
+    return failure();
+  }
+  int64_t indexBytes = shape[0] * shape[1] * kTmpElementBytes;
+  int64_t conversionBytes = llvm::alignTo(shape[0] * kTmpElementBytes, kConversionAlignment);
+  if (indexBytes > kMaxSize - conversionBytes) {
+    return failure();
+  }
+  // The bitmap uses one byte per tmp element; the remaining three bytes
+  // must cover i32 indices and the conversion area rounded to full repeats.
+  // Keep bitmap row starts and both following regions 32-byte aligned.
+  int64_t payload = indexBytes + conversionBytes;
+  int64_t rowPayload = payload / shape[0] + (payload % shape[0] != 0);
+  int64_t cols = rowPayload / kPayloadBytesPerTmpElement +
+                 (rowPayload % kPayloadBytesPerTmpElement != 0);
+  cols = llvm::alignTo(cols, kMaskRowAlignment);
+  int64_t elements = 0;
+  bool sizeOverflow = llvm::MulOverflow(shape[0], cols, elements);
+  if (sizeOverflow || elements > kMaxSize / kTmpElementBytes) {
+    return failure();
+  }
+  return makeVecTmpType(ctx, {shape[0], cols},
+                       IntegerType::get(ctx, mlir::pto::kValue32), {shape[0], cols});
+}
+
+static void rebuildTGatherWithTmp(pto::TGatherOp op, Value tmp) {
+  SmallVector<Value> operands{op.getSrc(), op.getDst()};
+  if (op.getCdst()) {
+    operands.push_back(op.getCdst());
+  }
+  if (op.getIndices()) {
+    operands.push_back(op.getIndices());
+  }
+  operands.push_back(tmp);
+  if (op.getKValue()) {
+    operands.push_back(op.getKValue());
+  }
+  rebuildWithOperands(op, operands,
+                      ArrayRef<int32_t>{1, 1, op.getCdst() ? 1 : 0,
+                                        op.getIndices() ? 1 : 0, 1,
+                                        op.getKValue() ? 1 : 0});
+}
+
+static LogicalResult materializeTGatherTmp(pto::TGatherOp op, bool requireExplicitTmp, MLIRContext *ctx) {
+  bool isA5 = pto::getTargetArch(op) == pto::PTOArch::A5;
+  bool needsTmp = !op.getTmp() && !op.hasMaskForm() && !(isA5 && op.hasIndexForm());
+  if (!needsTmp) {
+    return success();
+  }
+  if (requireExplicitTmp) {
+    return op.emitOpError("requires explicit tmp when PlanMemory is skipped");
+  }
+  FailureOr<pto::TileBufType> type =
+      op.hasIndexForm() ? makeSameShapeTmpType(ctx, op.getIndices())
+      : isA5 ? makeA5PlaceholderTmpType(ctx, op.getSrc())
+             : makeTGatherCompareTmpType(op, ctx);
+  if (failed(type)) {
+    return op.emitOpError(
+        "requires static tile_buf indices/src with representable scratch size "
+        "to materialize implicit tgather tmp");
+  }
+  OpBuilder builder(op);
+  FailureOr<Value> tmp = createAllocTmp(builder, op.getLoc(), *type);
+  if (failed(tmp)) {
+    return failure();
+  }
+  rebuildTGatherWithTmp(op, *tmp);
+  return success();
 }
 
 static void replaceTRowExpandBinaryOpWithTmp(Operation *op, Value src0,
@@ -1052,7 +1137,7 @@ struct PTOMaterializeImplicitTmpPass
     func.walk([&optionalTmpOps](Operation *op) {
       if (isa<pto::TColSumOp, pto::TQuantOp, pto::TPowOp,
               pto::TPowSOp, pto::TSort32Op, pto::TXorOp,
-              pto::TXorSOp, pto::TCvtOp, pto::TMrgSortOp>(op)) {
+              pto::TXorSOp, pto::TCvtOp, pto::TMrgSortOp, pto::TGatherOp>(op)) {
         optionalTmpOps.push_back(op);
       }
     });
@@ -1086,6 +1171,9 @@ struct PTOMaterializeImplicitTmpPass
               })
               .Case<pto::TMrgSortOp>([this, ctx](auto typedOp) {
                 return materializeTMrgSortTmp(typedOp, requireExplicitTmp, ctx);
+              })
+              .Case<pto::TGatherOp>([this, ctx](auto typedOp) {
+                return materializeTGatherTmp(typedOp, requireExplicitTmp, ctx);
               })
               .Default([](Operation *) { return success(); });
       if (mlir::failed(result)) {

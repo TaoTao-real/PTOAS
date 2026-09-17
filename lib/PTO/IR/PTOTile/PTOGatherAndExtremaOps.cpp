@@ -24,19 +24,18 @@ static LogicalResult verifyTGatherArch(TGatherOp op, bool isA5) {
     return op.emitOpError("axis attribute must not be provided without maskPattern");
   }
   if (op.getCdst() || op.getKValue()) {
-    if (!op.getCdst() || !op.getKValue() || !op.getTmp()) {
-      return op.emitOpError("compare-form tgather expects dst, cdst, kValue, and tmp");
+    bool hasCompareOperands = op.getCdst() && op.getKValue();
+    if (!hasCompareOperands) {
+      return op.emitOpError("compare-form tgather expects dst, cdst, and kValue");
     }
     if (op.getIndices()) {
       return op.emitOpError("compare-form tgather does not take indices");
     }
     return verifyTGatherCompareForm(op, /*allowA5SrcTypes=*/isA5);
   }
-  if (!op.getIndices())
-    return op.emitOpError(isA5 ? "index-form tgather expects indices"
-                               : "index-form tgather expects both indices and tmp");
-  if (!isA5 && !op.getTmp())
-    return op.emitOpError("index-form tgather expects both indices and tmp");
+  if (!op.getIndices()) {
+    return op.emitOpError("index-form tgather expects indices");
+  }
   return verifyTGatherIndexForm(op, /*allow16BitIndices=*/isA5,
                                 /*allowA5ElemTypes=*/isA5);
 }

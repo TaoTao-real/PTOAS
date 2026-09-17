@@ -4727,7 +4727,13 @@ def TGatherOp : PTO_TOp<"tgather", [
   OpPipeInterface,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]> {
-  let summary = "Gather/select elements using index+tmp, scalar-compare+tmp, or a mask pattern (tilebuf, DPS)";
+  let summary = "Gather/select elements using indices, scalar comparison, or a mask pattern (tilebuf, DPS)";
+  let description = [{
+    Index and compare forms accept an optional temporary tile. Level1/level2
+    supply omitted scratch tiles when needed. Level3 requires an explicit tmp
+    for compare forms and A2/A3 index forms. A5 index and mask-pattern forms
+    need no tmp.
+  }];
 
   let arguments = (ins
     PTODpsType:$src,

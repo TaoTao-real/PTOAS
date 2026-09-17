@@ -7599,7 +7599,7 @@ pto.tconcatidx ins(%src0, %src1, %idx0, %idx1 :
 **Summary:** Gathers elements from a source tile using one of three PTO-ISA-compatible forms:
 
 - index gather: `src + indices[+ tmp] -> dst`
-- compare gather: `src + kValue + tmp -> dst + cdst`
+- compare gather: `src + kValue[+ tmp] -> dst + cdst`
 - mask-pattern gather: `src + maskPattern -> dst`
 
 **Semantics:**
@@ -7624,7 +7624,7 @@ Mask form:
 | `dst` | `pto.tile_buf` | Main destination tile |
 | `cdst` | `Optional<pto.tile_buf>` | Secondary destination tile used only by compare form |
 | `indices` | `Optional<pto.tile_buf>` | Index tile used only by index form |
-| `tmp` | `Optional<pto.tile_buf>` | Temporary tile used by compare form; optionally used by index form on A2/A3 (required), A5 (optional) |
+| `tmp` | `Optional<pto.tile_buf>` | Temporary tile for index/compare forms; level1/level2 allocate omitted scratch as needed |
 | `kValue` | `Optional<scalar>` | Scalar compare value used only by compare form |
 | `maskPattern` | `Optional<MaskPatternAttr>` | Mask pattern used only by mask form |
 | `cmpMode` | `Optional<CmpModeAttr>` | Compare mode used only by compare form; defaults to `eq` when omitted |
@@ -7636,17 +7636,17 @@ Mask form:
 - Compare form writes both `dst` and `cdst`
 - Mask form writes `dst`
 
-Note: the compare-form C++ API is spelled as `TGATHER(dst, src, k_value, cdst, tmp)`, but in PTO IR the writable operands are grouped under `outs(...)`, so `cdst` appears in `outs(...)` rather than `ins(...)`.
+In compare form, both writable operands, `dst` and `cdst`, appear in `outs(...)`.
 
 **Assembly Format:**
 
 ```mlir
-// index + tmp
-pto.tgather ins(%src, %indices, %tmp : !pto.tile_buf<...>, !pto.tile_buf<...>, !pto.tile_buf<...>)
+// index form, with optional tmp
+pto.tgather ins(%src, %indices[, %tmp] : !pto.tile_buf<...>, !pto.tile_buf<...>[, !pto.tile_buf<...>])
            outs(%dst : !pto.tile_buf<...>)
 
-// compare + tmp
-pto.tgather ins(%src, %kValue, %tmp : !pto.tile_buf<...>, <scalar_type>, !pto.tile_buf<...>)
+// compare form, with optional tmp
+pto.tgather ins(%src, %kValue[, %tmp] : !pto.tile_buf<...>, <scalar_type>[, !pto.tile_buf<...>])
            outs(%dst, %cdst : !pto.tile_buf<...>, !pto.tile_buf<...>)
            {cmpMode = #pto<cmp eq|gt>, offset = <i32>}
 
@@ -7658,13 +7658,18 @@ pto.tgather ins(%src, {maskPattern = #pto.mask_pattern<Pxxxx>} : !pto.tile_buf<.
 **Constraints & Verification:**
 
 - Exactly one of the following forms must be used:
-  - index form: `indices` (A5: `tmp` is optional; A2/A3: `tmp` is required)
-  - compare form: `kValue`, `tmp`, and `cdst`
+  - index form: `indices`, with optional `tmp`
+  - compare form: `kValue` and `cdst`, with optional `tmp`
   - mask form: `maskPattern`
+- **Temporary allocation**:
+  - On A2/A3, level1/level2 automatically allocate omitted `tmp` for index and compare forms. Explicit `tmp` operands are preserved.
+  - Level3 requires an explicit `tmp` for A2/A3 index forms and compare forms on every architecture.
+  - A5 index form needs no `tmp`; level1/level2 compare forms receive a placeholder tile when `tmp` is omitted. Mask form does not accept `tmp`.
+  - Automatic A2/A3 index scratch requires static physical and valid shapes for `indices`; compare scratch requires a static physical shape for `src`.
 - **Index gather: implementation checks (A2/A3)**:
   - `src` and `dst` element types must match and be one of `i16/i32/f16/f32`.
   - `indices` element type must be `i32`.
-  - `tmp` is required; `tmp` element type must match `indices`.
+  - When provided, `tmp` element type must match `indices`.
   - `dst`, `indices`, and `tmp` must use row-major layout.
   - `dst` and `indices` must have the same valid shape.
   - `indices` and `tmp` must have the same valid shape; their allocated row
@@ -7700,12 +7705,12 @@ pto.tgather ins(%src, {maskPattern = #pto.mask_pattern<Pxxxx>} : !pto.tile_buf<.
 **Basic Examples:**
 
 ```mlir
-// index + tmp
-pto.tgather ins(%src, %idx, %tmp : !pto.tile_buf<...>, !pto.tile_buf<...>, !pto.tile_buf<...>)
+// level2 index form: scratch is allocated automatically
+pto.tgather ins(%src, %idx : !pto.tile_buf<...>, !pto.tile_buf<...>)
            outs(%dst : !pto.tile_buf<...>)
 
-// compare + tmp
-pto.tgather ins(%src, %k, %tmp : !pto.tile_buf<...>, f16, !pto.tile_buf<...>)
+// level2 compare form: scratch is allocated automatically
+pto.tgather ins(%src, %k : !pto.tile_buf<...>, f16)
            outs(%dst, %cdst : !pto.tile_buf<...>, !pto.tile_buf<...>)
            {offset = 7 : i32}
 

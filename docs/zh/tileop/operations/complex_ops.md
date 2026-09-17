@@ -141,16 +141,16 @@ pto.tgatherb ins(%src, %offsets :
 
 ```mlir
 // 索引形式
-pto.tgather ins(<src>, <indices>, <tmp> : <src_type>, <indices_type>, <tmp_type>)
+pto.tgather ins(<src>, <indices> : <src_type>, <indices_type>)
             outs(<dst> : <dst_type>)
 
 // 比较形式
-pto.tgather ins(<src>, <kValue>, <tmp> : <src_type>, <scalar_type>, <tmp_type>)
+pto.tgather ins(<src>, <kValue> : <src_type>, <scalar_type>)
             outs(<dst>, <cdst> : <dst_type>, <cdst_type>)
             {cmpMode = #pto<cmp <mode>>, offset = <i32>}
 
 // 掩码形式
-pto.tgather ins(<src>, {maskPattern = #pto.mask_pattern<<pattern>>} : <src_type>)
+pto.tgather ins(<src>, {maskPattern = #pto.mask_pattern<<pattern>>} : <src_type>, "row")
             outs(<dst> : <dst_type>)
 ```
 
@@ -210,7 +210,6 @@ P1000:
 | `dst` | `pto.tile_buf` | 主目标 tile 缓冲区 |
 | `cdst` | `pto.tile_buf` | 比较形式中的辅助目标 tile（仅比较形式） |
 | `indices` | `pto.tile_buf` | 索引形式中的索引 tile（仅索引形式） |
-| `tmp` | `pto.tile_buf` | 索引形式和比较形式中的临时 tile（仅索引/比较形式） |
 | `kValue` | 标量类型 | 比较形式中的标量比较值（仅比较形式） |
 
 **返回值：** 无。以 DPS 的形式写入 `dst`（及比较形式下的 `cdst`）。
@@ -235,24 +234,21 @@ P1000:
 **约束：**
 
 - **实现检查（A2A3）**
-  - 索引形式：`src` 和 `dst` 元素类型必须一致，且为 `i16`、`i32`、`f16` 或 `f32` 之一。`indices` 元素类型必须为 `i32`。`tmp` 元素类型必须与 `indices` 一致。`dst` 的 `valid_shape[1]` 必须等于 `dst.cols`。
-  - 比较形式：`dst` 和 `cdst` 元素类型必须为 `i32`。`src` 元素类型必须为 `f16`、`f32`，或当 `cmpMode=eq` 时可为 `i32`。`kValue` 类型必须与 `src` 元素类型一致。`cmpMode` 必须为 `eq` 或 `gt`。`src`、`dst`、`cdst`、`tmp` 必须为 `loc=vec`。
+  - 索引形式：`src` 和 `dst` 元素类型必须一致，且为 `i16`、`i32`、`f16` 或 `f32` 之一。`indices` 元素类型必须为 `i32`，物理形状和有效形状必须为静态值。`dst` 的 `valid_shape[1]` 必须等于 `dst.cols`。
+  - 比较形式：`dst` 和 `cdst` 元素类型必须为 `i32`。`src` 元素类型必须为 `f16`、`f32`，或当 `cmpMode=eq` 时可为 `i32`；`src` 的物理形状必须为静态值。`kValue` 类型必须与 `src` 元素类型一致。`cmpMode` 必须为 `eq` 或 `gt`。`src`、`dst`、`cdst` 必须为 `loc=vec`。
   - 掩码形式：`src` 元素大小必须为 2 或 4 字节。`src` 和 `dst` 必须使用 `loc=vec` 和 `blayout=row_major`。`src` 和 `dst` 元素大小必须一致。`dst` 的 `valid_shape[1]` 必须等于 `dst.cols`。
 
 - **实现检查（A5）**
   - 索引形式：`src` 和 `dst` 元素类型必须一致，且为 `i8`、`i16`、`i32`、`f16` 或 `f32` 之一。`indices` 元素类型可为 `i16` 或 `i32`。`dst` 的 `valid_shape[1]` 必须等于 `dst.cols`。
-  - 比较形式：`dst` 和 `cdst` 元素类型必须为 `i32`。`src` 元素类型必须为 `i16`、`i32`、`f16` 或 `f32` 之一。`kValue` 类型必须与 `src` 元素类型一致。`cmpMode` 必须为 `eq` 或 `gt`。`src`、`dst`、`cdst`、`tmp` 必须为 `loc=vec`。
+  - 比较形式：`dst` 和 `cdst` 元素类型必须为 `i32`。`src` 元素类型必须为 `i16`、`i32`、`f16` 或 `f32` 之一。`kValue` 类型必须与 `src` 元素类型一致。`cmpMode` 必须为 `eq` 或 `gt`。`src`、`dst`、`cdst` 必须为 `loc=vec`。
   - 掩码形式：`src` 元素大小必须为 1、2 或 4 字节。`src` 和 `dst` 必须使用 `loc=vec` 和 `blayout=row_major`。`src`/`dst` 元素类型必须为 `i8`、`i16`、`i32`、`f16`、`bf16`、`f32` 或 fp8 类支持类型之一。`src` 和 `dst` 元素大小必须一致。`dst` 的 `valid_shape[1]` 必须等于 `dst.cols`。
 
 **示例：**
 
 ```mlir
 // 索引形式
-pto.tgather ins(%src, %indices, %index_tmp :
+pto.tgather ins(%src, %indices :
                 !pto.tile_buf<loc=vec, dtype=f16, rows=1, cols=32,
-                    v_row=1, v_col=32, blayout=row_major, slayout=none_box,
-                    fractal=512, pad=0>,
-                !pto.tile_buf<loc=vec, dtype=i32, rows=1, cols=32,
                     v_row=1, v_col=32, blayout=row_major, slayout=none_box,
                     fractal=512, pad=0>,
                 !pto.tile_buf<loc=vec, dtype=i32, rows=1, cols=32,
