@@ -145,6 +145,13 @@ PTO_BUILD_DIR="$PTO_SOURCE_DIR/build" \
 
 安装完成后，必须先按第 4 节配置运行环境，再执行 `ptoas` 或 `check-pto`。
 
+GitCode/CANN 构建入口 `bash build.sh --build` 保留 `build/`，由 Ninja
+增量更新受影响的目标。`bash build.sh --pkg` 使用独立的 `build/wheel/`
+构建 wheel，再由 `build/package/` 封装安装包，不重复编译 PTOAS。
+需要清理 PTOAS 中间产物（例如切换工具链）时，使用 `--clean --build`
+或 `--clean --pkg`；此选项不清理共享 LLVM 缓存。跨 CI 任务的编译结果
+复用由 `BuildAccelerate`/xcache 提供，工作区内的增量构建需要保留对应目录。
+
 ### 3.4 Python 安装合同 (Python Distribution Contract)
 
 如果你要使用 Python 绑定、PTODSL资源，推荐使用仓库根目录

@@ -143,6 +143,14 @@ owns `PYTHON_BIN`. Activating the virtual environment created above puts its
 After installation, configure the runtime environment in section 4 before
 running either `ptoas` or `check-pto`.
 
+The GitCode/CANN entrypoint `bash build.sh --build` preserves `build/` for
+incremental Ninja builds. `bash build.sh --pkg` builds the wheel in
+`build/wheel/`, then packages it in `build/package/` without rebuilding PTOAS.
+Use `--clean --build` or `--clean --pkg` to reset PTOAS intermediates, for
+example when switching toolchains; the shared LLVM cache is preserved.
+`BuildAccelerate`/xcache provides compiler caching across CI jobs. Incremental
+builds within a workspace require the corresponding build directory to persist.
+
 ### 3.4 Step 3: Supported Python Install Flows
 
 If you want to use Python bindings or PTODSL, prefer the repository-root
