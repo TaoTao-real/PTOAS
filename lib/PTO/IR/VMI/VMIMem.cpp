@@ -445,11 +445,6 @@ static const std::set<StringRef> &validStoreDistModes() {
   return modes;
 }
 
-static const std::set<StringRef> &validPModes() {
-  static const std::set<StringRef> modes = {"zero", "merge"};
-  return modes;
-}
-
 LogicalResult VMIVgatherOp::verify() {
   auto offsetsType = cast<VMIVRegType>(getOffsets().getType());
   auto maskType = cast<VMIMaskType>(getMask().getType());
@@ -492,10 +487,8 @@ LogicalResult VMIVgatherOp::verify() {
         "offsets, or i8/ui8 -> i16/ui16 integer promotion");
   }
 
-  if (auto pmode = getPmode()) {
-    if (pmode.value() != "merge" && pmode.value() != "zero") {
-      return emitOpError("pmode must be 'merge' or 'zero'");
-    }
+  if (failed(verifyVMIPMode(getOperation(), getPmode()))) {
+    return failure();
   }
   return success();
 }
@@ -571,10 +564,8 @@ LogicalResult VMIVscatterOp::verify() {
     return failure();
   }
 
-  if (auto pmode = getPmode()) {
-    if (pmode.value() != "merge" && pmode.value() != "zero") {
-      return emitOpError("pmode must be 'merge' or 'zero'");
-    }
+  if (failed(verifyVMIPMode(getOperation(), getPmode()))) {
+    return failure();
   }
   return success();
 }
@@ -1117,8 +1108,8 @@ static LogicalResult verifyVLoadDistModeAndPmode(
     return op->emitOpError("requires exactly 1 result for dist-mode \"")
            << (distMode ? *distMode : "continuous") << "\"";
   }
-  if (pmode && validPModes().find(*pmode) == validPModes().end()) {
-    return op->emitOpError("invalid pmode: \"") << *pmode << "\"";
+  if (failed(verifyVMIPMode(op, pmode))) {
+    return failure();
   }
   return success();
 }

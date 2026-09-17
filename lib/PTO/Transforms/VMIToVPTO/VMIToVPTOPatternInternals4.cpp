@@ -491,13 +491,6 @@ public:
       SourceOp op,
       typename OneToNOpConversionPattern<SourceOp>::OpAdaptor adaptor,
       OneToNPatternRewriter &rewriter) const override {
-    const bool requiresPassthru =
-        op.getPmode().has_value() && *op.getPmode() == "merge";
-    if (requiresPassthru) {
-      return rewriter.notifyMatchFailure(
-          op, "merge predicate mode requires an explicit passthru lowering");
-    }
-
     ValueRange sourceParts = adaptor.getSrc();
     FailureOr<Value> scalar =
         getSingleValue(op, adaptor.getScalar(),
@@ -1231,13 +1224,6 @@ public:
   LogicalResult
   matchAndRewrite(VMIVexpdifOp op, OpAdaptor adaptor,
                   OneToNPatternRewriter &rewriter) const override {
-    const bool requiresPassthru =
-        op.getPmode().has_value() && *op.getPmode() == "merge";
-    if (requiresPassthru) {
-      return rewriter.notifyMatchFailure(
-          op, "merge predicate mode requires an explicit passthru lowering");
-    }
-
     ValueRange xParts = adaptor.getX();
     ValueRange maxParts = adaptor.getMax();
     ValueRange maskParts = adaptor.getMask();

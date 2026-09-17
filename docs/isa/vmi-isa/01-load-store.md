@@ -65,7 +65,7 @@
   |---|---|---|---|
   | `dist_mode` | `"continuous"`, `"dintlv"`, `"brc"` | `"continuous"` | Memory access pattern |
   | `group` | positive integer | *(none)* | Strided group load arity; mutually exclusive with `dist_mode`; requires `stride` |
-  | `pmode` | `"zero"`, `"merge"` | `"zero"` | Inactive-lane behavior (applied at consumer, not on load) |
+  | `pmode` | `"zero"` | `"zero"` | Inactive-lane behavior (applied at consumer, not on load) |
 
 - **lowering to `pto.mi`:**
   - **dist-mode** `vload` and `vstore` accept an optional `{dist_mode = "..."}` attribute

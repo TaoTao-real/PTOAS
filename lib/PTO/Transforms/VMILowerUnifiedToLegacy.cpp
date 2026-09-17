@@ -100,21 +100,6 @@ constexpr int64_t kDecimalRadix = 10;
 // Helpers
 //===----------------------------------------------------------------------===//
 
-/// Returns the string name of a predicate mode, defaulting to "zero".
-static StringRef getPmodeOrDefault(Operation *op, StringRef attrName = "pmode") {
-  if (auto attr = op->getAttrOfType<StringAttr>(attrName)) {
-    return attr.getValue();
-  }
-  return "zero";
-}
-
-/// Returns true when the pmode on `op` is "merge" — these ops must be
-/// skipped because merge semantic (inactive lane preserves OLD_DEST) cannot
-/// be expressed in VMI SSA IR.
-static bool hasMergePmode(Operation *op) {
-  return getPmodeOrDefault(op) == "merge";
-}
-
 /// Create a zero-valued VMIConstantOp with the same type as \p vmiType.
 static Value createZeroConstant(OpBuilder &builder, Location loc,
                                 VMIVRegType vmiType) {
@@ -246,10 +231,6 @@ static bool isCompactGroupCount(int64_t count) {
 
 /// Lower vcmp to cmpf/cmpi + mask_and.
 static LogicalResult lowerVCmp(VMIVcmpOp op, OpBuilder &builder) {
-  if (hasMergePmode(op)) {
-    return failure();
-  }
-
   Location loc = op.getLoc();
   Type elemType = getVMIElementType(op.getLhs());
   bool isFloat = isFloatType(elemType);
@@ -288,10 +269,6 @@ static LogicalResult lowerVCmp(VMIVcmpOp op, OpBuilder &builder) {
 
 /// Lower vcmps to broadcast scalar + cmpf/cmpi + mask_and.
 static LogicalResult lowerVCmps(VMIVcmpsOp op, OpBuilder &builder) {
-  if (hasMergePmode(op)) {
-    return failure();
-  }
-
   Location loc = op.getLoc();
   Type srcVmiType = op.getSrc().getType();
   Value scalar = op.getScalar();
@@ -340,10 +317,6 @@ static LogicalResult lowerVCmps(VMIVcmpsOp op, OpBuilder &builder) {
 
 /// Lower vcvt by dispatching on src→dst element types.
 static LogicalResult lowerVCvt(VMICvtOp op, OpBuilder &builder) {
-  if (hasMergePmode(op)) {
-    return failure();
-  }
-
   Type srcElem = getVMIElementType(op.getSource());
   Type dstElem = getVMIElementType(op.getResult());
   StringRef direction = classifyCvtDirection(srcElem, dstElem);
@@ -524,8 +497,6 @@ static LogicalResult lowerVLoad(VMIvLoadOp op, OpBuilder &builder) {
     result = lowerGroupedLoad(op, builder);
   } else if (op.getBlockStride()) {
     result = lowerBlockStrideLoad(op, builder);
-  } else if (hasMergePmode(op)) {
-    return failure();
   } else {
     result = lowerDistributedLoad(op, builder);
   }
@@ -757,10 +728,6 @@ static std::optional<int64_t> getReductionNumGroups(ReductionOp op) {
 /// group_reduce_addf/group_reduce_addi.  Always succeeds for valid input
 /// (vcadd verifier guarantees reassoc for float, and group 整除 source lanes).
 static LogicalResult lowerVCadd(VMIvcaddOp op, OpBuilder &builder) {
-  if (hasMergePmode(op)) {
-    return failure();
-  }
-
   auto sourceType = cast<VMIVRegType>(op.getSource().getType());
   Type elemType = sourceType.getElementType();
   bool isFloat = isa<FloatType>(elemType);
@@ -810,10 +777,6 @@ static LogicalResult lowerVCadd(VMIvcaddOp op, OpBuilder &builder) {
 
 /// Lower vcmax to legacy full or grouped float/integer maximum reduction.
 static LogicalResult lowerVcmax(VMIvcmaxOp op, OpBuilder &builder) {
-  if (hasMergePmode(op)) {
-    return failure();
-  }
-
   auto sourceType = cast<VMIVRegType>(op.getSource().getType());
   Type elemType = sourceType.getElementType();
   bool isFloat = isa<FloatType>(elemType);
@@ -860,10 +823,6 @@ static LogicalResult lowerVcmax(VMIvcmaxOp op, OpBuilder &builder) {
 
 /// Lower vcmin to legacy full or grouped float/integer minimum reduction.
 static LogicalResult lowerVcmin(VMIvcminOp op, OpBuilder &builder) {
-  if (hasMergePmode(op)) {
-    return failure();
-  }
-
   auto sourceType = cast<VMIVRegType>(op.getSource().getType());
   Type elemType = sourceType.getElementType();
   bool isFloat = isa<FloatType>(elemType);
@@ -937,13 +896,9 @@ static LogicalResult lowerPlt(VMIPltOp op, OpBuilder &builder) {
 //===----------------------------------------------------------------------===//
 
 /// Lower vgather to legacy gather.  Legacy gather carries an explicit passthru
-/// operand for inactive lanes; pmode="zero" is modelled with a zero passthru.
-/// pmode="merge" (preserve OLD_DEST) has no SSA passthru and is skipped.
+/// operand for inactive lanes; the zero predicate mode is modelled with a zero
+/// passthru.
 static LogicalResult lowerVgather(VMIVgatherOp op, OpBuilder &builder) {
-  if (hasMergePmode(op)) {
-    return failure();
-  }
-
   Location loc = op.getLoc();
   auto resultType = cast<VMIVRegType>(op.getResult().getType());
   // pmode="zero" (default): inactive lanes are zeroed. Legacy gather models
@@ -963,12 +918,8 @@ static LogicalResult lowerVgather(VMIVgatherOp op, OpBuilder &builder) {
 }
 
 /// Lower vscatter to legacy scatter.  Legacy scatter only writes active lanes
-/// (mask-governed), matching vscatter's default/zero pmode; merge is skipped.
+/// (mask-governed), matching vscatter's zero predicate mode.
 static LogicalResult lowerVscatter(VMIVscatterOp op, OpBuilder &builder) {
-  if (hasMergePmode(op)) {
-    return failure();
-  }
-
   Location loc = op.getLoc();
   builder.create<VMIScatterOp>(loc, op.getValue(), op.getDestination(),
                                op.getOffsets(), op.getMask());
@@ -1242,12 +1193,6 @@ void VMILowerUnifiedToLegacyPass::runOnOperation() {
     }
 
     if (auto vop = dyn_cast<VMIVsstbOp>(op)) {
-      // pmode="merge" cannot be expressed by the legacy stride store; leave
-      // the op for VMIToVPTO (which has no vsstb pattern) so the conversion
-      // fails loudly instead of silently dropping the attribute.
-      if (hasMergePmode(vop)) {
-        continue;
-      }
       builder.create<VMIStrideStoreOp>(vop.getLoc(), vop.getValue(),
                                        vop.getDestination(), vop.getOffset(),
           vop.getBlockStride(), vop.getMask());

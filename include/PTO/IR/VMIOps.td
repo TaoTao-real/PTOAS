@@ -919,9 +919,8 @@ def VMIVabsOp : VMI_Op<"vabs", [Pure]> {
     Computes the elementwise absolute value of a logical vector.
     Supports floating-point and explicitly signed integer element types.
 
-    pmode governs inactive-lane behavior:
-    - "merge" (default): inactive lanes pass through the source value.
-    - "zero": inactive lanes are zeroed.
+    pmode governs inactive-lane behavior: "zero" (the default) zeroes
+    inactive lanes.
 
     Example:
     ```
@@ -1160,13 +1159,12 @@ class VMI_VecScalarOp<string mnemonic, string summaryText,
     Performs elementwise operation between a logical vector and a scalar.
     The scalar is implicitly broadcast to all lanes (R6/M2).
 
-    pmode governs inactive-lane behavior on the result:
-    - "merge" (default): inactive lanes pass through the source value.
-    - "zero": inactive lanes are zeroed.
+    pmode governs inactive-lane behavior on the result: "zero" (the default)
+    zeroes inactive lanes.
 
     Example:
     ```
-    %r = pto.vmi.} # mnemonic # [{ %v, %s, %m {pmode = "merge"}
+    %r = pto.vmi.} # mnemonic # [{ %v, %s, %m {pmode = "zero"}
       : !pto.vmi.vreg<64xf16>, f16, !pto.vmi.mask<64xpred> -> !pto.vmi.vreg<64xf16>
     ```
   }];
@@ -1197,9 +1195,8 @@ def VMIvSelOp : VMI_Op<"vsel", [Pure]> {
 
       result[i] = mask[i] ? true_value[i] : false_value[i]
 
-    pmode governs inactive-lane behavior on the result:
-    - "merge" (default): inactive lanes retain the false_value element.
-    - "zero": inactive lanes are zeroed.
+    pmode governs inactive-lane behavior on the result: "zero" (the default)
+    zeroes inactive lanes.
 
     Example:
     ```mlir
@@ -1225,8 +1222,8 @@ def VMIvcaddOp : VMI_Op<"vcadd", [Pure]> {
       or `C` compact scalars when `{group=C}` is specified.
     - Floating-point sources MUST carry the `reassoc` attribute (hardware
       vcadd uses pair-wise reassociation).
-    - `pmode` controls inactive-result behaviour: "zero" (default) writes 0;
-      "merge" preserves the destination register's old value.
+    - `pmode` controls inactive-result behaviour: "zero" (the default) writes
+      0 to inactive result lanes.
   }];
   let arguments = (ins
     VMI_VRegTypeConstraint:$source,
@@ -1301,7 +1298,7 @@ def VMICvtOp : VMI_Op<"vcvt", [Pure]> {
       R/A/F/C/Z.
     - `saturate`: "SAT" or "NOSAT"; required for fp narrowing, integer
       narrowing, and fp-to-int conversion.
-    - `pmode`: predication mode ("merge" | "zero").
+    - `pmode`: predication mode; only "zero" is accepted.
 
     Signless integer element types use unsigned semantics. Thus fp→signless
     follows the unsigned conversion path, and signless int→int widening uses
@@ -1342,7 +1339,7 @@ def VMIvLoadOp : VMI_Op<"vload",
     block-stride mode (mutually exclusive with dist-mode and group):
     - {block_stride = B}: block-strided masked load → 1 result
 
-    pmode ("zero"|"merge") governs inactive-lane behavior on the result.
+    pmode ("zero" only) governs inactive-lane behavior on the result.
     vload itself has no mask operand; A5 loads are not predicable — masks
     migrate to consumer ops or vstore.
   }];
@@ -1496,9 +1493,8 @@ def VMIVgatherOp : VMI_Op<"vgather", [DeclareOpInterfaceMethods<MemoryEffectsOpI
     type is signed (i8) or unsigned (ui8). Sign-extension is not supported.
     Inactive lanes are controlled by pmode (no explicit passthru operand).
 
-    pmode controls inactive-lane behavior:
-    - "zero" (default): inactive lanes are zeroed.
-    - "merge": inactive lanes preserve the prior destination value.
+    pmode controls inactive-lane behavior: "zero" (the default) zeroes
+    inactive lanes.
 
     Example:
     ```

@@ -622,13 +622,6 @@ WalkResult emitMaskableNonVReg(Operation *op, StringRef opName,
 template <typename VecScalarOp, typename MaskableCheck>
 WalkResult verifySupportedVecScalarOp(VecScalarOp op, StringRef opName,
                                       MaskableCheck checkMaskable) {
-  bool requiresPassthru =
-      op.getPmode().has_value() && *op.getPmode() == "merge";
-  if (requiresPassthru) {
-    op.emitError() << kVMIDiagUnsupportedPrefix << opName
-                   << " with pmode=merge requires an explicit passthru lowering";
-    return WalkResult::interrupt();
-  }
   auto resultType = dyn_cast<VMIVRegType>(op.getResult().getType());
   if (!resultType) {
     return emitMaskableNonVReg(op.getOperation(), opName,
@@ -637,19 +630,11 @@ WalkResult verifySupportedVecScalarOp(VecScalarOp op, StringRef opName,
   return checkMaskable(op, opName, resultType);
 }
 
-/// Unified v-ops carry an optional `pmode` attribute; `pmode="merge"` needs an
-/// explicit passthru lowering, so report it before the maskable check.
+/// Checks that a unified maskable op has a vreg result and a supported mask
+/// before it is lowered.
 template <typename UnifiedOp, typename MaskableCheck>
 WalkResult verifySupportedUnifiedMaskableOp(UnifiedOp op, StringRef opName,
                                             MaskableCheck checkMaskable) {
-  if (auto pmode = op->template getAttrOfType<StringAttr>("pmode")) {
-    if (pmode.getValue() == "merge") {
-      op.emitError() << kVMIDiagUnsupportedPrefix << opName
-                     << " with pmode=merge requires an explicit passthru "
-                        "lowering";
-      return WalkResult::interrupt();
-    }
-  }
   auto resultType = dyn_cast<VMIVRegType>(op.getResult().getType());
   if (!resultType) {
     return emitMaskableNonVReg(op.getOperation(), opName,
