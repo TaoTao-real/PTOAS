@@ -2034,9 +2034,9 @@ group_sum = pto.vcgadd(p_row, col_mask)
 
 These combine an arithmetic operation with a math function or activation in a single instruction.
 
-#### `pto.vexpdif(vec: VRegType, max_vec: VRegType, mask: MaskType, *, part: PartMode = PartMode.ODD) -> VRegType`
+#### `pto.vexpdif(vec: VRegType, max_vec: VRegType, mask: MaskType, *, part: PartMode | None = None) -> VRegType`
 
-**Description**: `exp(vec[i] - max_vec[i])` — the stable softmax numerator. `part` controls which half of the vector is computed: `EVEN` or `ODD`. The result keeps the same `VRegType` as the input vector.
+**Description**: `exp(vec[i] - max_vec[i])` — the stable softmax numerator. `part` selects which 16-bit half of every 32-bit lane feeds the mixed precision subtraction: `EVEN` or `ODD`. `f16` inputs pack two elements per 32-bit lane and consume only one half per instruction, so they must pass `part` explicitly; `f32` inputs are covered by a single instruction that computes the whole vector, so `part` may be omitted. The result keeps the same `VRegType` as the input vector.
 
 ---
 

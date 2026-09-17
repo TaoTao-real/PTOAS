@@ -4812,6 +4812,19 @@ def vmulscvt_surface_probe():
 
 
 @pto.jit(target="a5", mode="explicit")
+def vexpdif_surface_probe():
+    zero_u64 = pto.const(0, dtype=pto.ui64)
+    ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
+    mask32_full = pto.pset_b32(pto.MaskPattern.ALL)
+    vec_f32 = pto.vlds(ub_f32, pto.const(0))
+    # An f32 source covers the whole vector with one instruction, so the
+    # hardware contract value may be omitted.
+    _ = pto.vexpdif(vec_f32, vec_f32, mask32_full)
+    # The explicit EVEN/ODD spelling stays available.
+    _ = pto.vexpdif(vec_f32, vec_f32, mask32_full, part=pto.PartMode.ODD)
+
+
+@pto.jit(target="a5", mode="explicit")
 def vmula_surface_probe():
     zero_u64 = pto.const(0, dtype=pto.ui64)
     ub_f32 = pto.castptr(zero_u64, pto.ptr(pto.f32, "ub"))
@@ -8325,6 +8338,16 @@ def main() -> None:
     expect_parse_roundtrip_and_verify(vecscope_surface_text, "public vecscope surface specialization")
     vmulscvt_surface_text = vmulscvt_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(vmulscvt_surface_text, "public vmulscvt surface specialization")
+    vexpdif_surface_text = vexpdif_surface_probe.compile().mlir_text()
+    expect_parse_roundtrip_and_verify(vexpdif_surface_text, "public vexpdif surface specialization")
+    expect(
+        vexpdif_surface_text.count("pto.vexpdif") == 2,
+        "vexpdif surface probe should cover the omitted-part and explicit-part forms",
+    )
+    expect(
+        vexpdif_surface_text.count('"ODD"') == 1,
+        "only the explicit vexpdif call should print a part token",
+    )
     vmula_surface_text = vmula_surface_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(vmula_surface_text, "public vmula surface specialization")
     vmadd_surface_text = vmadd_surface_probe.compile().mlir_text()

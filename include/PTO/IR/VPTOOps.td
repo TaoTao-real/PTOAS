@@ -3599,18 +3599,28 @@ class PTO_BinaryVecMaskedOp<string mnemonic>
 
 def PTO_VpreluOp : PTO_BinaryVecMaskedOp<"vprelu">;
 def PTO_VexpdifOp : PTO_VectorMicroOp<"vexpdif", [Pure]> {
+  let summary = "Fused exp(input - max) for numerically stable softmax";
+  let description = [{
+    `part` selects which 16-bit half of every 32-bit lane feeds the mixed
+    precision subtraction. An `f16` source packs two elements per 32-bit lane,
+    so one instruction consumes only one half of the source storage and must
+    select `"EVEN"` or `"ODD"` explicitly. An `f32` source is covered by a
+    single instruction that computes the whole vector, and the selection is a
+    hardware contract value that the result does not observe, so `part` may be
+    omitted there.
+  }];
   let arguments = (ins
     PTO_VectorType:$input,
     PTO_VectorType:$max,
     PTO_MaskTypeConstraint:$mask,
-    StrAttr:$part
+    OptionalAttr<StrAttr>:$part
   );
   let results = (outs PTO_VectorType:$result);
 
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    $input `,` $max `,` $mask `,` $part attr-dict `:` type($input) `,` type($max) `,` type($mask) `->` type($result)
+    $input `,` $max `,` $mask ( `,` $part^ )? attr-dict `:` type($input) `,` type($max) `,` type($mask) `->` type($result)
   }];
 }
 

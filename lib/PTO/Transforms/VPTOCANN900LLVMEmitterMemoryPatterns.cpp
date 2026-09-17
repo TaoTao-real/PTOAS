@@ -1413,9 +1413,17 @@ public:
 
   LogicalResult matchAndRewrite(pto::VexpdifOp op, pto::VexpdifOp::Adaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
-    auto part = parsePartImmediate(op.getPart());
+    // `part` may be omitted for f32 sources (see VexpdifOp::verify): a single
+    // instruction already covers the whole f32 vector and the immediate is a
+    // hardware contract value only. Every f32 producer in the pipeline passes
+    // ODD, so fall back to that encoding (PART_ODD = 1) when it is absent.
+    constexpr uint64_t kF32DefaultPartImmediate = 1;
+    std::optional<uint64_t> part = kF32DefaultPartImmediate;
+    if (auto partToken = op.getPart()) {
+      part = parsePartImmediate(*partToken);
+    }
     if (!part) {
-      return rewriter.notifyMatchFailure(op, "unsupported vexpdif signature");
+      return rewriter.notifyMatchFailure(op, "unsupported vexpdif part immediate");
     }
 
     Type resultType = this->getTypeConverter()->convertType(op.getResult().getType());

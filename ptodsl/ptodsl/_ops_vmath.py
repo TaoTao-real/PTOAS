@@ -21,6 +21,7 @@ from ._ops_common import (
     _emit_unary_vec_op,
     _emit_vec_scalar_masked_op,
     _infer_mask_metadata,
+    _infer_vreg_metadata,
     _negate_runtime_scalar,
     _normalize_vcvt_round_mode,
     _normalize_vdup_position_mode,
@@ -303,16 +304,51 @@ def vsqz(inp, mask):
     return _emit_unary_vec_op(_pto.VsqzOp, inp, mask)
 
 
-def vexpdif(inp, ref, mask, part: str = "ODD"):
-    """``pto.vexpdif`` – ``exp(inp - ref)`` selecting ODD or EVEN lanes."""
-    _reject_low_precision_vreg_operands(inp, ref, context="pto.vexpdif(...)")
+_EVEN_ODD_PART_TOKENS = ("EVEN", "ODD")
+
+
+def _normalize_even_odd_part_mode(part, *, context: str) -> str:
+    """Normalize a PTODSL EVEN/ODD part selector into its IR token."""
+    token = part if isinstance(part, str) else str(part)
+    if "." in token:
+        token = token.rsplit(".", 1)[-1]
+    normalized = token.strip().upper()
+    if normalized not in _EVEN_ODD_PART_TOKENS:
+        raise ValueError(
+            f"{context} does not support part {part!r}; expected one of EVEN, ODD"
+        )
+    return normalized
+
+
+def vexpdif(inp, ref, mask, part=None):
+    """``pto.vexpdif`` – ``exp(inp - ref)``.
+
+    ``part`` selects which 16-bit half of every 32-bit lane feeds the mixed
+    precision subtraction. ``f16`` inputs pack two elements per 32-bit lane and
+    consume only one half per instruction, so they must select
+    ``PartMode.EVEN`` or ``PartMode.ODD`` explicitly. ``f32`` inputs are covered
+    by a single instruction that computes the whole vector, so ``part`` may be
+    omitted there.
+    """
+    context = "pto.vexpdif(...)"
+    _reject_low_precision_vreg_operands(inp, ref, context=context)
+    kwargs = {}
+    if part is None:
+        _, elem_type = _infer_vreg_metadata(inp)
+        if F16Type.isinstance(elem_type):
+            raise TypeError(
+                f"{context} requires part=pto.PartMode.EVEN or pto.PartMode.ODD for "
+                "f16 input vectors; omit part only for f32 inputs"
+            )
+    else:
+        kwargs["part"] = _normalize_even_odd_part_mode(part, context=context)
     return wrap_surface_value(
         _pto.VexpdifOp(
             unwrap_surface_value(inp).type,
             unwrap_surface_value(inp),
             unwrap_surface_value(ref),
             unwrap_surface_value(mask),
-            part,
+            **kwargs,
         ).result
     )
 
