@@ -340,7 +340,6 @@ inline FailureOr<StringRef> buildReduxCallee<pto::ReduxMinFOp>(MLIRContext *cont
   return buildReduxCalleeImpl(context, valueType, signednessAttr, "min");
 }
 
-
 template <typename AtomicOp>
 FailureOr<StringRef> buildAtomicCallee(MLIRContext *context, Type ptrType, Type valueType, Attribute signednessAttr);
 
