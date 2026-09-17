@@ -86,6 +86,39 @@ def kernel(rows: pto.i32):
 ```
 
 
+### 3.1.1 Standard library — `pto.init_core()`
+
+PTODSL ships a first-party standard library so that kernels call common
+core-state initialization through the normal `pto.*` surface without any
+extra import or registration. Its first entry is `pto.init_core()`, a
+`@pto.func` helper that emits the canonical A5 VPTO core-state initialization
+sequence in source order:
+
+1. `pto.get_ctrl` → `arith.andi` → `arith.ori` → `pto.set_ctrl` – preserve
+   selected running CTRL bits and force the default preset bits.
+2. Vector kernels: `pto.set_loop_size_ubtoout(1, 1)` /
+   `pto.set_loop_size_outtoub(1, 1)` to restore default DMA loop sizes.
+   Explicit `kernel_kind="cube"` kernels receive `pto.set_mov_pad_val(0)`
+   instead, mirroring the reference `__DAV_CUBE__` / `__DAV_VEC__` split.
+3. `pto.set_store_atomic_cfg(0b00100100)` – restore the default scalar
+   store-atomic configuration.
+
+`pto.init_core()` behaves like a normal PTODSL traced callable: it may only be
+called while tracing a compatible kernel, and the VPTO pipeline inlines the
+helper body at the call site before VMI layout assignment and scheduling so
+the initialization operations participate in later semantic, layout,
+scheduling, and code-generation passes. V1 targets A5 + VPTO + `mode="explicit"`;
+calls under any other backend (e.g. EmitC) are rejected.
+
+<!-- ptodsl-doc-test: {"mode":"compile","symbol":"init_core_example","compile":{}} -->
+```python
+@pto.jit(target="a5", mode="explicit")
+def init_core_example(inp: pto.ptr(pto.f32, "gm"), out: pto.ptr(pto.f32, "gm")):
+    pto.init_core()
+    # ... main computation ...
+```
+
+
 ## 3.2 `entry=True` — host-launchable kernel entry
 
 ### Signature

@@ -516,6 +516,11 @@ from ._ops_mte import (  # noqa: F401
     set_atomic_s32,
     set_atomic_s8,
     set_store_atomic_cfg,
+    get_ctrl,
+    set_ctrl,
+    set_mov_pad_val,
+    set_loop_size_ubtoout,
+    set_loop_size_outtoub,
 )
 from ._ops_simt import (  # noqa: F401
     _atomic_binary,
@@ -669,6 +674,8 @@ __all__ = [
     "mte_load", "mte_store", "mte_gm_ub", "mte_ub_gm", "mte_ub_ub", "mte_ub_l1",
     "mte_gm_l1", "raw_fill_l1", "mte_l1_ub", "mte_gm_l1_frac", "mte_l1_bt", "mte_l1_fb", "mem_bar",
     "set_store_atomic_cfg",
+    "get_ctrl", "set_ctrl", "set_mov_pad_val",
+    "set_loop_size_ubtoout", "set_loop_size_outtoub",
     "set_atomic_add", "set_atomic_max", "set_atomic_min", "set_atomic_none",
     "set_atomic_f32", "set_atomic_f16", "set_atomic_bf16",
     "set_atomic_s32", "set_atomic_s16", "set_atomic_s8",

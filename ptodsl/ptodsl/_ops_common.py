@@ -125,6 +125,27 @@ def _require_target_arch(surface: str, allowed: set[str]):
         raise ValueError(f"{surface} is only supported for {expected}; got target={target!r}")
 
 
+def _current_backend():
+    try:
+        from ._tracing.active import current_session
+        session = current_session()
+    except Exception:
+        return None
+    if session is None:
+        return None
+    current_module_spec = getattr(session, "current_function_module_spec", session.module_spec)
+    return getattr(current_module_spec, "backend", None)
+
+
+def _require_backend(surface: str, allowed: set[str]):
+    backend = _current_backend()
+    if backend is None:
+        return
+    if backend not in allowed:
+        expected = ", ".join(f"backend='{name}'" for name in sorted(allowed))
+        raise ValueError(f"{surface} is only supported for {expected}; got backend={backend!r}")
+
+
 def _require_simt_subkernel(surface: str):
     try:
         from ._tracing.active import current_session

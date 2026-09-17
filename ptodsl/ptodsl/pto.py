@@ -131,6 +131,8 @@ from ._ops import (             # noqa: F401
     mte_load, mte_store, mte_gm_ub, mte_ub_gm, mte_ub_ub, mte_ub_l1,
     mte_gm_l1, raw_fill_l1, mte_l1_ub, mte_gm_l1_frac, mte_l1_bt, mte_l1_fb, mem_bar,
     set_store_atomic_cfg,
+    get_ctrl, set_ctrl, set_mov_pad_val,
+    set_loop_size_ubtoout, set_loop_size_outtoub,
     set_atomic_add, set_atomic_max, set_atomic_min, set_atomic_none,
     set_atomic_f32, set_atomic_f16, set_atomic_bf16,
     set_atomic_s32, set_atomic_s16, set_atomic_s8,
@@ -216,6 +218,11 @@ from ._func import func  # noqa: F401
 from ._subkernels import cube, simd, simt, tileop     # noqa: F401
 from ._pipe_namespace import pipe  # noqa: F401
 
+# ── Standard library ─────────────────────────────────────────────────────────
+# The stdlib export catalog is imported eagerly (it is a read-only mapping),
+# while the implementation modules resolve lazily on first attribute access.
+from .stdlib import _exports as _stdlib_exports  # noqa: F401
+
 # pto.max / pto.min / pto.abs keep their builtin names on the public DSL surface,
 # so bind them from the implementation module instead of importing the names.
 for _builtin_named in ('max', 'min', 'abs'):
@@ -238,8 +245,47 @@ mask_b16 = mask_type("b16")
 mask_b32 = mask_type("b32")
 PAT = MaskPattern
 
+_RESERVED_PUBLIC_SURFACE_NAMES = frozenset({
+    "ukernel", "tile_buf_type", "as_ptr", "vbrc_load", "vsts_1pt",
+    "constexpr", "copy_ubuf_to_ubuf", "tensor_spec", "TensorSpec",
+})
+
+# The public surface is every non-private module member.  Derive ``__all__``
+# from ``globals()`` so newly added APIs are star-importable without manual
+# registration here; stdlib catalog names are appended on top (collision-free
+# by ``_validate_stdlib_catalog_collisions`` below).
+_existing_public_names = [
+    name for name in globals()
+    if not name.startswith("_")
+]
+
+__all__ = [
+    *_existing_public_names,
+    *_stdlib_exports.public_export_names(),
+]
+
+
+def _validate_stdlib_catalog_collisions():
+    for name in _stdlib_exports.public_export_names():
+        if name in globals():
+            raise RuntimeError(
+                f"PTODSL stdlib export {name!r} collides with an existing "
+                f"{__name__} member"
+            )
+
+
+_validate_stdlib_catalog_collisions()
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))
+
 
 def __getattr__(name):
-    if name in {"ukernel", "tile_buf_type", "as_ptr", "vbrc_load", "vsts_1pt", "constexpr", "copy_ubuf_to_ubuf", "tensor_spec", "TensorSpec"}:
+    if name in _RESERVED_PUBLIC_SURFACE_NAMES:
         raise unsupported_public_surface_error(name)
+    if name in _stdlib_exports.EXPORTS:
+        resolved = _stdlib_exports.resolve_export(name)
+        globals()[name] = resolved
+        return resolved
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

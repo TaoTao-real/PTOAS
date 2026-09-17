@@ -25,6 +25,7 @@ from ._scalar_adaptation import (
     coerce_runtime_i1_value,
     coerce_runtime_index_value,
     coerce_runtime_integer_value,
+    is_mlir_value,
 )
 from ._runtime_scalar_ops import emit_runtime_binary_op
 from ._surface_values import (
@@ -798,6 +799,88 @@ def set_store_atomic_cfg(config):
     """Configure scalar ST atomic mode via ST_ATOMIC_CFG (SU path)."""
     _pto.SetStoreAtomicCfgOp(
         _coerce_i64(config, context="set_store_atomic_cfg config")
+    )
+
+
+@_explicit_mode_only("pto.get_ctrl(...)")
+def get_ctrl():
+    """Read the 64-bit running CTRL register (SU path).
+
+    Returns the value as a standard runtime scalar, so authored code can
+    compose it with the normal scalar operators (e.g. ``ctrl & mask``).
+    """
+    return wrap_surface_value(_pto.GetCtrlOp().result)
+
+
+@_explicit_mode_only("pto.set_ctrl(...)")
+def set_ctrl(ctrl):
+    """Overwrite the 64-bit running CTRL register (SU path)."""
+    _pto.SetCtrlOp(
+        _coerce_i64(ctrl, context="set_ctrl ctrl")
+    )
+
+
+def _is_supported_mov_pad_type(type_obj) -> bool:
+    """True for the element types pto.set_mov_pad_val accepts natively."""
+    if IntegerType.isinstance(type_obj):
+        integer_type = IntegerType(type_obj)
+        return integer_type.is_signless and integer_type.width in (8, 16, 32)
+    return (
+        F16Type.isinstance(type_obj)
+        or BF16Type.isinstance(type_obj)
+        or F32Type.isinstance(type_obj)
+    )
+
+
+def _coerce_mov_pad_value(value, *, context: str):
+    """Keep supported typed scalars as-is; Python literals default to i32/f32."""
+    raw_value = unwrap_surface_value(value)
+    if is_mlir_value(raw_value):
+        if _is_supported_mov_pad_type(raw_value.type):
+            return raw_value
+        raise TypeError(
+            f"{context} expects an i8/i16/i32 or f16/bf16/f32 runtime scalar, "
+            f"got {raw_value.type}"
+        )
+    if isinstance(value, bool):
+        raise TypeError(f"{context} does not accept bool values")
+    if isinstance(value, float):
+        return materialize_scalar_literal(value, F32Type.get(), context=context)
+    if isinstance(value, int):
+        return materialize_scalar_literal(
+            value, IntegerType.get_signless(32), context=context
+        )
+    raise TypeError(f"{context} expects a typed scalar or a Python number, got {value!r}")
+
+
+@_explicit_mode_only("pto.set_mov_pad_val(...)")
+def set_mov_pad_val(pad_value):
+    """Configure the MTE movement padding value (SU path).
+
+    Supported runtime scalars (i8/i16/i32, f16/bf16/f32) keep their original
+    element type and bit pattern; plain Python literals default to i32 for
+    ints and f32 for floats.
+    """
+    _pto.SetMovPadValOp(
+        _coerce_mov_pad_value(pad_value, context="set_mov_pad_val pad_value")
+    )
+
+
+@_explicit_mode_only("pto.set_loop_size_ubtoout(...)")
+def set_loop_size_ubtoout(count0, count1):
+    """Configure the default UB-to-OUT DMA loop sizes (SU path)."""
+    _pto.SetLoopSizeUbToOutOp(
+        _coerce_i64(count0, context="set_loop_size_ubtoout count0"),
+        _coerce_i64(count1, context="set_loop_size_ubtoout count1"),
+    )
+
+
+@_explicit_mode_only("pto.set_loop_size_outtoub(...)")
+def set_loop_size_outtoub(count0, count1):
+    """Configure the default OUT-to-UB DMA loop sizes (SU path)."""
+    _pto.SetLoopSizeOutToUbOp(
+        _coerce_i64(count0, context="set_loop_size_outtoub count0"),
+        _coerce_i64(count1, context="set_loop_size_outtoub count1"),
     )
 
 
