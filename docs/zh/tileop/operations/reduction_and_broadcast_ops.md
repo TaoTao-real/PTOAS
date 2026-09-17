@@ -307,8 +307,8 @@ pto.tcolargmin ins(%src, %tmp : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=
 ### `pto.tcolsum` — 列求和归约
 
 ```mlir
-pto.tcolsum ins(<src>, <tmp> : <src_type>, <tmp_type>)
-            outs(<dst> : <dst_type>) isBinary = false
+pto.tcolsum ins(<src>, <tmp> {isBinary = false} : <src_type>, <tmp_type>)
+            outs(<dst> : <dst_type>)
 ```
 
 **语义：**
@@ -354,7 +354,7 @@ For each column j:
 **示例：**
 
 ```mlir
-pto.tcolsum ins(%src, %tmp : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
+pto.tcolsum ins(%src, %tmp {isBinary = false} : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
                 v_row=16, v_col=16, blayout=row_major, slayout=none_box,
                 fractal=512, pad=0>,
                 !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
@@ -362,7 +362,7 @@ pto.tcolsum ins(%src, %tmp : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
                 fractal=512, pad=0>)
             outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=1, cols=16,
                 v_row=1, v_col=16, blayout=row_major, slayout=none_box,
-                fractal=512, pad=0>) isBinary = false
+                fractal=512, pad=0>)
 ```
 
 ---
@@ -1482,12 +1482,14 @@ For each element (i, j):
 
 **示例：**
 
+示例的逐行标量载体使用列优先的一列 Tile。若改用行优先载体，其有效列数必须为 `32/sizeof(dtype)`，f32 为 8。
+
 ```mlir
 pto.trowexpandmax ins(%src0, %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
                       v_row=16, v_col=16, blayout=row_major, slayout=none_box,
                       fractal=512, pad=0>,
                       !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=1,
-                      v_row=16, v_col=1, blayout=row_major, slayout=none_box,
+                      v_row=16, v_col=1, blayout=col_major, slayout=none_box,
                       fractal=512, pad=0>)
                   outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
                       v_row=16, v_col=16, blayout=row_major, slayout=none_box,
@@ -1536,12 +1538,14 @@ For each element (i, j):
 
 **示例：**
 
+示例的逐行标量载体使用列优先的一列 Tile。若改用行优先载体，其有效列数必须为 `32/sizeof(dtype)`，f32 为 8。
+
 ```mlir
 pto.trowexpandmin ins(%src0, %src1 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
                       v_row=16, v_col=16, blayout=row_major, slayout=none_box,
                       fractal=512, pad=0>,
                       !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=1,
-                      v_row=16, v_col=1, blayout=row_major, slayout=none_box,
+                      v_row=16, v_col=1, blayout=col_major, slayout=none_box,
                       fractal=512, pad=0>)
                   outs(%dst : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=16,
                       v_row=16, v_col=16, blayout=row_major, slayout=none_box,

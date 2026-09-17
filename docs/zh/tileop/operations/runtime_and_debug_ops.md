@@ -43,7 +43,7 @@
 ### `pto.get_block_idx` — 获取当前核索引
 
 ```mlir
-%idx = pto.get_block_idx -> i64
+%idx = pto.get_block_idx
 ```
 
 **语义：**
@@ -59,7 +59,7 @@ result = block_idx()
 **示例：**
 
 ```mlir
-%idx = pto.get_block_idx -> i64
+%idx = pto.get_block_idx
 ```
 
 ---
@@ -67,7 +67,7 @@ result = block_idx()
 ### `pto.get_subblock_idx` — 获取当前子核索引
 
 ```mlir
-%idx = pto.get_subblock_idx -> i64
+%idx = pto.get_subblock_idx
 ```
 
 **语义：**
@@ -83,7 +83,7 @@ result = subblock_idx()
 **示例：**
 
 ```mlir
-%idx = pto.get_subblock_idx -> i64
+%idx = pto.get_subblock_idx
 ```
 
 ---
@@ -91,7 +91,7 @@ result = subblock_idx()
 ### `pto.get_block_num` — 获取总核数
 
 ```mlir
-%num = pto.get_block_num -> i64
+%num = pto.get_block_num
 ```
 
 **语义：**
@@ -107,7 +107,7 @@ result = block_num()
 **示例：**
 
 ```mlir
-%num = pto.get_block_num -> i64
+%num = pto.get_block_num
 ```
 
 ---
@@ -115,7 +115,7 @@ result = block_num()
 ### `pto.get_subblock_num` — 获取总子核数
 
 ```mlir
-%num = pto.get_subblock_num -> i64
+%num = pto.get_subblock_num
 ```
 
 **语义：**
@@ -131,7 +131,7 @@ result = subblock_num()
 **示例：**
 
 ```mlir
-%num = pto.get_subblock_num -> i64
+%num = pto.get_subblock_num
 ```
 
 ---

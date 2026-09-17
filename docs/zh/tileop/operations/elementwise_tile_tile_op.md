@@ -905,7 +905,7 @@ For each element (i, j):
 
 - **实现检查（A2A3）**
   - `dst/src0/src1` 元素类型必须一致，且必须为 `f16` 或 `f32`。
-  - `tmp` 元素类型必须为 `u8`。
+  - `tmp` 元素类型使用 `ui8`。令 R/C 为目标有效行列数：临时空间物理行数至少 R+1，有效列数至少 `ceil(C/8)`，总容量至少 `(R+1)*align_up(ceil(C/8),32)` 字节。目标有效区域必须为静态尺寸。
   - 所有相关 tile 必须使用行优先布局（`blayout=row_major`）。
   - `src0`、`src1` 必须分别与 `dst` 具有相同有效区域。
   - A3 中两个源 tile、目标 tile、临时空间不得内存重叠。
@@ -919,7 +919,7 @@ For each element (i, j):
 **示例：**
 
 ```mlir
-// A2/A3：需要独立的 tmp tile（元素类型为 u8）
+// A2/A3：需要独立的 tmp tile（元素类型为 ui8）
 pto.tprelu ins(%a, %slopes, %tmp :
                !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16,
                v_row=16, v_col=16, blayout=row_major, slayout=none_box,
@@ -927,13 +927,17 @@ pto.tprelu ins(%a, %slopes, %tmp :
                !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16,
                v_row=16, v_col=16, blayout=row_major, slayout=none_box,
                fractal=512, pad=0>,
-               !pto.tile_buf<loc=vec, dtype=u8, rows=16, cols=16,
-               v_row=16, v_col=16, blayout=row_major, slayout=none_box,
+               !pto.tile_buf<loc=vec, dtype=ui8, rows=17, cols=32,
+               v_row=17, v_col=32, blayout=row_major, slayout=none_box,
                fractal=512, pad=0>)
            outs(%c : !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16,
                v_row=16, v_col=16, blayout=row_major, slayout=none_box,
                fractal=512, pad=0>)
+```
 
+A5 使用目标 Tile 作为占位参数：
+
+```mlir
 // A5：tmp 可复用 dst 作为占位
 pto.tprelu ins(%a, %slopes, %c :
                !pto.tile_buf<loc=vec, dtype=f16, rows=16, cols=16,

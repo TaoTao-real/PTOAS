@@ -188,7 +188,7 @@ For each element (i, j):
 pto.tands ins(%a, %s : !pto.tile_buf<loc=vec, dtype=i16, rows=16, cols=16,
              v_row=16, v_col=16, blayout=row_major, slayout=none_box,
              fractal=512, pad=0>, i32)
-          outs(%c : !pto.tile_buf<loc=vec, dtype=i32, rows=16, cols=16,
+          outs(%c : !pto.tile_buf<loc=vec, dtype=i16, rows=16, cols=16,
              v_row=16, v_col=16, blayout=row_major, slayout=none_box,
              fractal=512, pad=0>)
 ```
