@@ -14,7 +14,8 @@ L2L C2V pop/free execute on V; V2C pop/free execute on MTE1. Producer
 publish executes on FIX/MTE3 respectively (A5 TPipe::Consumer/Producer).
 Scalar source order alone never supplies a completion edge.
 """
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
+import hashlib
 
 from ptoas._cv_ir import attr
 from ptoas.mlir.dialects import pto
@@ -190,9 +191,23 @@ def verify_completion(module, package, candidate, memory):
     invalid = {"VERSION_MAPPING", "TRANSACTION_MAPPING", "LIVE_STORAGE_OVERLAP",
                "COMPLETION_CYCLE", "NATIVE_LAYOUT_OVERFLOW"}
     status = "fail" if any(e["code"] in invalid for e in errors) else "unknown" if errors else "pass"
+    compact, proof_summary = _compact_proofs(proofs)
     return dict(status=status, semantic_profile="a5_l2l_tile_entry_v1",
-                obligations=proofs, edges=graph.evidence, unresolved=errors,
+                obligations=compact, obligation_summary=proof_summary,
+                edges=graph.evidence, unresolved=errors,
                 limitations=["only mapped FP32 static tile operations; target headers must match the declared profile"])
+
+
+def _compact_proofs(proofs, limit=4096):
+    """Bound diagnostic output without weakening the checks that produced it."""
+    digest = hashlib.sha256()
+    for proof in proofs:
+        digest.update(repr((proof["source"], proof["target"], proof["kind"])).encode("utf-8"))
+        digest.update(b"\n")
+    summary = dict(total=len(proofs), retained=min(len(proofs), limit),
+                   by_kind=dict(sorted(Counter(p["kind"] for p in proofs).items())),
+                   sha256=digest.hexdigest(), truncated=len(proofs) > limit)
+    return proofs[:limit], summary
 
 
 def _layout_preflight(found, errors):

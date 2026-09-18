@@ -21,7 +21,7 @@ from ptoas.mlir import ir
 from ptoas.mlir.dialects import pto
 from ptoas._cv_exchange import export_v2
 from ptoas._cv_session import apply_candidate
-from ptoas._cv_completion import verify_completion
+from ptoas._cv_completion import _compact_proofs, verify_completion
 from ptoas._cv_memory import physical_memory, _usage
 from ptoas._cv_ir import walk
 from pto_costmodel.contract import configuration
@@ -170,6 +170,17 @@ class FeedbackTest(unittest.TestCase):
                 verify_artifacts(self.variant)
         finally:
             path.write_text(original)
+
+    def test_large_completion_evidence_is_bounded_and_bound(self):
+        proofs = [dict(source=f"s{i}", target=f"t{i}", kind="physical_overlap") for i in range(5000)]
+        retained, summary = _compact_proofs(proofs)
+        self.assertEqual(len(retained), 4096)
+        self.assertEqual(summary["total"], 5000)
+        self.assertEqual(summary["by_kind"], {"physical_overlap": 5000})
+        self.assertTrue(summary["truncated"])
+        changed = [dict(row) for row in proofs]
+        changed[-1]["target"] = "different"
+        self.assertNotEqual(summary["sha256"], _compact_proofs(changed)[1]["sha256"])
 
     def test_native_memory_replay(self):
         with ir.Context() as context:
