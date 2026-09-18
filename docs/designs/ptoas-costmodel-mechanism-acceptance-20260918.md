@@ -1,9 +1,11 @@
 # PTOAS × TileSim preload + multi-buffer mechanism acceptance (2026-09-18)
 
-## Verdict
+## Verdicts kept separate
 
-`MECHANISM_BENEFIT_PASS` for the exact frozen `multibuffer-stress-n8-r129` workload on
-`ptoas-a5-39`, device 0. This is an optimization-mechanism result, not a general G4 certificate.
+- Annotation-guided optimization: **`MECHANISM_BENEFIT_PASS`** for the exact frozen
+  `multibuffer-stress-n8-r129` workload on `ptoas-a5-39`, device 0.
+- Cost Model accuracy: candidate selection direction passed, absolute latency accuracy failed the
+  10% policy. This is not a general G4 certificate.
 
 TileSim selected the smallest permitted stress setting, 129 odd alternating `tneg` operations,
 before any device measurement. It recommended `preload_count=1` and two slots for P Buffer
@@ -15,7 +17,7 @@ before any device measurement. It recommended `preload_count=1` and two slots fo
 - B: TileSim's P=1 recommendation with the complete minimum slot configuration;
 - P-invalid: B's preload with P forced to one slot, rejected with `INSUFFICIENT_SLOTS`.
 
-## Correctness and measurement
+## Part 1: annotation-guided optimization benefit
 
 All 24 G3 runs passed independent exact-integer golden comparison, repeated output, input hash,
 guard, timeout, and runtime checks. Performance collection completed four warmups and 20 paired
@@ -34,8 +36,29 @@ paired regression. M/P0 remains wholly inside the specified ±2% equivalence int
 therefore attributes the observed gain to the legal cross-iteration overlap enabled by preload
 and its required multi-buffer storage, rather than to allocating an extra P slot alone.
 
-TileSim predicted B at 21.0298 us. Its absolute error against the measured B mean is 24.02%, above
-the 10% G4 policy limit. The mechanism passes, while model calibration and G4 remain open.
+## Part 2: model prediction gap and feedback
+
+| Quantity | TileSim | A5 measured | Difference |
+|---|---:|---:|---:|
+| P0 baseline latency | 26.1513 us | 32.7171 us | 20.07% absolute error |
+| B candidate latency | 21.0298 us | 27.6794 us | 24.02% absolute error |
+| B/P0 gain | 19.58% | 15.39% | model overestimates by 4.19 percentage points |
+
+TileSim correctly selected a beneficial configuration, so its selection result must not be hidden
+by the latency error. It nevertheless underestimates both the common workload cost and B's final
+latency. The cost-model team should act on the following feedback:
+
+1. Calibrate common launch, ND/NZ layout conversion, A5 L2L, and synchronization costs. The fact
+   that both P0 and B are low indicates missing or optimistic common costs.
+2. Calibrate `tneg` throughput and fixed cost with independent primitive microbenchmarks across
+   several chain lengths and both AIV lanes. Do not fit this acceptance workload and then reuse it
+   as independent G4 evidence.
+3. Consume the compiler's lowered operation counts, inserted waits/synchronization, memory plan,
+   and final schedule fingerprint before retaining a prediction for G4.
+4. Report three fields separately: selection quality, absolute-latency accuracy, and speedup
+   accuracy. For this run they are respectively pass, fail, and an overestimate of 4.19 points.
+
+The optimization mechanism passes. Model calibration and G4 remain open.
 
 ## Frozen identities and evidence
 
