@@ -17,6 +17,8 @@ from pathlib import Path
 import shutil
 import subprocess
 
+BUILD_TIMEOUT_SECONDS = 900
+
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -77,7 +79,8 @@ def build(variant, output):
     (output / "commands.json").write_text(json.dumps(commands, indent=2))
     for index, command in enumerate(commands):
         with (output / f"build-{index}.log").open("w") as log:
-            subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=180)
+            subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=True,
+                           timeout=BUILD_TIMEOUT_SECONDS)
     symbols = [v["symbol"] for c in json.loads((variant.parent.parent / "manifest.json").read_text())["cases"]
                if c["case"] == variant.parent.name for v in c["candidates"] if v["variant"] == variant.name]
     if len(symbols) != 1 or symbols[0].encode() not in (output / "kernel.o").read_bytes():
