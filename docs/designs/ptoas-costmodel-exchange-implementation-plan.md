@@ -1,8 +1,9 @@
 # PTOAS × Cost Model 实施与验收计划
 
-状态：实施中；2026-09-16 已实现固定 micro 的 TileSim 候选计时、冻结选择和配对 A/B 工具，
-并在 A5 完成冻结推荐后的 G2/G3 验收。四个 workload 均因预测收益低于 2% 保留 baseline，
-因此本轮没有 B 产物或配对性能样本，未签发 G4。
+状态：实施中；2026-09-18 已完成固定 stress micro 的预冻结四组消融验收。
+TileSim 推荐 P=1、P Buffer 双槽；A5 配对实测 B/A 收益 14.64%、B/P0 收益 15.39%，
+仅加槽的 M/P0 为 -0.72%，通过 `MECHANISM_BENEFIT_PASS`。TileSim 绝对预测误差 24.02%，
+因此不签发 G4，自动优化仍关闭。
 
 设计依据：[交换协议 ADR](ptoas-costmodel-exchange-v2.md)、[v1 契约](ptoas-cv-costmodel-exchange-v1.md)
 及 [CV 流水设计 #1292](https://github.com/hw-native-sys/PTOAS/pull/1292)。
@@ -37,6 +38,13 @@
 2% 门槛，`basic/crossing × N=4/8` 均返回 `BASELINE_RETAINED`。PTOAS 只生成 A/P0，八个
 产物通过 G2；A5 39 主机设备 0 上的 48 次 G3 全部通过。按冻结协议不生成伪造 B，也不采集
 A/B profiler 数据，故该结果证明了“无足够收益时正确保留基线”，不构成性能收益或预测误差认证。
+
+2026-09-18 的机制验收使用 PTOAS `210f9f03f`、同一 TileSim 提交和
+`multibuffer-stress-n8-r129`。模型在上板前从 129/257/513 中选择第一个预测收益达到 10%
+的 129 次奇数 `tneg` 链，冻结 P=1 和 P Buffer 双槽。A/P0/M/B 均通过受限 G2，P-invalid
+以 `INSUFFICIENT_SLOTS` 拒绝；24 次 G3 和 80 个四路配对 profile 全部正确。该结果证明
+专用 materializer 的 preload＋multi-buffer 机制在这个精确 workload 上产生实际收益，不能外推
+到真实 FA 或其他 shape/target。详见[机制验收记录](ptoas-costmodel-mechanism-acceptance-20260918.md)。
 
 ## 近期阶段：来源、内存契约与 G2 门槛
 
@@ -150,3 +158,13 @@ M07 有界规划试跑、M09 反馈计时消费、完整 B2/B3 模型重评和 G
   新工具已在干净冻结提交和全新私有实验中完成本轮 baseline-retained 验收；结果见
   [固定推荐 A/B 验收记录](ptoas-costmodel-ab-acceptance-20260916.md)。只有未来冻结选择返回
   optimize 时，才进入 20 个 AB/BA block 和预测误差认证。
+
+## 2026-09-18 preload＋multi-buffer 机制消融增量
+
+- 新增 `multibuffer_stress_source_text`、`prepare_mechanism.py`、`run_mechanism.py` 和
+  `summarize_mechanism.py`，固定 A/P0/M/B 四组及 20 个四路轮换 block。
+- G2 完成关系仍全量检查；为支持长链，JSON 诊断只保留前 4096 条 proof，同时保存总数、
+  分类和全量摘要，避免 176 MiB 重复证据超过交换文件上限。
+- r129/P=1/P 双槽通过机制收益门槛；仅加槽不产生收益，P-invalid 被 G2 拒绝。
+- 模型绝对时延误差仍为 24.02%，下一步是用独立原语 microbench 校准 `tneg`/layout/L2L，
+  然后在同一冻结契约下重做预测误差和 G4，不使用本轮设备数据反向选择候选。
