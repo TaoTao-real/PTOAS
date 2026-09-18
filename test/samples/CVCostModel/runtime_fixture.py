@@ -10,6 +10,7 @@
 
 """Iteration-distinct C/V fixtures and independent exact-integer golden."""
 from pathlib import Path
+import re
 
 from pto_costmodel.wire import integer, require
 
@@ -49,6 +50,40 @@ def source_text(count, crossing=False):
     require(loop == 2, "FIXTURE", "expected the fixed C/V loop pair")
     text = "\n".join(result) + "\n"
     return text.replace("pto.tadd ins(%pv,%pv", "pto.tadd ins(%pv,%a") if crossing else text
+
+
+def multibuffer_stress_source_text(repetitions):
+    """Return the fixed crossing/N=8 fixture with an odd alternating tneg chain.
+
+    The last operation always writes ``%a``, so the observable calculation stays
+    P=-QK while the vector prefix is long enough to expose C/V overlap.
+    """
+    integer(repetitions, "repetitions")
+    require(repetitions in (129, 257, 513) and repetitions % 2 == 1,
+            "FIXTURE", "stress repetitions must be one of the frozen odd choices")
+    text = source_text(8, crossing=True)
+    vector = text.index("func.func @vector")
+    allocation = re.search(r"(?m)^(\s*)%a = pto\.alloc_tile([^\n]+)$", text[vector:])
+    require(allocation is not None, "FIXTURE", "vector P allocation not found")
+    end = vector + allocation.end()
+    indent, suffix = allocation.group(1), allocation.group(2)
+    text = text[:end] + "\n" + indent + "%d = pto.alloc_tile" + suffix + text[end:]
+
+    vector = text.index("func.func @vector")
+    operation = re.search(
+        r"(?m)^(\s*)pto\.tneg ins\(%qk : ([^)]+)\) outs\(%a : ([^)]+)\)$", text[vector:])
+    require(operation is not None and operation.group(2) == operation.group(3),
+            "FIXTURE", "vector P tneg not found")
+    source_type = operation.group(2)
+    lines = []
+    for index in range(repetitions):
+        source = "%qk" if index == 0 else ("%a" if index % 2 else "%d")
+        target = "%a" if index % 2 == 0 else "%d"
+        lines.append(f"{operation.group(1)}pto.tneg ins({source} : {source_type}) "
+                     f"outs({target} : {source_type})")
+    start = vector + operation.start()
+    end = vector + operation.end()
+    return text[:start] + "\n".join(lines) + text[end:]
 
 
 def input_arrays(count, seed, crossing=False):

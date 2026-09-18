@@ -20,6 +20,9 @@ sys.path.insert(0, str(SAMPLE))
 from summarize_runtime import duration, summarize
 from summarize_ab import paired_statistics
 from run_ab import performance_order
+from run_mechanism import ORDERS, correctness_order as mechanism_correctness_order
+from run_mechanism import performance_order as mechanism_performance_order
+from runtime_fixture import multibuffer_stress_source_text
 
 
 class TimingBoundaryTest(unittest.TestCase):
@@ -89,6 +92,31 @@ class TimingBoundaryTest(unittest.TestCase):
             self.assertEqual([row[1]["variant"] for row in selected], expected)
             self.assertTrue(all(row[2] == block % 3 for row in selected))
         self.assertFalse(any(row[0]["case"] == "retained" for row in rows))
+
+    def test_stress_fixture_keeps_odd_negation_result(self):
+        for repetitions in (129, 257, 513):
+            text = multibuffer_stress_source_text(repetitions)
+            self.assertEqual(text.count("pto.tneg"), repetitions)
+            self.assertEqual(text.count("%d = pto.alloc_tile"), 1)
+            operations = [line.strip() for line in text.splitlines() if "pto.tneg" in line]
+            self.assertIn("ins(%qk", operations[0])
+            self.assertIn("outs(%a", operations[-1])
+
+    def test_four_way_mechanism_matrix(self):
+        variant = lambda name: {"variant": name}
+        manifest = {"cases": [{"case": "stress", "candidates": [
+            variant(name) for name in ("A", "P0", "M", "B")]}]}
+        correctness = list(mechanism_correctness_order(manifest))
+        self.assertEqual(len(correctness), 24)
+        self.assertEqual({row[1]["variant"] for row in correctness}, {"A", "P0", "M", "B"})
+        rows = list(mechanism_performance_order(manifest))
+        self.assertEqual(len(rows), 84)
+        paired = [row for row in rows if row[4] == "paired_profile"]
+        self.assertEqual(len(paired), 80)
+        for block in range(20):
+            selected = [row for row in paired if row[3] == block]
+            self.assertEqual(tuple(row[1]["variant"] for row in selected), ORDERS[block % 4])
+            self.assertTrue(all(row[2] == block % 3 for row in selected))
 
 
 if __name__ == "__main__":

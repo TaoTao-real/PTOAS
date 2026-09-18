@@ -206,3 +206,33 @@ paired blocks per optimized workload and five P0 diagnostic samples. `summarize_
 one matching `MIX_AIC` task per run, reproduces the 10,000-resample bootstrap with seed 20260916,
 and reports benefit separately from prediction-error certification. Baseline-retained workloads
 produce no A/B performance samples and are reported as `BASELINE_RETAINED`.
+
+## preload + multi-buffer mechanism acceptance
+
+`prepare_mechanism.py` builds the crossing/N=8 stress fixture and asks TileSim to evaluate 129,
+257, then 513 odd `tneg` repetitions. It freezes the first recommendation whose predicted gain
+reaches 10%, then emits A (serial), P0 (unrolled), M (P0 plus the recommended P slots), B (the
+complete recommendation), and an `INSUFFICIENT_SLOTS` P-invalid rejection. No A5 result is
+available while this selection is made.
+
+```bash
+python test/samples/CVCostModel/prepare_mechanism.py \
+  --tilesim-root /path/to/tilesim --tilesim-python /path/to/python \
+  --output /path/to/fresh-mechanism-matrix
+python test/samples/CVCostModel/run_mechanism.py --mode build \
+  --matrix /experiment/inputs/matrix --artifacts /experiment/artifacts \
+  --experiment /experiment --soc ACTUAL_SOC
+python test/samples/CVCostModel/run_mechanism.py --mode correctness \
+  --matrix /experiment/inputs/matrix --artifacts /experiment/artifacts \
+  --experiment /experiment --device 0 --soc ACTUAL_SOC
+python test/samples/CVCostModel/run_mechanism.py --mode performance \
+  --matrix /experiment/inputs/matrix --artifacts /experiment/artifacts \
+  --experiment /experiment --device 0 --soc ACTUAL_SOC \
+  --g3-report /experiment/results/correctness.json
+python test/samples/CVCostModel/summarize_mechanism.py \
+  --experiment /experiment --matrix /experiment/inputs/matrix \
+  --output /experiment/acceptance
+```
+
+The performance run has four warmups and 20 four-way paired blocks (80 profiler samples). The
+summary reports `MECHANISM_BENEFIT_PASS/FAIL`; it deliberately does not issue a general G4 claim.
