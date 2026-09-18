@@ -43,6 +43,7 @@ the 10% G4 policy limit. The mechanism passes, while model calibration and G4 re
 - TileSim source: `0ea5ba8f548595771c0c92f51f797e0dac7e0ee9`
 - Target: `Ascend950DT_9592`, A5, 1 AIC + 2 AIV
 - Remote experiment: `20260918-cv-mechanism-acceptance-02`
+- Immutable provenance correction: `20260918-cv-mechanism-acceptance-02-attestation`
 - Local evidence: `_private_ptoas_lab/experiments/20260918-cv-mechanism-acceptance-02`
 - Machine-readable result: `results/acceptance/report.json`
 
@@ -55,3 +56,8 @@ The initial CANN profiler export lacked an unversioned `libsqlite3.so` dependenc
 profiles had already been captured and correctness-checked. They were parsed and exported offline
 from the same immutable raw directories using the host's `libsqlite3.so.0`; no kernel was rerun and
 no candidate was changed.
+
+The remote experiment wrapper's manually supplied `SOURCE_COMMIT` contains a transcription error.
+The matrix manifest and acceptance report contain the correct full commit shown above. The separate
+read-only attestation binds that correction to SHA-256 values for the matrix, G3, performance, and
+acceptance reports; it changes no measured evidence.
