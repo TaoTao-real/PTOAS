@@ -1,0 +1,571 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// Packed-FP4 GM descriptors carry two units at once. The IR descriptor counts
+// carriers: its strides drive typed __gm__ float4_e2m1x2_t* addresses, they are
+// what pto.get_tensor_view_stride reports, and a nested partition_view reads
+// them back as address strides. The A5 UB transfer paths instead run every
+// GlobalTensor stride through GetByteSize<float4_e2m1x2_t>(n) == (n + 1) >> 1,
+// so they read nibbles, and each layout takes its pitch from a different axis:
+// TLoadVecND2ND/TStoreVecND burst along the second-to-last dimension (gStride3),
+// TLoadVecDN2DN/TStoreVecDN along the last one (gStride4). Feeding the carrier
+// stride to the ISA halves the row pitch - 64 carriers became 32 bytes instead
+// of 64 - and a multi-row transfer walks into the previous row.
+//
+// The lowering therefore rebuilds the descriptor handed to the ISA, scaling the
+// transfer-axis strides exactly once at the consumer that needs them (see
+// buildPackedFp4TransferGlobalTensor). The IR descriptor, addresses, and stride
+// queries stay in carrier units, and the L1/L0 paths - which scale with
+// sizeof(L1Type) - keep the original descriptor.
+// See hw-native-sys/PTOAS#1575.
+
+// RUN: ptoas --pto-arch=a5 %s 2>&1 | FileCheck %s
+
+module attributes {pto.target_arch = "a5"} {
+  // ND: the partition descriptor keeps carrier strides, and the descriptor the
+  // ISA receives doubles the row pitch (64 carriers -> 128 nibbles -> 64 bytes)
+  // while the transfer shape and the contiguous innermost stride stay as they
+  // are. Two rows in one DMA is the case that used to overlap.
+  func.func @fp4_nd_partition_view_dma_stride(
+      %src: !pto.ptr<!pto.f4E2M1x2>,
+      %dst: !pto.ptr<!pto.f4E2M1x2>
+  ) attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %c64 = arith.constant 64 : index
+    %c128 = arith.constant 128 : index
+
+    %src_view = pto.make_tensor_view %src,
+        shape = [%c2, %c128], strides = [%c64, %c1]
+        {layout = #pto.layout<nd>} : !pto.tensor_view<2x128x!pto.f4E2M1x2>
+    %dst_view = pto.make_tensor_view %dst,
+        shape = [%c2, %c128], strides = [%c64, %c1]
+        {layout = #pto.layout<nd>} : !pto.tensor_view<2x128x!pto.f4E2M1x2>
+
+    %tile = pto.alloc_tile :
+        !pto.tile_buf<loc=vec, dtype=!pto.f4E2M1x2, rows=2, cols=64,
+                       v_row=2, v_col=64, blayout=row_major, slayout=none_box,
+                       fractal=512, pad=0>
+
+    %src_part = pto.partition_view %src_view,
+        offsets = [%c0, %c0], sizes = [%c2, %c64] :
+        !pto.tensor_view<2x128x!pto.f4E2M1x2> -> !pto.partition_tensor_view<2x64x!pto.f4E2M1x2>
+    pto.tload ins(%src_part : !pto.partition_tensor_view<2x64x!pto.f4E2M1x2>)
+              outs(%tile : !pto.tile_buf<loc=vec, dtype=!pto.f4E2M1x2, rows=2, cols=64,
+                                          v_row=2, v_col=64, blayout=row_major, slayout=none_box,
+                                          fractal=512, pad=0>)
+
+    %dst_part = pto.partition_view %dst_view,
+        offsets = [%c0, %c0], sizes = [%c2, %c64] :
+        !pto.tensor_view<2x128x!pto.f4E2M1x2> -> !pto.partition_tensor_view<2x64x!pto.f4E2M1x2>
+    pto.tstore ins(%tile : !pto.tile_buf<loc=vec, dtype=!pto.f4E2M1x2, rows=2, cols=64,
+                                           v_row=2, v_col=64, blayout=row_major, slayout=none_box,
+                                           fractal=512, pad=0>)
+               outs(%dst_part : !pto.partition_tensor_view<2x64x!pto.f4E2M1x2>)
+    return
+  }
+
+  // DN: the pitch comes from the last dimension, so that one is scaled too.
+  // A [32, 32] view with strides [1, 32] carriers must reach the ISA as
+  // (2, 64) nibbles: GetByteSize(64) == 32 bytes is the carrier pitch, while
+  // GetByteSize(32) == 16 would put every burst in the wrong place.
+  func.func @fp4_dn_partition_view_dma_stride(
+      %src: !pto.ptr<!pto.f4E2M1x2>
+  ) attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c32 = arith.constant 32 : index
+
+    %src_view = pto.make_tensor_view %src,
+        shape = [%c32, %c32], strides = [%c1, %c32]
+        {layout = #pto.layout<dn>} : !pto.tensor_view<32x32x!pto.f4E2M1x2>
+
+    %tile = pto.alloc_tile :
+        !pto.tile_buf<loc=vec, dtype=!pto.f4E2M1x2, rows=32, cols=32,
+                       v_row=32, v_col=32, blayout=col_major, slayout=none_box,
+                       fractal=512, pad=0>
+
+    %src_part = pto.partition_view %src_view,
+        offsets = [%c0, %c0], sizes = [%c32, %c32] :
+        !pto.tensor_view<32x32x!pto.f4E2M1x2> -> !pto.partition_tensor_view<32x32x!pto.f4E2M1x2>
+    pto.tload ins(%src_part : !pto.partition_tensor_view<32x32x!pto.f4E2M1x2>)
+              outs(%tile : !pto.tile_buf<loc=vec, dtype=!pto.f4E2M1x2, rows=32, cols=32,
+                                          v_row=32, v_col=32, blayout=col_major, slayout=none_box,
+                                          fractal=512, pad=0>)
+    return
+  }
+
+  // DN rank-3: the matrix-row dimension is rank-2 (dim 1), while dim 0 is a
+  // batch dimension. Both the TLOAD and TSTORE descriptors must preserve the
+  // batch extent and expand only the row extent.
+  func.func @fp4_dn_rank3_shape_axis(
+      %src: !pto.ptr<!pto.f4E2M1x2>, %dst: !pto.ptr<!pto.f4E2M1x2>
+  ) attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c32 = arith.constant 32 : index
+    %c1024 = arith.constant 1024 : index
+    %src_view = pto.make_tensor_view %src,
+        shape = [%c1, %c32, %c32], strides = [%c1024, %c1, %c32]
+        {layout = #pto.layout<dn>}
+        : !pto.tensor_view<1x32x32x!pto.f4E2M1x2, #pto.layout<dn>>
+    %dst_view = pto.make_tensor_view %dst,
+        shape = [%c1, %c32, %c32], strides = [%c1024, %c1, %c32]
+        {layout = #pto.layout<dn>}
+        : !pto.tensor_view<1x32x32x!pto.f4E2M1x2, #pto.layout<dn>>
+    %tile = pto.alloc_tile :
+        !pto.tile_buf<loc=vec, dtype=!pto.f4E2M1x2, rows=32, cols=32,
+                       v_row=32, v_col=32, blayout=col_major, slayout=none_box,
+                       fractal=512, pad=0>
+    %src_part = pto.partition_view %src_view,
+        offsets = [%c0, %c0, %c0], sizes = [%c1, %c32, %c32] :
+        !pto.tensor_view<1x32x32x!pto.f4E2M1x2, #pto.layout<dn>>
+        -> !pto.partition_tensor_view<1x32x32x!pto.f4E2M1x2, #pto.layout<dn>>
+    pto.tload ins(%src_part :
+        !pto.partition_tensor_view<1x32x32x!pto.f4E2M1x2, #pto.layout<dn>>)
+        outs(%tile : !pto.tile_buf<loc=vec, dtype=!pto.f4E2M1x2, rows=32, cols=32,
+                                    v_row=32, v_col=32, blayout=col_major,
+                                    slayout=none_box, fractal=512, pad=0>)
+    %dst_part = pto.partition_view %dst_view,
+        offsets = [%c0, %c0, %c0], sizes = [%c1, %c32, %c32] :
+        !pto.tensor_view<1x32x32x!pto.f4E2M1x2, #pto.layout<dn>>
+        -> !pto.partition_tensor_view<1x32x32x!pto.f4E2M1x2, #pto.layout<dn>>
+    pto.tstore ins(%tile : !pto.tile_buf<loc=vec, dtype=!pto.f4E2M1x2, rows=32, cols=32,
+                                           v_row=32, v_col=32, blayout=col_major,
+                                           slayout=none_box, fractal=512, pad=0>)
+               outs(%dst_part :
+        !pto.partition_tensor_view<1x32x32x!pto.f4E2M1x2, #pto.layout<dn>>)
+    return
+  }
+
+  func.func @fp4_dn_rank4_shape_axis(
+      %src: !pto.ptr<!pto.f4E2M1x2>
+  ) attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c32 = arith.constant 32 : index
+    %c1024 = arith.constant 1024 : index
+    %src_view = pto.make_tensor_view %src,
+        shape = [%c1, %c1, %c32, %c32],
+        strides = [%c1024, %c1024, %c1, %c32]
+        {layout = #pto.layout<dn>}
+        : !pto.tensor_view<1x1x32x32x!pto.f4E2M1x2, #pto.layout<dn>>
+    %tile = pto.alloc_tile :
+        !pto.tile_buf<loc=vec, dtype=!pto.f4E2M1x2, rows=32, cols=32,
+                       v_row=32, v_col=32, blayout=col_major, slayout=none_box,
+                       fractal=512, pad=0>
+    %part = pto.partition_view %src_view,
+        offsets = [%c0, %c0, %c0, %c0], sizes = [%c1, %c1, %c32, %c32] :
+        !pto.tensor_view<1x1x32x32x!pto.f4E2M1x2, #pto.layout<dn>>
+        -> !pto.partition_tensor_view<1x1x32x32x!pto.f4E2M1x2, #pto.layout<dn>>
+    pto.tload ins(%part :
+        !pto.partition_tensor_view<1x1x32x32x!pto.f4E2M1x2, #pto.layout<dn>>)
+        outs(%tile : !pto.tile_buf<loc=vec, dtype=!pto.f4E2M1x2, rows=32, cols=32,
+                                    v_row=32, v_col=32, blayout=col_major,
+                                    slayout=none_box, fractal=512, pad=0>)
+    return
+  }
+
+  func.func @fp4_dn_rank5_shape_axis(
+      %src: !pto.ptr<!pto.f4E2M1x2>
+  ) attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c32 = arith.constant 32 : index
+    %c1024 = arith.constant 1024 : index
+    %src_view = pto.make_tensor_view %src,
+        shape = [%c1, %c1, %c1, %c32, %c32],
+        strides = [%c1024, %c1024, %c1024, %c1, %c32]
+        {layout = #pto.layout<dn>}
+        : !pto.tensor_view<1x1x1x32x32x!pto.f4E2M1x2, #pto.layout<dn>>
+    %tile = pto.alloc_tile :
+        !pto.tile_buf<loc=vec, dtype=!pto.f4E2M1x2, rows=32, cols=32,
+                       v_row=32, v_col=32, blayout=col_major, slayout=none_box,
+                       fractal=512, pad=0>
+    %part = pto.partition_view %src_view,
+        offsets = [%c0, %c0, %c0, %c0, %c0], sizes = [%c1, %c1, %c1, %c32, %c32] :
+        !pto.tensor_view<1x1x1x32x32x!pto.f4E2M1x2, #pto.layout<dn>>
+        -> !pto.partition_tensor_view<1x1x1x32x32x!pto.f4E2M1x2, #pto.layout<dn>>
+    pto.tload ins(%part :
+        !pto.partition_tensor_view<1x1x1x32x32x!pto.f4E2M1x2, #pto.layout<dn>>)
+        outs(%tile : !pto.tile_buf<loc=vec, dtype=!pto.f4E2M1x2, rows=32, cols=32,
+                                    v_row=32, v_col=32, blayout=col_major,
+                                    slayout=none_box, fractal=512, pad=0>)
+    return
+  }
+
+  func.func @fp4_dn_rank3_dynamic_shape_axis(
+      %src: !pto.ptr<!pto.f4E2M1x2>, %batch_stride: index, %row_stride: index
+  ) attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c32 = arith.constant 32 : index
+    %src_view = pto.make_tensor_view %src,
+        shape = [%c1, %c32, %c32],
+        strides = [%batch_stride, %c1, %row_stride]
+        {layout = #pto.layout<dn>}
+        : !pto.tensor_view<?x?x?x!pto.f4E2M1x2, #pto.layout<dn>>
+    %tile = pto.alloc_tile :
+        !pto.tile_buf<loc=vec, dtype=!pto.f4E2M1x2, rows=32, cols=32,
+                       v_row=32, v_col=32, blayout=col_major, slayout=none_box,
+                       fractal=512, pad=0>
+    %part = pto.partition_view %src_view,
+        offsets = [%c0, %c0, %c0], sizes = [%c1, %c32, %c32] :
+        !pto.tensor_view<?x?x?x!pto.f4E2M1x2, #pto.layout<dn>>
+        -> !pto.partition_tensor_view<1x32x32x!pto.f4E2M1x2, #pto.layout<dn>>
+    pto.tload ins(%part :
+        !pto.partition_tensor_view<1x32x32x!pto.f4E2M1x2, #pto.layout<dn>>)
+        outs(%tile : !pto.tile_buf<loc=vec, dtype=!pto.f4E2M1x2, rows=32, cols=32,
+                                    v_row=32, v_col=32, blayout=col_major,
+                                    slayout=none_box, fractal=512, pad=0>)
+    return
+  }
+
+  // A function parameter without a layout remains the default ND source even
+  // when the MAT tile is column-major. The fallback must not infer DN here.
+  func.func @fp4_mat_default_layout_parameter(
+      %src: !pto.partition_tensor_view<16x32x!pto.f4E2M1x2>
+  ) attributes {pto.kernel_kind = #pto.kernel_kind<cube>} {
+    %tile = pto.alloc_tile :
+        !pto.tile_buf<loc=mat, dtype=!pto.f4E2M1x2, rows=16, cols=32,
+                       v_row=16, v_col=32, blayout=col_major, slayout=row_major,
+                       fractal=512, pad=0>
+    pto.tload ins(%src : !pto.partition_tensor_view<16x32x!pto.f4E2M1x2>)
+        outs(%tile : !pto.tile_buf<loc=mat, dtype=!pto.f4E2M1x2, rows=16, cols=32,
+                                    v_row=16, v_col=32, blayout=col_major,
+                                    slayout=row_major, fractal=512, pad=0>)
+    return
+  }
+
+  // Runtime stride: the dynamic carrier stride operand picks up the same packed
+  // factor, and the runtime-derived leading dims are built on the scaled value.
+  func.func @fp4_runtime_stride_partition_view(
+      %src: !pto.ptr<!pto.f4E2M1x2>,
+      %row_stride: index
+  ) attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %c64 = arith.constant 64 : index
+
+    %src_view = pto.make_tensor_view %src,
+        shape = [%c64, %c64], strides = [%row_stride, %c1]
+        {layout = #pto.layout<nd>} : !pto.tensor_view<?x?x!pto.f4E2M1x2>
+
+    %tile = pto.alloc_tile :
+        !pto.tile_buf<loc=vec, dtype=!pto.f4E2M1x2, rows=4, cols=64,
+                       v_row=4, v_col=64, blayout=row_major, slayout=none_box,
+                       fractal=512, pad=0>
+
+    %src_part = pto.partition_view %src_view,
+        offsets = [%c1, %c0], sizes = [%c4, %c64] :
+        !pto.tensor_view<?x?x!pto.f4E2M1x2> -> !pto.partition_tensor_view<4x64x!pto.f4E2M1x2>
+    pto.tload ins(%src_part : !pto.partition_tensor_view<4x64x!pto.f4E2M1x2>)
+              outs(%tile : !pto.tile_buf<loc=vec, dtype=!pto.f4E2M1x2, rows=4, cols=64,
+                                          v_row=4, v_col=64, blayout=row_major, slayout=none_box,
+                                          fractal=512, pad=0>)
+    return
+  }
+
+  // Nested partition views: the inner descriptor stays in carrier units, so the
+  // outer offsets address carriers (1 * 64 + 64 * 1 == 128 elements of the
+  // typed pointer) and the outer transfer descriptor scales the inner stride
+  // once (64 -> 128), not twice.
+  func.func @fp4_nested_partition_view_offsets(
+      %src: !pto.ptr<!pto.f4E2M1x2>
+  ) attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %c64 = arith.constant 64 : index
+    %c128 = arith.constant 128 : index
+
+    %src_view = pto.make_tensor_view %src,
+        shape = [%c2, %c128], strides = [%c64, %c1]
+        {layout = #pto.layout<nd>} : !pto.tensor_view<2x128x!pto.f4E2M1x2>
+
+    %tile = pto.alloc_tile :
+        !pto.tile_buf<loc=vec, dtype=!pto.f4E2M1x2, rows=1, cols=64,
+                       v_row=1, v_col=64, blayout=row_major, slayout=none_box,
+                       fractal=512, pad=0>
+
+    %inner = pto.partition_view %src_view,
+        offsets = [%c0, %c0], sizes = [%c2, %c128] :
+        !pto.tensor_view<2x128x!pto.f4E2M1x2> -> !pto.partition_tensor_view<2x128x!pto.f4E2M1x2>
+    %outer = pto.partition_view %inner,
+        offsets = [%c1, %c64], sizes = [%c1, %c64] :
+        !pto.partition_tensor_view<2x128x!pto.f4E2M1x2> -> !pto.partition_tensor_view<1x64x!pto.f4E2M1x2>
+    pto.tload ins(%outer : !pto.partition_tensor_view<1x64x!pto.f4E2M1x2>)
+              outs(%tile : !pto.tile_buf<loc=vec, dtype=!pto.f4E2M1x2, rows=1, cols=64,
+                                          v_row=1, v_col=64, blayout=row_major, slayout=none_box,
+                                          fractal=512, pad=0>)
+    return
+  }
+
+  // pto.get_tensor_view_stride reports the logical view stride: it reads the
+  // carrier stride out of the descriptor, and using it as an offset of another
+  // partition addresses carriers.
+  func.func @fp4_tensor_view_stride_query(
+      %src: !pto.ptr<!pto.f4E2M1x2>
+  ) attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %c64 = arith.constant 64 : index
+    %c128 = arith.constant 128 : index
+
+    %src_view = pto.make_tensor_view %src,
+        shape = [%c2, %c128], strides = [%c64, %c1]
+        {layout = #pto.layout<nd>} : !pto.tensor_view<2x128x!pto.f4E2M1x2>
+
+    %tile = pto.alloc_tile :
+        !pto.tile_buf<loc=vec, dtype=!pto.f4E2M1x2, rows=1, cols=64,
+                       v_row=1, v_col=64, blayout=row_major, slayout=none_box,
+                       fractal=512, pad=0>
+
+    %full = pto.partition_view %src_view,
+        offsets = [%c0, %c0], sizes = [%c2, %c128] :
+        !pto.tensor_view<2x128x!pto.f4E2M1x2> -> !pto.partition_tensor_view<2x128x!pto.f4E2M1x2>
+    %row_stride = pto.get_tensor_view_stride %full, %c0
+        : !pto.partition_tensor_view<2x128x!pto.f4E2M1x2> -> index
+    %row = pto.partition_view %src_view,
+        offsets = [%row_stride, %c0], sizes = [%c1, %c64] :
+        !pto.tensor_view<2x128x!pto.f4E2M1x2> -> !pto.partition_tensor_view<1x64x!pto.f4E2M1x2>
+    pto.tload ins(%row : !pto.partition_tensor_view<1x64x!pto.f4E2M1x2>)
+              outs(%tile : !pto.tile_buf<loc=vec, dtype=!pto.f4E2M1x2, rows=1, cols=64,
+                                          v_row=1, v_col=64, blayout=row_major, slayout=none_box,
+                                          fractal=512, pad=0>)
+    return
+  }
+
+  // Unpacked control: f16 transfers keep their element-unit strides, and no
+  // descriptor is rebuilt.
+  func.func @f16_partition_view_carrier_stride(
+      %src: !pto.ptr<f16>,
+      %dst: !pto.ptr<f16>
+  ) attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %c64 = arith.constant 64 : index
+    %c128 = arith.constant 128 : index
+
+    %src_view = pto.make_tensor_view %src,
+        shape = [%c2, %c128], strides = [%c64, %c1]
+        {layout = #pto.layout<nd>} : !pto.tensor_view<2x128xf16>
+    %dst_view = pto.make_tensor_view %dst,
+        shape = [%c2, %c128], strides = [%c64, %c1]
+        {layout = #pto.layout<nd>} : !pto.tensor_view<2x128xf16>
+
+    %tile = pto.alloc_tile :
+        !pto.tile_buf<loc=vec, dtype=f16, rows=2, cols=64,
+                       v_row=2, v_col=64, blayout=row_major, slayout=none_box,
+                       fractal=512, pad=0>
+
+    %src_part = pto.partition_view %src_view,
+        offsets = [%c0, %c0], sizes = [%c2, %c64] :
+        !pto.tensor_view<2x128xf16> -> !pto.partition_tensor_view<2x64xf16>
+    pto.tload ins(%src_part : !pto.partition_tensor_view<2x64xf16>)
+              outs(%tile : !pto.tile_buf<loc=vec, dtype=f16, rows=2, cols=64,
+                                          v_row=2, v_col=64, blayout=row_major, slayout=none_box,
+                                          fractal=512, pad=0>)
+
+    %dst_part = pto.partition_view %dst_view,
+        offsets = [%c0, %c0], sizes = [%c2, %c64] :
+        !pto.tensor_view<2x128xf16> -> !pto.partition_tensor_view<2x64xf16>
+    pto.tstore ins(%tile : !pto.tile_buf<loc=vec, dtype=f16, rows=2, cols=64,
+                                           v_row=2, v_col=64, blayout=row_major, slayout=none_box,
+                                           fractal=512, pad=0>)
+               outs(%dst_part : !pto.partition_tensor_view<2x64xf16>)
+    return
+  }
+
+  // TPREFETCH uses the A5 byte-based implementation.  Its source descriptor
+  // must therefore keep the carrier shape and stride used by the typed GM
+  // pointer; applying the TLOAD nibble conversion would double the prefetch
+  // row pitch.
+  func.func @fp4_tprefetch_keeps_carrier_descriptor(
+      %src: !pto.ptr<!pto.f4E2M1x2>
+  ) attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %c64 = arith.constant 64 : index
+    %c128 = arith.constant 128 : index
+
+    %src_view = pto.make_tensor_view %src,
+        shape = [%c2, %c128], strides = [%c64, %c1]
+        {layout = #pto.layout<nd>} : !pto.tensor_view<2x128x!pto.f4E2M1x2>
+    %tile = pto.alloc_tile :
+        !pto.tile_buf<loc=vec, dtype=!pto.f4E2M1x2, rows=2, cols=64,
+                       v_row=2, v_col=64, blayout=row_major, slayout=none_box,
+                       fractal=512, pad=0>
+    %src_part = pto.partition_view %src_view,
+        offsets = [%c0, %c0], sizes = [%c2, %c64] :
+        !pto.tensor_view<2x128x!pto.f4E2M1x2> -> !pto.partition_tensor_view<2x64x!pto.f4E2M1x2>
+    pto.tprefetch ins(%src_part : !pto.partition_tensor_view<2x64x!pto.f4E2M1x2>)
+                  outs(%tile : !pto.tile_buf<loc=vec, dtype=!pto.f4E2M1x2, rows=2, cols=64,
+                                              v_row=2, v_col=64, blayout=row_major, slayout=none_box,
+                                              fractal=512, pad=0>)
+    return
+  }
+
+  // Ordinary MAT cube loads also call GetByteSize<FP4> for their GM strides.
+  // They need the stride conversion, but their cube shape is interpreted as
+  // row/block counts and must remain unchanged.
+  func.func @fp4_mat_cube_keeps_shape_scales_stride(
+      %src: !pto.ptr<!pto.f4E2M1x2>
+  ) attributes {pto.kernel_kind = #pto.kernel_kind<cube>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c16 = arith.constant 16 : index
+    %c32 = arith.constant 32 : index
+    %src_view = pto.make_tensor_view %src,
+        shape = [%c16, %c32], strides = [%c32, %c1]
+        {layout = #pto.layout<nd>} : !pto.tensor_view<16x32x!pto.f4E2M1x2>
+    %tile = pto.alloc_tile :
+        !pto.tile_buf<loc=mat, dtype=!pto.f4E2M1x2, rows=16, cols=32,
+                       v_row=16, v_col=32, blayout=col_major, slayout=row_major,
+                       fractal=512, pad=0>
+    %src_part = pto.partition_view %src_view,
+        offsets = [%c0, %c0], sizes = [%c16, %c32] :
+        !pto.tensor_view<16x32x!pto.f4E2M1x2> -> !pto.partition_tensor_view<16x32x!pto.f4E2M1x2>
+    pto.tload ins(%src_part : !pto.partition_tensor_view<16x32x!pto.f4E2M1x2>)
+              outs(%tile : !pto.tile_buf<loc=mat, dtype=!pto.f4E2M1x2, rows=16, cols=32,
+                                          v_row=16, v_col=32, blayout=col_major, slayout=row_major,
+                                          fractal=512, pad=0>)
+    return
+  }
+
+  // MAT NZ: FP4 NZ descriptors must expose the doubled C0 byte extent to
+  // TLoadCubeNZ2NZ (shape[3] remains BLOCK_LEN = 16).
+  func.func @fp4_mat_nz_partition_view_scales_shape(
+      %src: !pto.ptr<!pto.f4E2M1x2>
+  ) attributes {pto.kernel_kind = #pto.kernel_kind<cube>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    %c16 = arith.constant 16 : index
+    %c32 = arith.constant 32 : index
+    %c512 = arith.constant 512 : index
+    %c4096 = arith.constant 4096 : index
+    %c32768 = arith.constant 32768 : index
+    %src_view = pto.make_tensor_view %src,
+        shape = [%c1, %c8, %c8, %c16, %c32],
+        strides = [%c32768, %c4096, %c512, %c32, %c1]
+        {layout = #pto.layout<nz>}
+        : !pto.tensor_view<1x8x8x16x32x!pto.f4E2M1x2, #pto.layout<nz>>
+    %tile = pto.alloc_tile :
+        !pto.tile_buf<loc=mat, dtype=!pto.f4E2M1x2, rows=16, cols=32,
+                       v_row=16, v_col=32, blayout=col_major, slayout=row_major,
+                       fractal=512, pad=0>
+    %src_part = pto.partition_view %src_view,
+        offsets = [%c0, %c0, %c0, %c0, %c0],
+        sizes = [%c1, %c8, %c8, %c16, %c32] :
+        !pto.tensor_view<1x8x8x16x32x!pto.f4E2M1x2, #pto.layout<nz>>
+        -> !pto.partition_tensor_view<1x8x8x16x32x!pto.f4E2M1x2, #pto.layout<nz>>
+    pto.tload ins(%src_part :
+        !pto.partition_tensor_view<1x8x8x16x32x!pto.f4E2M1x2, #pto.layout<nz>>)
+        outs(%tile : !pto.tile_buf<loc=mat, dtype=!pto.f4E2M1x2, rows=16, cols=32,
+                                    v_row=16, v_col=32, blayout=col_major,
+                                    slayout=row_major, fractal=512, pad=0>)
+    return
+  }
+}
+
+// ND: the IR descriptor stays in carrier units...
+// CHECK-LABEL: fp4_nd_partition_view_dma_stride(
+// CHECK: GlobalTensor<float4_e2m1x2_t, pto::Shape<1, 1, 1, 2, 64>, pto::Stride<128, 128, 128, 64, 1>, pto::Layout::ND>
+// ...while both transfers receive a descriptor whose row pitch is scaled for
+// the nibble-counting ISA path.
+// CHECK: GlobalTensor<float4_e2m1x2_t, pto::Shape<1, 1, 1, 2, 128>, pto::Stride<256, 256, 256, 128, 1>, pto::Layout::ND>
+// CHECK: TLOAD(
+// CHECK: GlobalTensor<float4_e2m1x2_t, pto::Shape<1, 1, 1, 2, 128>, pto::Stride<256, 256, 256, 128, 1>, pto::Layout::ND>
+// CHECK: TSTORE(
+
+// DN: the transport descriptor scales the innermost stride, which is the pitch
+// of that layout.
+// CHECK-LABEL: fp4_dn_partition_view_dma_stride(
+// CHECK: GlobalTensor<float4_e2m1x2_t, pto::Shape<1, 1, 1, 64, 32>, pto::Stride<128, 128, 128, 2, 64>, pto::Layout::DN>
+// CHECK: TLOAD(
+
+// DN rank-3/4/5: only the right-aligned matrix row dimension is doubled.
+// CHECK-LABEL: fp4_dn_rank3_shape_axis(
+// CHECK: GlobalTensor<float4_e2m1x2_t, pto::Shape<1, 1, 1, 64, 32>, pto::Stride<2048, 2048, 2048, 2, 64>, pto::Layout::DN>
+// CHECK: TLOAD(
+// CHECK: GlobalTensor<float4_e2m1x2_t, pto::Shape<1, 1, 1, 64, 32>, pto::Stride<2048, 2048, 2048, 2, 64>, pto::Layout::DN>
+// CHECK: TSTORE(
+
+// CHECK-LABEL: fp4_dn_rank4_shape_axis(
+// CHECK: GlobalTensor<float4_e2m1x2_t, pto::Shape<1, 1, 1, 64, 32>, pto::Stride<2048, 2048, 2048, 2, 64>, pto::Layout::DN>
+// CHECK: TLOAD(
+
+// CHECK-LABEL: fp4_dn_rank5_shape_axis(
+// CHECK: GlobalTensor<float4_e2m1x2_t, pto::Shape<1, 1, 1, 64, 32>, pto::Stride<2048, 2048, 2048, 2, 64>, pto::Layout::DN>
+// CHECK: TLOAD(
+
+// Dynamic DN rank-3: runtime shape/stride values are expanded on rank-2.
+// CHECK-LABEL: fp4_dn_rank3_dynamic_shape_axis(
+// CHECK: GlobalTensor<float4_e2m1x2_t, pto::Shape<1, 1, 1, 64, 32>, pto::Stride<-1, -1, -1, -1, -1>, pto::Layout::DN>
+// CHECK: TLOAD(
+
+// Default layout parameter: preserve ND instead of inferring DN from MAT.
+// CHECK-LABEL: fp4_mat_default_layout_parameter(
+// CHECK: GlobalTensor<float4_e2m1x2_t, pto::Shape<1, 1, 1, 16, 32>, pto::Stride<-1, -1, -1, -1, -1>, pto::Layout::ND>
+// CHECK: TLOAD(
+
+// Runtime stride: the dynamic carrier stride is scaled once, and the derived
+// leading dims are computed from the scaled value.
+// CHECK-LABEL: fp4_runtime_stride_partition_view(
+// CHECK: GlobalTensor<float4_e2m1x2_t, pto::Shape<1, 1, 1, 4, 64>, pto::Stride<-1, -1, -1, -1, -1>, pto::Layout::ND>
+// CHECK: const int64_t [[PACK:v[0-9]+]] = 2;
+// CHECK: int64_t [[NIBBLE_STRIDE:v[0-9]+]] = [[CARRIER_STRIDE:v[0-9]+]] * [[PACK]];
+// CHECK: pto::Stride<-1, -1, -1, -1, -1> {{.*}}({{.*}}, {{.*}}, {{.*}}, [[NIBBLE_STRIDE]], {{.*}})
+// CHECK: TLOAD(
+
+// Nested: the inner descriptor stays a carrier descriptor, the outer offsets
+// address carriers (1 * 64 + 64 * 1 == 128 elements of the typed pointer), and
+// the outer transfer descriptor scales the inner stride once.
+// CHECK-LABEL: fp4_nested_partition_view_offsets(
+// CHECK: GlobalTensor<float4_e2m1x2_t, pto::Shape<1, 1, 1, 2, 128>, pto::Stride<128, 128, 128, 64, 1>, pto::Layout::ND>
+// CHECK: unsigned [[CARRIER_OFFSET:v[0-9]+]] = 128;
+// CHECK: {{.*}} + [[CARRIER_OFFSET]]
+// CHECK: GlobalTensor<float4_e2m1x2_t, pto::Shape<1, 1, 1, 1, 128>, pto::Stride<128, 128, 128, 128, 1>, pto::Layout::ND>
+// CHECK: TLOAD(
+
+// Stride query: the query reads the carrier stride out of the partition
+// descriptor (64 for the 128-element-wide view) instead of a scaled one.
+// CHECK-LABEL: fp4_tensor_view_stride_query(
+// CHECK: GlobalTensor<float4_e2m1x2_t, pto::Shape<1, 1, 1, 2, 128>, pto::Stride<128, 128, 128, 64, 1>, pto::Layout::ND>
+// CHECK: GetStride(
+// CHECK: TLOAD(
+
+// f16 control: no descriptor is rebuilt.
+// CHECK-LABEL: f16_partition_view_carrier_stride(
+// CHECK: GlobalTensor<half, pto::Shape<1, 1, 1, 2, 64>, pto::Stride<128, 128, 128, 64, 1>, pto::Layout::ND>
+// CHECK: TLOAD(
+// CHECK: GlobalTensor<half, pto::Shape<1, 1, 1, 2, 64>, pto::Stride<128, 128, 128, 64, 1>, pto::Layout::ND>
+// CHECK: TSTORE(
+
+// TPREFETCH keeps the carrier descriptor because its A5 implementation uses
+// sizeof(GlobalData::DType), unlike TLOAD/TSTORE.
+// CHECK-LABEL: fp4_tprefetch_keeps_carrier_descriptor(
+// CHECK: GlobalTensor<float4_e2m1x2_t, pto::Shape<1, 1, 1, 2, 64>, pto::Stride<128, 128, 128, 64, 1>, pto::Layout::ND>
+// CHECK: TPREFETCH(
+
+// MAT cube: only the strides are converted; scaling the row shape would make
+// TLoadCubeND2NZ issue twice as many bursts.
+// CHECK-LABEL: fp4_mat_cube_keeps_shape_scales_stride(
+// CHECK: GlobalTensor<float4_e2m1x2_t, pto::Shape<1, 1, 1, 16, 32>, pto::Stride<1024, 1024, 1024, 64, 1>, pto::Layout::ND>
+// CHECK: TLOAD(
+
+// MAT NZ: the FP4 C0 extent is doubled for the NZ2NZ static contract.
+// CHECK-LABEL: fp4_mat_nz_partition_view_scales_shape(
+// CHECK: GlobalTensor<float4_e2m1x2_t, pto::Shape<1, 8, 8, 16, 64>, pto::Stride<65536, 8192, 1024, 64, 1>, pto::Layout::NZ>
+// CHECK: TLOAD(

@@ -1,0 +1,50 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// Packed-FP4 UB transfers only have a defined stride unit for the ND and DN
+// layouts: those paths read the pitch through GetByteSize<float4_e2m1x2_t>(n)
+// and therefore count nibbles, which is the unit the lowering converts. The NZ
+// transfer path mixes that with C0-block byte math
+// (TLoadVecNZ2NZ: lenBurst = validRow * C0_SIZE_BYTE), so scaling its strides
+// would not be justified - reject the combination instead of emitting a
+// descriptor with a silently wrong row pitch.
+// See hw-native-sys/PTOAS#1575.
+
+// RUN: not ptoas --pto-arch=a5 %s 2>&1 | FileCheck %s --check-prefix=NZ
+
+module attributes {pto.target_arch = "a5"} {
+  func.func @fp4_nz_partition_view_unsupported(
+      %src: !pto.ptr<!pto.f4E2M1x2>
+  ) attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c16 = arith.constant 16 : index
+    %c32 = arith.constant 32 : index
+
+    %src_view = pto.make_tensor_view %src,
+        shape = [%c16, %c32], strides = [%c32, %c1]
+        : !pto.tensor_view<16x32x!pto.f4E2M1x2>
+
+    %tile = pto.alloc_tile :
+        !pto.tile_buf<loc=vec, dtype=!pto.f4E2M1x2, rows=16, cols=32,
+                       v_row=16, v_col=32, blayout=col_major, slayout=row_major,
+                       fractal=512, pad=0>
+
+    %src_part = pto.partition_view %src_view,
+        offsets = [%c0, %c0], sizes = [%c16, %c32] :
+        !pto.tensor_view<16x32x!pto.f4E2M1x2> -> !pto.partition_tensor_view<16x32x!pto.f4E2M1x2>
+    pto.tload ins(%src_part : !pto.partition_tensor_view<16x32x!pto.f4E2M1x2>)
+              outs(%tile : !pto.tile_buf<loc=vec, dtype=!pto.f4E2M1x2, rows=16, cols=32,
+                                          v_row=16, v_col=32, blayout=col_major, slayout=row_major,
+                                          fractal=512, pad=0>)
+    return
+  }
+}
+
+// NZ: error: packed FP4
+// NZ-SAME: supports the ND and DN UB layouts only

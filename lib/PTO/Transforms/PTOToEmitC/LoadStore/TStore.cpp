@@ -64,8 +64,21 @@ struct PTOTStoreToTSTORE : public OpConversionPattern<pto::TStoreOp> {
     if (op.getFp())
       fp = adaptor.getFp();
     Value preQuantScalar;
-    if (op.getPreQuantScalar())
+    if (op.getPreQuantScalar()) {
       preQuantScalar = adaptor.getPreQuantScalar();
+    }
+
+    if (auto dstType =
+            dyn_cast<pto::PartitionTensorViewType>(op.getDst().getType())) {
+      if (auto srcType = dyn_cast<pto::TileBufType>(op.getSrc().getType())) {
+        auto transferDst = buildPackedFp4TransferGlobalTensor(
+            rewriter, op, dst, op.getDst(), dstType, srcType);
+        if (failed(transferDst)) {
+          return failure();
+        }
+        dst = *transferDst;
+      }
+    }
 
     return emitTStore(op, rewriter, src, dst, dst, fp, preQuantScalar);
   }

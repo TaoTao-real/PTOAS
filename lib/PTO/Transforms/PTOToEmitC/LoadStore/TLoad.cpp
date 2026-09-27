@@ -21,6 +21,27 @@ using namespace mlir::pto;
 namespace mlir {
 namespace pto {
 
+// TLOAD hands its partition descriptor to the A5 transfer paths whose FP4
+// strides are nibble based.  TPREFETCH has a separate byte-based stride
+// implementation and must keep the carrier descriptor unchanged.
+static LogicalResult convertTransferSource(
+    ConversionPatternRewriter &rewriter, Operation *op, Value &src,
+    Value originalSrc, Type tileType) {
+  auto partitionType =
+      dyn_cast<pto::PartitionTensorViewType>(originalSrc.getType());
+  auto dstType = dyn_cast<pto::TileBufType>(tileType);
+  if (!partitionType || !dstType) {
+    return success();
+  }
+  auto transferSrc = buildPackedFp4TransferGlobalTensor(
+      rewriter, op, src, originalSrc, partitionType, dstType);
+  if (failed(transferSrc)) {
+    return failure();
+  }
+  src = *transferSrc;
+  return success();
+}
+
 static FailureOr<Value> offsetTLoadSource(
     pto::TLoadOp op, Value src, Value offset,
     ConversionPatternRewriter &rewriter) {
@@ -84,6 +105,10 @@ struct PTOTLoadToTLOAD : public OpConversionPattern<pto::TLoadOp> {
       }
       src = *adjustedSrc;
     }
+
+    if (failed(convertTransferSource(rewriter, op, src, op.getSrc(),
+                                     op.getDst().getType())))
+      return failure();
 
     rewriter.create<emitc::CallOpaqueOp>(op.getLoc(), TypeRange{}, "TLOAD",
                                        ArrayAttr{}, ArrayAttr{},
