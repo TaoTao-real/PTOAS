@@ -15,27 +15,10 @@
 形态取自 pto_test `vload_i8_vl64_g1_a64_n_nomask_tS8o0n`（i8 / vl=64 / block_stride=8）。
 """
 
-from pathlib import Path
-import sys
-
 import numpy as np
-
-
-def _bootstrap_dsl_st_common() -> None:
-    here = Path(__file__).resolve()
-    for candidate in here.parents:
-        common_dir = candidate / "test" / "dsl-st"
-        if (common_dir / "common.py").exists():
-            sys.path.insert(0, str(common_dir))
-            return
-    raise RuntimeError("Unable to locate test/dsl-st/common.py from vmi-block-stride-load-basic.py")
-
-
-_bootstrap_dsl_st_common()
 
 from common import auto_main, golden_output_case
 from ptodsl import pto
-
 
 VL = 64
 BLOCK_STRIDE = 8
@@ -83,7 +66,6 @@ SRC = """module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kerne
 }
 """
 
-
 @pto.jit(
     name="vmi_block_stride_load_basic_kernel",
     target="a5",
@@ -97,10 +79,8 @@ def vmi_block_stride_load_basic_kernel(
 ):
     pass
 
-
 def make_inputs():
     return [(np.arange(SRC_ELEMS) % 100).astype(np.int8)]
-
 
 def make_expected(src):
     out = np.empty(VL, dtype=np.int8)
@@ -108,7 +88,6 @@ def make_expected(src):
         blk = lane // EV
         out[lane] = src[blk * BLOCK_STRIDE * EV + (lane % EV)]
     return out
-
 
 CASES = [
     golden_output_case(
@@ -120,6 +99,5 @@ CASES = [
         atol=0.0,
     ),
 ]
-
 
 auto_main(globals())

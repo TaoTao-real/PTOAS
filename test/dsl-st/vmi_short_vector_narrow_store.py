@@ -17,12 +17,18 @@ runs past the vector shows up as a canary mismatch.
 """
 
 import numpy as np
-from common import auto_main
+from common import assert_close, auto_main
 from ptodsl import pto
 
 SRC_ELEMS = 256
 OUT_ELEMS = 256
 CANARY = 241
+
+
+def check_case(inputs, expected):
+    # The golden array keeps the canary outside the narrowed lanes, so a store
+    # that writes the wrong lanes or runs past the vector shows up here.
+    assert_close(inputs[1].cpu().numpy(), expected, rtol=0.0, atol=0.0)
 
 
 def build(n, offset, name):
@@ -57,7 +63,8 @@ for n in (1, 2, 4, 8, 64):
         def make_case(source=source, expected=expected, output=output):
             return [source.copy(), output.copy()], expected.copy(), []
 
-        CASES.append(dict(name=name, kernel=build(n, offset, name), make_case=make_case))
+        CASES.append(dict(name=name, kernel=build(n, offset, name), make_case=make_case,
+                          check=check_case))
 
 
 auto_main(globals())

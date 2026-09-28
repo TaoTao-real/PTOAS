@@ -129,17 +129,13 @@ stages:
               # rewrites brace syntax inside run blocks, and a bare test would trip
               # over set -u. See .gitcode/scripts/setup_sim_runner.sh.
               #
-              # The gate is in its observation phase (see the observation block in
-              # .gitcode/scripts/sim_validation.sh), so a gap in the runner environment
-              # warns and skips this step instead of failing: while the setup is
-              # still being proven on real pull requests, it must not fail somebody
-              # else's merge request. Restore the hard failure together with the
-              # observation block once the gate starts enforcing.
+              # Both values are mandatory: the gate cannot run without them, so a
+              # gap in the runner environment fails this step instead of skipping
+              # it silently.
               require_env() {
                 if [ -z "$2" ]; then
                   echo "ERROR: this runner must provide $1 (runner service environment)" >&2
-                  echo "::warning::SIM_VALIDATION observation phase: skipping this step without $1" >&2
-                  exit 0
+                  exit 1
                 fi
               }
               require_env SIM_PYTHON_BIN "$(printenv SIM_PYTHON_BIN || true)"

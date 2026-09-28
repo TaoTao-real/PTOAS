@@ -9,23 +9,7 @@
 
 """Runtime equivalence checks through element-wise 1D/2D TileOp selection."""
 
-from pathlib import Path
-import sys
-
 import numpy as np
-
-
-def _bootstrap_dsl_st_common() -> None:
-    here = Path(__file__).resolve()
-    for candidate in here.parents:
-        common_dir = candidate / "test" / "dsl-st"
-        if (common_dir / "common.py").exists():
-            sys.path.insert(0, str(common_dir))
-            return
-    raise RuntimeError("Unable to locate test/dsl-st/common.py")
-
-
-_bootstrap_dsl_st_common()
 
 from common import assert_close, auto_main
 from ptodsl import pto
@@ -58,7 +42,6 @@ from ptodsl.tilelib.templates.a5.tsels import (
     template_tsels_1d,
 )
 
-
 SEED = 20260802
 GUARD_ELEMENTS = 32
 
@@ -84,7 +67,6 @@ TEXPANDS_PADDED_SHAPE = (4, 80)
 # corresponding padded shape keeps the same valid region but introduces a row
 # stride gap, which conservatively selects the 2D fallback.
 
-
 _TEMPLATE_PAIRS = (
     (template_tabs_1d, template_tabs),
     (template_tadd_1d, template_tadd),
@@ -101,7 +83,6 @@ for _flattened, _rowwise in _TEMPLATE_PAIRS:
     if _rowwise.metadata.loop_depth != 2:
         raise AssertionError(f"{_rowwise.name} is not a 2D candidate")
 
-
 def _row_major_view(ptr, rows, cols, *, offset=0):
     if offset:
         ptr = pto.addptr(ptr, offset)
@@ -111,7 +92,6 @@ def _row_major_view(ptr, rows, cols, *, offset=0):
         strides=[cols, 1],
     )
 
-
 def _equivalence_jit(op_name):
     return pto.jit(
         name=f"elementwise_{op_name}_1d_2d_equivalence",
@@ -120,7 +100,6 @@ def _equivalence_jit(op_name):
         mode="explicit",
         insert_sync=True,
     )
-
 
 # Only cases with the same one-input ABI and tile topology use this factory.
 # Packed predicates, temporaries, and other distinct operand forms stay explicit.
@@ -176,18 +155,14 @@ def _make_single_input_equivalence_kernel(
 
     return _kernel
 
-
 def _tabs_operation(src, dst):
     pto.tile.abs(src, dst)
-
 
 def _tadds_operation(src, dst):
     pto.tile.adds(src, 7, dst)
 
-
 def _tcvt_operation(src, dst):
     pto.tile.cvt(src, dst)
-
 
 elementwise_tabs_1d_2d_equivalence = _make_single_input_equivalence_kernel(
     "tabs",
@@ -197,7 +172,6 @@ elementwise_tabs_1d_2d_equivalence = _make_single_input_equivalence_kernel(
     dst_dtype=pto.f32,
     operation=_tabs_operation,
 )
-
 
 @_equivalence_jit("tadd")
 def elementwise_tadd_1d_2d_equivalence(
@@ -248,7 +222,6 @@ def elementwise_tadd_1d_2d_equivalence(
     pto.tile.store(out_1d, out_1d_view)
     pto.tile.store(out_2d, out_2d_view)
 
-
 elementwise_tadds_1d_2d_equivalence = _make_single_input_equivalence_kernel(
     "tadds",
     shape=TADDS_SHAPE,
@@ -257,7 +230,6 @@ elementwise_tadds_1d_2d_equivalence = _make_single_input_equivalence_kernel(
     dst_dtype=pto.i8,
     operation=_tadds_operation,
 )
-
 
 @_equivalence_jit("tcmps")
 def elementwise_tcmps_1d_2d_equivalence(
@@ -302,7 +274,6 @@ def elementwise_tcmps_1d_2d_equivalence(
     pto.tile.cmps(src_2d, 5, out_2d)
     pto.tile.store(out_1d, out_1d_view)
     pto.tile.store(out_2d, out_2d_view)
-
 
 @_equivalence_jit("tsels")
 def elementwise_tsels_1d_2d_equivalence(
@@ -366,7 +337,6 @@ def elementwise_tsels_1d_2d_equivalence(
     pto.tile.store(out_1d, out_1d_view)
     pto.tile.store(out_2d, out_2d_view)
 
-
 elementwise_tcvt_1d_2d_equivalence = _make_single_input_equivalence_kernel(
     "tcvt",
     shape=TCVT_SHAPE,
@@ -375,7 +345,6 @@ elementwise_tcvt_1d_2d_equivalence = _make_single_input_equivalence_kernel(
     dst_dtype=pto.i16,
     operation=_tcvt_operation,
 )
-
 
 @_equivalence_jit("texpands")
 def elementwise_texpands_1d_2d_equivalence(
@@ -403,7 +372,6 @@ def elementwise_texpands_1d_2d_equivalence(
     pto.tile.expands(23, out_2d)
     pto.tile.store(out_1d, out_1d_view)
     pto.tile.store(out_2d, out_2d_view)
-
 
 def _equivalence_case(
     name,
@@ -467,11 +435,9 @@ def _equivalence_case(
         "check": check,
     }
 
-
 def _tabs_inputs():
     rng = np.random.default_rng(SEED + 1)
     return [rng.uniform(-20.0, 20.0, size=TABS_SHAPE).astype(np.float32)]
-
 
 def _tadd_inputs():
     rng = np.random.default_rng(SEED + 2)
@@ -480,17 +446,14 @@ def _tadd_inputs():
         rng.integers(-100, 100, size=TADD_SHAPE, dtype=np.int16),
     ]
 
-
 def _tadds_inputs():
     rng = np.random.default_rng(SEED + 3)
     return [rng.integers(-50, 50, size=TADDS_SHAPE, dtype=np.int8)]
-
 
 def _tcmps_inputs():
     rng = np.random.default_rng(SEED + 4)
     src = rng.integers(0, 10, size=TCMPS_DATA_SHAPE, dtype=np.int8)
     return [src]
-
 
 def _tsels_inputs():
     rng = np.random.default_rng(SEED + 5)
@@ -504,12 +467,10 @@ def _tsels_inputs():
     src = rng.integers(-20, 20, size=TSELS_DATA_SHAPE, dtype=np.int8)
     return [mask, src]
 
-
 def _tcvt_inputs():
     rng = np.random.default_rng(SEED + 6)
     src = rng.integers(-1000, 1000, size=TCVT_SHAPE).astype(np.float32)
     return [src]
-
 
 CASES = [
     _equivalence_case(
@@ -582,6 +543,5 @@ CASES = [
         guard_value=np.int32(123456789),
     ),
 ]
-
 
 auto_main(globals())

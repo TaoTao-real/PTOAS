@@ -10,6 +10,18 @@
 
 如果你要验证的是 parser、verifier、pass dump、IR rewrite 之类“只看编译输出”的行为，优先放到 `test/lit`，不要放这里。
 
+## 与 VPTO 套件的分工
+
+两个套件都吃纯 MLIR，但调度粒度和覆盖面不同，用例不要互相镜像：
+
+- **语义用例放这里**（本目录）。目录级 runner 会把每个模块按用例切片（默认 ≤50 例/片）后并发执行，每片一次
+  `msprof op simulator`、每片独立超时；一个模块里的用例越多，越应该待在这里而不是别处。
+- **`test/vpto/cases/` 只保留它独有的覆盖面**：`ptoas` CLI 读 `.pto` 文件出 fatobj、
+  `launch.cpp`/`main.cpp` 的 C++ 宿主 ABI 与 `kernel.so` 链接、以及 `DEVICE=NPU` 的真机路径。
+  它的调度单位是“一个用例目录 / 一个 `.py` 文件”，不可切分。
+- 同一个 kernel 在两个套件里各写一份（比如用一层 `from <module> import CASES` 的 shim）不会增加覆盖，
+  只会让 VPTO 那一步多出一个不可切分的长尾用例。
+
 ## 环境前提
 
 `test/dsl-st/` 现在假设 `ptodsl` 已经通过支持的 `ptoas` 安装合同进入当前

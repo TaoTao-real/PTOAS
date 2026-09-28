@@ -13,33 +13,15 @@ These exercise ``pto.vmi.vgather`` directly and cover the i8 -> i16 and
 ui8 -> ui16 result-type inference added with the vgather board-test commit.
 """
 
-from pathlib import Path
-import sys
-
 import numpy as np
-
-
-def _bootstrap_dsl_st_common() -> None:
-    here = Path(__file__).resolve()
-    for candidate in here.parents:
-        common_dir = candidate / "test" / "dsl-st"
-        if (common_dir / "common.py").exists():
-            sys.path.insert(0, str(common_dir))
-            return
-    raise RuntimeError("Unable to locate test/dsl-st/common.py from vgather-dsl-i8-ui8-256.py")
-
-
-_bootstrap_dsl_st_common()
 
 from common import auto_main, golden_output_case
 from ptodsl import pto
-
 
 ELEMS = 256
 SRC_BYTES = 256
 IDX_BYTES = 512
 DST_BYTES = 512
-
 
 @pto.jit(
     name="vmi_vgather_i8_to_i16_256_kernel",
@@ -75,7 +57,6 @@ def vmi_vgather_i8_to_i16_256_kernel(
     pto.mte_ub_gm(ub_dst, dst_gm, DST_BYTES, nburst=(1, DST_BYTES, DST_BYTES))
     pto.pipe_barrier(pto.Pipe.ALL)
 
-
 @pto.jit(
     name="vmi_vgather_u8_to_u16_256_kernel",
     target="a5",
@@ -110,28 +91,22 @@ def vmi_vgather_u8_to_u16_256_kernel(
     pto.mte_ub_gm(ub_dst, dst_gm, DST_BYTES, nburst=(1, DST_BYTES, DST_BYTES))
     pto.pipe_barrier(pto.Pipe.ALL)
 
-
 def _non_identity_indices() -> np.ndarray:
     return ((np.arange(ELEMS, dtype=np.uint16) * 7 + 13) % ELEMS).astype(np.uint16)
-
 
 def _i8_inputs():
     src = np.arange(ELEMS, dtype=np.uint8)
     return [src, _non_identity_indices()]
 
-
 def _i8_expected(src, idx):
     return src.astype(np.uint16)[idx].astype(np.uint16)
-
 
 def _u8_inputs():
     src = np.arange(ELEMS, dtype=np.uint8)
     return [src, _non_identity_indices()]
 
-
 def _u8_expected(src, idx):
     return src.astype(np.uint16)[idx].astype(np.uint16)
-
 
 CASES = [
     golden_output_case(
@@ -156,11 +131,9 @@ CASES = [
     ),
 ]
 
-
 KERNELS = [
     vmi_vgather_i8_to_i16_256_kernel,
     vmi_vgather_u8_to_u16_256_kernel,
 ]
-
 
 auto_main(globals())

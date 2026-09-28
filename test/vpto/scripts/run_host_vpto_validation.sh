@@ -75,25 +75,34 @@ resolve_sim_lib_dir() {
     return 0
   fi
 
+  # A CANN installation ships two views of the dav_3510 runtime: the plain one
+  # under simulator/dav_3510/lib and the ESL model under simulator/dav_3510/camodel.
+  # lib is what the v1 driver (.gitcode/scripts/vpto_sim.sh) and the GitHub
+  # simulator job (.github/workflows/ci_sim.yml) have always used, and it is much
+  # faster: measured back to back on one host with the same case
+  # (micro-op/binary-vector/vaddc, alternating runs), one lib case takes 11-12 s
+  # wall clock (10-11 s from launch to PASS) while the camodel runtime needs 39 s
+  # (38-39 s), i.e. 3.5-4x slower. Prefer lib and keep camodel as the fallback for
+  # an installation that does not ship the plain runtime directory.
   local -a candidates=()
   readarray -t candidates < <(
-    find "${ASCEND_HOME_PATH}" -type d -path '*/simulator/dav_3510/camodel' | sort
+    find "${ASCEND_HOME_PATH}" -type d -path '*/simulator/dav_3510/lib' | sort
   )
   if [[ "${#candidates[@]}" -eq 0 ]]; then
     readarray -t candidates < <(
-      find "${ASCEND_HOME_PATH}" -type d -path '*/simulator/dav_3510/lib' | sort
+      find "${ASCEND_HOME_PATH}" -type d -path '*/simulator/dav_3510/camodel' | sort
     )
   fi
 
   if [[ "${#candidates[@]}" -eq 1 ]]; then
     SIM_LIB_DIR="${candidates[0]}"
-    log "SIM_LIB_DIR is unset; auto-selected camodel runtime: ${SIM_LIB_DIR}"
+    log "SIM_LIB_DIR is unset; auto-selected dav_3510 runtime: ${SIM_LIB_DIR}"
     return 0
   fi
 
   if [[ "${#candidates[@]}" -gt 1 ]]; then
     SIM_LIB_DIR="${candidates[0]}"
-    log "SIM_LIB_DIR is unset; multiple dav_3510 camodel runtimes found, using: ${SIM_LIB_DIR}"
+    log "SIM_LIB_DIR is unset; multiple dav_3510 runtimes found, using: ${SIM_LIB_DIR}"
     return 0
   fi
 

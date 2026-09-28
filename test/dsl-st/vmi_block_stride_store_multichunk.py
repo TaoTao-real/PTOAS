@@ -26,27 +26,10 @@ i32 / vl=256 / block_stride=8 的 256 lane 会按“每 8 个元素一组、组�
 形态取自 pto_test `vstore_i32_vl256_g1_a256_n_nomask_tS8o0n`。
 """
 
-from pathlib import Path
-import sys
-
 import numpy as np
-
-
-def _bootstrap_dsl_st_common() -> None:
-    here = Path(__file__).resolve()
-    for candidate in here.parents:
-        common_dir = candidate / "test" / "dsl-st"
-        if (common_dir / "common.py").exists():
-            sys.path.insert(0, str(common_dir))
-            return
-    raise RuntimeError("Unable to locate test/dsl-st/common.py from vmi-block-stride-store-multichunk.py")
-
-
-_bootstrap_dsl_st_common()
 
 from common import auto_main, golden_output_case
 from ptodsl import pto
-
 
 VL = 256
 BLOCK_STRIDE = 8
@@ -99,7 +82,6 @@ SRC = """module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kerne
 }
 """
 
-
 @pto.jit(
     name="vmi_block_stride_store_multichunk_kernel",
     target="a5",
@@ -114,12 +96,10 @@ def vmi_block_stride_store_multichunk_kernel(
 ):
     pass
 
-
 def make_inputs():
     values = (np.arange(VL) % 100).astype(np.int32)
     sentinel = np.full(DST_ELEMS, SENTINEL, dtype=np.int32)
     return [values, sentinel]
-
 
 def make_expected(values, sentinel):
     out = np.array(sentinel, dtype=np.int32).copy()
@@ -127,7 +107,6 @@ def make_expected(values, sentinel):
         pos = (lane // EV) * BLOCK_STRIDE * EV + (lane % EV)
         out[pos] = values[lane]
     return out
-
 
 CASES = [
     golden_output_case(
@@ -139,6 +118,5 @@ CASES = [
         atol=0.0,
     ),
 ]
-
 
 auto_main(globals())

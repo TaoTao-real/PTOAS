@@ -28,6 +28,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
                                 %dst_gm: !pto.ptr<bf16, gm>) attributes {pto.kernel} {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
+    %c_repeat = arith.constant 4 : index
     %c16 = arith.constant 16 : index
     %c64 = arith.constant 64 : index
     %c256 = arith.constant 256 : index
@@ -47,7 +48,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
     pto.wait_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
 
     pto.vecscope {
-      scf.for %rep = %c0 to %c16 step %c1 {
+      scf.for %rep = %c0 to %c_repeat step %c1 {
         scf.for %tile = %c0 to %c64 step %c1 {
           %elem = arith.muli %tile, %c256 : index
           %x_bf16 = pto.vmi.vload %ub_src[%elem]

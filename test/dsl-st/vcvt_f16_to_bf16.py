@@ -7,27 +7,10 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-from pathlib import Path
-import sys
-
 import numpy as np
-
-
-def _bootstrap_dsl_st_common() -> None:
-    here = Path(__file__).resolve()
-    for candidate in here.parents:
-        common_dir = candidate / "test" / "dsl-st"
-        if (common_dir / "common.py").exists():
-            sys.path.insert(0, str(common_dir))
-            return
-    raise RuntimeError("Unable to locate test/dsl-st/common.py from vcvt_f16_to_bf16.py")
-
-
-_bootstrap_dsl_st_common()
 
 from common import auto_main, golden_output_case
 from ptodsl import pto
-
 
 ELEMS = 256
 
@@ -71,7 +54,6 @@ VCVT_SOURCE = """module attributes {pto.target_arch = "a5", pto.kernel_kind = #p
 }
 """
 
-
 @pto.jit(
     name="vcvt_f16_to_bf16_kernel",
     target="a5",
@@ -85,7 +67,6 @@ def vcvt_f16_to_bf16_kernel(
 ):
     pass
 
-
 def to_bf16_bits(x):
     """f32 -> bfloat16 bit pattern (uint16), round-to-nearest-even."""
     x = np.asarray(x, dtype=np.float32)
@@ -95,7 +76,6 @@ def to_bf16_bits(x):
     r = ((u + rounding_bias) >> np.uint32(16)).astype(np.uint16)
     r = np.where(np.isnan(x), np.uint16(0x7FC0), r)
     return r
-
 
 def make_inputs():
     probe = np.array(
@@ -112,10 +92,8 @@ def make_inputs():
     src = np.tile(probe, ELEMS // len(probe))[:ELEMS].astype(np.float16)
     return [src]
 
-
 def make_expected(src):
     return to_bf16_bits(src.astype(np.float32))
-
 
 CASES = [
     golden_output_case(
@@ -127,6 +105,5 @@ CASES = [
         atol=0.0,
     ),
 ]
-
 
 auto_main(globals())

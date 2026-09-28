@@ -7,39 +7,19 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-from pathlib import Path
-import sys
-
 import numpy as np
-
-
-def _bootstrap_dsl_st_common() -> None:
-    here = Path(__file__).resolve()
-    for candidate in here.parents:
-        common_dir = candidate / "test" / "dsl-st"
-        if (common_dir / "common.py").exists():
-            sys.path.insert(0, str(common_dir))
-            return
-    raise RuntimeError("Unable to locate test/dsl-st/common.py")
-
-
-_bootstrap_dsl_st_common()
 
 from common import auto_main, golden_output_case
 from ptodsl import pto
 
-
 REQUESTS = 128
 SEED = 29
-
 
 def _copy_gm_to_ub(src, dst):
     pto.mte_gm_ub(src, dst, 0, 256, nburst=(8, 256, 256))
 
-
 def _copy_ub_to_gm(src, dst):
     pto.mte_ub_gm(src, dst, 256, nburst=(8, 256, 256))
-
 
 @pto.jit(
     name="vscatter_b8_kernel",
@@ -75,7 +55,6 @@ def vscatter_b8_kernel(
     _copy_ub_to_gm(ub_output, output)
     pto.pipe_barrier(pto.Pipe.ALL)
 
-
 @pto.jit(
     name="vscatter_b16_kernel",
     target="a5",
@@ -110,10 +89,8 @@ def vscatter_b16_kernel(
     _copy_ub_to_gm(ub_output, output)
     pto.pipe_barrier(pto.Pipe.ALL)
 
-
 def _indices() -> np.ndarray:
     return np.random.default_rng(SEED).permutation(REQUESTS).astype(np.uint16)
-
 
 def _b8_inputs():
     src = np.empty(REQUESTS * 2, dtype=np.uint8)
@@ -121,23 +98,19 @@ def _b8_inputs():
     src[1::2] = 255 - src[0::2]
     return [src, _indices()]
 
-
 def _b8_expected(src, indices):
     result = np.zeros(REQUESTS * 2, dtype=np.uint8)
     result[indices] = src[0::2]
     return result
 
-
 def _b16_inputs():
     src = (np.arange(REQUESTS, dtype=np.int32) * 257 - 16000).astype(np.int16)
     return [src, _indices()]
-
 
 def _b16_expected(src, indices):
     result = np.zeros(REQUESTS, dtype=np.int16)
     result[indices] = src
     return result
-
 
 CASES = [
     golden_output_case(
@@ -161,6 +134,5 @@ CASES = [
         atol=0.0,
     ),
 ]
-
 
 auto_main(globals())

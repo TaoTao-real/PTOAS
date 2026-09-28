@@ -88,8 +88,33 @@ SIM_MEMORY_BUDGET_GIB="${SIM_MEMORY_BUDGET_GIB:-16}"
 VPTO_CASE_JOBS="${VPTO_SIM_JOBS:-32}"
 TILELIB_BUILD_JOBS="${TILELIB_BUILD_JOBS:-32}"
 TILELIB_CASE_JOBS="${TILELIB_CASE_JOBS:-64}"
+# PTODSL/DSL ST has no parallelism of its own: scripts/sim_dsl.sh runs the whole
+# suite as one simulator process that reports nothing until every case is done,
+# so one slow case stretches the step without any progress to read (observed: 37
+# minutes and still running). The CI side therefore splits the suite into case
+# slices (see .gitcode/scripts/run_ptodsl_cases_parallel.sh). A slice costs about
+# 2.3 cores, so half of the cores is the useful fan-out, and the memory budget
+# below can lower it further.
+PTODSL_DEFAULT_CASE_JOBS="$(( CPU_COUNT / 2 ))"
+(( PTODSL_DEFAULT_CASE_JOBS < 1 )) && PTODSL_DEFAULT_CASE_JOBS=1
+PTODSL_CASE_JOBS="${PTODSL_CASE_JOBS:-${PTODSL_DEFAULT_CASE_JOBS}}"
+# Cases per slice. Measured on a runner at full fan-out, one case costs about ten
+# seconds of simulator launch, so 50 cases keep a slice near nine minutes while
+# still splitting the long pole of a 700 case module across the fan-out.
+PTODSL_CASE_SHARD_SIZE="${PTODSL_CASE_SHARD_SIZE:-50}"
+# Upper bound for one slice, about twice its measured time. A slice that hangs
+# used to hold the whole step until the job deadline; bounding it here turns that
+# into one failing slice.
+PTODSL_CASE_TIMEOUT="${PTODSL_CASE_TIMEOUT:-1200}"
+# One PTODSL slice is much lighter than one VPTO case: the largest module measured
+# 1.93 GiB resident and a five way run peaked at 7.3 GiB in total, so the 16 GiB
+# per process budget would cap this suite at five processes and leave half of a
+# 24 core runner idle. Keep a 2x margin over the measurement instead.
+PTODSL_MEMORY_BUDGET_GIB="${PTODSL_MEMORY_BUDGET_GIB:-4}"
 # Camodel ESL worker threads per simulator instance; empty means "derive it
-# from the fan-out" (see prepare_camodel_runtime).
+# from the fan-out" (see prepare_camodel_runtime). This only applies to the
+# camodel fallback: the dav_3510 lib runtime sizes its own worker pool and never
+# reads camodel_v100.json.
 CAMODEL_THREADS="${CAMODEL_THREADS:-}"
 SIM_PYTHON_BIN="${SIM_PYTHON_BIN:-${CI_SIM_PYTHON_BIN:-}}"
 PYPTO_REF="${PYPTO_REF:-ef6ce7cd8bd33b4c93b58dc34830a20b145736ac}"
@@ -108,31 +133,6 @@ SIM_SUITE="${SIM_SUITE:-all}"
 
 mkdir -p "${BUILD_ROOT}"
 exec > >(tee "${BUILD_ROOT}/vpto-sim.log") 2>&1
-
-# Observation phase: this gate validates nothing yet, and it can never fail the
-# job it runs in. A pull request pipeline executes the workflow of the *default*
-# branch, so the first real run of this script happens on somebody else's merge
-# request - an unfinished runner or a missing simulator must not fail that merge
-# request while the setup is still being proven on real pull requests. The
-# announcement below lands in the main log through the redirection above; the
-# remaining artifacts are the ones the workflow uploads from an always() step,
-# and obs-upload is not known to tolerate a missing path, so every one of them
-# has to exist even though nothing ran. Delete this block - nothing else, here
-# or in the workflow - to turn the simulator gate on.
-OBSERVATION_NOTE="Observation phase: the GitCode simulator gate does not enforce yet; no validation was executed."
-echo "${OBSERVATION_NOTE}"
-mkdir -p "${BUILD_ROOT}/cases"
-for placeholder in \
-  "${BUILD_ROOT}/tilelib-st.log" \
-  "${BUILD_ROOT}/ptodsl-dsl-st.log" \
-  "${BUILD_ROOT}/pypto-observation.log" \
-  "${BUILD_ROOT}/cases/parallel-runner.log" \
-  "${BUILD_ROOT}/cases/parallel-summary.tsv"
-do
-  printf '%s\n' "${OBSERVATION_NOTE}" > "${placeholder}"
-done
-echo "Placeholder artifacts written under ${BUILD_ROOT}; nothing was validated."
-exit 0
 
 skip_simulator() {
   echo "::warning::Skipping ${SIM_SUITE} simulator validation: $1"
@@ -195,12 +195,23 @@ command -v "${MSPROF_BIN}" >/dev/null 2>&1 || {
 if [[ -n "${SIM_LIB_DIR}" ]]; then
   [[ -d "${SIM_LIB_DIR}" ]] || skip_simulator "SIM_LIB_DIR is invalid: ${SIM_LIB_DIR}"
 else
+  # A CANN installation ships two views of the dav_3510 simulator runtime: the
+  # plain one under simulator/dav_3510/lib and the ESL model under
+  # simulator/dav_3510/camodel. lib is the view the v1 driver
+  # (.gitcode/scripts/vpto_sim.sh) and the GitHub simulator job
+  # (.github/workflows/ci_sim.yml) have always used, and it is much faster:
+  # measured back to back on one host with the same case
+  # (micro-op/binary-vector/vaddc, alternating lib/camodel runs), a lib run takes
+  # 11-12 s wall clock for one case (10-11 s from launch to PASS) while the same
+  # case on the camodel runtime takes 39 s (38-39 s), i.e. 3.5-4x slower. Prefer
+  # lib and keep camodel as the fallback for an installation that does not ship
+  # the plain runtime directory.
   readarray -t SIM_LIB_DIRS < <(
-    find "${ASCEND_HOME_PATH}" -type d -path '*/simulator/dav_3510/camodel' 2>/dev/null | sort
+    find "${ASCEND_HOME_PATH}" -type d -path '*/simulator/dav_3510/lib' 2>/dev/null | sort
   )
   if [[ "${#SIM_LIB_DIRS[@]}" -eq 0 ]]; then
     readarray -t SIM_LIB_DIRS < <(
-      find "${ASCEND_HOME_PATH}" -type d -path '*/simulator/dav_3510/lib' 2>/dev/null | sort
+      find "${ASCEND_HOME_PATH}" -type d -path '*/simulator/dav_3510/camodel' 2>/dev/null | sort
     )
   fi
   if [[ "${#SIM_LIB_DIRS[@]}" -eq 0 ]]; then
@@ -209,6 +220,62 @@ else
   SIM_LIB_DIR="${SIM_LIB_DIRS[0]}"
 fi
 
+# Quiet the selected runtime before anything uses it. Both variants build a
+# symlink farm under BUILD_ROOT that replaces exactly one file of the vendor
+# directory, so the CANN installation itself is never written to.
+#
+# The lib runtime is the default, and the only thing it consults here is the
+# LOG/WRAPPER verbosity of its config.json: the keys and values
+# scripts/prepare_quiet_camodel.py applies in the GitHub job. It ships no
+# camodel_v100.json and sizes its own worker pool, so nothing below touches a
+# thread count.
+prepare_quiet_lib_runtime() {
+  local config="${SIM_LIB_DIR}/config.json"
+  [[ -f "${config}" ]] || {
+    echo "ERROR: the dav_3510 lib simulator runtime has no config.json: ${config}" >&2
+    exit 2
+  }
+
+  local overlay_dir="${BUILD_ROOT}/quiet-lib-runtime"
+  mkdir -p "${overlay_dir}"
+  local entry name
+  for entry in "${SIM_LIB_DIR}"/*; do
+    name="${entry##*/}"
+    [[ "${name}" == "config.json" ]] && continue
+    if [[ ! -e "${overlay_dir}/${name}" && ! -L "${overlay_dir}/${name}" ]]; then
+      ln -s "${entry}" "${overlay_dir}/${name}"
+    fi
+  done
+  # A vendor config.json is free to omit any of these keys, so add what is
+  # missing instead of assuming the full set is present.
+  if [[ ! -f "${overlay_dir}/config.json" ]]; then
+    "${PYTHON_BIN}" - "${config}" "${overlay_dir}/config.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    config = json.load(handle)
+config.setdefault("LOG", {})["flush_level"] = 6
+config.setdefault("LOG", {})["core_enable_mask"] = ["0x0"]
+wrapper = config.setdefault("WRAPPER", {})
+wrapper["adapter_log_file_level"] = 6
+wrapper["aic_wrap_log_file_level"] = 6
+wrapper["cosim_log_file_level"] = 6
+wrapper["cosim_log_flush_level"] = 6
+wrapper["cosim_log_scr_level"] = 6
+with open(sys.argv[2], "w", encoding="utf-8") as handle:
+    json.dump(config, handle, indent=4)
+    handle.write("\n")
+PY
+  fi
+  SIM_LIB_DIR="${overlay_dir}"
+  echo "Quiet lib runtime: ${overlay_dir}"
+}
+
+# Fallback path: only reached when the installation has no
+# simulator/dav_3510/lib directory. This runtime reads its worker count from
+# camodel_v100.json instead of sizing its own pool, which is why the thread
+# tuning below belongs here and nowhere else.
 prepare_camodel_runtime() {
   [[ "${CAMODEL_THREADS}" =~ ^[0-9]+$ && "${CAMODEL_THREADS}" -ge 1 ]] || {
     echo "ERROR: CAMODEL_THREADS must be a positive integer, got: ${CAMODEL_THREADS}" >&2
@@ -331,11 +398,13 @@ available_memory_kib() {
 
 # Clamp a requested fan-out to what the memory budget allows and report it.
 cap_jobs_to_memory() {
-  local name="$1" value="$2"
-  if (( value > MEMORY_JOBS )); then
-    echo "Capping ${name} to ${MEMORY_JOBS} (requested ${value});" \
-      "budget ${SIM_MEMORY_BUDGET_GIB} GiB per process, ${MEMORY_AVAIL_GIB} GiB available" >&2
-    value="${MEMORY_JOBS}"
+  local name="$1" value="$2" budget="${3:-${SIM_MEMORY_BUDGET_GIB}}" max_jobs
+  max_jobs="$(( MEMORY_AVAIL_KIB / (budget * 1048576) ))"
+  (( max_jobs < 1 )) && max_jobs=1
+  if (( value > max_jobs )); then
+    echo "Capping ${name} to ${max_jobs} (requested ${value});" \
+      "budget ${budget} GiB per process, ${MEMORY_AVAIL_GIB} GiB available" >&2
+    value="${max_jobs}"
   fi
   printf '%s\n' "${value}"
 }
@@ -370,30 +439,63 @@ MEMORY_JOBS="$(( MEMORY_AVAIL_KIB / (SIM_MEMORY_BUDGET_GIB * 1048576) ))"
   echo "ERROR: TILELIB_CASE_JOBS must be a positive integer, got: ${TILELIB_CASE_JOBS}" >&2
   exit 2
 }
+[[ "${PTODSL_CASE_JOBS}" =~ ^[0-9]+$ && "${PTODSL_CASE_JOBS}" -ge 1 ]] || {
+  echo "ERROR: PTODSL_CASE_JOBS must be a positive integer, got: ${PTODSL_CASE_JOBS}" >&2
+  exit 2
+}
+[[ "${PTODSL_CASE_TIMEOUT}" =~ ^[0-9]+$ && "${PTODSL_CASE_TIMEOUT}" -ge 1 ]] || {
+  echo "ERROR: PTODSL_CASE_TIMEOUT must be a positive integer, got: ${PTODSL_CASE_TIMEOUT}" >&2
+  exit 2
+}
+[[ "${PTODSL_CASE_SHARD_SIZE}" =~ ^[0-9]+$ ]] || {
+  echo "ERROR: PTODSL_CASE_SHARD_SIZE must be a non-negative integer," \
+    "got: ${PTODSL_CASE_SHARD_SIZE}" >&2
+  exit 2
+}
+[[ "${PTODSL_MEMORY_BUDGET_GIB}" =~ ^[0-9]+$ && "${PTODSL_MEMORY_BUDGET_GIB}" -ge 1 ]] || {
+  echo "ERROR: PTODSL_MEMORY_BUDGET_GIB must be a positive integer," \
+    "got: ${PTODSL_MEMORY_BUDGET_GIB}" >&2
+  exit 2
+}
 VPTO_CASE_JOBS="$(cap_jobs_to_memory VPTO_SIM_JOBS "${VPTO_CASE_JOBS}")"
 TILELIB_BUILD_JOBS="$(cap_jobs_to_memory TILELIB_BUILD_JOBS "${TILELIB_BUILD_JOBS}")"
 TILELIB_CASE_JOBS="$(cap_jobs_to_memory TILELIB_CASE_JOBS "${TILELIB_CASE_JOBS}")"
+PTODSL_CASE_JOBS="$(cap_jobs_to_memory PTODSL_CASE_JOBS "${PTODSL_CASE_JOBS}" \
+  "${PTODSL_MEMORY_BUDGET_GIB}")"
 echo "Memory budget: ${MEMORY_AVAIL_GIB} GiB available," \
   "${SIM_MEMORY_BUDGET_GIB} GiB per process -> at most ${MEMORY_JOBS} parallel"
 echo "VPTO case concurrency: ${VPTO_CASE_JOBS}"
 echo "TileLib concurrency: build=${TILELIB_BUILD_JOBS} cases=${TILELIB_CASE_JOBS}"
+echo "PTODSL concurrency: ${PTODSL_CASE_JOBS} slices of ${PTODSL_CASE_SHARD_SIZE} cases," \
+  "slice timeout ${PTODSL_CASE_TIMEOUT}s, ${PTODSL_MEMORY_BUDGET_GIB} GiB per slice"
 
-# Every simulator instance starts its own ESL worker pool, and the stock config
-# asks for 32 of them. A 12 way case fan-out then puts 384 threads on a 64 core
-# host: the same suite that needed 30 minutes took 4h46m, because a single case
-# only saturates about three cores anyway (20 s CPU for 7.6 s wall) while the
-# extra threads fight for the CPU. Give the fan-out half of the cores, which is
-# also what the measured baseline run used, unless CAMODEL_THREADS says otherwise.
-if [[ -z "${CAMODEL_THREADS}" ]]; then
-  WIDEST_FAN_OUT="${VPTO_CASE_JOBS}"
-  if [[ "${TILELIB_CASE_JOBS}" -gt "${WIDEST_FAN_OUT}" ]]; then
-    WIDEST_FAN_OUT="${TILELIB_CASE_JOBS}"
+# The thread count below is a camodel-only concern, so it is derived only on the
+# fallback path. Every camodel instance starts its own ESL worker pool, and the
+# stock config asks for 32 of them. A 12 way case fan-out then puts 384 threads
+# on a 64 core host: the same suite that needed 30 minutes took 4h46m, because a
+# single case only saturates about three cores anyway (20 s CPU for 7.6 s wall)
+# while the extra threads fight for the CPU. Give the fan-out half of the cores,
+# which is also what the measured baseline run used, unless CAMODEL_THREADS says
+# otherwise. The lib runtime sizes its own pool; nothing here applies to it.
+if [[ "${SIM_LIB_DIR}" == */camodel ]]; then
+  if [[ -z "${CAMODEL_THREADS}" ]]; then
+    WIDEST_FAN_OUT="${VPTO_CASE_JOBS}"
+    if [[ "${TILELIB_CASE_JOBS}" -gt "${WIDEST_FAN_OUT}" ]]; then
+      WIDEST_FAN_OUT="${TILELIB_CASE_JOBS}"
+    fi
+    # The PTODSL slices run inside the same job, so they widen the fan out the
+    # camodel thread count has to be shared with.
+    if [[ "${PTODSL_CASE_JOBS}" -gt "${WIDEST_FAN_OUT}" ]]; then
+      WIDEST_FAN_OUT="${PTODSL_CASE_JOBS}"
+    fi
+    CAMODEL_THREADS="$(( CPU_COUNT / 2 / WIDEST_FAN_OUT ))"
+    (( CAMODEL_THREADS < 1 )) && CAMODEL_THREADS=1
+    (( CAMODEL_THREADS > 4 )) && CAMODEL_THREADS=4
   fi
-  CAMODEL_THREADS="$(( CPU_COUNT / 2 / WIDEST_FAN_OUT ))"
-  (( CAMODEL_THREADS < 1 )) && CAMODEL_THREADS=1
-  (( CAMODEL_THREADS > 4 )) && CAMODEL_THREADS=4
+  prepare_camodel_runtime
+else
+  prepare_quiet_lib_runtime
 fi
-prepare_camodel_runtime
 
 if [[ "${MODE}" != "test" ]]; then
   BUILD_ARGS=(--build -j "${BUILD_JOBS}")
@@ -507,9 +609,16 @@ prepare_pto_isa() {
   [[ -f "${PTO_ISA_ROOT}/include/pto/pto-inst.hpp" ]]
 }
 
+# The PTODSL suite runs as one process per case slice so a stuck case costs a
+# timeout instead of the whole step. The driver falls back to the single process
+# suite on its own whenever it cannot trust its case list, and its per case
+# results stay in the main log this job uploads.
 run_ptodsl_st() {
   ASCEND_HOME_PATH="${ASCEND_HOME_PATH}" PTOAS_BIN="${PTOAS_BIN}" \
-    bash "${WORKSPACE}/scripts/sim_dsl.sh" "${WORKSPACE}/test/dsl-st" \
+    PYTHON_BIN="${PYTHON_BIN:-python3}" WORKSPACE="${WORKSPACE}" BUILD_ROOT="${BUILD_ROOT}" \
+    PTODSL_CASE_JOBS="${PTODSL_CASE_JOBS}" PTODSL_CASE_TIMEOUT="${PTODSL_CASE_TIMEOUT}" \
+    PTODSL_CASE_SHARD_SIZE="${PTODSL_CASE_SHARD_SIZE}" \
+    bash "${WORKSPACE}/.gitcode/scripts/run_ptodsl_cases_parallel.sh" \
       2>&1 | tee "${BUILD_ROOT}/ptodsl-dsl-st.log"
 }
 

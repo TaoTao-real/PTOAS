@@ -37,10 +37,18 @@ mte_gm_ub -> vecscope { scf.for REPEAT { scf.for TILE { chain } } } -> mte_ub_gm
 ```
 
 * the inner `TILE` loop walks the whole UB buffer once (64 tiles);
-* the outer `REPEAT` loop (16) replays it, so one launch performs
-  `16 * 64` chain iterations.  This keeps the per-iteration VPTO shape stable -
+* the outer `REPEAT` loop (4) replays it, so one launch performs
+  `4 * 64` chain iterations.  This keeps the per-iteration VPTO shape stable -
   so the op census of the two compiler arms is directly comparable - while
-  making a single launch long enough to time above the launch-overhead floor;
+  making a single launch long enough to time above the launch-overhead floor.
+
+  The replay body never reads `%rep`: every iteration walks the same tiles and
+  writes the same UB offsets, so the replay count only lengthens the timed
+  window.  It is kept at 4 because the layouts under test are decided during
+  compilation and the simulator step is CPU bound: at 16 replays these six cases
+  cost 2135 s of simulator time and set the whole VPTO step's critical path
+  (655 s for one case).  On hardware, raise `CAST_SPINE_ITERS` if a single
+  launch drops below the timing floor;
 * input and output are read from / written to GM through the standard
   `pto.mte_gm_ub` / `pto.mte_ub_gm` pair, so the case is a real kernel, not a
   fragment.

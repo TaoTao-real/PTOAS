@@ -100,13 +100,18 @@ path it would also put a `b32` reduction predicate on a `b16` arithmetic op.
   subsequent reduction, with multiple users of each native sum. Entire
   output buffers are compared, including untouched canaries.
 
-The runtime test has a wrapper at
-`test/vpto/cases/vmi_new/native-i16-group-sum.py`. With a configured build,
-CANN environment, `PTOAS_BIN`, `PYTHONPATH`, and `WORK_SPACE`, the queued NPU
-invocation is:
+The runtime test is the DSL ST module
+`test/dsl-st/vmi_native_i16_group_sum.py`; the VPTO suite used to carry a
+source-backed wrapper for it, which was removed as a duplicate (the DSL ST
+driver discovers, slices and runs the module itself). With a configured build,
+CANN environment, `PTOAS_BIN` and `PYTHONPATH`, the queued invocation is:
 
 ```sh
-task-submit --device auto --run 'ASCEND_RT_VISIBLE_DEVICES="$TASK_DEVICE" DEVICE=NPU CASE_NAME=vmi_new/native-i16-group-sum.py bash test/vpto/scripts/run_host_vpto_validation.sh'
+# simulator
+task-submit --device auto --run 'bash scripts/sim_dsl.sh test/dsl-st/vmi_native_i16_group_sum.py'
+
+# onboard
+task-submit --device auto --run 'ASCEND_RT_VISIBLE_DEVICES="$TASK_DEVICE" python3 test/dsl-st/vmi_native_i16_group_sum.py'
 ```
 
 This change establishes the native layout contract. Fewer producer packs do

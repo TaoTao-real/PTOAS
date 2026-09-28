@@ -7,27 +7,10 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-from pathlib import Path
-import sys
-
 import numpy as np
-
-
-def _bootstrap_dsl_st_common() -> None:
-    here = Path(__file__).resolve()
-    for candidate in here.parents:
-        common_dir = candidate / "test" / "dsl-st"
-        if (common_dir / "common.py").exists():
-            sys.path.insert(0, str(common_dir))
-            return
-    raise RuntimeError("Unable to locate test/dsl-st/common.py from vmadd.py")
-
-
-_bootstrap_dsl_st_common()
 
 from common import auto_main, golden_output_case
 from ptodsl import pto
-
 
 ELEMS = 1024
 SEED = 29
@@ -85,7 +68,6 @@ VMADD_SOURCE = """module attributes {pto.target_arch = "a5", pto.kernel_kind = #
 }
 """
 
-
 @pto.jit(
     name="a5_extra_vmadd_kernel",
     target="a5",
@@ -101,7 +83,6 @@ def a5_extra_vmadd_kernel(
 ):
     pass
 
-
 def make_inputs():
     rng = np.random.default_rng(SEED)
     f_acc = rng.uniform(-2.0, 2.0, size=ELEMS).astype(np.float32)
@@ -109,10 +90,8 @@ def make_inputs():
     f_rhs = rng.uniform(-1.0, 1.0, size=ELEMS).astype(np.float32)
     return [f_acc, f_lhs, f_rhs]
 
-
 def make_expected(f_acc, f_lhs, f_rhs):
     return (f_lhs * f_acc + f_rhs).astype(np.float32)
-
 
 CASES = [
     golden_output_case(
@@ -124,6 +103,5 @@ CASES = [
         atol=2e-4,
     ),
 ]
-
 
 auto_main(globals())

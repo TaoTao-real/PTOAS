@@ -7,27 +7,10 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-from pathlib import Path
-import sys
-
 import numpy as np
-
-
-def _bootstrap_dsl_st_common() -> None:
-    here = Path(__file__).resolve()
-    for candidate in here.parents:
-        common_dir = candidate / "test" / "dsl-st"
-        if (common_dir / "common.py").exists():
-            sys.path.insert(0, str(common_dir))
-            return
-    raise RuntimeError("Unable to locate test/dsl-st/common.py from vcvt-f32-to-f8-rahz.py")
-
-
-_bootstrap_dsl_st_common()
 
 from common import auto_main, golden_output_case
 from ptodsl import pto
-
 
 ELEMS = 256
 
@@ -99,11 +82,9 @@ CASE_SPECS = [
     },
 ]
 
-
 def _repeat_pattern(pattern: np.ndarray) -> np.ndarray:
     repeats = (ELEMS + len(pattern) - 1) // len(pattern)
     return np.tile(pattern, repeats)[:ELEMS].copy()
-
 
 def _build_kernel(case):
     dst_dtype = case["dst_dtype"]
@@ -149,11 +130,9 @@ def _build_kernel(case):
 
     return kernel
 
-
 def _make_inputs(case):
     src = _repeat_pattern(case["values"]).astype(np.float32)
     return [src]
-
 
 CASES = []
 KERNELS = []
@@ -172,6 +151,5 @@ for case in CASE_SPECS:
             atol=0.0,
         )
     )
-
 
 auto_main(globals())

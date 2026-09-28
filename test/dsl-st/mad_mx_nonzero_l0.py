@@ -7,29 +7,10 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-from pathlib import Path
-import sys
-
 import numpy as np
-
-
-def _bootstrap_dsl_st_common() -> None:
-    here = Path(__file__).resolve()
-    for candidate in here.parents:
-        common_dir = candidate / "test" / "dsl-st"
-        if (common_dir / "common.py").exists():
-            sys.path.insert(0, str(common_dir))
-            return
-    raise RuntimeError(
-        "Unable to locate test/dsl-st/common.py from mad_mx_nonzero_l0.py"
-    )
-
-
-_bootstrap_dsl_st_common()
 
 from common import auto_main, golden_output_case
 from ptodsl import pto
-
 
 M = 16
 N = 16
@@ -102,7 +83,6 @@ MAD_MX_NONZERO_L0_SOURCE = """module attributes {pto.target_arch = "a5", pto.ker
 }
 """
 
-
 @pto.jit(
     name="mad_mx_nonzero_l0_kernel",
     target="a5",
@@ -119,7 +99,6 @@ def mad_mx_nonzero_l0_kernel(
 ):
     pass
 
-
 def fp8_e4m3_to_f32(bits: np.ndarray) -> np.ndarray:
     raw = bits.astype(np.uint8)
     sign = np.where((raw & 0x80) != 0, -1.0, 1.0).astype(np.float32)
@@ -133,22 +112,18 @@ def fp8_e4m3_to_f32(bits: np.ndarray) -> np.ndarray:
     ).astype(np.float32)
     return sign * value
 
-
 def e8m0_to_f32(bits: np.ndarray) -> np.ndarray:
     return np.exp2(bits.astype(np.int32) - 127).astype(np.float32)
-
 
 def pack_a_scale(a_scale: np.ndarray) -> np.ndarray:
     packed = np.zeros(SCALE_BYTES, dtype=np.uint8)
     packed[0:32] = a_scale.reshape(-1)
     return packed
 
-
 def pack_b_scale(b_scale: np.ndarray) -> np.ndarray:
     packed = np.zeros(SCALE_BYTES, dtype=np.uint8)
     packed[0:32] = b_scale.T.reshape(-1)
     return packed
-
 
 def make_inputs():
     a_codes = np.array([0x30, 0x38, 0x40, 0xB8], dtype=np.uint8)
@@ -167,7 +142,6 @@ def make_inputs():
         pack_b_scale(b_scale_matrix),
     ]
 
-
 def make_expected(a, b, a_scale, b_scale):
     a_matrix = a.reshape(M, K)
     b_matrix = b.reshape(K, N)
@@ -185,7 +159,6 @@ def make_expected(a, b, a_scale, b_scale):
         golden += scaled_a @ scaled_b
     return golden
 
-
 CASES = [
     golden_output_case(
         "mad_mx_nonzero_l0",
@@ -196,6 +169,5 @@ CASES = [
         atol=1e-2,
     ),
 ]
-
 
 auto_main(globals())

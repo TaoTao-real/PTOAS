@@ -16,27 +16,10 @@ contiguous physical result/mask chunk`。形态取自 pto_test
 `vload_i32_vl256_g1_a256_n_nomask_tS8o0n`。
 """
 
-from pathlib import Path
-import sys
-
 import numpy as np
-
-
-def _bootstrap_dsl_st_common() -> None:
-    here = Path(__file__).resolve()
-    for candidate in here.parents:
-        common_dir = candidate / "test" / "dsl-st"
-        if (common_dir / "common.py").exists():
-            sys.path.insert(0, str(common_dir))
-            return
-    raise RuntimeError("Unable to locate test/dsl-st/common.py from vmi-block-stride-load-multichunk.py")
-
-
-_bootstrap_dsl_st_common()
 
 from common import auto_main, golden_output_case
 from ptodsl import pto
-
 
 VL = 256
 BLOCK_STRIDE = 8
@@ -84,7 +67,6 @@ SRC = """module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kerne
 }
 """
 
-
 @pto.jit(
     name="vmi_block_stride_load_multichunk_kernel",
     target="a5",
@@ -98,10 +80,8 @@ def vmi_block_stride_load_multichunk_kernel(
 ):
     pass
 
-
 def make_inputs():
     return [(np.arange(SRC_ELEMS) % 1000).astype(np.int32)]
-
 
 def make_expected(src):
     out = np.empty(VL, dtype=np.int32)
@@ -109,7 +89,6 @@ def make_expected(src):
         blk = lane // EV
         out[lane] = src[blk * BLOCK_STRIDE * EV + (lane % EV)]
     return out
-
 
 CASES = [
     golden_output_case(
@@ -121,6 +100,5 @@ CASES = [
         atol=0.0,
     ),
 ]
-
 
 auto_main(globals())

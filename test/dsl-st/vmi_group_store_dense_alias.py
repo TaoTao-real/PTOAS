@@ -24,27 +24,10 @@ table-supported value layout ...`。形态取自 pto_test
 向量读端口读不到，见 `vload-vstore-c3c4-failure-analysis.md`）。
 """
 
-from pathlib import Path
-import sys
-
 import numpy as np
-
-
-def _bootstrap_dsl_st_common() -> None:
-    here = Path(__file__).resolve()
-    for candidate in here.parents:
-        common_dir = candidate / "test" / "dsl-st"
-        if (common_dir / "common.py").exists():
-            sys.path.insert(0, str(common_dir))
-            return
-    raise RuntimeError("Unable to locate test/dsl-st/common.py from vmi-group-store-dense-alias.py")
-
-
-_bootstrap_dsl_st_common()
 
 from common import auto_main, golden_output_case
 from ptodsl import pto
-
 
 VL = 64
 GROUP = 8
@@ -97,7 +80,6 @@ SRC = """module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kerne
 }
 """
 
-
 @pto.jit(
     name="vmi_group_store_dense_alias_kernel",
     target="a5",
@@ -112,18 +94,15 @@ def vmi_group_store_dense_alias_kernel(
 ):
     pass
 
-
 def make_inputs():
     values = (np.arange(VL) % 200).astype(np.uint8)
     sentinel = np.full(DST_ELEMS, SENTINEL, dtype=np.uint8)
     return [values, sentinel]
 
-
 def make_expected(values, sentinel):
     out = np.array(sentinel, dtype=np.uint8).copy()
     out[:VL] = values[:VL]
     return out
-
 
 CASES = [
     golden_output_case(
@@ -135,6 +114,5 @@ CASES = [
         atol=0.0,
     ),
 ]
-
 
 auto_main(globals())

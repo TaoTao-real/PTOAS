@@ -7,27 +7,10 @@
 # INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 # See LICENSE in the root of the software repository for the full text of the License.
 
-from pathlib import Path
-import sys
-
 import numpy as np
-
-
-def _bootstrap_dsl_st_common() -> None:
-    here = Path(__file__).resolve()
-    for candidate in here.parents:
-        common_dir = candidate / "test" / "dsl-st"
-        if (common_dir / "common.py").exists():
-            sys.path.insert(0, str(common_dir))
-            return
-    raise RuntimeError("Unable to locate test/dsl-st/common.py from vcvt_s8_to_f16.py")
-
-
-_bootstrap_dsl_st_common()
 
 from common import auto_main, golden_output_case
 from ptodsl import pto
-
 
 ELEMS = 256
 
@@ -72,7 +55,6 @@ VCVT_SOURCE = """module attributes {pto.target_arch = "a5", pto.kernel_kind = #p
 }
 """
 
-
 @pto.jit(
     name="vcvt_s8_to_f16_kernel",
     target="a5",
@@ -86,7 +68,6 @@ def vcvt_s8_to_f16_kernel(
 ):
     pass
 
-
 def make_inputs():
     src = np.arange(-128, 128, dtype=np.int8)
     if src.size < ELEMS:
@@ -94,11 +75,9 @@ def make_inputs():
     src = src.astype(np.int8)
     return [src]
 
-
 def make_expected(src):
     golden_f16 = src.astype(np.float16)
     return golden_f16.view(np.uint16).astype(np.uint16)
-
 
 CASES = [
     golden_output_case(
@@ -110,6 +89,5 @@ CASES = [
         atol=0.0,
     ),
 ]
-
 
 auto_main(globals())
