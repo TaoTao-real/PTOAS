@@ -134,6 +134,33 @@ SIM_SUITE="${SIM_SUITE:-all}"
 mkdir -p "${BUILD_ROOT}"
 exec > >(tee "${BUILD_ROOT}/vpto-sim.log") 2>&1
 
+# Observation phase: this gate records no verdict yet and can never fail the job
+# it runs in. A pull request pipeline executes the workflow of the *default*
+# branch while the scripts come from the PR checkout, so the first real run of
+# this script happens on somebody else's merge request: an unfinished runner or
+# a failing migrated DSL ST suite must not block that merge request while the
+# gate is still being proven. The announcement below lands in the main log
+# through the redirection above; the remaining artifacts are the ones the
+# workflow uploads from an always() step, and obs-upload is not known to
+# tolerate a missing path, so every one of them has to exist even though nothing
+# ran. Delete this block to turn the simulator gate on; the workflow's prepare
+# step already fails hard when the runner environment itself is incomplete, so
+# this block only covers the validation verdict.
+OBSERVATION_NOTE="Observation phase: the GitCode simulator gate does not enforce yet; no validation was executed."
+echo "${OBSERVATION_NOTE}"
+mkdir -p "${BUILD_ROOT}/cases"
+for placeholder in \
+  "${BUILD_ROOT}/tilelib-st.log" \
+  "${BUILD_ROOT}/ptodsl-dsl-st.log" \
+  "${BUILD_ROOT}/pypto-observation.log" \
+  "${BUILD_ROOT}/cases/parallel-runner.log" \
+  "${BUILD_ROOT}/cases/parallel-summary.tsv"
+do
+  printf '%s\n' "${OBSERVATION_NOTE}" > "${placeholder}"
+done
+echo "Placeholder artifacts written under ${BUILD_ROOT}; nothing was validated."
+exit 0
+
 skip_simulator() {
   echo "::warning::Skipping ${SIM_SUITE} simulator validation: $1"
   echo "Simulator environment is unavailable; no validation was executed."
