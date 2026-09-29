@@ -1,0 +1,43 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for details.
+
+// RUN: pto-test-opt %s -vmi-lower-unified-to-legacy -vmi-mask-granularity-assignment -vmi-layout-assignment | FileCheck %s --check-prefix=ASSIGN
+// RUN: pto-test-opt %s -vmi-lower-unified-to-legacy -vmi-mask-granularity-assignment -vmi-layout-assignment -vmi-to-vpto | FileCheck %s --check-prefix=VPTO
+
+// Dense FP8 widening from a vload should prefer the compact ls4 -> contiguous
+// carrier.  The source lane stride selects the valid unpacked byte lane, so
+// widening needs P0 only and must not materialize P1/P2/P3 plus a merge.
+
+module {
+  func.func @dense_fp8_ls4_widen(
+      %src: !pto.ptr<f8E4M3FN, ub>,
+      %dst: !pto.ptr<f32, ub>,
+      %off: index) {
+    %x = pto.vmi.vload %src[%off]
+        : !pto.ptr<f8E4M3FN, ub> -> !pto.vmi.vreg<128xf8E4M3FN>
+    %y = pto.vmi.vcvt %x
+        : !pto.vmi.vreg<128xf8E4M3FN> -> !pto.vmi.vreg<128xf32>
+    pto.vmi.vstore %y, %dst[%off]
+        : !pto.vmi.vreg<128xf32>, !pto.ptr<f32, ub>
+    return
+  }
+}
+
+// ASSIGN-LABEL: func.func @dense_fp8_ls4_widen(
+// ASSIGN: pto.vmi.load {{.*}} -> !pto.vmi.vreg<128xf8E4M3FN, #pto.vmi.layout<contiguous, lane_stride = 4>>
+// ASSIGN: pto.vmi.extf {{.*}} : !pto.vmi.vreg<128xf8E4M3FN, #pto.vmi.layout<contiguous, lane_stride = 4>> -> !pto.vmi.vreg<128xf32, #pto.vmi.layout<contiguous>>
+
+// VPTO-LABEL: func.func @dense_fp8_ls4_widen(
+// VPTO: pto.vldus
+// VPTO-COUNT-2: pto.vcvt {{.*}} {part = "P0"} : !pto.vreg<256xf8E4M3FN>, !pto.mask<b8> -> !pto.vreg<64xf32>
+// VPTO-NOT: part = "P1"
+// VPTO-NOT: part = "P2"
+// VPTO-NOT: part = "P3"
+// VPTO-NOT: pto.vintlv
+// VPTO-NOT: pto.vmi.
+// VPTO-NOT: !pto.vmi.

@@ -78,14 +78,16 @@ static constexpr PreferredCastLayoutPattern kPreferredCastLayoutPatterns[] = {
     // Exact rows override the default legal relation for small shapes where the
     // compact lane-stride form is the natural cast layout.
     {bits<16>(), bits<32>(), 64, ls(2), c()},
-    {bits<8>(), bits<32>(), 64, ls(4), c()},
+    // Dense FP8/HiF8 widening prefers the compact UNPK4-style carrier over
+    // the default dense {c(), d(4)} factor-4 relation. The latter emits four
+    // part-wise conversions and then recombines them; ls(4) -> contiguous
+    // keeps the valid byte lanes directly addressable by the one-part vcvt.
+    {bits<8>(), bits<32>(), 64, ls(4), c(), CastTypeClass::DenseFP8ToF32},
+    {bits<8>(), bits<32>(), 128, ls(4), c(), CastTypeClass::DenseFP8ToF32},
+    {bits<8>(), bits<32>(), 256, ls(4), c(), CastTypeClass::DenseFP8ToF32},
     // fp4 pair-cast row: f4E2M1x2 (8-bit storage) -> bf16x2 (32-bit pair) at
-    // 128 elements, lowered as UNPK4 + a single P0 vcvt.  Restricted to the
-    // exact packed pair so dense 8-bit -> 32-bit casts at 128 elements keep
-    // the stock default row {c(), d(4)}: both forms are value-correct for
-    // dense data (UNPK4/P0 selects exactly the valid lanes), but letting the
-    // dense cast take this row changes solver outcomes and conflict
-    // diagnostics (vmi_layout_assignment_multi_return_conflict_invalid.pto).
+    // 128 elements, lowered as UNPK4 + a single P0 vcvt. Dense FP8/HiF8 uses
+    // the DenseFP8ToF32 rows above and independently prefers ls(4) -> c.
     {bits<8>(), bits<32>(), 128, ls(4), c(),
      CastTypeClass::F4E2M1x2ToBF16x2},
     {bits<32>(), bits<16>(), 64, c(), ls(2)},

@@ -257,8 +257,11 @@ inline LogicalResult getNarrowCastSupport(VMIVRegType sourceType,
     return success();
   }
   return success(isSpineScopedCastLayoutPair(
-      sourceType, resultType, sourceType.getLayoutAttr(),
-      resultType.getLayoutAttr()));
+                     sourceType, resultType, sourceType.getLayoutAttr(),
+                     resultType.getLayoutAttr()) ||
+                 isDeinterleaved4ToContiguousBF16CastPair(
+                     sourceType, resultType, sourceType.getLayoutAttr(),
+                     resultType.getLayoutAttr()));
 }
 
 LogicalResult VMILayoutSupport::getTruncFSupport(VMITruncFOp op,

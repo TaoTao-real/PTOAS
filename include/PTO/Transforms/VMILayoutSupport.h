@@ -605,6 +605,13 @@ bool isBF16SameLayoutCastPair(VMIVRegType sourceType, VMIVRegType resultType,
                               VMILayoutAttr sourceLayout,
                               VMILayoutAttr resultLayout);
 
+/// True for an already assigned F32 deinterleaved=4 -> BF16 contiguous
+/// narrowing. This is validator-only and is not a layout-solver candidate.
+bool isDeinterleaved4ToContiguousBF16CastPair(VMIVRegType sourceType,
+                                              VMIVRegType resultType,
+                                              VMILayoutAttr sourceLayout,
+                                              VMILayoutAttr resultLayout);
+
 } // namespace mlir::pto
 
 #endif // PTO_TRANSFORMS_VMILAYOUTSUPPORT_H

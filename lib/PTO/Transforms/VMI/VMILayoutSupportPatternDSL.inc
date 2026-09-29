@@ -45,6 +45,10 @@ enum class CastTypeClass {
   // F32 <-> BF16 casts. These may use an equal-layout carrier independently
   // of the conversion's rounding/fastmath lowering choice.
   BF16F32,
+  // Dense FP8/HiF8 widened to F32. These casts prefer the compact
+  // lane-stride-4 source form (UNPK4-style carrier) and a contiguous result,
+  // which lets the widening select the valid byte lanes with one vcvt part.
+  DenseFP8ToF32,
 };
 
 struct LayoutPattern {
@@ -160,16 +164,18 @@ inline bool matchesCastTypeClass(CastTypeClass typeClass, Type sourceType,
     return isa<IntegerType>(sourceType) && isa<IntegerType>(resultType) &&
            cast<IntegerType>(resultType).isUnsigned();
   case CastTypeClass::F4E2M1x2ToBF16x2:
-    // Only the exact packed pair -> packed pair widening is eligible for the
-    // ls(4)/UNPK4 compact form.  A dense 8-bit cast at 128 elements must keep
-    // the stock {c(), d(4)} preferred row, otherwise the solver flips its
-    // result preference from d(4) to c() and downstream conflict diagnostics
-    // change (see vmi_layout_assignment_multi_return_conflict_invalid.pto).
+    // Only the exact packed pair -> packed pair widening is eligible for this
+    // packed-pair-specific layout relation. Dense FP8/HiF8 widening is a
+    // separate class below and intentionally prefers ls(4) -> contiguous.
     return isa<pto::F4E2M1x2Type>(sourceType) &&
            pto::isPTOBF16x2Type(resultType);
   case CastTypeClass::BF16F32:
     return (sourceType.isF32() && resultType.isBF16()) ||
            (sourceType.isBF16() && resultType.isF32());
+  case CastTypeClass::DenseFP8ToF32:
+    return (pto::isPTOFloat8Type(sourceType) ||
+            pto::isPTOHiFloat8Type(sourceType)) &&
+           resultType.isF32();
   }
   llvm_unreachable("unknown cast type class");
 }
@@ -185,6 +191,7 @@ inline unsigned getCastTypeClassSpecificity(CastTypeClass typeClass) {
     return 2;
   case CastTypeClass::F4E2M1x2ToBF16x2:
   case CastTypeClass::BF16F32:
+  case CastTypeClass::DenseFP8ToF32:
     return 3;
   }
   llvm_unreachable("unknown cast type class");

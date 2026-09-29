@@ -74,4 +74,28 @@ bool isBF16SameLayoutCastPair(VMIVRegType sourceType,
          (wideArity % kValue2 == 0 && wideArity / kValue2 == narrowArity);
 }
 
+
+// Checker-side acceptance for already-assigned F32 deinterleaved=4 -> BF16
+// contiguous narrowing. This pair is intentionally not a legal-table
+// candidate: the current solver cannot materialize the parallel d(4) source
+// from a contiguous seed without first choosing an unsupported c -> c cast
+// pair. The lowering handles the pair when a producer has already selected
+// the d(4) source layout.
+bool isDeinterleaved4ToContiguousBF16CastPair(VMIVRegType sourceType,
+                                              VMIVRegType resultType,
+                                              VMILayoutAttr sourceLayout,
+                                              VMILayoutAttr resultLayout) {
+  if (!sourceType || !resultType || !sourceLayout || !resultLayout) {
+    return false;
+  }
+  int64_t elementCount = sourceType.getElementCount();
+  return sourceType.getElementType().isF32() &&
+         resultType.getElementType().isBF16() &&
+         resultType.getElementCount() == elementCount &&
+         (elementCount == 128 || elementCount == 256) &&
+         sourceLayout.isDeinterleaved() && sourceLayout.getFactor() == 4 &&
+         sourceLayout.getLaneStride() == 1 && resultLayout.isContiguous() &&
+         resultLayout.getLaneStride() == 1;
+}
+
 } // namespace mlir::pto
