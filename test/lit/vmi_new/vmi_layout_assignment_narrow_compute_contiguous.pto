@@ -36,5 +36,5 @@ module {
 
 // CHECK-LABEL: func.func @narrow_side_compute_contiguous(
 // CHECK: pto.vmi.vmax {{.*}} : !pto.vmi.vreg<128xbf16, #pto.vmi.layout<contiguous>>, !pto.vmi.vreg<128xbf16, #pto.vmi.layout<contiguous>>, {{.*}} -> !pto.vmi.vreg<128xbf16, #pto.vmi.layout<contiguous>>
-// CHECK: pto.vmi.extf {{.*}} : !pto.vmi.vreg<128xbf16, #pto.vmi.layout<contiguous>> -> !pto.vmi.vreg<128xf32, #pto.vmi.layout<deinterleaved = 2>>
+// CHECK: pto.vmi.extf {{.*}} : !pto.vmi.vreg<128xbf16, #pto.vmi.layout<contiguous>> -> !pto.vmi.vreg<128xf32, #pto.vmi.layout<contiguous>>
 // CHECK-NOT: lane_stride = 2

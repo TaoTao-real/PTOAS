@@ -39,9 +39,7 @@ module {
 // A 256-lane f16 value is only two physical parts, too short to rearrange into
 // four deinterleaved groups, so the reduction keeps the contiguous source and
 // carries one group per part.
-// CHECK: %[[MASK4_D2:.*]] = pto.vmi.ensure_mask_layout %arg1
-// CHECK-SAME: -> !pto.vmi.mask<256xb32, #pto.vmi.layout<deinterleaved = 2>>
-// CHECK: %[[MASK4_C:.*]] = pto.vmi.ensure_mask_granularity %[[MASK4_D2]]
+// CHECK: %[[MASK4_C:.*]] = pto.vmi.ensure_mask_granularity %arg1
 // CHECK-SAME: -> !pto.vmi.mask<256xb16, #pto.vmi.layout<contiguous>>
 // CHECK: %[[OUT4:.*]] = pto.vmi.group_reduce_addf %arg0, %[[MASK4_C]]
 // CHECK-SAME: -> !pto.vmi.vreg<4xf16, #pto.vmi.layout<num_groups = 4, slots = 1>>
@@ -51,9 +49,7 @@ module {
 // CHECK-SAME: %arg0: !pto.vmi.vreg<768xf16, #pto.vmi.layout<contiguous>>
 // CHECK-SAME: %arg1: !pto.vmi.mask<768xb32, #pto.vmi.layout<contiguous>>
 // CHECK-SAME: -> !pto.vmi.vreg<12xf16, #pto.vmi.layout<num_groups = 12, slots = 8>>
-// CHECK: %[[MASK12_D2:.*]] = pto.vmi.ensure_mask_layout %arg1
-// CHECK-SAME: -> !pto.vmi.mask<768xb32, #pto.vmi.layout<deinterleaved = 2>>
-// CHECK: %[[MASK12_C:.*]] = pto.vmi.ensure_mask_granularity %[[MASK12_D2]]
+// CHECK: %[[MASK12_C:.*]] = pto.vmi.ensure_mask_granularity %arg1
 // CHECK-SAME: -> !pto.vmi.mask<768xb16, #pto.vmi.layout<contiguous>>
 // CHECK: %[[SRC12:.*]] = pto.vmi.ensure_layout %arg0
 // CHECK-SAME: -> !pto.vmi.vreg<768xf16, #pto.vmi.layout<deinterleaved = 4>>

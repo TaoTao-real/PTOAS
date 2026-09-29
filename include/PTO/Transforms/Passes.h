@@ -139,6 +139,8 @@ std::unique_ptr<Pass> createVMILegalizeArithSelectPass();
 std::unique_ptr<Pass> createVMILowerUnifiedToLegacyPass();
 std::unique_ptr<Pass> createVMINormalizeSignlessIntToUnsignedPass();
 std::unique_ptr<Pass> createVMIToVPTOPass();
+std::unique_ptr<Pass>
+createVMIToVPTOPass(const VMIToVPTOOptions &options);
 std::unique_ptr<Pass> createVPTOStatefulStreamFusionPass();
 std::unique_ptr<Pass> createPTOExpandSoftLibPass();
 std::unique_ptr<Pass> createInsertTemplateAttributesPass();

@@ -991,7 +991,9 @@ static void appendVMISemanticPipeline(OpPassManager &pm) {
   // d2/d4 -> contiguous right after it. Without this, vmi-to-vpto cannot
   // lower the multi-part contiguous E2B form as a single packet per part.
   pm.addPass(pto::createVMIExpandImplicitEnsureLayoutsPass());
-  pm.addPass(pto::createVMIToVPTOPass());
+  pto::VMIToVPTOOptions vmiToVPTOOptions;
+  vmiToVPTOOptions.enableVmiFastmath = enableVmiFastmath;
+  pm.addPass(pto::createVMIToVPTOPass(vmiToVPTOOptions));
   pm.addPass(pto::createVPTOStatefulStreamFusionPass());
 }
 

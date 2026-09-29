@@ -36,22 +36,29 @@ module {
 
 // ASSIGN-LABEL: func.func @scalar_brc_vexpdif_group_store
 // ASSIGN: %[[X:.*]] = pto.vmi.load
-// ASSIGN-SAME: -> !pto.vmi.vreg<128xf32, #pto.vmi.layout<deinterleaved = 2>>
+// ASSIGN-SAME: -> !pto.vmi.vreg<128xf32, #pto.vmi.layout<contiguous>>
 // ASSIGN: %[[MAX:.*]] = pto.vmi.group_broadcast_load
-// ASSIGN-SAME: -> !pto.vmi.vreg<128xf32, #pto.vmi.layout<deinterleaved = 2>>
+// ASSIGN-SAME: -> !pto.vmi.vreg<128xf32, #pto.vmi.layout<contiguous>>
 // ASSIGN: %[[EXP:.*]] = pto.vmi.vexpdif %[[X]], %[[MAX]]
-// ASSIGN-SAME: -> !pto.vmi.vreg<128xf32, #pto.vmi.layout<deinterleaved = 2>>
+// ASSIGN-SAME: -> !pto.vmi.vreg<128xf32, #pto.vmi.layout<contiguous>>
 // ASSIGN: %[[NARROW:.*]] = pto.vmi.truncf %[[EXP]]
 // ASSIGN-SAME: -> !pto.vmi.vreg<128xbf16, #pto.vmi.layout<contiguous>>
 // ASSIGN-NOT: pto.vmi.ensure_layout
 // ASSIGN: pto.vmi.group_store %[[NARROW]]
 
 // LOWER-LABEL: func.func @scalar_brc_vexpdif_group_store
-// LOWER: %[[X0:.*]], %[[X1:.*]] = pto.vldsx2 {{.*}}, "DINTLV_B32"
+// LOWER: %[[X0:.*]] = pto.vlds {{.*}} : {{.*}} -> !pto.vreg<64xf32>
+// LOWER: %[[X1:.*]] = pto.vlds {{.*}} : {{.*}} -> !pto.vreg<64xf32>
 // LOWER: %[[MAX0:.*]] = pto.vlds {{.*}} {dist = "BRC_B32"}
 // LOWER: %[[MAX1:.*]] = pto.vlds {{.*}} {dist = "BRC_B32"}
-// LOWER: pto.vexpdif %[[X0]], %[[MAX0]]
-// LOWER: pto.vexpdif %[[X1]], %[[MAX1]]
+// LOWER: pto.vexpdif %[[X0]], %[[MAX0]], {{.*}}, "ODD"
+// LOWER: pto.vexpdif %[[X1]], %[[MAX1]], {{.*}}, "ODD"
+// LOWER: pto.vcvt {{.*}} {part = "EVEN", rnd = "R", sat = "SAT"}
+// LOWER: pto.vcvt {{.*}} {part = "EVEN", rnd = "R", sat = "SAT"}
+// LOWER: pto.vbitcast
+// LOWER: pto.vbitcast
+// LOWER: pto.vdintlv
+// LOWER: pto.vbitcast
 // LOWER-NOT: pto.vpack
 // LOWER: pto.vsstb
 // LOWER-NOT: pto.vmi.

@@ -692,6 +692,8 @@ static void collectMatchingCastFacts(
   for (const LegalCastLayoutPattern &pattern : patterns) {
     if (!matchesElementBitsPattern(pattern.sourceBits, sourceBits) ||
         !matchesElementBitsPattern(pattern.resultBits, resultBits) ||
+        !matchesElementCountPattern(pattern.elementCounts,
+                                    sourceType.getElementCount()) ||
         !matchesCastTypeClass(pattern.typeClass, sourceType.getElementType(),
                               resultType.getElementType())) {
       continue;
@@ -722,15 +724,20 @@ matchHighPriorityCastLayoutPattern(const HighPriorityCastLayoutPattern &pattern,
   MLIRContext *ctx = sourceType.getContext();
   if (!matchesElementBitsPattern(pattern.sourceBits, sourceBits) ||
       !matchesElementBitsPattern(pattern.resultBits, resultBits) ||
+      !matchesElementCountPattern(pattern.elementCounts,
+                                  sourceType.getElementCount()) ||
       !matchesCastTypeClass(pattern.typeClass, sourceType.getElementType(),
                             resultType.getElementType())) {
     return std::nullopt;
   }
 
+  int64_t numGroups = pattern.numGroupsFromElementCount
+                          ? sourceType.getElementCount()
+                          : 0;
   VMILayoutAttr sourceLayout =
-      materializeLayoutPattern(ctx, pattern.sourceLayout);
+      materializeLayoutPattern(ctx, pattern.sourceLayout, numGroups);
   VMILayoutAttr resultLayout =
-      materializeLayoutPattern(ctx, pattern.resultLayout);
+      materializeLayoutPattern(ctx, pattern.resultLayout, numGroups);
   auto assignedSourceType = VMIVRegType::get(
       ctx, sourceType.getElementCount(), sourceType.getElementType(),
       sourceLayout);
@@ -761,6 +768,7 @@ getHighPriorityCastLayoutFactImpl(VMIVRegType sourceType,
   }
 
   std::optional<VMICastLayoutFact> selected;
+  unsigned selectedSpecificity = 0;
   for (const HighPriorityCastLayoutPattern &pattern :
        kHighPriorityCastLayoutPatterns) {
     std::optional<VMICastLayoutFact> match = matchHighPriorityCastLayoutPattern(
@@ -768,13 +776,18 @@ getHighPriorityCastLayoutFactImpl(VMIVRegType sourceType,
     if (!match) {
       continue;
     }
-    if (selected) {
+    unsigned specificity = getCastTypeClassSpecificity(pattern.typeClass);
+    if (!selected || specificity > selectedSpecificity) {
+      selected = *match;
+      selectedSpecificity = specificity;
+      continue;
+    }
+    if (specificity == selectedSpecificity) {
       if (reason) {
         *reason = "high-priority cast layout table has ambiguous matching rows";
       }
       return failure();
     }
-    selected = *match;
   }
   if (!selected) {
     if (reason) {
@@ -834,6 +847,7 @@ selectPreferredCastLayoutPattern(
     const PreferredCastPatternQuery &query) {
   const PreferredCastLayoutPattern *selected = nullptr;
   bool selectedIsExact = false;
+  unsigned selectedSpecificity = 0;
   for (const PreferredCastLayoutPattern &pattern : patterns) {
     bool elementBitsMismatch =
         !matchesElementBitsPattern(pattern.sourceBits, query.sourceBits) ||
@@ -847,12 +861,17 @@ selectPreferredCastLayoutPattern(
     if (isExact && pattern.elementCount != query.elementCount) {
       continue;
     }
-    if (!selected || (isExact && !selectedIsExact)) {
+    unsigned specificity = getCastTypeClassSpecificity(pattern.typeClass);
+    bool isMoreSpecific =
+        !selected || specificity > selectedSpecificity ||
+        (specificity == selectedSpecificity && isExact && !selectedIsExact);
+    if (isMoreSpecific) {
       selected = &pattern;
       selectedIsExact = isExact;
+      selectedSpecificity = specificity;
       continue;
     }
-    if (isExact == selectedIsExact) {
+    if (specificity == selectedSpecificity && isExact == selectedIsExact) {
       if (query.reason) {
         *query.reason =
             (Twine(query.tableName) + " has ambiguous matching rows").str();
@@ -891,11 +910,16 @@ static FailureOr<VMICastLayoutFact> getPreferredCastLayoutFactImpl(
   }
 
   MLIRContext *ctx = request.sourceType.getContext();
+  int64_t numGroups = (*selected)->numGroupsFromElementCount
+                          ? request.sourceType.getElementCount()
+                          : 0;
   return makeCastLayoutFact(sourceBits, resultBits,
                             materializeLayoutPattern(ctx,
-                                                     (*selected)->sourceLayout),
+                                                     (*selected)->sourceLayout,
+                                                     numGroups),
                             materializeLayoutPattern(ctx,
-                                                     (*selected)->resultLayout),
+                                                     (*selected)->resultLayout,
+                                                     numGroups),
                             request.priority);
 }
 

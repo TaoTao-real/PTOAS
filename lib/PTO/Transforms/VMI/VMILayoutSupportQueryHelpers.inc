@@ -263,9 +263,37 @@ inline LogicalResult getNarrowCastSupport(VMIVRegType sourceType,
 
 LogicalResult VMILayoutSupport::getTruncFSupport(VMITruncFOp op,
                                                  std::string *reason) const {
-  return getNarrowCastSupport(cast<VMIVRegType>(op.getSource().getType()),
-                              cast<VMIVRegType>(op.getResult().getType()),
-                              reason);
+  auto sourceType = cast<VMIVRegType>(op.getSource().getType());
+  auto resultType = cast<VMIVRegType>(op.getResult().getType());
+  if (succeeded(getNarrowCastSupport(sourceType, resultType, reason))) {
+    return success();
+  }
+  StringAttr rounding = op->getAttrOfType<StringAttr>("rounding");
+  bool zeroRound = rounding && rounding.getValue() == "Z";
+  VMILayoutAttr sourceLayout = sourceType.getLayoutAttr();
+  VMILayoutAttr resultLayout = resultType.getLayoutAttr();
+  // Permit already-assigned reduction cast pairs whose matching group-slot
+  // layouts are lowered by the dedicated zero-paired vdintlv path. This is a
+  // validation exception only; it does not add a layout-assignment candidate.
+  bool sameGroupSlotReduceLayout =
+      sourceType.getElementType().isF32() &&
+      resultType.getElementType().isBF16() &&
+      sourceType.getElementCount() == resultType.getElementCount() &&
+      (sourceType.getElementCount() == 2 ||
+       sourceType.getElementCount() == 4 ||
+       sourceType.getElementCount() == 8) &&
+      sourceLayout && resultLayout && sourceLayout.isGroupSlots() &&
+      resultLayout.isGroupSlots() &&
+      sourceLayout.getNumGroups() == sourceType.getElementCount() &&
+      sourceLayout.getNumGroups() == resultLayout.getNumGroups() &&
+      sourceLayout.getSlots() == resultLayout.getSlots() &&
+      (sourceLayout.getSlots() == 1 || sourceLayout.getSlots() == 8) &&
+      sourceLayout.getLaneStride() == resultLayout.getLaneStride();
+  bool sameRegularLayoutBF16Pair =
+      isBF16SameLayoutCastPair(sourceType, resultType, sourceLayout,
+                               resultLayout);
+  return success(zeroRound &&
+                 (sameRegularLayoutBF16Pair || sameGroupSlotReduceLayout));
 }
 
 LogicalResult VMILayoutSupport::getExtFSupport(VMIExtFOp op,
@@ -277,7 +305,12 @@ LogicalResult VMILayoutSupport::getExtFSupport(VMIExtFOp op,
           resultType.getLayoutAttr(), reason))) {
     return success();
   }
-  return success(isSpineScopedCastLayoutPair(
+  if (isSpineScopedCastLayoutPair(sourceType, resultType,
+                                  sourceType.getLayoutAttr(),
+                                  resultType.getLayoutAttr())) {
+    return success();
+  }
+  return success(isBF16SameLayoutCastPair(
       sourceType, resultType, sourceType.getLayoutAttr(),
       resultType.getLayoutAttr()));
 }

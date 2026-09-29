@@ -1,0 +1,160 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: pto-test-opt %s -vmi-lower-unified-to-legacy -vmi-to-vpto=vmi-fastmath=true | FileCheck %s
+// RUN: pto-test-opt %s -vmi-lower-unified-to-legacy -vmi-to-vpto=vmi-fastmath=false | FileCheck %s --check-prefix=STRICT
+
+module {
+  func.func @trunc_d2(
+      %src: !pto.vmi.vreg<256xf32, #pto.vmi.layout<deinterleaved = 2>>)
+      -> !pto.vmi.vreg<256xbf16, #pto.vmi.layout<deinterleaved = 2>> {
+    %result = pto.vmi.vcvt %src {rounding = "Z", saturate = "NOSAT"}
+        : !pto.vmi.vreg<256xf32, #pto.vmi.layout<deinterleaved = 2>>
+        -> !pto.vmi.vreg<256xbf16, #pto.vmi.layout<deinterleaved = 2>>
+    return %result : !pto.vmi.vreg<256xbf16,
+                                     #pto.vmi.layout<deinterleaved = 2>>
+  }
+
+  func.func @trunc_d4(
+      %src: !pto.vmi.vreg<256xf32, #pto.vmi.layout<deinterleaved = 4>>)
+      -> !pto.vmi.vreg<256xbf16, #pto.vmi.layout<deinterleaved = 4>> {
+    %result = pto.vmi.vcvt %src {rounding = "Z", saturate = "NOSAT"}
+        : !pto.vmi.vreg<256xf32, #pto.vmi.layout<deinterleaved = 4>>
+        -> !pto.vmi.vreg<256xbf16, #pto.vmi.layout<deinterleaved = 4>>
+    return %result : !pto.vmi.vreg<256xbf16,
+                                     #pto.vmi.layout<deinterleaved = 4>>
+  }
+
+  func.func @trunc_ls2(
+      %src: !pto.vmi.vreg<128xf32,
+                           #pto.vmi.layout<contiguous, lane_stride = 2>>)
+      -> !pto.vmi.vreg<128xbf16,
+                       #pto.vmi.layout<contiguous, lane_stride = 2>> {
+    %result = pto.vmi.vcvt %src {rounding = "Z", saturate = "NOSAT"}
+        : !pto.vmi.vreg<128xf32,
+                        #pto.vmi.layout<contiguous, lane_stride = 2>>
+        -> !pto.vmi.vreg<128xbf16,
+                         #pto.vmi.layout<contiguous, lane_stride = 2>>
+    return %result : !pto.vmi.vreg<128xbf16,
+                                     #pto.vmi.layout<contiguous, lane_stride = 2>>
+  }
+
+  func.func @trunc_ls4(
+      %src: !pto.vmi.vreg<64xf32,
+                          #pto.vmi.layout<contiguous, lane_stride = 4>>)
+      -> !pto.vmi.vreg<64xbf16,
+                       #pto.vmi.layout<contiguous, lane_stride = 4>> {
+    %result = pto.vmi.vcvt %src {rounding = "Z", saturate = "NOSAT"}
+        : !pto.vmi.vreg<64xf32,
+                        #pto.vmi.layout<contiguous, lane_stride = 4>>
+        -> !pto.vmi.vreg<64xbf16,
+                         #pto.vmi.layout<contiguous, lane_stride = 4>>
+    return %result : !pto.vmi.vreg<64xbf16,
+                                     #pto.vmi.layout<contiguous, lane_stride = 4>>
+  }
+
+  func.func @ext_d2(
+      %src: !pto.vmi.vreg<256xbf16, #pto.vmi.layout<deinterleaved = 2>>)
+      -> !pto.vmi.vreg<256xf32, #pto.vmi.layout<deinterleaved = 2>> {
+    %result = pto.vmi.vcvt %src
+        : !pto.vmi.vreg<256xbf16, #pto.vmi.layout<deinterleaved = 2>>
+        -> !pto.vmi.vreg<256xf32, #pto.vmi.layout<deinterleaved = 2>>
+    return %result : !pto.vmi.vreg<256xf32,
+                                     #pto.vmi.layout<deinterleaved = 2>>
+  }
+
+  func.func @ext_d4(
+      %src: !pto.vmi.vreg<256xbf16, #pto.vmi.layout<deinterleaved = 4>>)
+      -> !pto.vmi.vreg<256xf32, #pto.vmi.layout<deinterleaved = 4>> {
+    %result = pto.vmi.vcvt %src
+        : !pto.vmi.vreg<256xbf16, #pto.vmi.layout<deinterleaved = 4>>
+        -> !pto.vmi.vreg<256xf32, #pto.vmi.layout<deinterleaved = 4>>
+    return %result : !pto.vmi.vreg<256xf32,
+                                     #pto.vmi.layout<deinterleaved = 4>>
+  }
+
+  func.func @ext_ls2(
+      %src: !pto.vmi.vreg<128xbf16,
+                           #pto.vmi.layout<contiguous, lane_stride = 2>>)
+      -> !pto.vmi.vreg<128xf32,
+                       #pto.vmi.layout<contiguous, lane_stride = 2>> {
+    %result = pto.vmi.vcvt %src
+        : !pto.vmi.vreg<128xbf16,
+                        #pto.vmi.layout<contiguous, lane_stride = 2>>
+        -> !pto.vmi.vreg<128xf32,
+                         #pto.vmi.layout<contiguous, lane_stride = 2>>
+    return %result : !pto.vmi.vreg<128xf32,
+                                     #pto.vmi.layout<contiguous, lane_stride = 2>>
+  }
+
+  func.func @ext_ls4(
+      %src: !pto.vmi.vreg<64xbf16,
+                          #pto.vmi.layout<contiguous, lane_stride = 4>>)
+      -> !pto.vmi.vreg<64xf32,
+                       #pto.vmi.layout<contiguous, lane_stride = 4>> {
+    %result = pto.vmi.vcvt %src
+        : !pto.vmi.vreg<64xbf16,
+                        #pto.vmi.layout<contiguous, lane_stride = 4>>
+        -> !pto.vmi.vreg<64xf32,
+                         #pto.vmi.layout<contiguous, lane_stride = 4>>
+    return %result : !pto.vmi.vreg<64xf32,
+                                     #pto.vmi.layout<contiguous, lane_stride = 4>>
+  }
+}
+
+// CHECK-LABEL: func.func @trunc_d2(
+// CHECK-NOT: pto.vcvt
+// CHECK: pto.vdintlv
+// CHECK: pto.vdintlv
+// CHECK-NOT: pto.vcvt
+// CHECK-LABEL: func.func @trunc_d4(
+// CHECK: pto.vdintlv
+// CHECK: pto.vdintlv
+// CHECK-NOT: pto.vcvt
+// CHECK-LABEL: func.func @trunc_ls2(
+// CHECK: pto.vdintlv
+// CHECK: pto.vdintlv
+// CHECK-NOT: pto.vcvt
+// CHECK-LABEL: func.func @trunc_ls4(
+// CHECK: pto.vdintlv
+// CHECK: pto.vdintlv
+// CHECK-NOT: pto.vcvt
+// CHECK-LABEL: func.func @ext_d2(
+// CHECK: %[[LOW0:.*]], %[[HIGH0:.*]] = pto.vintlv
+// CHECK: %[[LOW1:.*]], %[[HIGH1:.*]] = pto.vintlv
+// CHECK: pto.vbitcast %[[LOW0]]
+// CHECK: pto.vbitcast %[[HIGH0]]
+// CHECK: pto.vbitcast %[[LOW1]]
+// CHECK: pto.vbitcast %[[HIGH1]]
+// CHECK-NOT: pto.vcvt
+// CHECK-LABEL: func.func @ext_d4(
+// CHECK: pto.vintlv
+// CHECK: pto.vintlv
+// CHECK-NOT: pto.vcvt
+// CHECK-LABEL: func.func @ext_ls2(
+// CHECK: pto.vintlv
+// CHECK: pto.vintlv
+// CHECK-NOT: pto.vcvt
+// CHECK-LABEL: func.func @ext_ls4(
+// CHECK: pto.vintlv
+// CHECK: pto.vintlv
+
+// STRICT-LABEL: func.func @trunc_d2(
+// STRICT: pto.vcvt
+// STRICT: pto.vbitcast
+// STRICT: pto.vdintlv
+// STRICT-LABEL: func.func @trunc_d4(
+// STRICT: pto.vcvt
+// STRICT-LABEL: func.func @trunc_ls2(
+// STRICT: pto.vcvt
+// STRICT: pto.vbitcast
+// STRICT: pto.vdintlv
+// STRICT-LABEL: func.func @trunc_ls4(
+// STRICT: pto.vcvt
+// STRICT: pto.vbitcast
+// STRICT: pto.vdintlv

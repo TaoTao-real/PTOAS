@@ -73,9 +73,7 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 // ASSIGN-SAME: -> !pto.vmi.vreg<256xf32, #pto.vmi.layout<deinterleaved = 4>>
 // ASSIGN: %[[AMAX:.*]] = pto.vmi.group_reduce_maxf %[[X_F32]]
 // ASSIGN-SAME: -> !pto.vmi.vreg<8xf32, #pto.vmi.layout<num_groups = 8, slots = 8>>
-// ASSIGN: %[[SCALE_LS2:.*]] = pto.vmi.truncf %[[AMAX]]
-// ASSIGN-SAME: -> !pto.vmi.vreg<8xbf16, #pto.vmi.layout<num_groups = 8, slots = 8, lane_stride = 2>>
-// ASSIGN: %[[SCALE:.*]] = pto.vmi.ensure_layout %[[SCALE_LS2]]
+// ASSIGN: %[[SCALE:.*]] = pto.vmi.truncf %[[AMAX]]
 // ASSIGN-SAME: -> !pto.vmi.vreg<8xbf16, #pto.vmi.layout<num_groups = 8, slots = 8>>
 // ASSIGN-NOT: pto.vmi.store
 // ASSIGN-NOT: pto.vmi.load
@@ -103,9 +101,8 @@ module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<ve
 // VPTO-COUNT-3: pto.vmax {{.*}} : !pto.vreg<64xf32>, !pto.vreg<64xf32>, !pto.mask<b32>
 // VPTO: pto.vcgmax
 // VPTO: pto.vcvt {{.*}} {part = "EVEN", rnd = "R", sat = "NOSAT"} : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<128xbf16>
-// VPTO: pto.vbitcast {{.*}} : !pto.vreg<128xbf16> -> !pto.vreg<64xui32>
-// VPTO: pto.vpack {{.*}}, "LOWER" : !pto.vreg<64xui32> -> !pto.vreg<128xui16>
-// VPTO: pto.vbitcast {{.*}} : !pto.vreg<128xui16> -> !pto.vreg<128xbf16>
+// VPTO: pto.vci {{.*}} : i16 -> !pto.vreg<128xui16>
+// VPTO: pto.vshrs {{.*}} : !pto.vreg<128xui16>, i16, !pto.mask<b16> -> !pto.vreg<128xui16>
 // VPTO: pto.vselr
 // VPTO-COUNT-2: pto.vmul {{.*}} : !pto.vreg<128xbf16>, !pto.vreg<128xbf16>, !pto.mask<b16> -> !pto.vreg<128xbf16>
 // VPTO: %[[Q_LOW:.*]], %[[Q_HIGH:.*]] = pto.vintlv

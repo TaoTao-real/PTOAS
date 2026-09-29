@@ -597,6 +597,14 @@ public:
                                 std::string *reason = nullptr) const;
 };
 
+/// True when an already assigned BF16/F32 cast pair preserves one of the
+/// regular physical lane maps that the pairwise intlv/dintlv lowering can
+/// preserve.  This is validation-only: it is not a layout candidate and must
+/// not participate in layout assignment or propagation.
+bool isBF16SameLayoutCastPair(VMIVRegType sourceType, VMIVRegType resultType,
+                              VMILayoutAttr sourceLayout,
+                              VMILayoutAttr resultLayout);
+
 } // namespace mlir::pto
 
 #endif // PTO_TRANSFORMS_VMILAYOUTSUPPORT_H

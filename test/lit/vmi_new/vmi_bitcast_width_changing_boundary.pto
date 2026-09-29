@@ -119,9 +119,7 @@ module {
 // ASSIGN-SAME: !pto.vmi.vreg<64xi8, #pto.vmi.layout<contiguous, lane_stride = 4>>
 
 // ASSIGN-LABEL: func.func @wc_source_boundary
-// ASSIGN: pto.vmi.extf
-// ASSIGN-SAME: -> !pto.vmi.vreg<128xf32, #pto.vmi.layout<deinterleaved = 2>>
-// ASSIGN: %[[E:.*]] = pto.vmi.ensure_layout
+// ASSIGN: %[[E:.*]] = pto.vmi.extf
 // ASSIGN-SAME: -> !pto.vmi.vreg<128xf32, #pto.vmi.layout<contiguous>>
 // ASSIGN: %[[C:.*]] = pto.vmi.bitcast %[[E]]
 // ASSIGN-SAME: -> !pto.vmi.vreg<256xbf16, #pto.vmi.layout<contiguous>>
@@ -160,7 +158,7 @@ module {
 
 // LOWER-LABEL: func.func @wc_source_boundary
 // LOWER: pto.vlds
-// LOWER: pto.vcvt
+// LOWER: pto.vdup
 // LOWER: pto.vintlv
 // LOWER: pto.vbitcast
 // LOWER: pto.vsts

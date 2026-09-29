@@ -345,6 +345,8 @@ ptoas --version
 
 `--vpto-scheduler-remat` 是 A5 VPTO Vector 优化，必须使用 `--pto-backend=vpto`，且只能与 `--vpto-scheduler=on` 配合。A5 driver 在用户没有显式指定时会随默认的 scheduler `on` 一起启用；可通过 `--vpto-scheduler-remat=false` 单独关闭。它会在首次调度后分析静态压力，但仅在某个调度区间的 vector 峰值严格超过模型上限 32 时，从循环携带值递归构造由目标模型认可的 cheap producer DAG，在前驱深度和代码膨胀预算内于消费点附近重建计算，再重新分析并调度一次；predicate 峰值超过模型上限 7 不会单独触发 vector remat。Planner 会把预算内的候选交给二次调度，即使估算尚未完全达到降压目标；第二次调度失败、没有降低静态 vector 峰值或任一有上限的寄存器压力集最终仍超限时，会回滚全部克隆、use 替换和首次调度顺序。
 
+`--vmi-fastmath` 默认开启。部分 `f32` 到 `bf16` 的 `Z` 舍入且不饱和快速转换可能改变 NaN 结果（例如 `0x7F800001` 可被截断为正无穷 `0x7F80`）；需要保留这类 NaN 转换结果时，可显式传入 `--vmi-fastmath=false`。详见[编译选项说明](docs/zh/tileop/user_guide/compile_options.md)。
+
 ### 5.2 Python 接口 (Python API)
 
 在支持的 `ptoas` 安装环境中，PTO Dialect 与 PTODSL 都可以直接导入。

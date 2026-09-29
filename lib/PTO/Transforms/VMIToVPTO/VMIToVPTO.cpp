@@ -76,5 +76,10 @@ namespace {
 } // namespace mlir
 
 std::unique_ptr<mlir::Pass> mlir::pto::createVMIToVPTOPass() {
-  return std::make_unique<mlir::pto::VMIToVPTOPass>();
+  return createVMIToVPTOPass(VMIToVPTOOptions{});
+}
+
+std::unique_ptr<mlir::Pass> mlir::pto::createVMIToVPTOPass(
+    const VMIToVPTOOptions &options) {
+  return std::make_unique<mlir::pto::VMIToVPTOPass>(options);
 }

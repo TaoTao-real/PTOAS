@@ -49,6 +49,18 @@ module {
         -> (!pto.vreg<128xf16>, !pto.vreg<128xf16>)
     return %p0, %p1 : !pto.vreg<128xf16>, !pto.vreg<128xf16>
   }
+
+  func.func @vmi_to_vpto_truncf_f32_to_bf16_same_layout(
+      %src: !pto.vmi.vreg<128xf32, #pto.vmi.layout<contiguous>>)
+      -> !pto.vreg<128xbf16> {
+    %narrow = pto.vmi.vcvt %src {saturate = "SAT"}
+        : !pto.vmi.vreg<128xf32, #pto.vmi.layout<contiguous>>
+        -> !pto.vmi.vreg<128xbf16, #pto.vmi.layout<contiguous>>
+    %p = "pto.vmi.unpack"(%narrow)
+        : (!pto.vmi.vreg<128xbf16, #pto.vmi.layout<contiguous>>)
+        -> !pto.vreg<128xbf16>
+    return %p : !pto.vreg<128xbf16>
+  }
 }
 
 // CHECK-LABEL: func.func @vmi_to_vpto_truncf_f32_to_f16(
@@ -75,6 +87,18 @@ module {
 // CHECK: %[[ODD1:.*]] = pto.vcvt {{.*}}, {{.*}} {part = "ODD", rnd = "R", sat = "SAT"} : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<128xf16>
 // CHECK: %[[OUT1:.*]] = pto.vor %[[EVEN1]], %[[ODD1]]
 // CHECK: return %[[OUT0]], %[[OUT1]]
+// CHECK-NOT: pto.vmi.
+// CHECK-NOT: !pto.vmi.
+// CHECK-NOT: unrealized_conversion_cast
+
+// CHECK-LABEL: func.func @vmi_to_vpto_truncf_f32_to_bf16_same_layout(
+// CHECK: %[[EVEN0:.*]] = pto.vcvt {{.*}} {part = "EVEN", rnd = "R", sat = "SAT"} : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<128xbf16>
+// CHECK: %[[EVEN1:.*]] = pto.vcvt {{.*}} {part = "EVEN", rnd = "R", sat = "SAT"} : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<128xbf16>
+// CHECK: %[[CARRIER0:.*]] = pto.vbitcast %[[EVEN0]] : !pto.vreg<128xbf16> -> !pto.vreg<128xi16>
+// CHECK: %[[CARRIER1:.*]] = pto.vbitcast %[[EVEN1]] : !pto.vreg<128xbf16> -> !pto.vreg<128xi16>
+// CHECK: %[[LOW:.*]], {{.*}} = pto.vdintlv %[[CARRIER0]], %[[CARRIER1]]
+// CHECK: %{{.*}} = pto.vbitcast %[[LOW]] : !pto.vreg<128xi16> -> !pto.vreg<128xbf16>
+// CHECK-NOT: part = "ODD"
 // CHECK-NOT: pto.vmi.
 // CHECK-NOT: !pto.vmi.
 // CHECK-NOT: unrealized_conversion_cast

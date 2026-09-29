@@ -666,7 +666,8 @@ static void populateVMIArithmeticPatterns(
 }
 
 static void populateVMIReductionAndConversionPatterns(
-    VMIToVPTOTypeConverter &typeConverter, RewritePatternSet &patterns) {
+    VMIToVPTOTypeConverter &typeConverter, RewritePatternSet &patterns,
+    bool enableVmiFastmath) {
   patterns.add<
       OneToNVMIReduceAddIOpPattern, OneToNVMIReduceAddFOpPattern,
       OneToNVMIGroupBroadcastOpPattern, OneToNVMIVdhistOpPattern,
@@ -675,7 +676,7 @@ static void populateVMIReductionAndConversionPatterns(
       OneToNVMIReduceMinMaxOpPattern<VMIReduceMinFOp, VcminOp, VminOp>,
       OneToNVMIReduceMinMaxOpPattern<VMIReduceMaxIOp, VcmaxOp, VmaxOp>,
       OneToNVMIReduceMinMaxOpPattern<VMIReduceMinIOp, VcminOp, VminOp>,
-      OneToNVMIExtFOpPattern, OneToNVMITruncFOpPattern,
+      OneToNVMIExtFOpPattern,
       OneToNVMIVUnzipOpPattern, OneToNVMIVZipOpPattern,
       OneToNVMIExtIOpPattern<VMIExtSIOp>, OneToNVMIExtIOpPattern<VMIExtUIOp>,
       OneToNVMITruncIOpPattern, OneToNVMIFPToSIOpPattern,
@@ -685,6 +686,9 @@ static void populateVMIReductionAndConversionPatterns(
       OneToNVMIInterleaveOpPattern<VMIVdintlvOp, VdintlvOp>,
       OneToNVMIChannelSplitOpPattern, OneToNVMIChannelMergeOpPattern,
       OneToNVMIShuffleOpPattern>(typeConverter, patterns.getContext());
+  patterns.add<OneToNVMITruncFOpPattern>(typeConverter,
+                                         patterns.getContext(),
+                                         enableVmiFastmath);
   patterns.add<OneToNVMIGroupBroadcastLoadOpPattern>(
       typeConverter, patterns.getContext());
   patterns.add<
@@ -707,10 +711,12 @@ static void populateVMIReductionAndConversionPatterns(
 
 void populateVMIConversionPatterns(VMIToVPTOTypeConverter &typeConverter,
                                    RewritePatternSet &patterns,
-                                   VMILoadSafetyPolicy loadSafety) {
+                                   VMILoadSafetyPolicy loadSafety,
+                                   bool enableVmiFastmath) {
   populateVMIStructuralAndMemoryPatterns(typeConverter, patterns, loadSafety);
   populateVMIArithmeticPatterns(typeConverter, patterns);
-  populateVMIReductionAndConversionPatterns(typeConverter, patterns);
+  populateVMIReductionAndConversionPatterns(typeConverter, patterns,
+                                            enableVmiFastmath);
 }
 
 static WalkResult verifyNoResidualCreateMask(Operation *op) {

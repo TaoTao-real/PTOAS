@@ -45,8 +45,11 @@
 | `--plan-memory-order-by-size` | 无 | 关闭 | 同一地址空间内优先规划较大的本地 buffer，再套用基础复用策略 |
 | `--enable-insert-sync` | 无 | 关闭 | 启用常规自动同步插入 |
 | `--enable-inject-barrier-all-sync` | 无 | 关闭 | 启用更保守的同步插入策略 |
+| `--vmi-fastmath` | 无 | 开启 | 启用可能改变 NaN 结果的 VMI 转换快速路径 |
 
 上表中的两个自动同步选项互斥：`--enable-insert-sync` 和 `--enable-inject-barrier-all-sync` 一次只能启用一个，同时指定会直接报错。
+
+`--vmi-fastmath` 默认开启。部分 `f32` 到 `bf16` 的 `Z` 舍入且不饱和快速转换会使用位级截断；例如 `f32` 位模式 `0x7F800001` 可能变为表示正无穷的 `bf16` 位模式 `0x7F80`。如果程序要求保留这类 NaN 结果，请显式传入 `--vmi-fastmath=false`。
 
 ## 选项使用顺序
 

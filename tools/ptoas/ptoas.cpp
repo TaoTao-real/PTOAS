@@ -146,6 +146,13 @@ llvm::cl::opt<bool> enableInsertSync("enable-insert-sync",
                                             llvm::cl::desc("Enable automatic synchronization insertion pass"),
                                             llvm::cl::init(false));
 
+llvm::cl::opt<bool> enableVmiFastmath(
+    "vmi-fastmath",
+    llvm::cl::desc("Enable VMI conversion fast paths that may change NaN "
+                   "results, including f32-to-bf16 narrowing. Enabled by "
+                   "default; pass --vmi-fastmath=false to disable"),
+    llvm::cl::init(true));
+
 llvm::cl::opt<bool> planMemoryOrderBySize(
     "plan-memory-order-by-size",
     llvm::cl::desc("Plan larger local buffers first inside one AddressSpace "

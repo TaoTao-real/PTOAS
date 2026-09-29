@@ -42,6 +42,9 @@ enum class CastTypeClass {
   // f4E1M2x2 stays on the stock default row {c(), d(4)} (factor 4, still
   // value-correct, just no compact form), so no wider predicate is needed.
   F4E2M1x2ToBF16x2,
+  // F32 <-> BF16 casts. These may use an equal-layout carrier independently
+  // of the conversion's rounding/fastmath lowering choice.
+  BF16F32,
 };
 
 struct LayoutPattern {
@@ -164,6 +167,25 @@ inline bool matchesCastTypeClass(CastTypeClass typeClass, Type sourceType,
     // change (see vmi_layout_assignment_multi_return_conflict_invalid.pto).
     return isa<pto::F4E2M1x2Type>(sourceType) &&
            pto::isPTOBF16x2Type(resultType);
+  case CastTypeClass::BF16F32:
+    return (sourceType.isF32() && resultType.isBF16()) ||
+           (sourceType.isBF16() && resultType.isF32());
+  }
+  llvm_unreachable("unknown cast type class");
+}
+
+inline unsigned getCastTypeClassSpecificity(CastTypeClass typeClass) {
+  switch (typeClass) {
+  case CastTypeClass::Any:
+    return 0;
+  case CastTypeClass::Float:
+  case CastTypeClass::Integer:
+    return 1;
+  case CastTypeClass::IntegerToUnsigned:
+    return 2;
+  case CastTypeClass::F4E2M1x2ToBF16x2:
+  case CastTypeClass::BF16F32:
+    return 3;
   }
   llvm_unreachable("unknown cast type class");
 }

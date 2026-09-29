@@ -1,0 +1,80 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software; you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: pto-test-opt %s -vmi-lower-unified-to-legacy -vmi-mask-granularity-assignment -vmi-layout-assignment | FileCheck %s --check-prefix=ASSIGN
+// RUN: pto-test-opt %s -vmi-lower-unified-to-legacy -vmi-mask-granularity-assignment -vmi-layout-assignment -vmi-to-vpto=vmi-fastmath=false | FileCheck %s --check-prefix=STRICT --implicit-check-not=pto.vmi.
+// RUN: pto-test-opt %s -vmi-lower-unified-to-legacy -vmi-mask-granularity-assignment -vmi-layout-assignment -vmi-to-vpto=vmi-fastmath=true | FileCheck %s --check-prefix=FAST --implicit-check-not=pto.vmi.
+
+module {
+  func.func @bf16_f32_dense_cast_preference(
+      %f32_64: !pto.vmi.vreg<64xf32>, %bf16_64: !pto.vmi.vreg<64xbf16>,
+      %f32_128: !pto.vmi.vreg<128xf32>, %bf16_128: !pto.vmi.vreg<128xbf16>,
+      %f32_256: !pto.vmi.vreg<256xf32>, %bf16_256: !pto.vmi.vreg<256xbf16>) {
+    %narrow64 = pto.vmi.truncf %f32_64 {rounding = "Z", saturate = "NOSAT"}
+        : !pto.vmi.vreg<64xf32> -> !pto.vmi.vreg<64xbf16>
+    %wide64 = pto.vmi.extf %bf16_64
+        : !pto.vmi.vreg<64xbf16> -> !pto.vmi.vreg<64xf32>
+    %narrow128 = pto.vmi.truncf %f32_128 {rounding = "Z", saturate = "NOSAT"}
+        : !pto.vmi.vreg<128xf32> -> !pto.vmi.vreg<128xbf16>
+    %wide128 = pto.vmi.extf %bf16_128
+        : !pto.vmi.vreg<128xbf16> -> !pto.vmi.vreg<128xf32>
+    %narrow256 = pto.vmi.truncf %f32_256 {rounding = "Z", saturate = "NOSAT"}
+        : !pto.vmi.vreg<256xf32> -> !pto.vmi.vreg<256xbf16>
+    %wide256 = pto.vmi.extf %bf16_256
+        : !pto.vmi.vreg<256xbf16> -> !pto.vmi.vreg<256xf32>
+    return
+  }
+
+  func.func @bf16_f32_group_slot_cast_preference(
+      %source: !pto.vmi.vreg<128xf32>, %mask: !pto.vmi.mask<128xpred>,
+      %dst_bf16: !pto.ptr<bf16, ub>, %dst_f32: !pto.ptr<f32, ub>,
+      %off: index) {
+    %c1 = arith.constant 1 : index
+    %sum = pto.vmi.vcadd %source, %mask {group = 8, reassoc}
+        : !pto.vmi.vreg<128xf32>, !pto.vmi.mask<128xpred>
+        -> !pto.vmi.vreg<8xf32>
+    %narrow = pto.vmi.truncf %sum {rounding = "Z", saturate = "NOSAT"}
+        : !pto.vmi.vreg<8xf32> -> !pto.vmi.vreg<8xbf16>
+    %wide = pto.vmi.extf %narrow
+        : !pto.vmi.vreg<8xbf16> -> !pto.vmi.vreg<8xf32>
+    pto.vmi.vstore %narrow, %dst_bf16[%off], %c1 {group = 8}
+        : !pto.vmi.vreg<8xbf16>, !pto.ptr<bf16, ub>
+    pto.vmi.vstore %wide, %dst_f32[%off], %c1 {group = 8}
+        : !pto.vmi.vreg<8xf32>, !pto.ptr<f32, ub>
+    return
+  }
+}
+
+// ASSIGN-LABEL: func.func @bf16_f32_dense_cast_preference(
+// ASSIGN: %[[NARROW64:[^ ]+]] = pto.vmi.truncf %{{[^ ]+}}
+// ASSIGN-SAME: : !pto.vmi.vreg<64xf32, #pto.vmi.layout<contiguous>> -> !pto.vmi.vreg<64xbf16, #pto.vmi.layout<contiguous>>
+// ASSIGN: %[[WIDE64:[^ ]+]] = pto.vmi.extf %{{[^ ]+}}
+// ASSIGN-SAME: : !pto.vmi.vreg<64xbf16, #pto.vmi.layout<contiguous>> -> !pto.vmi.vreg<64xf32, #pto.vmi.layout<contiguous>>
+// ASSIGN: %[[NARROW128:[^ ]+]] = pto.vmi.truncf %{{[^ ]+}}
+// ASSIGN-SAME: : !pto.vmi.vreg<128xf32, #pto.vmi.layout<contiguous>> -> !pto.vmi.vreg<128xbf16, #pto.vmi.layout<contiguous>>
+// ASSIGN: %[[WIDE128:[^ ]+]] = pto.vmi.extf %{{[^ ]+}}
+// ASSIGN-SAME: : !pto.vmi.vreg<128xbf16, #pto.vmi.layout<contiguous>> -> !pto.vmi.vreg<128xf32, #pto.vmi.layout<contiguous>>
+// ASSIGN: %[[NARROW256:[^ ]+]] = pto.vmi.truncf %{{[^ ]+}}
+// ASSIGN-SAME: : !pto.vmi.vreg<256xf32, #pto.vmi.layout<contiguous>> -> !pto.vmi.vreg<256xbf16, #pto.vmi.layout<contiguous>>
+// ASSIGN: %[[WIDE256:[^ ]+]] = pto.vmi.extf %{{[^ ]+}}
+// ASSIGN-SAME: : !pto.vmi.vreg<256xbf16, #pto.vmi.layout<contiguous>> -> !pto.vmi.vreg<256xf32, #pto.vmi.layout<contiguous>>
+
+// ASSIGN-LABEL: func.func @bf16_f32_group_slot_cast_preference(
+// ASSIGN: %[[SUM:[^ ]+]] = pto.vmi.group_reduce_addf
+// ASSIGN-SAME: -> !pto.vmi.vreg<8xf32, #pto.vmi.layout<num_groups = 8, slots = 8>>
+// ASSIGN: %[[NARROW_GS:[^ ]+]] = pto.vmi.truncf %[[SUM]]
+// ASSIGN-SAME: -> !pto.vmi.vreg<8xbf16, #pto.vmi.layout<num_groups = 8, slots = 8>>
+// ASSIGN: %[[WIDE_GS:[^ ]+]] = pto.vmi.extf %[[NARROW_GS]]
+// ASSIGN-SAME: -> !pto.vmi.vreg<8xf32, #pto.vmi.layout<num_groups = 8, slots = 8>>
+
+// STRICT-LABEL: func.func @bf16_f32_group_slot_cast_preference(
+// STRICT: pto.vcvt
+
+// FAST-LABEL: func.func @bf16_f32_group_slot_cast_preference(
+// FAST: pto.vdintlv
+// FAST: pto.vintlv

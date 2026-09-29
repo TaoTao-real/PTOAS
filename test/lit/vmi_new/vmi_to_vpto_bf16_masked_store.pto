@@ -1,0 +1,36 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: pto-test-opt %s -vmi-lower-unified-to-legacy -vmi-mask-granularity-assignment -vmi-layout-assignment -vmi-to-vpto -vpto-optimize-vcvt | FileCheck %s
+
+module {
+  func.func @truncf_bf16_masked_store(
+      %src: !pto.vmi.vreg<64xf32, #pto.vmi.layout<contiguous>>,
+      %dst: !pto.ptr<bf16, ub>, %offset: index) {
+    %c64 = arith.constant 64 : index
+    %aligned_offset = arith.muli %offset, %c64 : index
+    %mask = pto.vmi.create_mask %c64
+        : index -> !pto.vmi.mask<64xb16, #pto.vmi.layout<contiguous>>
+    %narrow = pto.vmi.vcvt %src {rounding = "R", saturate = "SAT"}
+        : !pto.vmi.vreg<64xf32, #pto.vmi.layout<contiguous>>
+        -> !pto.vmi.vreg<64xbf16, #pto.vmi.layout<contiguous>>
+    pto.vmi.masked_store %narrow, %dst[%aligned_offset], %mask
+        : !pto.vmi.vreg<64xbf16, #pto.vmi.layout<contiguous>>,
+          !pto.ptr<bf16, ub>,
+          !pto.vmi.mask<64xb16, #pto.vmi.layout<contiguous>>
+    return
+  }
+}
+
+// CHECK-LABEL: func.func @truncf_bf16_masked_store(
+// CHECK: %[[CVT:.*]] = pto.vcvt {{.*}} {part = "EVEN", rnd = "R", sat = "SAT"} : !pto.vreg<64xf32>, !pto.mask<b32> -> !pto.vreg<128xbf16>
+// CHECK: %[[MASK16:.*]] = pto.pand {{.*}} : !pto.mask<b16>, !pto.mask<b16>, !pto.mask<b16> -> !pto.mask<b16>
+// CHECK: %[[MASK32:.*]] = pto.punpack %[[MASK16]], "LOWER" : !pto.mask<b16> -> !pto.mask<b32>
+// CHECK: pto.vsts %[[CVT]], {{.*}}, %[[MASK32]] {dist = "PK_B32"} : !pto.vreg<128xbf16>, !pto.ptr<bf16, ub>, !pto.mask<b32>
+// CHECK-NOT: pto.vdintlv
+// CHECK-NOT: pto.vmi.

@@ -27,6 +27,9 @@ static FailureOr<VMILoadSafetyPolicy> parseLoadSafetyPolicy(StringRef value) {
 struct VMIToVPTOPass : public mlir::pto::impl::VMIToVPTOBase<VMIToVPTOPass> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(VMIToVPTOPass)
 
+  explicit VMIToVPTOPass(const VMIToVPTOOptions &options)
+      : mlir::pto::impl::VMIToVPTOBase<VMIToVPTOPass>(options) {}
+
   void runOnOperation() override {
     ModuleOp module = getOperation();
     FailureOr<VMILoadSafetyPolicy> loadSafetyPolicy =
@@ -51,7 +54,8 @@ struct VMIToVPTOPass : public mlir::pto::impl::VMIToVPTOBase<VMIToVPTOPass> {
     VMIToVPTOTypeConverter typeConverter;
     RewritePatternSet patterns(context);
 
-    populateVMIConversionPatterns(typeConverter, patterns, *loadSafetyPolicy);
+    populateVMIConversionPatterns(typeConverter, patterns, *loadSafetyPolicy,
+                                  enableVmiFastmath);
     if (failed(applyPartialOneToNConversion(module, typeConverter,
                                             std::move(patterns)))) {
       module.emitError() << kVMIDiagResidualOpPrefix
