@@ -286,11 +286,30 @@ LogicalResult verifySimtConversionControls(Operation *op, Type srcType,
 bool isPTOEntryFunction(func::FuncOp func);
 bool isPTOEntryFunction(LLVM::LLVMFuncOp func);
 
-/// Return true if the function should remain externally visible in backend
-/// artifacts. PTO entries are always treated as externally visible. Non-entry
-/// functions default to internal visibility unless they carry
-/// `pto.visibility = "external"`.
+/// Return true if the function carries an explicit request to stay externally
+/// visible in backend artifacts: PTO entries always qualify, and any other
+/// function qualifies while it carries `pto.visibility = "external"`.
+///
+/// A `false` result does not by itself mean the function gets internalized.
+/// Internalization keys off the MLIR symbol visibility, and both backends apply
+/// the same policy -- `applyFuncSpecifiers` for EmitC,
+/// `applyArtifactVisibilityLinkage` for VPTO:
+///   - entry                        -> exported
+///   - private                      -> module-local (EmitC `static`, VPTO
+///                                     `internal`)
+///   - `pto.visibility = "external"` -> exported
+///   - public without either marker -> keeps whatever linkage the exporter
+///                                     chose, so a `@pto.jit(entry=False)`
+///                                     kernel-module primary stays referable
+///                                     from sibling children
+/// Precedence is entry, then private, then the external marker, so this helper
+/// does not decide the `private` + `pto.visibility = "external"` pair on its
+/// own -- both backends resolve that to module-local.
+///
+/// The `LLVM::LLVMFuncOp` overload reports `false` for declarations; it cannot
+/// rely on `isDeclaration()` there (see the definition).
 bool hasExternalArtifactVisibility(func::FuncOp func);
+bool hasExternalArtifactVisibility(LLVM::LLVMFuncOp func);
 
 /// Set explicit artifact visibility on one function definition.
 void setExternalArtifactVisibility(func::FuncOp func, bool isExternal);

@@ -70,6 +70,14 @@ values via a tuple. Every `@pto.func` helper must declare its return type with
 `returns=...` or a Python return annotation; use `returns=None` or `-> None` for
 helpers that do not return values.
 
+Each specialization of an `@pto.func` helper belongs to the backend child
+module that calls it. PTODSL emits these definitions with private symbol
+visibility, so equal specializations may appear independently in different
+children without exporting duplicate fatobj symbols. Decorated and outlined
+TileOp helpers follow the same module-local rule. Named SIMT helpers use their
+dedicated `pto.simt_entry` linkage policy. A callable that must be exported
+across child modules must use the `@pto.jit(entry=False)` kernel-module path.
+
 ```python
 @pto.func(returns=pto.i32)
 def add_rows(total: pto.i32, rows: pto.i32):
@@ -902,6 +910,12 @@ merged = pto.merge_jit_modules(
 All handles in the merge must share the same target architecture. Backend and
 mode can differ per handle — the merge appends the functions together and
 preserves each one's compilation settings.
+
+Every merged child remains an independent symbol table and backend object.
+Its entry or kernel-module primary function remains externally visible, while
+ordinary `@pto.func` and TileOp helper specializations remain private to that
+child. Consequently, two children may contain the same private helper symbol;
+the final fatobj link does not treat either definition as an exported symbol.
 
 
 ## 3.7 Sub-kernels — custom tile operations

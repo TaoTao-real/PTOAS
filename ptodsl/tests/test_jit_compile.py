@@ -725,7 +725,7 @@ def stable_dtype_symbol_probe(x: pto.i32):
     _ = stable_dtype_return_helper(x)
 
 text = stable_dtype_symbol_probe.compile().mlir_text()
-match = re.search(r"func\.func @(stable_dtype_return_helper__ptodsl_[0-9a-f]+)\(", text)
+match = re.search(r"func\.func private @(stable_dtype_return_helper__ptodsl_[0-9a-f]+)\(", text)
 if match is None:
     raise RuntimeError(text)
 print(match.group(1))
@@ -5145,6 +5145,23 @@ def _check_removed_public_interfaces() -> None:
     )
 
 
+def _check_tileop_helpers_are_private(mlir_text: str) -> None:
+    helper_names = (
+        "top_level_cube_probe",
+        "top_level_simd_probe",
+        "nested_simd_probe",
+    )
+    for helper_name in helper_names:
+        expect(
+            re.search(
+                rf"func\.func private @{helper_name}__ptodsl_[0-9a-f]+\(\)",
+                mlir_text,
+            )
+            is not None,
+            f"decorated TileOp helper {helper_name} must remain private to its backend child",
+        )
+
+
 def main() -> None:
     expected_public_exports = [
         "f8e4m3",
@@ -6737,6 +6754,7 @@ def main() -> None:
         and re.search(r"call @nested_simd_probe__ptodsl_[0-9a-f]+\(\)", shared_subkernel_text) is not None,
         "@pto.tileop decorated helpers should lower to helper calls in the caller body",
     )
+    _check_tileop_helpers_are_private(shared_subkernel_text)
     expect(
         shared_subkernel_text.count("pto.tileop.helper") == 3
         and "pto.section.vector" not in shared_subkernel_text
@@ -6755,6 +6773,14 @@ def main() -> None:
         and "pto.tileop.helper" in explicit_vector_inline_tileop_text
         and "pto.section.vector {" not in explicit_vector_inline_tileop_text,
         "inline pto.tileop() scopes should defer physical section materialization to PTOAS",
+    )
+    expect(
+        re.search(
+            r"func\.func private @inline_tileop_[0-9]+__ptodsl_[0-9a-f]+",
+            explicit_vector_inline_tileop_text,
+        )
+        is not None,
+        "outlined inline TileOp helpers must remain private to their backend child",
     )
 
     INLINE_SUBKERNEL_SCOPE_OBSERVATIONS.clear()
@@ -6797,7 +6823,7 @@ def main() -> None:
         "with pto.simt(dim_x, dim_y, dim_z) should not emit caller-side SIMT launch metadata",
     )
     expect(
-        re.search(r"func\.func @inline_simt_[0-9]+__ptodsl_[0-9a-f]+", inline_simt_launch_text)
+        re.search(r"func\.func (?:private )?@inline_simt_[0-9]+__ptodsl_[0-9a-f]+", inline_simt_launch_text)
         is None
         and "pto.simt_entry" not in inline_simt_launch_text,
         "inline SIMT launch-dims body should remain in the enclosing kernel during DSL tracing",
@@ -7467,12 +7493,18 @@ def main() -> None:
     ptodsl_func_call_text = ptodsl_func_call_probe.compile().mlir_text()
     expect_parse_roundtrip_and_verify(ptodsl_func_call_text, "@pto.func helper call specialization")
     expect(
-        re.search(r"func\.func @func_runtime_for_return_helper__ptodsl_[0-9a-f]+\(.*\) -> i32", ptodsl_func_call_text)
+        re.search(
+            r"func\.func private @func_runtime_for_return_helper__ptodsl_[0-9a-f]+\(.*\) -> i32",
+            ptodsl_func_call_text,
+        )
         is not None,
         "@pto.func helpers that return one runtime value should materialize a typed helper result",
     )
     expect(
-        re.search(r"func\.func @func_multi_return_helper__ptodsl_[0-9a-f]+\(.*\) -> \(i32, i32\)", ptodsl_func_call_text)
+        re.search(
+            r"func\.func private @func_multi_return_helper__ptodsl_[0-9a-f]+\(.*\) -> \(i32, i32\)",
+            ptodsl_func_call_text,
+        )
         is not None,
         "@pto.func helpers should support multiple returned runtime values",
     )
@@ -7481,8 +7513,20 @@ def main() -> None:
         "@pto.func helper bodies should use native control-flow AST rewrite",
     )
     expect(
-        len(re.findall(r"func\.func @func_void_helper__ptodsl_[0-9a-f]+", ptodsl_func_call_text)) == 1
-        and len(re.findall(r"call @func_void_helper__ptodsl_[0-9a-f]+", ptodsl_func_call_text)) == 2,
+        len(
+            re.findall(
+                r"func\.func private @func_void_helper__ptodsl_[0-9a-f]+",
+                ptodsl_func_call_text,
+            )
+        )
+        == 1
+        and len(
+            re.findall(
+                r"call @func_void_helper__ptodsl_[0-9a-f]+",
+                ptodsl_func_call_text,
+            )
+        )
+        == 2,
         "repeated @pto.func calls should reuse one materialized helper artifact",
     )
     ptodsl_func_partition_metadata_text = ptodsl_func_partition_metadata_probe.compile().mlir_text()
@@ -7491,9 +7535,15 @@ def main() -> None:
         "@pto.func partition metadata specialization",
     )
     expect(
-        re.search(r"func\.func @func_partition_metadata_helper__ptodsl_[0-9a-f]+", ptodsl_func_partition_metadata_text)
+        re.search(
+            r"func\.func private @func_partition_metadata_helper__ptodsl_[0-9a-f]+",
+            ptodsl_func_partition_metadata_text,
+        )
         is not None
-        and re.search(r"func\.func @func_partition_metadata_helper__ptodsl_[0-9a-f]+\(.*\) -> i32", ptodsl_func_partition_metadata_text)
+        and re.search(
+            r"func\.func private @func_partition_metadata_helper__ptodsl_[0-9a-f]+\(.*\) -> i32",
+            ptodsl_func_partition_metadata_text,
+        )
         is not None
         and re.search(r"%\d+ = pto\.constant 1 : i32", ptodsl_func_partition_metadata_text) is not None,
         "@pto.func should preserve partition metadata across the helper boundary",
@@ -7505,7 +7555,7 @@ def main() -> None:
     )
     expect(
         re.search(
-            r"func\.func @func_future_i32_return_helper__ptodsl_[0-9a-f]+\(.*i32.*\) -> i32",
+            r"func\.func private @func_future_i32_return_helper__ptodsl_[0-9a-f]+\(.*i32.*\) -> i32",
             ptodsl_func_future_annotations_text,
         )
         is not None,
@@ -7513,7 +7563,7 @@ def main() -> None:
     )
     expect(
         re.search(
-            r"func\.func @func_future_i64_literal_helper__ptodsl_[0-9a-f]+\(.*i64.*\) -> i64",
+            r"func\.func private @func_future_i64_literal_helper__ptodsl_[0-9a-f]+\(.*i64.*\) -> i64",
             ptodsl_func_future_annotations_text,
         )
         is not None,
@@ -7521,7 +7571,7 @@ def main() -> None:
     )
     expect(
         re.search(
-            r"func\.func @func_future_void_helper__ptodsl_[0-9a-f]+\(.*i32.*\) attributes",
+            r"func\.func private @func_future_void_helper__ptodsl_[0-9a-f]+\(.*i32.*\) attributes",
             ptodsl_func_future_annotations_text,
         )
         is not None,
@@ -7552,7 +7602,7 @@ def main() -> None:
         "@pto.func const_expr specialization",
     )
     constexpr_helper_names = re.findall(
-        r"func\.func @(func_constexpr_static_helper__ptodsl_[0-9a-f]+)\(%arg0: i32\) -> i32",
+        r"func\.func private @(func_constexpr_static_helper__ptodsl_[0-9a-f]+)\(%arg0: i32\) -> i32",
         ptodsl_func_constexpr_text,
     )
     expect(
@@ -7579,7 +7629,7 @@ def main() -> None:
     expect(
         "pto.trunci" in ptodsl_func_traced_argument_coercion_text
         and re.search(
-            r"func\.func @func_i32_argument_helper__ptodsl_[0-9a-f]+\(%arg0: i32\)",
+            r"func\.func private @func_i32_argument_helper__ptodsl_[0-9a-f]+\(%arg0: i32\)",
             ptodsl_func_traced_argument_coercion_text,
         )
         is not None,

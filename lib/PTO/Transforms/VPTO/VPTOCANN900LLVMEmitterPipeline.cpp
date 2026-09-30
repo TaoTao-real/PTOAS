@@ -438,25 +438,60 @@ llvm::StringSet<llvm::BumpPtrAllocator> collectSimtEntryFunctionNames(ModuleOp m
   return simtEntries;
 }
 
-void applyArtifactVisibilityLinkage(ModuleOp sourceModule, llvm::Module &llvmModule) {
-  llvm::StringMap<bool> externalByName;
-  sourceModule.walk([&](func::FuncOp funcOp) {
-    if (funcOp.isDeclaration()) {
+void applyArtifactVisibilityLinkage(ModuleOp sourceModule, llvm::Module &llvmModule,
+                                    const llvm::StringSet<llvm::BumpPtrAllocator> &simtEntryNames) {
+  // Mirror the EmitC specifier policy in applyFuncSpecifiers, including its
+  // precedence:
+  //   entry                          -> exported
+  //   private                        -> internal, so equal specializations in
+  //                                     sibling children cannot collide at the
+  //                                     final fatobj link
+  //   pto.visibility = "external"    -> exported
+  //   public without either marker   -> keeps the linkage the LLVM export chose
+  // Declarations and named SIMT helpers are left alone; see below.
+  llvm::StringMap<llvm::GlobalValue::LinkageTypes> linkageByName;
+  sourceModule.walk([&](LLVM::LLVMFuncOp funcOp) {
+    // LLVM::LLVMFuncOp keeps the default Symbol::isDeclaration(), so test the
+    // body directly: declarations (hivm intrinsics and cross-child imports
+    // among them) must keep the external linkage the exporter gave them.
+    if (funcOp.isExternal()) {
       return;
     }
-    externalByName[funcOp.getSymName()] = pto::hasExternalArtifactVisibility(funcOp);
+    // Keep applyFuncSpecifiers' precedence exactly: entry, then private, then
+    // the explicit external marker. The order only matters for a function
+    // carrying both `private` and `pto.visibility = "external"` --
+    // setExternalArtifactVisibility can construct that pair because it never
+    // touches sym_visibility -- and both backends now resolve it the same way,
+    // to module-local.
+    if (pto::isPTOEntryFunction(funcOp)) {
+      linkageByName[funcOp.getSymName()] = llvm::GlobalValue::ExternalLinkage;
+      return;
+    }
+    if (funcOp.isPrivate()) {
+      linkageByName[funcOp.getSymName()] = llvm::GlobalValue::InternalLinkage;
+      return;
+    }
+    if (pto::hasExternalArtifactVisibility(funcOp)) {
+      linkageByName[funcOp.getSymName()] = llvm::GlobalValue::ExternalLinkage;
+    }
   });
 
   for (llvm::Function &function : llvmModule) {
-    auto it = externalByName.find(function.getName());
-    if (it == externalByName.end()) {
+    if (function.isDeclaration()) {
       continue;
     }
-    if (it->second) {
-      function.setLinkage(llvm::GlobalValue::ExternalLinkage);
+    // Named SIMT helpers own their linkage: applySimtEntryCallingConvention
+    // makes them linkonce_odr so the runtime does not count them as kernels.
+    // Forcing internal linkage here would also make them dso_local, which that
+    // later policy cannot undo.
+    if (simtEntryNames.contains(function.getName())) {
       continue;
     }
-    function.setLinkage(llvm::GlobalValue::InternalLinkage);
+    auto it = linkageByName.find(function.getName());
+    if (it == linkageByName.end()) {
+      continue;
+    }
+    function.setLinkage(it->second);
   }
 }
 
@@ -514,7 +549,7 @@ FailureOr<EmittedLLVMModule> emitDeviceLLVMModule(ModuleOp deviceModule, StringR
     return failure();
   }
 
-  applyArtifactVisibilityLinkage(deviceModule, *llvmModule);
+  applyArtifactVisibilityLinkage(deviceModule, *llvmModule, simtEntryNames);
   for (llvm::Function &func : *llvmModule) {
     if (!func.getName().starts_with("llvm.hivm.vscatter.")) {
       continue;

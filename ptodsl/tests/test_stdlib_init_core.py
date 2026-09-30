@@ -261,7 +261,7 @@ def repeated_calls_reuse_one_helper() -> None:
         pto.init_core()
 
     text = twice_probe.mlir_text()
-    helper_defs = re.findall(r"func\.func @init_core__ptodsl_\w+\(", text)
+    helper_defs = re.findall(r"func\.func private @init_core__ptodsl_\w+\(", text)
     call_sites = text.count("call @init_core__ptodsl_")
     expect(len(helper_defs) == 1, "repeated calls must reuse one helper definition")
     expect(call_sites == 2, "repeated calls must emit one call site per invocation")
@@ -386,6 +386,82 @@ def mixed_kernel_rejects_unscoped_init_after_sections() -> None:
     )
 
 
+def _merged_init_kernels():
+    @pto.jit(name="merged_init_a", target="a5", mode="explicit", kernel_kind="vector")
+    def merged_init_a(inp: pto.ptr(pto.f32, "gm")):
+        pto.init_core()
+
+    @pto.jit(name="merged_init_b", target="a5", mode="explicit", kernel_kind="vector")
+    def merged_init_b(inp: pto.ptr(pto.f32, "gm")):
+        pto.init_core()
+
+    return pto.merge_jit_modules(merged_init_a, merged_init_b)
+
+
+def _child_entry_and_init_helper(child):
+    entries = []
+    helpers = []
+    for op in child.body.operations:
+        if op.operation.name != "func.func":
+            continue
+        attributes = op.operation.attributes
+        if "pto.entry" in attributes:
+            entries.append(op)
+        if "pto.ptodsl.logical_name" not in attributes:
+            continue
+        logical_name = str(attributes["pto.ptodsl.logical_name"]).strip('"')
+        if logical_name == "init_core":
+            helpers.append(op)
+    expect(len(entries) == 1,
+           "each merged child must contain one exported kernel entry")
+    expect(len(helpers) == 1,
+           "each merged child must contain one init_core helper definition")
+    return entries[0], helpers[0]
+
+
+def _check_child_helper_visibility(child):
+    entry, helper = _child_entry_and_init_helper(child)
+    entry_symbol = str(entry.operation.attributes["sym_name"]).strip('"')
+    helper_symbol = str(helper.operation.attributes["sym_name"]).strip('"')
+
+    expect("sym_visibility" not in entry.operation.attributes,
+           "kernel entries must retain public symbol visibility")
+    expect(
+        str(helper.operation.attributes["sym_visibility"]).strip('"') == "private",
+        "init_core helpers must be private in each owning child",
+    )
+    expect(
+        "pto.entry" not in helper.operation.attributes
+        and "pto.visibility" not in helper.operation.attributes,
+        "ordinary helpers must not carry entry or external artifact visibility",
+    )
+    expect(f"call @{helper_symbol}" in str(child),
+           "each merged kernel must call its own child-local init_core helper")
+    return entry_symbol, helper_symbol
+
+
+def merged_kernels_keep_init_core_helpers_private() -> None:
+    merged = _merged_init_kernels()
+    children = []
+    for op in merged.body.operations:
+        if op.operation.name == "builtin.module":
+            children.append(op)
+    expect(len(children) == 2,
+           "merged kernels must retain two independent backend children")
+
+    helper_symbols = []
+    entry_symbols = []
+    for child in children:
+        entry_symbol, helper_symbol = _check_child_helper_visibility(child)
+        entry_symbols.append(entry_symbol)
+        helper_symbols.append(helper_symbol)
+
+    expect(set(entry_symbols) == {"merged_init_a", "merged_init_b"},
+           "merged children must retain both authored kernel entries")
+    expect(len(set(helper_symbols)) == 1,
+           "equal init_core specializations should keep their stable symbol name")
+
+
 def constants_match_reference() -> None:
     @pto.jit(target="a5", mode="explicit", kernel_kind="vector")
     def const_probe(inp: pto.ptr(pto.f32, "gm"), out: pto.ptr(pto.f32, "gm")):
@@ -422,6 +498,7 @@ def main() -> None:
     mixed_kernel_survives_full_vpto_pipeline()
     mixed_kernel_rejects_unscoped_init_before_sections()
     mixed_kernel_rejects_unscoped_init_after_sections()
+    merged_kernels_keep_init_core_helpers_private()
     constants_match_reference()
 
 

@@ -42,10 +42,22 @@ bool mlir::pto::isPTOEntryFunction(func::FuncOp func)
 
 bool mlir::pto::isPTOEntryFunction(LLVM::LLVMFuncOp func)
 {
-    if (!func || func.isDeclaration()) {
+    // LLVM::LLVMFuncOp keeps the default Symbol::isDeclaration(), which always
+    // reports a definition, so inspect the body instead. Otherwise an external
+    // declaration carrying pto.entry would be mistaken for an entry definition.
+    if (!func || func.isExternal()) {
         return false;
     }
     return hasExplicitPTOEntryAttr(func);
+}
+
+static bool hasExternalArtifactVisibilityImpl(mlir::Operation* func, bool isEntry)
+{
+    if (isEntry) {
+        return true;
+    }
+    auto attr = func->getAttrOfType<mlir::StringAttr>(mlir::pto::kPTOVisibilityAttrName);
+    return attr && attr.getValue() == mlir::pto::kPTOVisibilityExternalValue;
 }
 
 bool mlir::pto::hasExternalArtifactVisibility(func::FuncOp func)
@@ -53,14 +65,17 @@ bool mlir::pto::hasExternalArtifactVisibility(func::FuncOp func)
     if (!func || func.isDeclaration()) {
         return false;
     }
-    if (isPTOEntryFunction(func)) {
-        return true;
-    }
-    auto attr = func->getAttrOfType<StringAttr>(kPTOVisibilityAttrName);
-    if (!attr) {
+    return hasExternalArtifactVisibilityImpl(func.getOperation(), isPTOEntryFunction(func));
+}
+
+bool mlir::pto::hasExternalArtifactVisibility(LLVM::LLVMFuncOp func)
+{
+    // Same isDeclaration() caveat as isPTOEntryFunction(LLVM::LLVMFuncOp):
+    // inspect the body instead.
+    if (!func || func.isExternal()) {
         return false;
     }
-    return attr.getValue() == kPTOVisibilityExternalValue;
+    return hasExternalArtifactVisibilityImpl(func.getOperation(), isPTOEntryFunction(func));
 }
 
 void mlir::pto::setExternalArtifactVisibility(func::FuncOp func, bool isExternal)

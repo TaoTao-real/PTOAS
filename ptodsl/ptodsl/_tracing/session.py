@@ -1205,7 +1205,14 @@ class TraceSession:
 
     def get_or_create_helper_function(self, spec: HelperFunctionSpec, *, owner_symbol_name: str | None = None):
         """
-        Look up or create a helper ``func.func`` in the owning child module.
+        Look up or create a module-local helper in the owning child module.
+
+        This path serves regular ``@pto.func`` definitions, decorated TileOp
+        helpers, and outlined inline TileOp helpers.  All are implementation
+        details of one backend child and must remain private.  Kernel-module
+        primary functions use ``get_or_create_kernel_module_primary_function``
+        and stay externally visible.  Named SIMT helpers use their separate
+        ``pto.simt_entry`` creation path and backend linkage policy.
 
         Returns ``(helper_fn, created)`` where *created* reports whether a new
         symbol was emitted in this trace session.
@@ -1227,10 +1234,11 @@ class TraceSession:
         with InsertionPoint(symbol_table):
             helper = func.FuncOp(specialized_symbol_name, fn_ty)
             self._attach_ptodsl_logical_name_attr(helper, spec.symbol_name)
+            # A merged compilation emits every child as a separate fatobj, so
+            # equal helper specializations must have child-local linkage.
+            helper.attributes["sym_visibility"] = StringAttr.get("private")
             for attr_name, attr_value in spec.attributes:
                 helper.attributes[attr_name] = attr_value
-            if any(attr_name == "pto.tileop.helper" for attr_name, _ in spec.attributes):
-                helper.attributes["sym_visibility"] = StringAttr.get("private")
         self._helpers[cache_key] = helper
         return helper, True
 

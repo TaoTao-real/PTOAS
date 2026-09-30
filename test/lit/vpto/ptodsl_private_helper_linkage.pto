@@ -1,0 +1,98 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto-llvm-ir %s -o - 2>&1 | FileCheck %s
+
+// Checks the final VPTO LLVM linkage rather than only frontend symbol
+// visibility, so a lowering step that drops the decision cannot pass. The
+// policy and its precedence match the EmitC specifiers in applyFuncSpecifiers:
+//   - pto.entry                        -> exported kernel
+//   - private                          -> internal, child-local helper
+//   - public + pto.visibility external -> exported helper
+//   - public, no marker                -> keeps the exporter's linkage
+// Precedence is entry, then private, then the external marker, so a function
+// carrying both private and pto.visibility = "external" resolves to internal.
+// Two paths deliberately opt out of that table, and both are covered here:
+//   - a named SIMT helper keeps the linkonce_odr that
+//     applySimtEntryCallingConvention assigns. @ptodsl_simt_body is private on
+//     purpose: the private rule alone would internalize it, which would also
+//     make it dso_local, and that later policy cannot undo either.
+//   - a declaration is never internalized. @ptodsl_imported_helper models the
+//     caller-side import of a sibling child's exported primary; the walk can
+//     only get this right by testing the body, because LLVM::LLVMFuncOp keeps
+//     the default Symbol::isDeclaration(), which always reports a definition.
+// Every defined helper self-calls so the generic inliner cannot delete it
+// before the LLVM export.
+
+module attributes {pto.target_arch = "a5"} {
+  module attributes {
+    pto.backend = "vpto",
+    pto.kernel_kind = #pto.kernel_kind<vector>,
+    pto.target_arch = "a5"
+  } {
+    func.func @ptodsl_private_entry()
+        attributes {pto.entry, pto.kernel_kind = #pto.kernel_kind<vector>} {
+      func.call @ptodsl_private_helper() : () -> ()
+      func.call @ptodsl_external_helper() : () -> ()
+      func.call @ptodsl_public_helper() : () -> ()
+      func.call @ptodsl_simt_body() : () -> ()
+      func.call @ptodsl_imported_helper() : () -> ()
+      func.call @ptodsl_private_wins_helper() : () -> ()
+      return
+    }
+
+    func.func private @ptodsl_private_helper() {
+      func.call @ptodsl_private_helper() : () -> ()
+      return
+    }
+
+    func.func public @ptodsl_external_helper() attributes {pto.visibility = "external"} {
+      func.call @ptodsl_external_helper() : () -> ()
+      return
+    }
+
+    func.func public @ptodsl_public_helper() {
+      func.call @ptodsl_public_helper() : () -> ()
+      return
+    }
+
+    func.func private @ptodsl_simt_body() attributes {pto.simt_entry} {
+      func.call @ptodsl_simt_body() : () -> ()
+      return
+    }
+
+    // setExternalArtifactVisibility only adds or removes pto.visibility, never
+    // sym_visibility, so this self-contradictory pair is constructible. Pin the
+    // precedence both backends use: private wins, the marker is ignored.
+    func.func private @ptodsl_private_wins_helper() attributes {pto.visibility = "external"} {
+      func.call @ptodsl_private_wins_helper() : () -> ()
+      return
+    }
+
+    func.func private @ptodsl_imported_helper()
+  }
+}
+
+// The entry's CTRL setup brings in real hivm intrinsic declarations; they must
+// survive the walk as declarations rather than be internalized.
+// CHECK: declare i64 @llvm.hivm.GET.CTRL()
+
+// CHECK-LABEL: define void @ptodsl_private_entry_mix_aiv()
+// CHECK: call void @ptodsl_private_helper()
+// CHECK: call void @ptodsl_external_helper()
+// CHECK: call void @ptodsl_public_helper()
+// CHECK: call simt_entry void @ptodsl_simt_body()
+// CHECK: call void @ptodsl_imported_helper()
+// CHECK: call void @ptodsl_private_wins_helper()
+
+// CHECK-DAG: define internal void @ptodsl_private_helper()
+// CHECK-DAG: define internal void @ptodsl_private_wins_helper()
+// CHECK-DAG: define void @ptodsl_external_helper()
+// CHECK-DAG: define void @ptodsl_public_helper()
+// CHECK-DAG: define linkonce_odr simt_entry void @ptodsl_simt_body()
+// CHECK-DAG: declare void @ptodsl_imported_helper()
