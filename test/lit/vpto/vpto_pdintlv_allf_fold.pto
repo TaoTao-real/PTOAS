@@ -1,0 +1,63 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: pto-test-opt %s -vpto-mask-simplify -vpto-combine-reductions | FileCheck %s
+
+// The sub-chunk deinterleave uses pdintlv(m, PAT_ALLF), so a static all-active
+// mask folds to a prefix pattern and the two grouped reductions share one mask,
+// letting the tree collapse.  A dynamic mask cannot be proven pair-uniform and
+// correctly keeps both reductions.
+
+module {
+  func.func @static_mask_folds(%a: !pto.vreg<128xui16>,
+                               %b: !pto.vreg<128xui16>)
+      -> !pto.vreg<128xui16> {
+    %m = pto.pset_b16 "PAT_ALL" : !pto.mask<b16>
+    %f = pto.pset_b16 "PAT_ALLF" : !pto.mask<b16>
+    %ml, %mh = pto.pdintlv_b16 %m, %f
+        : !pto.mask<b16>, !pto.mask<b16> -> !pto.mask<b16>, !pto.mask<b16>
+    %combine = pto.pset_b16 "PAT_VL4" : !pto.mask<b16>
+    %lo = pto.vcgmax %a, %ml
+        : !pto.vreg<128xui16>, !pto.mask<b16> -> !pto.vreg<128xui16>
+    %hi = pto.vcgmax %b, %mh
+        : !pto.vreg<128xui16>, !pto.mask<b16> -> !pto.vreg<128xui16>
+    %folded = pto.vmax %lo, %hi, %combine
+        : !pto.vreg<128xui16>, !pto.vreg<128xui16>, !pto.mask<b16>
+        -> !pto.vreg<128xui16>
+    return %folded : !pto.vreg<128xui16>
+  }
+
+  func.func @dynamic_mask_preserved(%a: !pto.vreg<128xui16>,
+                                    %b: !pto.vreg<128xui16>,
+                                    %m: !pto.mask<b16>)
+      -> !pto.vreg<128xui16> {
+    %f = pto.pset_b16 "PAT_ALLF" : !pto.mask<b16>
+    %ml, %mh = pto.pdintlv_b16 %m, %f
+        : !pto.mask<b16>, !pto.mask<b16> -> !pto.mask<b16>, !pto.mask<b16>
+    %combine = pto.pset_b16 "PAT_VL4" : !pto.mask<b16>
+    %lo = pto.vcgmax %a, %ml
+        : !pto.vreg<128xui16>, !pto.mask<b16> -> !pto.vreg<128xui16>
+    %hi = pto.vcgmax %b, %mh
+        : !pto.vreg<128xui16>, !pto.mask<b16> -> !pto.vreg<128xui16>
+    %folded = pto.vmax %lo, %hi, %combine
+        : !pto.vreg<128xui16>, !pto.vreg<128xui16>, !pto.mask<b16>
+        -> !pto.vreg<128xui16>
+    return %folded : !pto.vreg<128xui16>
+  }
+}
+
+// CHECK-LABEL: func.func @static_mask_folds
+// CHECK: pto.pset_b16 "PAT_VL64"
+// CHECK: pto.vmax %arg0, %arg1
+// CHECK-COUNT-1: pto.vcgmax
+// CHECK-NOT: pto.vcgmax
+// CHECK-NOT: pto.pdintlv_b16
+
+// CHECK-LABEL: func.func @dynamic_mask_preserved
+// CHECK: pto.pdintlv_b16
+// CHECK-COUNT-2: pto.vcgmax

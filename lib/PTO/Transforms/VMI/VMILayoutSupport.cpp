@@ -376,6 +376,27 @@ VMILayoutSupport::getGroupReduceLayoutFactForLayouts(
               "layout table row for the group size");
 }
 
+/// Whether the shared ensure_layout table can turn a contiguous value of this
+/// shape into nativeLayout.  A native grouped-reduction row is reachable
+/// from a contiguous source only when such a row exists, so the dense fallback
+/// must not answer for the contiguous form when one does: doing so anchors the
+/// result to the dense slots=1 output while the operand still asks for the
+/// native source, which the layout contract then rejects.
+static bool hasContiguousToNativeEnsureBridge(VMIVRegType sourceType,
+                                              VMILayoutAttr nativeLayout) {
+  if (!nativeLayout || nativeLayout.isContiguous()) {
+    return false;
+  }
+  MLIRContext *ctx = sourceType.getContext();
+  VMILayoutAttr contiguous = VMILayoutAttr::getContiguous(ctx);
+  auto contiguousType = VMIVRegType::get(ctx, sourceType.getElementCount(),
+                                         sourceType.getElementType(), contiguous);
+  auto nativeType = VMIVRegType::get(ctx, sourceType.getElementCount(),
+                                     sourceType.getElementType(), nativeLayout);
+  VMILayoutSupport supports;
+  return succeeded(supports.getEnsureLayoutFact(contiguousType, nativeType));
+}
+
 FailureOr<SmallVector<VMIGroupReduceLayoutFact, mlir::pto::kValue4>>
 VMILayoutSupport::getGroupReduceLayoutFactsForLayout(
     VMIGroupReduceKind kind, VMIVRegType sourceType, int64_t numGroups,
@@ -401,6 +422,7 @@ VMILayoutSupport::getGroupReduceLayoutFactsForLayout(
   }
 
   SmallVector<VMIGroupReduceLayoutFact, mlir::pto::kValue4> facts;
+  bool hasBridgeableNative = false;
   for (const GroupReduceLayoutPattern &pattern : kGroupReduceLayoutPatterns) {
     if (!matchesGroupBlockPattern(pattern.block, *key) ||
         !isExecutableGroupReducePattern(pattern, *key)) {
@@ -409,6 +431,14 @@ VMILayoutSupport::getGroupReduceLayoutFactsForLayout(
     VMIGroupReduceLayoutFact candidate = materializeGroupReduceLayoutFact(
         sourceType.getContext(), pattern, *key, numGroups, kind,
         sourceType.getElementType());
+
+    // A native source the ensure_layout table can bridge from the contiguous
+    // form is a real alternative to the dense fallback.  Remember it so the
+    // dense fallback does not make the contiguous layout look acceptable and
+    // pin the result to the dense slots=1 output.
+    if (hasContiguousToNativeEnsureBridge(sourceType, candidate.sourceLayout)) {
+      hasBridgeableNative = true;
+    }
 
     VMILayoutAttr candidateLayout = groupReduceLayoutForPort(candidate, port);
     if (candidateLayout == layout) {
@@ -420,11 +450,13 @@ VMILayoutSupport::getGroupReduceLayoutFactsForLayout(
       makeDenseRowsGroupReduceFact(sourceType.getContext(), *key, numGroups);
   VMILayoutAttr denseLayout = groupReduceLayoutForPort(dense, port);
   // The dense fallback exists only for shapes the table cannot describe.  If a
-  // table row already provides this port layout, adding the fallback as a
-  // second fact would make the layout assignment treat the result as weakly
-  // seeded and let a contiguous source drift into a deinterleaved form (and
-  // back again).
-  const bool denseFallbackApplies = denseLayout == layout && facts.empty();
+  // table row already provides this port layout, adding the fallback as a second
+  // fact would make the layout assignment treat the result as weakly seeded and
+  // let a contiguous source drift into a deinterleaved form (and back again).
+  // Likewise, a bridgeable native row must not be shadowed by the fallback just
+  // because the operand happens to still be contiguous.
+  const bool denseFallbackApplies =
+      denseLayout == layout && facts.empty() && !hasBridgeableNative;
   if (denseFallbackApplies) {
     facts.push_back(dense);
   }

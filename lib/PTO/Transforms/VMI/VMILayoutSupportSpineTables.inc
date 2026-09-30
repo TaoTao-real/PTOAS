@@ -53,6 +53,14 @@ static constexpr PreferredCastLayoutPattern
         {bits<16>(), bits<32>(), 0, dls(4, 2), d(4), CastTypeClass::Float},
         {bits<32>(), bits<8>(), 0, d(4), dls(4, 4)},
         {bits<8>(), bits<32>(), 0, dls(4, 4), d(4)},
+        // Exact rows for the 128-element shapes the default rows above
+        // mis-size: such a value fits in one part at 16-bit and two at 32-bit,
+        // so the factor-4 composite leaves every carrier half empty and doubles
+        // the carrier count.  Factor 2 keeps one part per chunk here.
+        {bits<32>(), bits<16>(), 128, d(2), dls(2, 2), CastTypeClass::Float},
+        {bits<16>(), bits<32>(), 128, dls(2, 2), d(2), CastTypeClass::Float},
+        {bits<32>(), bits<8>(), 128, d(2), dls(2, 4)},
+        {bits<8>(), bits<32>(), 128, dls(2, 4), d(2)},
 };
 
 // The matching *legal* relations for the scoped rows above.  They are kept out
@@ -68,6 +76,11 @@ static constexpr LegalCastLayoutPattern kSpineScopedLegalCastLayoutPatterns[] =
         {bits<16>(), bits<32>(), dls(4, 2), d(4), CastTypeClass::Float},
         {bits<32>(), bits<8>(), d(4), dls(4, 4)},
         {bits<8>(), bits<32>(), dls(4, 4), d(4)},
+        // Matching legal rows for the 128-element exact rows above.
+        {bits<32>(), bits<16>(), d(2), dls(2, 2), CastTypeClass::Float},
+        {bits<16>(), bits<32>(), dls(2, 2), d(2), CastTypeClass::Float},
+        {bits<32>(), bits<8>(), d(2), dls(2, 4)},
+        {bits<8>(), bits<32>(), dls(2, 4), d(2)},
 };
 
 //===----------------------------------------------------------------------===//

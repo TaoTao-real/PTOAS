@@ -1,0 +1,63 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: pto-test-opt %s -vmi-lower-unified-to-legacy -vmi-mask-granularity-assignment -vmi-layout-assignment -vmi-to-vpto | FileCheck %s --check-prefix=LOWER
+
+// Four-group 128-lane group broadcasts on both element widths that reach this
+// shape, with NO layout pinned anywhere and the broadcast consumed by a store
+// rather than returned: layout assignment must choose the layout itself, which
+// is the part the pinned-layout test
+// vmi_to_vpto_group_broadcast_load_e2b_four_group.pto structurally cannot see
+// (there the result layout is carried by the function return type).
+//
+// The eight-group E2B packet pairs a group size with a result layout:
+//   gb(1) <-> contiguous, gb(2) <-> deinterleaved = 2, gb(4) <-> deinterleaved = 4
+// where gb(N) means one group spans N VCG blocks (32 bytes each).  With
+// 128 lanes over 4 groups a group is 32 lanes wide, so
+//   16-bit elements: 32 / 16 = gb(2)  -> pairs with deinterleaved = 2
+//   32-bit elements: 32 /  8 = gb(4)  -> pairs with deinterleaved = 4
+// A result layout outside that pairing cannot use the packet, and falls back to
+// one lane-zero BRC load per logical group plus a prefix-mask select tree.
+//
+// Only the lowering is asserted, so that either fix (make the broadcast prefer
+// deinterleaved = 4, or admit the packet for a contiguous result) satisfies the
+// same contract.
+
+module {
+  func.func @group_broadcast_load_four_group_bf16_layout_assigned(
+      %src: !pto.ptr<bf16, ub>, %dst: !pto.ptr<bf16, ub>, %off: index) {
+    %c1 = arith.constant 1 : index
+    %c16 = arith.constant 16 : index
+    %aligned_off = arith.muli %off, %c16 : index
+    %out = pto.vmi.vload %src[%aligned_off], %c1 {dist_mode = "brc", group = 4}
+        : !pto.ptr<bf16, ub> -> !pto.vmi.vreg<128xbf16>
+    pto.vmi.vstore %out, %dst[%aligned_off]
+        : !pto.vmi.vreg<128xbf16>, !pto.ptr<bf16, ub>
+    return
+  }
+
+  func.func @group_broadcast_load_four_group_f32_layout_assigned(
+      %src: !pto.ptr<f32, ub>, %dst: !pto.ptr<f32, ub>, %off: index) {
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    %aligned_off = arith.muli %off, %c8 : index
+    %out = pto.vmi.vload %src[%aligned_off], %c1 {dist_mode = "brc", group = 4}
+        : !pto.ptr<f32, ub> -> !pto.vmi.vreg<128xf32>
+    pto.vmi.vstore %out, %dst[%aligned_off]
+        : !pto.vmi.vreg<128xf32>, !pto.ptr<f32, ub>
+    return
+  }
+}
+
+// LOWER-LABEL: func.func @group_broadcast_load_four_group_bf16_layout_assigned
+// LOWER-NOT: BRC_B16
+// LOWER: dist = "E2B_B16"
+
+// LOWER-LABEL: func.func @group_broadcast_load_four_group_f32_layout_assigned
+// LOWER-NOT: BRC_B32
+// LOWER: dist = "E2B_B32"

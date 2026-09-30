@@ -1,0 +1,56 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: pto-test-opt %s -vpto-mask-simplify | FileCheck %s
+
+// pdintlv(a, b) = (low = [even(a); even(b)], high = [odd(a); odd(b)]).  With the
+// second operand all-false the split keeps only the even/odd image of the first
+// operand, so a static prefix folds into prefix masks.  A prefix paired with
+// itself duplicates each image into both halves and is not a plain prefix.
+
+module {
+  func.func @pdintlv_even_prefix_allf_folds()
+      -> (!pto.mask<b16>, !pto.mask<b16>) {
+    %m = pto.pset_b16 "PAT_VL4" : !pto.mask<b16>
+    %f = pto.pset_b16 "PAT_ALLF" : !pto.mask<b16>
+    %low, %high = pto.pdintlv_b16 %m, %f
+        : !pto.mask<b16>, !pto.mask<b16> -> !pto.mask<b16>, !pto.mask<b16>
+    return %low, %high : !pto.mask<b16>, !pto.mask<b16>
+  }
+
+  func.func @pdintlv_odd_prefix_allf_folds()
+      -> (!pto.mask<b16>, !pto.mask<b16>) {
+    %m = pto.pset_b16 "PAT_VL3" : !pto.mask<b16>
+    %f = pto.pset_b16 "PAT_ALLF" : !pto.mask<b16>
+    %low, %high = pto.pdintlv_b16 %m, %f
+        : !pto.mask<b16>, !pto.mask<b16> -> !pto.mask<b16>, !pto.mask<b16>
+    return %low, %high : !pto.mask<b16>, !pto.mask<b16>
+  }
+
+  func.func @pdintlv_self_prefix_preserved()
+      -> (!pto.mask<b16>, !pto.mask<b16>) {
+    %m = pto.pset_b16 "PAT_VL4" : !pto.mask<b16>
+    %low, %high = pto.pdintlv_b16 %m, %m
+        : !pto.mask<b16>, !pto.mask<b16> -> !pto.mask<b16>, !pto.mask<b16>
+    return %low, %high : !pto.mask<b16>, !pto.mask<b16>
+  }
+}
+
+// CHECK-LABEL: func.func @pdintlv_even_prefix_allf_folds
+// CHECK-NOT: pto.pdintlv_b16
+// CHECK-COUNT-2: pto.pset_b16 "PAT_VL2"
+// CHECK: return
+
+// CHECK-LABEL: func.func @pdintlv_odd_prefix_allf_folds
+// CHECK-NOT: pto.pdintlv_b16
+// CHECK: pto.pset_b16 "PAT_VL2"
+// CHECK: pto.pset_b16 "PAT_VL1"
+// CHECK: return
+
+// CHECK-LABEL: func.func @pdintlv_self_prefix_preserved
+// CHECK: pto.pdintlv_b16

@@ -273,6 +273,93 @@ static FailureOr<SmallVector<Value>> materializeDeinterleaved2ToContiguous(
   return results;
 }
 
+/// Packs the two deinterleaved=2 parts of a compacted gather back into the
+/// contiguous carriers: interleaving them once more yields lanes 0..63 and
+/// 64..127.  Split out of materializeDeint4ToDeint2 to keep that materializer
+/// within the coding-standard function size.
+static FailureOr<std::optional<SmallVector<Value>>>
+mergeCompactedPartsIntoContiguous(Operation *op,
+                                  const SmallVector<Value> &parts,
+                                  TypeRange resultTypes,
+                                  PatternRewriter &rewriter) {
+  Type partType = parts[0].getType();
+  if (parts.size() != 2 || partType != parts[1].getType() ||
+      partType != resultTypes[0] || partType != resultTypes[1]) {
+    return rewriter.notifyMatchFailure(
+        op, "vintlv requires operands and results to share one type");
+  }
+  auto merged = rewriter.create<VintlvOp>(op->getLoc(), partType, partType,
+                                          parts[0], parts[1]);
+  return std::optional<SmallVector<Value>>(
+      SmallVector<Value>{merged.getLow(), merged.getHigh()});
+}
+
+/// A deinterleaved=4 value whose deinterleaved=2 form spans half as many
+/// carriers (four parts -> two, for example 128 f32) is a carrier-compacting
+/// gather.  Part p holds the logical lanes congruent to p modulo 4 in its low
+/// half, so the two classes that share a parity interleave back into exactly
+/// one deinterleaved=2 part:
+///   d0 = vintlv(p0, p2).low   (lanes 0, 2, 4, ...)
+///   d1 = vintlv(p1, p3).low   (lanes 1, 3, 5, ...)
+/// The high halves of the sources are padding outside the value, so the high
+/// halves of the interleave results are unused.
+static FailureOr<std::optional<SmallVector<Value>>> materializeDeint4ToDeint2(
+    Operation *op, ValueRange sourceParts, TypeRange resultTypes,
+    VMILayoutAttr sourceLayout, VMILayoutAttr resultLayout,
+    PatternRewriter &rewriter) {
+  auto isClassLayout = [](VMILayoutAttr layout, int64_t factor) {
+    return layout && layout.isDeinterleaved() &&
+           layout.getFactor() == factor && layout.getLaneStride() == 1;
+  };
+  bool resultIsClass2 = isClassLayout(resultLayout, 2);
+  bool resultIsContiguous = resultLayout && resultLayout.isContiguous() &&
+                            resultLayout.getLaneStride() == 1;
+  bool compacting = isClassLayout(sourceLayout, 4) &&
+                    (resultIsClass2 || resultIsContiguous);
+  if (!compacting) {
+    return std::optional<SmallVector<Value>>{};
+  }
+  // Only the carrier-compacting 4*N -> 2*N relation belongs to this
+  // materializer.  An arity-preserving deinterleaved=4 <-> contiguous pair
+  // (4*N -> 4*N, e.g. 256 f32) must stay unclaimed so that the generic
+  // deinterleaved=4 path still gets its turn; reporting failure here would
+  // abort the materializer chain and leave the ensure_layout unconverted.
+  // Exactly one four-part group: the parts are consumed in partition order
+  // (see materializeDeint4DataToContiguous), so a wider 4N -> 2N pair would
+  // need a group-major index this materializer does not implement.
+  bool compactingArity = sourceParts.size() == 4 &&
+                         resultTypes.size() == sourceParts.size() / 2;
+  if (!compactingArity) {
+    return std::optional<SmallVector<Value>>{};
+  }
+  int64_t groups = sourceParts.size() / 4;
+  SmallVector<Value> results;
+  results.reserve(resultTypes.size());
+  for (int64_t group = 0; group < groups; ++group) {
+    Value classes[4] = {sourceParts[4 * group], sourceParts[4 * group + 1],
+                        sourceParts[4 * group + 2],
+                        sourceParts[4 * group + 3]};
+    for (int64_t parity = 0; parity < 2; ++parity) {
+      Value lhs = classes[parity];
+      Value rhs = classes[parity + 2];
+      Type lhsType = lhs.getType();
+      if (lhsType != rhs.getType() ||
+          lhsType != resultTypes[2 * group + parity]) {
+        return rewriter.notifyMatchFailure(
+            op, "vintlv requires operands and results to share one type");
+      }
+      auto interleave =
+          rewriter.create<VintlvOp>(op->getLoc(), lhsType, lhsType, lhs, rhs);
+      results.push_back(interleave.getLow());
+    }
+  }
+  if (resultIsContiguous) {
+    return mergeCompactedPartsIntoContiguous(op, results, resultTypes,
+                                             rewriter);
+  }
+  return std::optional<SmallVector<Value>>(std::move(results));
+}
+
 static LogicalResult validateContiguousToDeinterleaved2Shape(
     Operation *op, ValueRange sourceParts, TypeRange resultTypes,
     PatternRewriter &rewriter, int64_t &groups) {
@@ -788,6 +875,13 @@ tryDataLayoutMaterializers(const DataLayoutMaterializationContext &context) {
   if (didHandleDataLayoutMaterialization(deinterleaved2)) {
     return deinterleaved2;
   }
+  DataLayoutMaterializationResult compactingDeinterleaved =
+      materializeDeint4ToDeint2(
+          context.op, context.sourceParts, context.resultTypes,
+          context.sourceLayout, context.resultLayout, context.rewriter);
+  if (didHandleDataLayoutMaterialization(compactingDeinterleaved)) {
+    return compactingDeinterleaved;
+  }
   DataLayoutMaterializationResult deinterleaved4 =
       materializeDeinterleaved4DataLayout(
           context.op, context.sourceParts, context.resultTypes,
@@ -936,15 +1030,44 @@ static FailureOr<SmallVector<Value>> materializeDeinterleaved2MaskToContiguous(
 static FailureOr<SmallVector<Value>> materializeContiguousToDeinterleaved2Mask(
     Operation *op, ValueRange sourceParts, TypeRange resultTypes,
     PatternRewriter &rewriter) {
-  int64_t groups = sourceParts.size() / kVMIDataLayoutFactor2;
+  // One deinterleaved part per pair of result types.  A sub-chunk contiguous
+  // source (a single part the 2-way split expands into two) has no second
+  // source part, so its second predicate operand is the all-false mask: the
+  // deinterleave then keeps only the even/odd image of the sole part and zeroes
+  // the duplicated half instead of marking that redundant half valid.
+  int64_t groups = resultTypes.size() / kVMIDataLayoutFactor2;
   SmallVector<Value> part0;
   SmallVector<Value> part1;
   part0.reserve(groups);
   part1.reserve(groups);
   for (int64_t i = 0; i < groups; ++i) {
+    size_t lhsIndex = 2 * i;
+    if (lhsIndex >= sourceParts.size()) {
+      return rewriter.notifyMatchFailure(
+          op, "contiguous to deinterleaved=2 mask materialization missing "
+              "source part");
+    }
+    Value rhs = sourceParts[lhsIndex];
+    if (lhsIndex + 1 < sourceParts.size()) {
+      rhs = sourceParts[lhsIndex + 1];
+    } else {
+      auto maskType = dyn_cast<MaskType>(resultTypes[i]);
+      if (!maskType) {
+        return rewriter.notifyMatchFailure(
+            op, "contiguous to deinterleaved=2 mask materialization requires a "
+                "predicate result");
+      }
+      FailureOr<Value> allFalse =
+          createPrefixMask(op->getLoc(), maskType, "PAT_ALLF", rewriter);
+      if (failed(allFalse)) {
+        return rewriter.notifyMatchFailure(
+            op, "failed to create all-false deinterleave mask");
+      }
+      rhs = *allFalse;
+    }
     FailureOr<std::pair<Value, Value>> materialize = createPredicateDintlv(
         op->getLoc(), resultTypes[i], resultTypes[groups + i],
-        sourceParts[2 * i], sourceParts[2 * i + 1], rewriter);
+        sourceParts[lhsIndex], rhs, rewriter);
     if (failed(materialize)) {
       return rewriter.notifyMatchFailure(
           op, "unsupported predicate dintlv mask type");
@@ -997,14 +1120,26 @@ materializeDeinterleaved2MaskLayout(
   if (direction == Deinterleaved2MaskLayoutDirection::Unsupported) {
     return std::optional<SmallVector<Value>>{};
   }
-  bool invalidArity = sourceParts.size() != resultTypes.size() ||
-                      sourceParts.empty() || sourceParts.size() % 2 != 0;
+  // The reverse (deinterleaved -> contiguous) move is the full 2*N -> 2*N
+  // relation, but the forward move also covers a sub-chunk contiguous source
+  // (one part expanding into two) whose halves live in the two halves of the
+  // same physical carrier.  That case is not an identity forward, so it skips
+  // the per-part type check and lets pdintlv reorder the predicate lanes.
+  bool equalArity = sourceParts.size() == resultTypes.size();
+  bool subChunkForward =
+      direction == Deinterleaved2MaskLayoutDirection::FromContiguous &&
+      sourceParts.size() * kVMIDataLayoutFactor2 == resultTypes.size();
+  bool invalidArity = sourceParts.empty() || resultTypes.empty() ||
+                      (!equalArity && !subChunkForward) ||
+                      resultTypes.size() % kVMIDataLayoutFactor2 != 0;
   if (invalidArity) {
     (void)rewriter.notifyMatchFailure(
-        op, "deinterleaved=2 mask layout materialization requires 2*N parts");
+        op, "deinterleaved=2 mask layout materialization requires 2*N parts "
+            "or a single contiguous source part");
     return failure();
   }
-  if (failed(verifyIdentityPartForwarding(op, sourceParts, resultTypes,
+  if (equalArity &&
+      failed(verifyIdentityPartForwarding(op, sourceParts, resultTypes,
                                           rewriter))) {
     return failure();
   }

@@ -1,0 +1,36 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: pto-test-opt %s -vmi-lower-unified-to-legacy -vmi-mask-granularity-assignment -vmi-layout-assignment -vmi-to-vpto | FileCheck %s
+
+// A 128-column scale tail asks for four groups over 128 lanes with the
+// deinterleaved=2 result layout layout assignment picks for it.  One E2B load
+// always reads a full eight-group packet; a four-group result consumes only the
+// leading packet VLanes and the surplus groups stay outside the result layout.
+// Their read remains inside the full physical chunk the load safety policy
+// already grants, so the shape must lower to the same E2B packet the eight-group
+// shape uses, not to the vsldb + vselr group-slot fallback.
+
+module {
+  func.func @group_broadcast_load_e2b_four_group_bf16(
+      %src: !pto.ptr<bf16, ub>, %off: index)
+      -> !pto.vmi.vreg<128xbf16, #pto.vmi.layout<deinterleaved = 2>> {
+    %c1 = arith.constant 1 : index
+    %c16 = arith.constant 16 : index
+    %aligned_off = arith.muli %off, %c16 : index
+    %out = pto.vmi.vload %src[%aligned_off], %c1 {dist_mode = "brc", group = 4}
+        : !pto.ptr<bf16, ub> -> !pto.vmi.vreg<128xbf16, #pto.vmi.layout<deinterleaved = 2>>
+    return %out : !pto.vmi.vreg<128xbf16, #pto.vmi.layout<deinterleaved = 2>>
+  }
+}
+
+// CHECK-LABEL: func.func @group_broadcast_load_e2b_four_group_bf16
+// CHECK-NOT: pto.vsldb
+// CHECK-NOT: pto.vselr
+// CHECK: %[[E2B:.*]] = pto.vlds %{{.*}} {dist = "E2B_B16"} : !pto.ptr<bf16, ub> -> !pto.vreg<128xbf16>
+// CHECK: return %[[E2B]], %[[E2B]]

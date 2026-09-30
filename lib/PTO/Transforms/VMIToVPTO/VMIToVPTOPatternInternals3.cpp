@@ -1453,9 +1453,14 @@ private:
       return rewriter.notifyMatchFailure(
           op, "group_broadcast_load E2B lowering requires !pto.ptr source");
     }
-    if (numGroups != kE2BBroadcastGroupCount) {
+    // One E2B load reads a full eight-group packet.  A result that needs
+    // fewer groups consumes only the leading packet VLanes; the surplus
+    // groups stay outside the result layout and their read remains inside the
+    // full physical chunk the load safety policy already grants.  Reject only
+    // a result that needs more groups than one packet carries.
+    if (numGroups <= 0 || numGroups > kE2BBroadcastGroupCount) {
       return rewriter.notifyMatchFailure(
-          op, "group_broadcast_load E2B lowering requires num_groups = 8");
+          op, "group_broadcast_load E2B lowering requires 1..8 num_groups");
     }
     return success();
   }

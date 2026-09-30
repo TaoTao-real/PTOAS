@@ -289,6 +289,36 @@ buildGroupLayoutKey(VMIVRegType type, int64_t numGroups,
                         vcgBlockElems, *blockClass};
 }
 
+// A sub-chunk deinterleaved source (fewer elements than one physical carrier
+// per deinterleaved group) has no dedicated load lowering, but it is still
+// reachable when the contiguous <-> deinterleaved ensure_layout bridge admits
+// the pair: that bridge lowers the value as a within-carrier lane permutation.
+// Keep the reducer and the materializer on one contract by executing a
+// deinterleaved row only when the whole-chunk property holds or the
+// ensure_layout table has the matching row.
+inline bool hasEnsureLayoutDeinterleaveBridge(int64_t elementBits,
+                                              int64_t elementCount,
+                                              int64_t factor) {
+  for (const EnsureLayoutPattern &row : kEnsureLayoutPatterns) {
+    if (!matchesElementBitsPattern(row.elementBits, elementBits) ||
+        !matchesElementCountPattern(row.elementCounts, elementCount)) {
+      continue;
+    }
+    bool contiguousToDeinterleaved =
+        row.sourceLayout.kind == LayoutPatternKind::Contiguous &&
+        row.resultLayout.kind == LayoutPatternKind::Deinterleaved &&
+        row.resultLayout.value == factor;
+    bool deinterleavedToContiguous =
+        row.sourceLayout.kind == LayoutPatternKind::Deinterleaved &&
+        row.sourceLayout.value == factor &&
+        row.resultLayout.kind == LayoutPatternKind::Contiguous;
+    if (contiguousToDeinterleaved || deinterleavedToContiguous) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Gate all reduction queries before either native rows or the dense fallback.
 // Broadcast keeps using buildGroupLayoutKey, including its eight-bit layouts.
 inline FailureOr<GroupLayoutKey>
@@ -313,20 +343,31 @@ inline bool isExecutableGroupReducePattern(const GroupReduceLayoutPattern &patte
   }
   // A deinterleaved source needs at least one whole physical chunk per
   // deinterleaved group; otherwise the producing load has no lowering and the
-  // dense masked-row plan has to be used instead.
+  // dense masked-row plan has to be used instead.  A sub-chunk shape is still
+  // admissible when the ensure_layout table can bridge it, which is exactly
+  // the within-carrier lane permutation the materializer emits.
   bool deinterleaved =
       pattern.sourceLayout.kind == LayoutPatternKind::Deinterleaved ||
       pattern.sourceLayout.kind == LayoutPatternKind::BlockDeinterleaved;
   int64_t deinterleavedFactor =
       deinterleaved ? pattern.sourceLayout.value : 1;
-  if (deinterleaved &&
-      key.elementCount < key.lanesPerPart * deinterleavedFactor) {
+  int64_t elementBits =
+      kVMIVCGBlockBytes * mlir::pto::kValue8 / key.vcgBlockElems;
+  bool wholeChunkPerGroup =
+      key.elementCount >= key.lanesPerPart * deinterleavedFactor;
+  // hasEnsureLayoutDeinterleaveBridge only inspects plain-deinterleaved ensure
+  // rows, so restrict the bridge to that kind: a block-deinterleaved source
+  // must not be admitted through a plain-deinterleaved row.
+  bool bridgeAdmitsSubChunk =
+      pattern.sourceLayout.kind == LayoutPatternKind::Deinterleaved &&
+      hasEnsureLayoutDeinterleaveBridge(elementBits, key.elementCount,
+                                        deinterleavedFactor);
+  if (deinterleaved && !wholeChunkPerGroup && !bridgeAdmitsSubChunk) {
     return false;
   }
   // Strided 16/32-bit operands must not demand nonexistent b64/b128 masks.
   int64_t stride = pattern.sourceLayout.kind == LayoutPatternKind::LaneStride
                        ? pattern.sourceLayout.value : 1;
-  int64_t elementBits = kVMIVCGBlockBytes * mlir::pto::kValue8 / key.vcgBlockElems;
   return elementBits * stride <= mlir::pto::kValue32;
 }
 

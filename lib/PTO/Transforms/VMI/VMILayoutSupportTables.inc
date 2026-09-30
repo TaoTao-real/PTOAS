@@ -32,10 +32,14 @@ static constexpr EnsureLayoutPattern kEnsureLayoutPatterns[] = {
     {bits<8, 16, 32, 64>(), anyN(), gsFit(), c()},
     {bits<8, 16, 32, 64>(), anyN(), c(), gsFit()},
 
-    {bits<16>(), N<256>(), c(), d(2)},
+    // A 128-element 16-bit value is a sub-chunk carrier: the tail group
+    // reduction reaches its deinterleaved=2 source only through this bridge,
+    // so the 16-bit row must admit the shorter element count the 32-bit row
+    // already does.
+    {bits<16>(), N<128, 256>(), c(), d(2)},
     {bits<32>(), N<128, 256>(), c(), d(2)},
     {bits<64>(), N<64, 128, 256>(), c(), d(2)},
-    {bits<16>(), N<256>(), d(2), c()},
+    {bits<16>(), N<128, 256>(), d(2), c()},
     {bits<32>(), N<128, 256>(), d(2), c()},
     {bits<64>(), N<64, 128, 256>(), d(2), c()},
 
@@ -44,9 +48,9 @@ static constexpr EnsureLayoutPattern kEnsureLayoutPatterns[] = {
     {bits<32>(), N<256>(), d(4), c()},
     {bits<64>(), N<128, 256>(), d(4), c()},
 
-    {bits<32>(), N<256, 512>(), d(2), d(4)},
+    {bits<32>(), N<128, 256, 512>(), d(2), d(4)},
     {bits<64>(), N<128, 256>(), d(2), d(4)},
-    {bits<32>(), N<256, 512>(), d(4), d(2)},
+    {bits<32>(), N<128, 256, 512>(), d(4), d(2)},
     {bits<64>(), N<128, 256>(), d(4), d(2)},
 
     // The lane-stride carrier is element bits times the stride and has to be
@@ -113,10 +117,10 @@ struct EnsureMaskLayoutPattern {
 };
 
 static constexpr EnsureMaskLayoutPattern kEnsureMaskLayoutPatterns[] = {
-    {mb16(), N<256>(), c(), d(2)},
+    {mb16(), N<128, 256>(), c(), d(2)},
     {mb32(), N<128, 256, 512>(), c(), d(2)},
     {mb32(), N<128>(), c(), bd(2)},
-    {mb16(), N<256>(), d(2), c()},
+    {mb16(), N<128, 256>(), d(2), c()},
     {mb32(), N<128, 256, 512>(), d(2), c()},
     {mb32(), N<128>(), bd(2), c()},
 
@@ -379,12 +383,17 @@ struct GroupBroadcastLoadDirectPattern {
 
 static constexpr GroupBroadcastLoadDirectPattern
     kGroupBroadcastLoadDirectPatterns[] = {
-        {VMIGroupBroadcastLoadDirectKind::E2B, G<8>(), gb(1), bits<16, 32>(),
-         memContiguous(), c()},
-        {VMIGroupBroadcastLoadDirectKind::E2B, G<8>(), gb(2), bits<16, 32>(),
-         memContiguous(), d(2)},
-        {VMIGroupBroadcastLoadDirectKind::E2B, G<8>(), gb(4), bits<16, 32>(),
-         memContiguous(), d(4)},
+        // E2B always reads one full eight-group packet; a packet that covers
+        // more groups than the result needs keeps its surplus groups outside
+        // the result layout.  The surplus read stays inside the full physical
+        // chunk the load safety policy already grants, so a four-group result
+        // (for example a 128-column scale tail) may use the same packet.
+        {VMIGroupBroadcastLoadDirectKind::E2B, G<8, 4>(), gb(1),
+         bits<16, 32>(), memContiguous(), c()},
+        {VMIGroupBroadcastLoadDirectKind::E2B, G<8, 4>(), gb(2),
+         bits<16, 32>(), memContiguous(), d(2)},
+        {VMIGroupBroadcastLoadDirectKind::E2B, G<8, 4>(), gb(4),
+         bits<16, 32>(), memContiguous(), d(4)},
         // A dense sub-full-part group is materialized by one lane-zero BRC
         // load per logical group plus a prefix-mask select tree, so it needs
         // only element alignment and never a 32B-aligned pto.vsldb base.

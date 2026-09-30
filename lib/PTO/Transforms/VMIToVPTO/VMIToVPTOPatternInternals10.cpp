@@ -340,8 +340,10 @@ private:
       OneToNPatternRewriter &rewriter) const {
     bool spineCompositeWidening =
         sourceLayout && resultLayout && sourceLayout.isDeinterleaved() &&
-        sourceLayout.getFactor() == 4 && resultLayout.isDeinterleaved() &&
-        resultLayout.getFactor() == 4 && resultLayout.getLaneStride() == 1 &&
+        (sourceLayout.getFactor() == 2 || sourceLayout.getFactor() == 4) &&
+        resultLayout.isDeinterleaved() &&
+        (resultLayout.getFactor() == 2 || resultLayout.getFactor() == 4) &&
+        resultLayout.getLaneStride() == 1 &&
         ((sourceBits == 8 && sourceLayout.getLaneStride() == 4) ||
          (sourceBits == 16 && sourceLayout.getLaneStride() == 2)) &&
         plan.resultTypes.size() == sourceParts.size();
@@ -352,6 +354,8 @@ private:
     if (failed(mask)) {
       return failure();
     }
+    // The part selector follows the widening relation (packed four-byte or
+    // pair), not the layout factor: the packed verifier only accepts P0..P3.
     StringRef part = sourceBits == 8 ? StringRef("P0") : StringRef("EVEN");
     if (failed(lowerLaneStride(op, rewriter, sourceParts, plan.resultTypes,
                                *mask, part, viewPlan.isPackedBF16x2,
@@ -1362,9 +1366,10 @@ private:
       VMILayoutAttr resultLayout, OneToNPatternRewriter &rewriter) const {
     bool spineCompositeNarrowing =
         physicalPlan.sourceBits == 32 && sourceLayout && resultLayout &&
-        sourceLayout.isDeinterleaved() && sourceLayout.getFactor() == 4 &&
+        sourceLayout.isDeinterleaved() &&
+        (sourceLayout.getFactor() == 2 || sourceLayout.getFactor() == 4) &&
         sourceLayout.getLaneStride() == 1 && resultLayout.isDeinterleaved() &&
-        resultLayout.getFactor() == 4 &&
+        (resultLayout.getFactor() == 2 || resultLayout.getFactor() == 4) &&
         ((physicalPlan.resultBits == 8 && resultLayout.getLaneStride() == 4) ||
          (physicalPlan.resultBits == 16 &&
           resultLayout.getLaneStride() == 2)) &&

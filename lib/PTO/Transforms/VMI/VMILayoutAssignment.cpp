@@ -643,6 +643,21 @@ struct LayoutSolver {
           ctx, type.getElementCount(), type.getElementType(), contiguous);
       FailureOr<int64_t> contiguousArity = getVMIPhysicalArity(contiguousType);
       if (succeeded(contiguousArity) && *contiguousArity > 1) {
+        // Preferring contiguous must not cost the broadcast its direct packet.
+        // When the contiguous result can only be served by the per-group BRC
+        // lowering plus a select tree, that costs more than the deinterleave
+        // materialization this preference avoids, so keep the deinterleaved
+        // direct layout (which still pairs with the eight-group E2B packet).
+        FailureOr<VMIGroupBroadcastLoadDirectFact> contiguousDirect =
+            supports.getGroupBroadcastLoadDirectFact(
+                contiguousType, op.getSource().getType(),
+                op.getSourceGroupStride(), op.getNumGroupsAttr().getInt());
+        bool contiguousKeepsDirectPacket =
+            failed(contiguousDirect) ||
+            contiguousDirect->kind != VMIGroupBroadcastLoadDirectKind::BRC;
+        if (!contiguousKeepsDirectPacket) {
+          return directLayout;
+        }
         FailureOr<
             SmallVector<VMIGroupBroadcastLayoutFact, mlir::pto::kValue4>>
             contiguousFacts = supports.getGroupBroadcastLayoutFactsForLayout(
