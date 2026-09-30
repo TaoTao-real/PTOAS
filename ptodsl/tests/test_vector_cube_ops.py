@@ -588,7 +588,6 @@ class VectorCubeSurfaceTest(unittest.TestCase):
             ("vneg", "VnegOp", (lhs, mask)),
             ("vrelu", "VreluOp", (lhs, mask)),
             ("vnot", "VnotOp", (lhs, mask)),
-            ("vcmin", "VcminOp", (lhs, mask)),
             ("vcpadd", "VcpaddOp", (lhs, mask)),
         ]
 

@@ -10,6 +10,7 @@
 """Table-driven selection and render coverage for the PTODSL TileLib catalog."""
 
 import ast
+from itertools import product
 from pathlib import Path
 import unittest
 
@@ -660,6 +661,16 @@ class TileLibCatalogTest(unittest.TestCase):
                 }
                 selected = select(op, "a5", specs)
                 self.assertIn(expected_op, selected.specialize(**specs).mlir_text())
+
+    def test_row_reductions_reject_unsupported_source_types(self):
+        ops = ("pto.trowmax", "pto.trowmin", "pto.trowargmax", "pto.trowargmin")
+        dtypes = ("i8", "ui8", "bf16", "f8e4m3", "f8e5m2", "hif8")
+        for op, dtype in product(ops, dtypes):
+            _, _, parameters, _, candidate_id = _entry_parts(CATALOG[op])
+            with self.subTest(op=op, dtype=dtype):
+                specs = _specs(op, parameters, dtype)
+                with self.assertRaises(tilelib.NoMatchingTemplate):
+                    select(op, "a5", specs, candidate_id=candidate_id)
 
     def test_declared_dtype_signatures_are_selectable(self):
         for op, entry in CATALOG.items():

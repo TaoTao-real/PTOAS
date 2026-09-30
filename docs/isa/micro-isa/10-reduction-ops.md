@@ -13,8 +13,11 @@ Operations that reduce a vector to a scalar or per-group result.
 - Reduction results are written into the low-significance portion of the
   destination vector and the remaining destination bits are zero-filled.
 - A5 has no native 8-bit `vcadd`, `vcmax`, `vcmin`, `vcgadd`, `vcgmax`, or
-  `vcgmin` form. VMI rejects direct 8-bit integer reduction inputs; callers
-  must explicitly convert to a supported 16/32-bit type before reducing.
+  `vcgmin` form. The `vcadd`, `vcmax`, and `vcmin` verifiers reject 8-bit
+  integer inputs; explicitly extend them to 16/32 bits before reducing.
+- Row `vcadd`, `vcmax`, and `vcmin` also reject BF16, all FP8 variants, and
+  HiF8 in their operation verifiers. Explicit conversion to `f16`/`f32` is
+  required; these operations do not emulate low-precision reductions.
 
 ---
 
@@ -25,8 +28,8 @@ Operations that reduce a vector to a scalar or per-group result.
 - **syntax:** `%result = pto.vcadd %input, %mask : !pto.vreg<NxT>, !pto.mask<G> -> !pto.vreg<MxU>`
 - **A5 types:** i16/i32 (signed, unsigned, or signless), f16, f32
 - **verification:** Direct micro IR with an `i8`, `si8`, or `ui8` input is
-  rejected with `requires 16-bit or 32-bit integer vector element type`,
-  even when no VMI passes run. There is no implicit 8-to-16-bit widening.
+  rejected with `requires 16-bit or 32-bit integer, f16, or f32 vector element type`.
+  There is no implicit 8-to-16-bit widening.
 - **semantics:** Sum all elements. Result in lane 0, others zeroed.
 
 ```c
@@ -45,11 +48,8 @@ for (int i = 1; i < M; i++)
   widened 32-bit integer results with the same signedness and half as many
   lanes (`M = N / 2`). For `i32/u32/f16/f32` inputs, `U = T` and `M = N`.
   If all predicate bits are zero, the result is zero.
-- **VMI compact use:** `!pto.vreg<128xui16>` reduces to
-  `!pto.vreg<64xui32>` with one sum in lane zero. The compact lowering uses
-  this widened type, combines partial sums before narrowing, and assembles
-  each logical group's low bits separately. Native `vcgadd` instead produces
-  eight sums at once; VMI exposes their low halfwords as `gs(8, 2)`.
+- **result type example:** `!pto.vreg<128xui16>` reduces to
+  `!pto.vreg<64xui32>` with one 32-bit sum in lane zero.
 
 ---
 
@@ -249,16 +249,9 @@ for (int i = groups; i < M; i++)
 - **outputs:** `%result` contains one sum per 32-byte VLane group. For 16-bit
   integers, its first sixteen declared elements hold alternating low/high
   halves of eight 32-bit sums. A `vbitcast` to 32-bit integers exposes the sum
-  view without moving bits. VMI represents its logical 16-bit results at
-  halfword lanes `0, 2, ..., 14` as `gs(8, 2)`, without a producer-side pack.
-  The high halfwords belong to the hardware sums and can be nonzero; they are
-  padding from the logical 16-bit value's perspective.
-- **VMI consumers:** Two- and four-block paths combine partial sums in a
-  32-bit view with `b32` predicates before exposing their low halfwords.
-  A consumer requiring consecutive 16-bit slots may request `gs(8)`, whose
-  conversion uses `vpack LOWER`. Integer extension instead uses `vcvt EVEN`
-  to extend the logical low halfwords, preserving modulo-2^16 reduction
-  semantics. See [Native integer sum layout](../vmi-isa/05-reduce.md#native-integer-sum-layout).
+  view without moving bits. The low halfwords occupy declared lanes
+  `0, 2, ..., 14`; the high halfwords occupy lanes `1, 3, ..., 15` and can be
+  nonzero. Both halves belong to the 32-bit hardware sums.
 - **constraints and limitations:** This is a per-32-byte VLane-group reduction.
   Inactive lanes are treated as zero. If all lanes in a VLane are inactive, the
   corresponding result element is `0` (`+0` for floating-point types).
@@ -291,8 +284,8 @@ for (int i = groups; i < N; i++)
   lanes.
 - **outputs:** `%result` contains one maximum per 32-byte VLane group, written
   contiguously to the low elements of the result vector. In particular,
-  16-bit integer extrema remain consecutive 16-bit values, represented by
-  VMI as `gs(8)`. Unlike row `vcmax`, this operation does not return indices.
+  16-bit integer extrema remain consecutive 16-bit values. Unlike row
+  `vcmax`, this operation does not return indices.
 - **constraints and limitations:** Grouping is by hardware 32-byte VLane, not by
   arbitrary software subvector. Inactive floating-point lanes are treated as
   `-INF`; inactive integer lanes are treated as the element type's minimum
@@ -328,8 +321,8 @@ for (int i = groups; i < N; i++)
   lanes.
 - **outputs:** `%result` contains one minimum per 32-byte VLane group, written
   contiguously to the low elements of the result vector. In particular,
-  16-bit integer extrema remain consecutive 16-bit values, represented by
-  VMI as `gs(8)`. Unlike row `vcmin`, this operation does not return indices.
+  16-bit integer extrema remain consecutive 16-bit values. Unlike row
+  `vcmin`, this operation does not return indices.
 - **constraints and limitations:** Grouping is by hardware 32-byte VLane, not by
   arbitrary software subvector. Inactive floating-point lanes are treated as
   `+INF`; inactive integer lanes are treated as the element type's maximum

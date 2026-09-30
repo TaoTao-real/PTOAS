@@ -16,6 +16,20 @@ from ._ops_imports import *  # noqa: F401,F403
 
 
 
+def _validate_reduction_element_type(elem_type, *, context: str):
+    """Keep logical and physical row reductions on the A5 type contract."""
+    widths = (16, 32)
+    if IntegerType.isinstance(elem_type):
+        if IntegerType(elem_type).width in widths:
+            return
+    elif F16Type.isinstance(elem_type) or F32Type.isinstance(elem_type):
+        return
+    raise TypeError(
+        f"{context} requires a 16-bit or 32-bit integer, f16, or f32 source vector; "
+        f"got {elem_type}; explicitly convert unsupported inputs before reduction"
+    )
+
+
 _PIPE_ALIASES = {
     "MTE1": "PIPE_MTE1",
     "MTE2": "PIPE_MTE2",

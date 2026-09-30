@@ -12,7 +12,7 @@
 from ptodsl import pto
 import ptodsl.tilelib as tilelib
 
-from ._common import NUMERIC_DTYPES, element_store_dist
+from ._common import ROW_REDUCTION_DTYPES, element_store_dist
 from ._part import pad_max, pad_min
 
 
@@ -46,7 +46,7 @@ def register_row_arg(*, op, name, reduce_op, cmp_mode):
         op=op,
         target="a5",
         name=name,
-        dtypes=[(dtype, dtype, index_dtype) for dtype in NUMERIC_DTYPES for index_dtype in ("i32", "ui32")],
+        dtypes=[(dtype, dtype, index_dtype) for dtype in ROW_REDUCTION_DTYPES for index_dtype in ("i32", "ui32")],
         iteration_axis="row",
         op_engine="vector",
         op_class="reduction",

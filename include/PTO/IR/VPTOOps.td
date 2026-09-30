@@ -2129,12 +2129,11 @@ def PTO_VreluOp : PTO_UnaryVecOp<"vrelu">;
 def PTO_VnotOp : PTO_UnaryVecOp<"vnot">;
 def PTO_VcaddOp : PTO_UnaryVecOp<"vcadd"> {
   let description = [{
-    Full-vector sum reduction for 16/32-bit integers (signed, unsigned, or
-    signless), f16, and f32. Eight-bit integer inputs are unsupported and
-    rejected by the verifier; callers must explicitly convert to a supported
-    type before reducing. A 16-bit integer input produces a 32-bit integer
-    result with the same signedness and half as many lanes. Other supported
-    inputs preserve the vector type.
+    A5 row reduction supporting 16/32-bit integers (signless, signed, or
+    unsigned), f16, and f32. Eight-bit integers, BF16, FP8, and HiF8 are
+    rejected; callers must explicitly convert them before reduction.
+    16-bit integer inputs produce 32-bit results with the same signedness
+    and half as many lanes; other supported inputs retain their type.
   }];
 }
 
@@ -2556,8 +2555,22 @@ def PTO_MadMxBiasRawOp : PTO_CubeMicroOp<"mad_mx_bias_raw", [
   }];
 }
 
-def PTO_VcmaxOp : PTO_UnaryVecOp<"vcmax">;
-def PTO_VcminOp : PTO_UnaryVecOp<"vcmin">;
+def PTO_VcmaxOp : PTO_UnaryVecOp<"vcmax"> {
+  let description = [{
+    A5 row reduction supporting 16/32-bit integers (signless, signed, or
+    unsigned), f16, and f32. Eight-bit integers, BF16, FP8, and HiF8 are
+    rejected; callers must explicitly convert them before reduction.
+    Input and result have the same type.
+  }];
+}
+def PTO_VcminOp : PTO_UnaryVecOp<"vcmin"> {
+  let description = [{
+    A5 row reduction supporting 16/32-bit integers (signless, signed, or
+    unsigned), f16, and f32. Eight-bit integers, BF16, FP8, and HiF8 are
+    rejected; callers must explicitly convert them before reduction.
+    Input and result have the same type.
+  }];
+}
 def PTO_VcgaddOp : PTO_UnaryVecOp<"vcgadd">;
 def PTO_VcgmaxOp : PTO_UnaryVecOp<"vcgmax">;
 def PTO_VcgminOp : PTO_UnaryVecOp<"vcgmin">;

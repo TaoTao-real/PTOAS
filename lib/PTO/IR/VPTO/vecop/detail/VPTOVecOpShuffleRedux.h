@@ -76,6 +76,32 @@ using namespace mlir::pto;
     return success();
   }
 
+  inline LogicalResult verifyRowReductionElementType(Operation *op, Type type) {
+    if (auto integerType = dyn_cast<IntegerType>(type)) {
+      if (integerType.getWidth() == mlir::pto::kValue16 ||
+          integerType.getWidth() == mlir::pto::kValue32) {
+        return success();
+      }
+    } else if (type.isF16() || type.isF32()) {
+      return success();
+    }
+    return op->emitOpError(
+        "requires 16-bit or 32-bit integer, f16, or f32 vector element type");
+  }
+
+  template <typename ReductionOp>
+  [[maybe_unused]] static LogicalResult verifyMinMaxReductionVecOp(ReductionOp op) {
+    if (failed(verifyVRegTypeLike(op, op.getInput().getType(), "input")) ||
+        failed(verifyVRegTypeLike(op, op.getResult().getType(), "result"))) {
+      return failure();
+    }
+    if (op.getInput().getType() != op.getResult().getType()) {
+      return op.emitOpError("input and result must have the same vector type");
+    }
+    return verifyRowReductionElementType(
+        op.getOperation(), cast<VRegType>(op.getInput().getType()).getElementType());
+  }
+
   template <typename ReductionOp>
   [[maybe_unused]] static LogicalResult verifyWideningReductionVecOp(ReductionOp op,
                                                     StringRef opName) {
@@ -91,21 +117,17 @@ using namespace mlir::pto;
     }
 
     Type inputElemType = inputType.getElementType();
+    if (failed(verifyRowReductionElementType(op.getOperation(), inputElemType))) {
+      return failure();
+    }
     Type expectedResultElemType = inputElemType;
     int64_t expectedResultLanes = inputType.getElementCount();
     if (auto inputInt = dyn_cast<IntegerType>(inputElemType)) {
-      if (inputInt.getWidth() != mlir::pto::kValue16 &&
-          inputInt.getWidth() != mlir::pto::kValue32) {
-        return op.emitOpError(
-            "requires 16-bit or 32-bit integer vector element type");
-      }
       if (inputInt.getWidth() == mlir::pto::kValue16) {
-        expectedResultElemType =
-            IntegerType::get(op.getContext(), mlir::pto::kValue32, inputInt.getSignedness());
+        expectedResultElemType = IntegerType::get(
+            op.getContext(), mlir::pto::kValue32, inputInt.getSignedness());
         expectedResultLanes = inputType.getElementCount() / mlir::pto::kValue2;
       }
-    } else if (!inputElemType.isF16() && !inputElemType.isF32()) {
-      return op.emitOpError("requires i16/i32/f16/f32 vector element type");
     }
 
     if (resultType.getElementCount() == expectedResultLanes &&

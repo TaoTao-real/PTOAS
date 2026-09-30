@@ -1306,6 +1306,11 @@ for (int i = groups; i < M; i++)
     sum_view[i] = 0;
 ```
 
+A5 `pto.vcadd`, `pto.vcmax`, and `pto.vcmin` accept only 16/32-bit integers
+(signless, signed, or unsigned), `f16`, and `f32`. Their operation verifiers
+reject eight-bit integer, BF16, FP8, and HiF8 inputs. Explicitly convert such
+inputs to a supported element type before reduction.
+
 For A5 reduction result types:
 
 - `pto.vcadd` rejects 8-bit integer inputs, including direct micro IR.
@@ -1313,9 +1318,11 @@ For A5 reduction result types:
   (signed, unsigned, or signless) and halving the lane count.
 - `pto.vcadd` keeps the same result type for `f16`, `f32`, and 32-bit integers.
 - A5 has no native 8-bit row or VLane reduction instruction.
-- For native 16-bit integer `pto.vcgadd`, VMI exposes the low halfwords as
-  `gs(8, 2)`. Consumers may convert them to consecutive slots, while the
-  producer itself emits no pack. See [Reduction Ops](isa/micro-isa/10-reduction-ops.md#ptovcgadd).
+- For native 16-bit integer `pto.vcgadd`, the destination contains eight
+  consecutive 32-bit sums, while the declared register type retains 16-bit
+  elements. Its first sixteen declared elements therefore hold alternating
+  low/high halfwords of those sums. See
+  [Reduction Ops](isa/micro-isa/10-reduction-ops.md#ptovcgadd).
 
 ### Template Placeholder Conventions
 

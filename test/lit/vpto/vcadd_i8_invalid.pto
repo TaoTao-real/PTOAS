@@ -14,7 +14,7 @@
 // RUN: not pto-test-opt %t/ui8.pto 2>&1 | FileCheck %s
 // RUN: not ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto %t/ui8.pto 2>&1 | FileCheck %s
 
-// CHECK: error: 'pto.vcadd' op requires 16-bit or 32-bit integer vector element type
+// CHECK: error: 'pto.vcadd' op requires 16-bit or 32-bit integer, f16, or f32 vector element type
 
 //--- i8.pto
 module {

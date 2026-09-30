@@ -603,11 +603,14 @@ LogicalResult verifyVCReductionElementAndMask(Operation *op,
   if (failed(verifyBF16x2ComputeElementType(op, elemTy))) {
     return failure();
   }
-  isFloat = isVMIFloatLikeType(elemTy);
-  bool isInt = isVMIIntegerLikeType(elemTy);
-  if (!isFloat && !isInt) {
-    return op->emitOpError("requires integer-like or floating-point-like VMI "
-                           "source element type");
+  auto integerType = dyn_cast<IntegerType>(elemTy);
+  bool supportedInteger = integerType &&
+      (integerType.getWidth() == kValue16 || integerType.getWidth() == kValue32);
+  if (!supportedInteger && !isVMIF16OrF32Type(elemTy)) {
+    return op->emitOpError(
+        "requires 16-bit or 32-bit integer, f16, or f32 VMI source "
+        "element type; explicitly convert unsupported inputs before reduction");
   }
+  isFloat = isVMIF16OrF32Type(elemTy);
   return verifyMaskMatchesData(op, maskType, sourceType);
 }

@@ -62,7 +62,7 @@ def check_unsupported_floats():
     try:
         build_vcadd(element, width, f"!pto.vreg<{2048 // width}x{element}>")
     except TypeError as error:
-        assert "f16 or f32" in str(error)
+        assert "f16, or f32 source vector" in str(error)
     else:
         raise AssertionError(f"pto.vcadd accepted unsupported {element}")
     for group in (None, 2, 8):
@@ -82,7 +82,7 @@ def main():
             try:
                 build_vcadd(element, 8, f"!pto.vreg<128x{element.replace('8', '16')}>")
             except TypeError as error:
-                assert "requires 16-bit or 32-bit integer vector elements" in str(error)
+                assert "requires a 16-bit or 32-bit integer, f16, or f32 source vector" in str(error)
             else:
                 raise AssertionError(f"pto.vcadd accepted unsupported {element}")
         for element, width, expected in (

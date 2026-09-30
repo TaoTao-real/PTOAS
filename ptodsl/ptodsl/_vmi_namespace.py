@@ -26,6 +26,7 @@ from ptoas.mlir.ir import (
     UnitAttr,
 )
 
+from ._ops_common import _validate_reduction_element_type
 from ._scalar_coercion import coerce_scalar_to_type
 from ._diagnostics import deprecated
 from ._surface_values import _coerce_index_value, _try_get_constant_index, unwrap_surface_value, wrap_surface_value
@@ -207,12 +208,6 @@ def _is_vmi_vmula_element_type(type_obj) -> bool:
         or BF16Type.isinstance(type_obj)
         or F32Type.isinstance(type_obj)
     )
-
-
-def _is_vmi_vcadd_element_type(type_obj) -> bool:
-    if IntegerType.isinstance(type_obj):
-        return IntegerType(type_obj).width in (16, 32)
-    return F16Type.isinstance(type_obj) or F32Type.isinstance(type_obj)
 
 
 def _isinstance_pto_type(type_obj, type_name: str) -> bool:
@@ -752,13 +747,9 @@ def _emit_reduce(
 ):
     context = f"pto.vmi.{op_name}(...)"
     result_type = _derive_vmi_reduce_result_type(source, group, context=context)
+    source_elem_type = _vmi_element_type(_type_of(source), context=context)
+    _validate_reduction_element_type(source_elem_type, context=context)
     if op_name == "vcadd":
-        source_elem_type = _vmi_element_type(_type_of(source), context=context)
-        if not _is_vmi_vcadd_element_type(source_elem_type):
-            raise TypeError(
-                f"{context} requires a 16-bit or 32-bit integer, f16, or f32 "
-                f"source vector; got {source_elem_type}"
-            )
         if reassoc is _UNSPECIFIED:
             if _is_vmi_float_element_type(source_elem_type):
                 raise TypeError(

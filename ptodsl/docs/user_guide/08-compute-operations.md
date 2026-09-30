@@ -1986,6 +1986,16 @@ dup_highest = pto.vdup(vec, mask32, pto.PositionMode.HIGHEST)
 
 #### Full-vector reductions
 
+All three row reduction entry points accept only 16/32-bit integers
+(signless, signed, or unsigned), `f16`, and `f32`. Eight-bit integers, BF16,
+FP8, and HiF8 are rejected before IR emission; convert them explicitly first.
+`pto.vcadd` widens 16-bit integer results to 32 bits with matching signedness
+and half as many lanes. Other supported input types retain their result type.
+
+The A5 VPTO TileLib implementations of `trowmax`, `trowmin`, `trowargmax`,
+and `trowargmin` use these row operations and follow the same source-type
+restriction. The template selector rejects unsupported source types.
+
 #### `pto.vcadd(vec: VRegType, mask: MaskType) -> VRegType`
 
 **Description**: Full-vector sum reduction. Result placed in lane 0.

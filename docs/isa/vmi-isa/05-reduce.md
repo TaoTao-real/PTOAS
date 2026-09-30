@@ -10,6 +10,19 @@
 > (fp) or type min/max (int).
 
 
+All three unified reductions accept only 16/32-bit integers (signless,
+signed, or unsigned), `f16`, and `f32`. BF16, all FP8 variants (including
+E4M3FN, E5M2, and E8M0), and HiF8 are rejected by the operation verifier.
+Convert such inputs explicitly to a supported type before reducing;
+no implicit `extf -> f32 reduction -> truncf`, rounding mode, or saturation
+policy is supplied by these operations.
+
+Logical `pto.vmi.vcadd/vcmax/vcmin` and physical `pto.vcadd/vcmax/vcmin`
+share this source-type range. Eight-bit integers are also rejected: explicitly
+sign- or zero-extend them to 16/32 bits before reducing. Internal extension
+helpers do not imply support for a direct 8-bit reduction. This applies to
+full, grouped, and singleton reductions.
+
 The A5 VPTO backend supports `group = 1, 2, 4, 8` when the group count
 divides `L`, for the following one-carrier shapes:
 
@@ -123,7 +136,7 @@ part of the query: native floating-point addition and integer max/min retain
 `gs(8)`. Scalar `vcadd` paths retain their existing row-local layout.
 
 Two- and four-block native reductions combine their 32-bit partial sums with
-32-bit predicates, then expose the low halfwords as `gs(8, 2)`. The arithmetic
+`b32` predicates, then expose the low halfwords as `gs(8, 2)`. The arithmetic
 still returns a logical 16-bit result modulo 2^16. The unused high halfwords
 are unspecified padding; consumers must not read them as logical values or
 assume they are zero.
@@ -133,8 +146,9 @@ A 16-to-32 integer extension reads even halfword lanes with `vcvt EVEN`:
 `ui16(65535 + 1)` extends to `0`, and `si16(32767 + 1)` extends to `-32768`.
 It must not return the full hardware sum. A store or broadcast can consume
 the strided slots directly when its layout supports them, or request a
-conversion to consecutive slots. Multiple consumers share the same producer
-layout and request their own necessary conversions.
+conversion to consecutive `gs(8)` slots using `vpack LOWER`. Multiple
+consumers share the same producer layout and request their own necessary
+conversions.
 
 This removes the former single-use cast-to-store peephole from
 `vpto-optimize-vcvt`. It does not promise that every complete consumer chain
@@ -192,7 +206,7 @@ contains fewer instructions or runs faster. See the
   | `pmode` | `"zero"` | `"zero"` | Inactive-result behavior |
 
 - **datatypes:** `i16`/`i32` (signless, signed, unsigned), `f16`/`f32`.
-  The operation verifier and Python constructor reject other floating types,
+  The operation verifier rejects other floating types,
   including `bf16`, before checking `reassoc` or lowering to legacy operations.
   A public full reduction is one logical group. The layout-assigned legacy
   `reduce_addi` form retains its 32-bit integer input restriction.
@@ -250,7 +264,8 @@ contains fewer instructions or runs faster. See the
 - **operands:** Same as `vcadd` (without `reassoc`).
 - **results:** Same as `vcadd`.
 - **attributes:** `group`, `pmode` (same as `vcadd`, no `reassoc`).
-- **datatypes:** `i16`/`i32` (signless, signed, unsigned), `f16`/`f32`.
+- **datatypes:** same source types and shape limits as `vcadd`; BF16/FP8/HiF8
+  are not supported.
 - **lowering to `pto.mi`:**
 
   | Group / W | Physical lowering |

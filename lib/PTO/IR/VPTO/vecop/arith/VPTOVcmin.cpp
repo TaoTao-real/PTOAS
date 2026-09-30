@@ -15,12 +15,5 @@ using namespace mlir::pto;
 using namespace mlir::pto::vecop_detail;
 
 LogicalResult VcminOp::verify() {
-  if (failed(verifyVRegTypeLike(*this, getInput().getType(), "input")) ||
-      failed(verifyVRegTypeLike(*this, getResult().getType(), "result"))) {
-    return failure();
-  }
-  if (getInput().getType() != getResult().getType()) {
-    return emitOpError("input and result must have the same vector type");
-  }
-  return success();
+  return verifyMinMaxReductionVecOp(*this);
 }

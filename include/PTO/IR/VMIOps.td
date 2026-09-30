@@ -1297,10 +1297,12 @@ def VMIvcaddOp : VMI_Op<"vcadd", [Pure]> {
   let description = [{
     Reduces source lanes by summation, governed by a mask.
 
-    - Supported source element types are 16-bit and 32-bit integers, f16,
-      and f32. Other floating-point types, including bf16, are unsupported.
-    - Eight-bit integer sources are unsupported, including singleton groups.
-      Explicitly convert to a supported 16-bit or 32-bit integer type first.
+    - Supported source element types are 16/32-bit integers, `f16`, and
+      `f32`. BF16, FP8, and HiF8 require an explicit conversion before
+      reduction; no implicit floating-point widening is performed.
+    - Eight-bit integers also require explicit extension before reduction,
+      including singleton groups;
+      logical and physical `pto.vcadd/vcmax/vcmin` share the same type range.
     - No init operand: inactive lanes contribute 0 (semantically nil in
       addition).  Result reaches a single scalar when `group` is absent,
       or `C` compact scalars when `{group=C}` is specified.
@@ -1326,8 +1328,12 @@ def VMIvcmaxOp : VMI_Op<"vcmax", [Pure]> {
   let description = [{
     Reduces source lanes by taking the element-wise maximum, governed by a mask.
 
-    - Eight-bit integer sources are unsupported, including singleton groups.
-      Explicitly convert to a supported 16-bit or 32-bit integer type first.
+    - Supported source element types are 16/32-bit integers, `f16`, and
+      `f32`. BF16, FP8, and HiF8 require an explicit conversion before
+      reduction; no implicit floating-point widening is performed.
+    - Eight-bit integers also require explicit extension before reduction,
+      including singleton groups;
+      logical and physical `pto.vcadd/vcmax/vcmin` share the same type range.
     - Inactive lanes are treated as -INF (floating-point) or the type's
       minimum representable value (integer).
     - `pmode` controls inactive-result behaviour as for `vcadd`.
@@ -1348,8 +1354,12 @@ def VMIvcminOp : VMI_Op<"vcmin", [Pure]> {
   let description = [{
     Reduces source lanes by taking the element-wise minimum, governed by a mask.
 
-    - Eight-bit integer sources are unsupported, including singleton groups.
-      Explicitly convert to a supported 16-bit or 32-bit integer type first.
+    - Supported source element types are 16/32-bit integers, `f16`, and
+      `f32`. BF16, FP8, and HiF8 require an explicit conversion before
+      reduction; no implicit floating-point widening is performed.
+    - Eight-bit integers also require explicit extension before reduction,
+      including singleton groups;
+      logical and physical `pto.vcadd/vcmax/vcmin` share the same type range.
     - Inactive lanes are treated as +INF (floating-point) or the type's
       maximum representable value (integer).
     - `pmode` controls inactive-result behaviour as for `vcadd`.

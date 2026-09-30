@@ -789,18 +789,25 @@ producing a smaller logical result.
 ### `pto.vmi.vcmin(source, mask, *, group=None, pmode=None) -> VRegType`
 
 **Description**: Full-vector or grouped reduction. `vcadd` computes the sum,
-`vcmax` / `vcmin` compute the maximum / minimum with their lane index. When
+`vcmax` / `vcmin` return the maximum / minimum value per group (no index). When
 `group` is omitted (or `None`), the reduction is across the full vector and
 the result lane count is 1. When `group` is provided, the vector is
 partitioned into that many equal-sized groups and a separate reduction is
 performed per group.
 
-**Supported `vcadd` source element types**: `i16`, `si16`, `ui16`, `i32`,
-`si32`, `ui32`, `f16`, and `f32`. Unsupported floating types, including
-`bf16`, are rejected before checking `reassoc` or lowering the operation.
-All three reductions reject direct `i8`, `si8`, and `ui8` sources, including
-singleton groups. Explicitly convert to a supported wider integer type first;
-the reduction then follows that type's identities and result-width semantics.
+**Supported source types for all three operations**: `i16`/`si16`/`ui16`,
+`i32`/`si32`/`ui32`, `f16`, and `f32`. BF16, all FP8 variants, and HiF8
+raise `TypeError` before an operation is emitted. VMI eight-bit integer inputs
+retain the `ValueError` diagnostic `8-bit integer reductions are not supported`. Convert
+inputs explicitly, for example with `pto.vmi.vcvt(src, to_dtype=pto.f32)`,
+before reduction. No implicit widening or final low-precision rounding is
+provided for floating-point inputs. Explicitly sign- or zero-extend 8-bit
+integers to 16/32 bits before reducing, including singleton groups.
+
+The physical `pto.vcadd/vcmax/vcmin` entry points accept the same source types.
+VMI results keep the source element width, whereas physical `pto.vcadd`
+widens 16-bit integers to 32 bits. Accepted source types still obey the
+[VMI reduction shape and layout limits](../../../docs/isa/vmi-isa/05-reduce.md).
 
 **Parameters**:
 

@@ -1058,14 +1058,6 @@ LogicalResult VMIvcaddOp::verify() {
                                              maskType, isFloat))) {
     return failure();
   }
-  auto integerType = dyn_cast<IntegerType>(sourceType.getElementType());
-  bool supportedInteger =
-      integerType && (integerType.getWidth() == kValue16 ||
-                      integerType.getWidth() == kValue32);
-  if (!supportedInteger && !isVMIF16OrF32Type(sourceType.getElementType())) {
-    return emitOpError(
-        "requires 16-bit or 32-bit integer, f16, or f32 VMI source element type");
-  }
   // Floating-point vcadd MUST carry reassoc
   if (isFloat && !getReassoc()) {
     return emitOpError("floating add-reduction requires reassoc attr");

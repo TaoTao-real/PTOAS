@@ -29,6 +29,7 @@ from ._ops_common import (
     _pointer_element_type,
     _require_b32_mask,
     _require_integer32_vreg_operands,
+    _validate_reduction_element_type,
     _reject_low_precision_vreg_operands,
 )
 
@@ -147,24 +148,21 @@ def vshr(lhs, rhs, mask):
 
 def vcmax(v, mask):
     """``pto.vcmax`` – cross-lane maximum reduction."""
+    elem_type = _pto.VRegType(unwrap_surface_value(v).type).element_type
+    _validate_reduction_element_type(elem_type, context="pto.vcmax(...)")
     return _emit_unary_vec_op(_pto.VcmaxOp, v, mask)
 
 
 def vcadd(v, mask):
-    """``pto.vcadd`` – sum reduction for 16/32-bit integers and f16/f32."""
-    _reject_low_precision_vreg_operands(v, context="pto.vcadd(...)")
+    """``pto.vcadd`` – cross-lane add (sum reduction)."""
     raw_v = unwrap_surface_value(v)
     input_type = _pto.VRegType(raw_v.type)
     elem_type = input_type.element_type
+    _validate_reduction_element_type(elem_type, context="pto.vcadd(...)")
     result_elem_type = elem_type
     result_lanes = input_type.element_count
     if IntegerType.isinstance(elem_type):
         int_type = IntegerType(elem_type)
-        if int_type.width not in (16, 32):
-            raise TypeError(
-                "pto.vcadd(...) requires 16-bit or 32-bit integer vector elements, "
-                f"got {elem_type}"
-            )
         if int_type.width == 16:
             if int_type.is_unsigned:
                 result_elem_type = IntegerType.get_unsigned(32)
@@ -173,11 +171,6 @@ def vcadd(v, mask):
             else:
                 result_elem_type = IntegerType.get_signless(32)
             result_lanes = input_type.element_count // 2
-    elif not (F16Type.isinstance(elem_type) or F32Type.isinstance(elem_type)):
-        raise TypeError(
-            "pto.vcadd(...) requires f16 or f32 floating-point vector elements, "
-            f"got {elem_type}"
-        )
     result_type = _resolve(vreg_type(result_lanes, result_elem_type))
     return wrap_surface_value(
         _pto.VcaddOp(
@@ -190,6 +183,8 @@ def vcadd(v, mask):
 
 def vcmin(v, mask):
     """``pto.vcmin`` – cross-lane minimum reduction."""
+    elem_type = _pto.VRegType(unwrap_surface_value(v).type).element_type
+    _validate_reduction_element_type(elem_type, context="pto.vcmin(...)")
     return _emit_unary_vec_op(_pto.VcminOp, v, mask)
 
 def _mask_granularity_bits(mask_value, *, context: str) -> int:

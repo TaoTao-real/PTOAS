@@ -709,6 +709,27 @@ static LogicalResult lowerPge(VMIPgeOp op, OpBuilder &builder) {
 // Category C6 helpers: vcadd / vcmax / vcmin
 //===----------------------------------------------------------------------===//
 
+enum class LegacyReductionKind { Unsupported, Integer, Float };
+
+/// Classify supported legacy reductions before any lowering creates IR.
+template <typename ReductionOp>
+static LegacyReductionKind getLegacyReductionKind(ReductionOp op) {
+  if (auto pmode = op.getPmode(); pmode && *pmode != "zero") {
+    return LegacyReductionKind::Unsupported;
+  }
+  Type elementType = cast<VMIVRegType>(op.getSource().getType()).getElementType();
+  if (elementType.isF16() || elementType.isF32()) {
+    return LegacyReductionKind::Float;
+  }
+  if (auto integerType = dyn_cast<IntegerType>(elementType)) {
+    unsigned width = integerType.getWidth();
+    if (width == 16 || width == 32) {
+      return LegacyReductionKind::Integer;
+    }
+  }
+  return LegacyReductionKind::Unsupported;
+}
+
 template <typename ReductionOp>
 static std::optional<int64_t> getReductionNumGroups(ReductionOp op) {
   if (auto groupAttr = op.getGroupAttr()) {
@@ -724,150 +745,68 @@ static std::optional<int64_t> getReductionNumGroups(ReductionOp op) {
   return std::nullopt;
 }
 
-/// Shared inputs of the vcadd/vcmax/vcmin reduction lowering paths.
-struct ReductionPlan {
-  Location loc;
-  Type resultType;
-  Value source;
-  Value mask;
-  bool isFloat;
-  std::optional<int64_t> numGroups;
-};
-
-template <typename ReduceOp>
-static ReductionPlan planReduction(ReduceOp op) {
-  auto sourceType = cast<VMIVRegType>(op.getSource().getType());
-  Type elemType = sourceType.getElementType();
-  return ReductionPlan{op.getLoc(),           op.getResult().getType(),
-                       op.getSource(),        op.getMask(),
-                       isa<FloatType>(elemType),
-                       getReductionNumGroups(op)};
-}
-
-/// Lower vcadd to legacy reduce_addf/reduce_addi or
-/// group_reduce_addf/group_reduce_addi.  Always succeeds for valid input
-/// (vcadd verifier guarantees reassoc for float, and group 整除 source lanes).
-static LogicalResult lowerVCadd(VMIvcaddOp op, OpBuilder &builder) {
-  ReductionPlan plan = planReduction(op);
-
-  Value result;
-  if (plan.numGroups) {
-    // Group reduce path
-    if (plan.isFloat) {
-      result = builder
-                   .create<VMIGroupReduceAddFOp>(plan.loc, plan.resultType, plan.source,
-                                                 plan.mask,
-                                                 builder.getI64IntegerAttr(*plan.numGroups),
-                                                 op.getReassocAttr())
-                   .getResult();
-    } else {
-      result = builder
-                   .create<VMIGroupReduceAddIOp>(plan.loc, plan.resultType, plan.source,
-                                                 plan.mask,
-                                                 builder.getI64IntegerAttr(*plan.numGroups))
-                   .getResult();
-    }
-    op.getResult().replaceAllUsesWith(result);
-    op->erase();
-    return success();
+/// Share type/group dispatch and replacement across the legacy reductions.
+/// Only floating add needs an extra attribute (reassoc).
+template <typename FloatOp, typename IntegerOp, typename GroupFloatOp,
+          typename GroupIntegerOp, typename ReductionOp, typename... FloatAttrs>
+static LogicalResult lowerLegacyReduction(ReductionOp op, OpBuilder &builder,
+                                          FloatAttrs... floatAttrs) {
+  LegacyReductionKind kind = getLegacyReductionKind(op);
+  if (kind == LegacyReductionKind::Unsupported) {
+    return failure();
   }
 
-  // Full reduce path
-  if (plan.isFloat) {
-    result = builder
-                 .create<VMIReduceAddFOp>(plan.loc, plan.resultType, plan.source,
-                                          plan.mask, op.getReassocAttr())
-                 .getResult();
+  bool isFloat = kind == LegacyReductionKind::Float;
+  Location loc = op.getLoc();
+  Type resultType = op.getResult().getType();
+  Value source = op.getSource();
+  Value mask = op.getMask();
+  Value result;
+  if (std::optional<int64_t> numGroups = getReductionNumGroups(op)) {
+    auto groupAttr = builder.getI64IntegerAttr(*numGroups);
+    if (isFloat) {
+      result = builder
+                   .create<GroupFloatOp>(loc, resultType, source, mask,
+                                         groupAttr, floatAttrs...)
+                   .getResult();
+    } else {
+      result =
+          builder
+              .create<GroupIntegerOp>(loc, resultType, source, mask, groupAttr)
+              .getResult();
+    }
+  } else if (isFloat) {
+    result =
+        builder.create<FloatOp>(loc, resultType, source, mask, floatAttrs...)
+            .getResult();
   } else {
-    result = builder
-                 .create<VMIReduceAddIOp>(plan.loc, plan.resultType, plan.source,
-                                          plan.mask)
-                 .getResult();
+    result =
+        builder.create<IntegerOp>(loc, resultType, source, mask).getResult();
   }
   op.getResult().replaceAllUsesWith(result);
   op->erase();
   return success();
+}
+
+/// Lower vcadd to legacy full or grouped float/integer addition reduction.
+static LogicalResult lowerVCadd(VMIvcaddOp op, OpBuilder &builder) {
+  return lowerLegacyReduction<VMIReduceAddFOp, VMIReduceAddIOp,
+                              VMIGroupReduceAddFOp, VMIGroupReduceAddIOp>(
+      op, builder, op.getReassocAttr());
 }
 
 /// Lower vcmax to legacy full or grouped float/integer maximum reduction.
 static LogicalResult lowerVcmax(VMIvcmaxOp op, OpBuilder &builder) {
-  ReductionPlan plan = planReduction(op);
-
-  Value result;
-  if (plan.numGroups) {
-    // Group reduce path
-    if (plan.isFloat) {
-      result = builder
-                   .create<VMIGroupReduceMaxFOp>(plan.loc, plan.resultType, plan.source,
-                                                 plan.mask,
-                                                 builder.getI64IntegerAttr(*plan.numGroups))
-                   .getResult();
-    } else {
-      result = builder
-                   .create<VMIGroupReduceMaxIOp>(plan.loc, plan.resultType, plan.source,
-                                                 plan.mask,
-                                                 builder.getI64IntegerAttr(*plan.numGroups))
-                   .getResult();
-    }
-    op.getResult().replaceAllUsesWith(result);
-    op->erase();
-    return success();
-  }
-
-  if (plan.isFloat) {
-    result = builder
-                 .create<VMIReduceMaxFOp>(plan.loc, plan.resultType, plan.source,
-                                          plan.mask)
-                 .getResult();
-  } else {
-    result = builder
-                 .create<VMIReduceMaxIOp>(plan.loc, plan.resultType, plan.source,
-                                          plan.mask)
-                 .getResult();
-  }
-  op.getResult().replaceAllUsesWith(result);
-  op->erase();
-  return success();
+  return lowerLegacyReduction<VMIReduceMaxFOp, VMIReduceMaxIOp,
+                              VMIGroupReduceMaxFOp, VMIGroupReduceMaxIOp>(
+      op, builder);
 }
 
 /// Lower vcmin to legacy full or grouped float/integer minimum reduction.
 static LogicalResult lowerVcmin(VMIvcminOp op, OpBuilder &builder) {
-  ReductionPlan plan = planReduction(op);
-
-  Value result;
-  if (plan.numGroups) {
-    if (plan.isFloat) {
-      result = builder
-                   .create<VMIGroupReduceMinFOp>(plan.loc, plan.resultType, plan.source,
-                                                 plan.mask,
-                                                 builder.getI64IntegerAttr(*plan.numGroups))
-                   .getResult();
-    } else {
-      result = builder
-                   .create<VMIGroupReduceMinIOp>(plan.loc, plan.resultType, plan.source,
-                                                 plan.mask,
-                                                 builder.getI64IntegerAttr(*plan.numGroups))
-                   .getResult();
-    }
-    op.getResult().replaceAllUsesWith(result);
-    op->erase();
-    return success();
-  }
-
-  if (plan.isFloat) {
-    result = builder
-                 .create<VMIReduceMinFOp>(plan.loc, plan.resultType, plan.source,
-                                          plan.mask)
-                 .getResult();
-  } else {
-    result = builder
-                 .create<VMIReduceMinIOp>(plan.loc, plan.resultType, plan.source,
-                                          plan.mask)
-                 .getResult();
-  }
-  op.getResult().replaceAllUsesWith(result);
-  op->erase();
-  return success();
+  return lowerLegacyReduction<VMIReduceMinFOp, VMIReduceMinIOp,
+                              VMIGroupReduceMinFOp, VMIGroupReduceMinIOp>(
+      op, builder);
 }
 
 /// Lower plt(rem:i32) -> create_mask(min(rem, L)) + arith remainder chain.

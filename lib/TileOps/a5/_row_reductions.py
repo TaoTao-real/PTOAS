@@ -12,7 +12,7 @@
 from ptodsl import pto
 import ptodsl.tilelib as tilelib
 
-from ._common import NUMERIC_DTYPES, element_store_dist
+from ._common import ROW_REDUCTION_DTYPES, element_store_dist
 from ._part import pad_max, pad_min
 
 
@@ -98,7 +98,7 @@ def register_row_extreme(*, op, name, reduce_op, combine_op):
         op=op,
         target="a5",
         name=name,
-        dtypes=[(dtype, dtype, dtype) for dtype in NUMERIC_DTYPES],
+        dtypes=[(dtype, dtype, dtype) for dtype in ROW_REDUCTION_DTYPES],
         iteration_axis="row",
         op_engine="vector",
         op_class="reduction",
