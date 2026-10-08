@@ -242,8 +242,8 @@ width may explicitly bridge an already concrete mask with
 `ensure_mask_granularity`; this is distinct from assigning an abstract `pred`.
 
 The operation dispatch lists are maintained explicitly, not inferred from every
-mask operand in the dialect. Direct `vsel`, `vadd`, and `vmul` uses are covered.
-For `vcmps`, `vcadd`/`vcmax`/`vcmin`, and `vgather`, run
+mask operand in the dialect. Direct `vsel`, `vadd`, `vmul`, and `vcmp`/`vcmps`
+uses are covered. For `vcadd`/`vcmax`/`vcmin`, and `vgather`, run
 `vmi-lower-unified-to-legacy` first: directly assigning an unconstrained `pred`
 mask for f16 data still fails the data-width verifier. The corresponding f16
 `vgatherb` case remains a known gap even with that normalization. These gaps are

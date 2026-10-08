@@ -8,7 +8,7 @@
 
 // RUN: split-file %s %t
 // RUN: pto-test-opt %t/vcmps.pto -o /dev/null
-// RUN: not pto-test-opt %t/vcmps.pto -vmi-mask-granularity-assignment 2>&1 | FileCheck %s --check-prefix=VCMPS-GAP
+// RUN: pto-test-opt %t/vcmps.pto -vmi-mask-granularity-assignment | FileCheck %s --check-prefix=VCMPS-COVERED
 // RUN: pto-test-opt %t/vcmps.pto -vmi-lower-unified-to-legacy -vmi-mask-granularity-assignment | FileCheck %s --check-prefix=VCMPS-NORMALIZED
 // RUN: pto-test-opt %t/vcadd_zero.pto -o /dev/null
 // RUN: not pto-test-opt %t/vcadd_zero.pto -vmi-mask-granularity-assignment 2>&1 | FileCheck %s --check-prefix=VCADD-ZERO-GAP
@@ -32,7 +32,10 @@
 // Do not XFAIL the whole file: normalized controls must remain passing.
 // vgatherb remains a gap even after unified-to-legacy normalization.
 
-// VCMPS-GAP: error: 'pto.vmi.vcmps' op requires mask granularity to match data element width
+// VCMPS-COVERED-LABEL: func.func @vcmps(
+// VCMPS-COVERED: pto.vmi.create_mask %{{.*}} : index -> !pto.vmi.mask<128xb32>
+// VCMPS-COVERED-NEXT: %{{.*}} = pto.vmi.create_mask %{{.*}} : index -> !pto.vmi.mask<128xb16>
+// VCMPS-COVERED: pto.vmi.vcmps %{{.*}}, %{{.*}}, %{{.*}} {cmp = "gt"} : !pto.vmi.vreg<128xf16>, f16, !pto.vmi.mask<128xb16> -> !pto.vmi.mask<128xb16>
 // VCMPS-NORMALIZED-LABEL: func.func @vcmps(
 // VCMPS-NORMALIZED: pto.vmi.cmpf
 // VCMPS-NORMALIZED-SAME: !pto.vmi.mask<128xb16>

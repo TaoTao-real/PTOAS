@@ -241,6 +241,12 @@ struct MaskGranularitySolver {
               compareOp.getResult(),
               getMaskGranularityForElement(lhsType.getElementType()), op));
         })
+        .Case<VMIVcmpOp, VMIVcmpsOp>([this, op](auto) {
+          auto sourceType = cast<VMIVRegType>(op->getOperand(0).getType());
+          return constraintResult(requestMask(
+              op->getResult(0),
+              getMaskGranularityForElement(sourceType.getElementType()), op));
+        })
         .Default([](Operation *) { return std::nullopt; });
   }
 
@@ -302,6 +308,9 @@ struct MaskGranularitySolver {
         })
         .Case<VMIVaxpyOp>([this, op](auto) {
           return constrainMandatoryMask(op, mlir::pto::kValue3);
+        })
+        .Case<VMIVcmpOp, VMIVcmpsOp>([this, op](auto) {
+          return constrainMandatoryMask(op, mlir::pto::kValue2);
         })
         .Case<VMIVlreluOp, VMIVpreluOp>([this, op](auto) {
           return constrainMandatoryMask(op, mlir::pto::kValue2);
