@@ -76,6 +76,13 @@ static VMILayoutAttr getE2BDeinterleavedResultLayout(VMIGroupBroadcastLoadOp op,
   if (fact->kind != VMIGroupBroadcastLoadDirectKind::E2B) {
     return VMILayoutAttr();
   }
+  // An E2B packet needs a stricter base-address alignment than the per-group
+  // BRC fallback.  Leave unaligned loads contiguous so vmi-to-vpto lowers them
+  // through the BRC path instead of rejecting the packet and leaving a
+  // residual op.
+  if (!isGroupBroadcastLoadDirectAddressLegal(op, *fact)) {
+    return VMILayoutAttr();
+  }
   VMILayoutAttr directLayout = fact->layout.resultLayout;
   if (!directLayout || !directLayout.isDeinterleaved()) {
     return VMILayoutAttr();

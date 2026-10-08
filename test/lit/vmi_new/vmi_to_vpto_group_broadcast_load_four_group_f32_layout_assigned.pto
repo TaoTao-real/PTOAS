@@ -6,7 +6,7 @@
 // INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
 // See LICENSE in the root of the software repository for the full text of the License.
 
-// RUN: pto-test-opt %s -vmi-lower-unified-to-legacy -vmi-mask-granularity-assignment -vmi-layout-assignment -vmi-to-vpto | FileCheck %s --check-prefix=LOWER
+// RUN: pto-test-opt %s -vmi-lower-unified-to-legacy -vmi-mask-granularity-assignment -vmi-layout-assignment -vmi-expand-implicit-ensure-layouts -vmi-to-vpto | FileCheck %s --check-prefix=LOWER
 
 // Four-group 128-lane group broadcasts on both element widths that reach this
 // shape, with NO layout pinned anywhere and the broadcast consumed by a store
@@ -52,6 +52,38 @@ module {
         : !pto.vmi.vreg<128xf32>, !pto.ptr<f32, ub>
     return
   }
+
+  // The E2B packet needs a 32-byte-aligned source base.  With a non-32-byte
+  // offset the result must not commit to the E2B deinterleaved pairing;
+  // preferring contiguous lets the per-group BRC path lower it instead of
+  // leaving a residual group_broadcast_load behind.
+  func.func @group_broadcast_load_four_group_f32_unaligned(
+      %src: !pto.ptr<f32, ub>, %dst: !pto.ptr<f32, ub>, %off: index) {
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    %aligned_off = arith.muli %off, %c8 : index
+    %unaligned_off = arith.addi %aligned_off, %c1 : index
+    %out = pto.vmi.vload %src[%unaligned_off], %c1 {dist_mode = "brc", group = 4}
+        : !pto.ptr<f32, ub> -> !pto.vmi.vreg<128xf32>
+    pto.vmi.vstore %out, %dst[%unaligned_off]
+        : !pto.vmi.vreg<128xf32>, !pto.ptr<f32, ub>
+    return
+  }
+
+  // bf16 128-lane group=4 pairs the packet with deinterleaved=2; the same
+  // alignment rule must keep an unaligned base on the BRC path.
+  func.func @group_broadcast_load_four_group_bf16_unaligned(
+      %src: !pto.ptr<bf16, ub>, %dst: !pto.ptr<bf16, ub>, %off: index) {
+    %c1 = arith.constant 1 : index
+    %c16 = arith.constant 16 : index
+    %aligned_off = arith.muli %off, %c16 : index
+    %unaligned_off = arith.addi %aligned_off, %c1 : index
+    %out = pto.vmi.vload %src[%unaligned_off], %c1 {dist_mode = "brc", group = 4}
+        : !pto.ptr<bf16, ub> -> !pto.vmi.vreg<128xbf16>
+    pto.vmi.vstore %out, %dst[%unaligned_off]
+        : !pto.vmi.vreg<128xbf16>, !pto.ptr<bf16, ub>
+    return
+  }
 }
 
 // LOWER-LABEL: func.func @group_broadcast_load_four_group_bf16_layout_assigned
@@ -61,3 +93,13 @@ module {
 // LOWER-LABEL: func.func @group_broadcast_load_four_group_f32_layout_assigned
 // LOWER-NOT: BRC_B32
 // LOWER: dist = "E2B_B32"
+
+// An unaligned base cannot use the E2B packet; the pair must fall back to the
+// contiguous per-group BRC lowering rather than leave a residual op.
+// LOWER-LABEL: func.func @group_broadcast_load_four_group_f32_unaligned
+// LOWER: dist = "BRC_B32"
+// LOWER-NOT: dist = "E2B_B32"
+
+// LOWER-LABEL: func.func @group_broadcast_load_four_group_bf16_unaligned
+// LOWER: dist = "BRC_B16"
+// LOWER-NOT: dist = "E2B_B16"

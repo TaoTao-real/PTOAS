@@ -630,6 +630,15 @@ struct LayoutSolver {
       return {};
     }
     VMILayoutAttr directLayout = fact->layout.resultLayout;
+    // The E2B packet carries a base-address alignment contract that the
+    // per-group BRC fallback does not.  When that contract cannot be proven
+    // here, prefer the contiguous layout the BRC path can materialize instead
+    // of committing to an E2B result layout the lowering will reject.
+    VMILayoutAttr unalignedFallback =
+        getUnalignedE2BFallbackLayout(op, type, *fact, supports);
+    if (unalignedFallback) {
+      return unalignedFallback;
+    }
     // A direct E2B packet fills exactly one physical part. When the
     // contiguous form of this broadcast spans multiple physical chunks, the
     // direct table can only offer a deinterleaved split layout. Prefer the

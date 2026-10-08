@@ -612,6 +612,21 @@ bool isDeinterleaved4ToContiguousBF16CastPair(VMIVRegType sourceType,
                                               VMILayoutAttr sourceLayout,
                                               VMILayoutAttr resultLayout);
 
+/// True when the direct E2B packet backing \p fact can be materialized at the
+/// address of \p op.  E2B needs a stricter base-address alignment than the
+/// per-group BRC fallback, so layout selection and the implicit ensure-layout
+/// expansion must agree with the lowering's E2B address gate.
+bool isGroupBroadcastLoadDirectAddressLegal(
+    VMIGroupBroadcastLoadOp op, const VMIGroupBroadcastLoadDirectFact &fact);
+
+/// When the direct E2B layout of \p op cannot be materialized because its base
+/// address is not provably aligned, return the contiguous layout the per-group
+/// BRC path can lower instead, or null when the E2B layout still applies.
+VMILayoutAttr getUnalignedE2BFallbackLayout(
+    VMIGroupBroadcastLoadOp op, VMIVRegType type,
+    const VMIGroupBroadcastLoadDirectFact &fact,
+    const VMILayoutSupport &supports);
+
 } // namespace mlir::pto
 
 #endif // PTO_TRANSFORMS_VMILAYOUTSUPPORT_H
