@@ -14,6 +14,12 @@ from ptoas._cv_ir import tile_info
 from pto_costmodel.wire import ContractError, require
 
 ENUMS = {
+    "#pto<round_mode CAST_RINT>": "CAST_RINT",
+    "#pto<saturation_mode OFF>": "OFF",
+    "#pto<div_precision default>": "default",
+    "#pto<exp_precision default>": "default",
+    "#pto.layout<dn>": "dn",
+    "#pto.layout<nd>": "nd",
     "#pto.kernel_kind<cube>": "cube", "#pto.kernel_kind<vector>": "vector",
     "#pto<relu_pre_mode no_relu>": "no_relu", "#pto<acc_phase unspecified>": "unspecified",
     "#pto<atomic_type atomic_none>": "atomic_none", "#pto<st_phase unspecified>": "unspecified",
@@ -53,6 +59,13 @@ def type_record(typ, profile):
 
 
 def attribute_record(value, profile):
+    if ir.UnitAttr.isinstance(value):
+        return dict(kind="unit")
+    if ir.ArrayAttr.isinstance(value):
+        return [attribute_record(v, profile) for v in value]
+    if ir.DictAttr.isinstance(value):
+        return {a.name: attribute_record(a.attr, profile) for a in value}
+
     if ir.BoolAttr.isinstance(value):
         return ir.BoolAttr(value).value
     if ir.IntegerAttr.isinstance(value):

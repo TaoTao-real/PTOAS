@@ -11,6 +11,20 @@ ptoas --pto-arch=a5 four_stage_serial.pto -o serial.cpp
 ptoas costmodel export four_stage_serial.pto --profile a5_profile.json --output package
 ```
 
+Cost-model export is an IR-only operation and does not invoke Bisheng. The native
+checkpoint preserves backend-partitioned wrapper/Cube/Vector modules and lowers
+and checks their pipes recursively. Ordinary code generation keeps the mainline
+backend routing and toolchain requirements.
+
+`flash_attention_serial.pto` is the downstream assembly regression. Its v2 export
+uses explicitly negotiated `pto.structured_cv.1` semantics, preserving symbolic
+loop bounds, function calls and module ownership. See the
+[structured assembly ADR](../../../docs/designs/ptoas-costmodel-structured-assembly.md)
+for bindings and Buffer-only annotation plans. This path is G1 only: the current
+static four-stage TileSim/materializer path cannot yet schedule the FA Vector
+prologue and recurrent loop. It must not claim a latency or certified optimization.
+The existing flat micro v1/v2 contract and commands below remain unchanged.
+
 The cost model reads the package and returns a plan in the format described in
 [the exchange ADR](../../../docs/designs/ptoas-cv-costmodel-exchange-v1.md).
 For a PTOAS-only smoke test, the following deliberately hand-authored plan sets each local allocation to one slot:

@@ -25,17 +25,26 @@ def read_package(path):
     from pto_costmodel.wire import read_text
     root = Path(path).resolve()
     manifest = read_json(root / "manifest.json")
-    envelope(manifest, "package")
+    from pto_costmodel.structured import SEMANTICS as STRUCTURED, FEATURES as STRUCTURED_FEATURES
+    envelope(manifest, "package", STRUCTURED_FEATURES)
     required = ("protocol_version", "kind", "required_features", "program_fingerprint", "bindings_fingerprint",
                 "target_fingerprint", "checkpoint_version", "semantics_version", "producer", "files")
     fields(manifest, required, ("extensions",))
-    require(manifest["semantics_version"] == SEMANTICS and manifest["checkpoint_version"] == 1,
+    require(manifest["semantics_version"] in (SEMANTICS, STRUCTURED) and manifest["checkpoint_version"] == 1,
             "VERSION", "unsupported program/checkpoint semantics")
+    from pto_costmodel.structured import REQUIRED as STRUCTURED_REQUIRED
+    if manifest["semantics_version"] == STRUCTURED:
+        require(set(STRUCTURED_REQUIRED) <= set(manifest["required_features"]),
+                "UNSUPPORTED_FEATURE", "structured package must declare required semantics")
+    else:
+        envelope(manifest, "package")
     fields(manifest["files"], FILES)
     for name in FILES:
         require(digest_text(read_text(root / name)) == manifest["files"][name],
                 "PACKAGE_INTEGRITY", f"file digest mismatch: {name}")
     program = read_json(root / "program.json")
+    if manifest["semantics_version"] == STRUCTURED:
+        require(program.get("semantics_version") == STRUCTURED, "VERSION", "manifest/program semantics mismatch")
     bindings = read_json(root / "runtime_bindings.json")
     target = read_json(root / "target_profile.json")
     for name, content in (("program", program), ("bindings", bindings), ("target", target)):

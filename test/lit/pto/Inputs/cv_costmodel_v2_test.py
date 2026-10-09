@@ -281,7 +281,8 @@ class ExchangeV2Test(unittest.TestCase):
                           encoding="utf-8")
         path = self.output("package")
         export_v2(source, self.profile, path, deepcopy(read_package(self.root / "disjoint")["bindings"]))
-        self.reject("ALIAS", apply_candidate, path, self.config(), self.output(), "compile")
+        self.reject("ALIAS", apply_candidate, path, configuration(read_package(path)["program"], 1),
+                    self.output(), "compile")
 
     def test_gm_bounds(self):
         from pto_costmodel.semantics import verify_global_accesses

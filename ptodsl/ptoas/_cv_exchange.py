@@ -12,7 +12,7 @@ from pathlib import Path
 
 from ptoas.mlir import ir
 from ptoas.mlir.dialects import pto
-from ptoas.costmodel import canonicalize, parse_graph
+from ptoas.costmodel import canonicalize, input_at_checkpoint, parse_graph
 from ptoas._cv_common import validate_profile
 from ptoas._cv_ir import attr
 from ptoas._cv_plan import annotate_ids
@@ -26,7 +26,12 @@ def export_v2(source, profile, output, bindings=None):
     validate_profile(profile)
     with ir.Context() as context:
         pto.register_dialect(context, load=True)
-        graph = parse_graph(canonicalize(source), profile, {})
+        canonical = canonicalize(source)
+        module = ir.Module.parse(canonical)
+        if any(op.operation.name == "builtin.module" for op in module.body.operations):
+            from ptoas._cv_structured import export_structured
+            return export_structured(module, profile, output, bindings)
+        graph = parse_graph(canonical, profile, {})
         program = program_from_graph(graph)
         selected = inferred_bindings(program) if bindings is None else bindings
         validate_bindings(selected, program)
@@ -46,9 +51,11 @@ def export_v2(source, profile, output, bindings=None):
 
 
 def verified_graph(path, package, current_input=None):
+    require(package["manifest"]["semantics_version"] == SEMANTICS, "UNSUPPORTED_FEATURE",
+            "static candidate construction cannot map structured FA phases; use annotation-only Buffer plans")
     profile = package["target"]["compiler_budget"]
     validate_profile(profile)
-    text = read_text(Path(path) / "canonical.pto") if current_input is None else canonicalize(current_input)
+    text = read_text(Path(path) / "canonical.pto") if current_input is None else input_at_checkpoint(current_input)
     graph = parse_graph(text, profile, {})
     require(program_from_graph(graph) == package["program"], "PACKAGE_INTEGRITY",
             "structured program differs from compiler-parsed PTO")

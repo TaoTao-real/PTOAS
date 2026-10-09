@@ -17,6 +17,9 @@ from pto_costmodel.wire import fields, integer, require
 
 
 def prepare_candidate(package, config):
+    from pto_costmodel.contract import SEMANTICS
+    require(package["manifest"]["semantics_version"] == SEMANTICS, "UNSUPPORTED_FEATURE",
+            "static candidate construction requires pto.static_cv.1; structured regions need a phase-aware adapter")
     schedule = build_schedule(package["program"], config)
     if package["program"]["loops"][0]["trip_count"]:
         pipe = next(p for p in package["program"]["pipes"] if p["direction"] == "v2c")

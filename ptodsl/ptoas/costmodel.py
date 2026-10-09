@@ -54,6 +54,20 @@ def canonicalize(source):
         return read_text(output)
 
 
+def input_at_checkpoint(source):
+    """Do not structurally normalize an already exported checkpoint again.
+
+    Callers still verify its full semantic identity against the saved package;
+    a checkpoint attribute never substitutes for that integrity check.
+    """
+    text = read_text(source)
+    module = ir.Module.parse(text)
+    if attr(module.operation, "pto.costmodel.checkpoint_version") == 1:
+        require(module.operation.verify(), "IR", "invalid checkpoint input")
+        return text
+    return canonicalize(source)
+
+
 def parse_graph(text, profile, bindings):
     module = ir.Module.parse(text)
     require(module.operation.verify(), "IR", "invalid canonical IR")
@@ -102,7 +116,7 @@ def import_plan(package, plan, output, current_input=None, profile=None, binding
         require(fingerprint(selected_bindings) == saved_manifest["bindings_fingerprint"],
                 "STALE_PLAN", "runtime bindings changed")
         if current_input is not None:
-            graph = parse_graph(canonicalize(current_input), selected_profile, selected_bindings)
+            graph = parse_graph(input_at_checkpoint(current_input), selected_profile, selected_bindings)
             require(graph.manifest["input_fingerprint"] == saved_manifest["input_fingerprint"],
                     "STALE_PLAN", "current input differs from the exported package")
         report = validate_plan(plan, graph)

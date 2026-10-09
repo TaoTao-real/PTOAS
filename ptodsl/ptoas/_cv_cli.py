@@ -68,7 +68,13 @@ def selected_plan(path, package):
 
 def dispatch(args):
     if args.action == "capabilities":
-        return capabilities()
+        result = capabilities()
+        from pto_costmodel.structured import SEMANTICS, REQUIRED
+        result["extensions"] = {"ptoas.structured_cv.v1": dict(
+            semantics_version=SEMANTICS, required_features=REQUIRED,
+            export=True, plan_kind="annotation_plan", apply_modes=["annotation_only"],
+            controls=["local_buffer_slots"], preload=False, candidate_compilation=False)}
+        return result
     if args.action == "certify":
         from pto_costmodel.certification import certify
         from pto_costmodel.wire import publish
@@ -81,6 +87,15 @@ def dispatch(args):
         return export_v2(args.input, read_json(args.profile), args.output,
                          None if args.bindings is None else read_json(args.bindings))
     package = read_package(args.package)
+    from pto_costmodel.structured import SEMANTICS as STRUCTURED
+    if package["manifest"]["semantics_version"] == STRUCTURED:
+        from ptoas._cv_structured import apply_structured
+        require(args.action in ("validate", "apply"), "UNSUPPORTED_FEATURE",
+                "structured assembly requires a phase-aware model adapter; static candidate search is unavailable")
+        require(getattr(args, "mode", "annotation_only") == "annotation_only", "UNSUPPORTED_FEATURE",
+                "structured assembly currently supports Buffer annotations only; preload compilation is unavailable")
+        return apply_structured(args.package, package, read_json(args.plan),
+                                args.output if args.action == "apply" else None, getattr(args, "input", None))
     candidate = selected_plan(args.plan, package) if args.plan else None
     if args.action == "validate":
         from ptoas._cv_exchange import verified_graph

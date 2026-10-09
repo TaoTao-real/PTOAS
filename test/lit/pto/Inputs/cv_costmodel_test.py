@@ -254,7 +254,7 @@ class ExchangeTest(unittest.TestCase):
         text = self.source.read_text(encoding="utf-8")
         text = text.replace(
             "%c2 = arith.constant 2 : index",
-            "%c2 = arith.constant 2 : index\n    %u = arith.divui %c2, %c1 : index")
+            "%unknown_block = pto.get_block_idx\n    %c2 = arith.index_cast %unknown_block : i64 to index")
         source.write_text(text, encoding="utf-8")
         with self.assertRaises(ContractError) as caught:
             export_package(source, self.profile, {}, self.output())

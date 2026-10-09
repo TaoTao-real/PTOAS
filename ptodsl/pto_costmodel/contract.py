@@ -23,7 +23,7 @@ MAX_TRIPS = 256
 MAX_CANDIDATES = 32
 
 
-def envelope(value, kind):
+def envelope(value, kind, supported_features=None):
     require(isinstance(value, dict), "SCHEMA", "expected object")
     version = value.get("protocol_version")
     require(isinstance(version, str) and len(version.split(".")) == 2,
@@ -34,7 +34,7 @@ def envelope(value, kind):
     required = value.get("required_features")
     require(isinstance(required, list) and all(isinstance(x, str) for x in required),
             "SCHEMA", "required_features must be strings")
-    require(set(required) <= set(FEATURES), "UNSUPPORTED_FEATURE", str(required))
+    require(set(required) <= set(FEATURES if supported_features is None else supported_features), "UNSUPPORTED_FEATURE", str(required))
     extensions = value.get("extensions", {})
     require(isinstance(extensions, dict) and all("." in k for k in extensions),
             "SCHEMA", "extensions require namespaced keys")

@@ -1,0 +1,237 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+//
+// Generated from flash_attention_serial.py for head_dim=128, S1_TILE=128,
+// q_rows=128. This three-pipe A5-local kernel is a preload optimization input.
+
+module attributes {pto.target_arch = "a5"} {
+  module attributes {pto.backend = "emitc", pto.target_arch = "a5"} {
+    func.func @hw_native_flash_attention_serial_h128_s1t128_qr128(%arg0: !pto.ptr<f16, gm>, %arg1: !pto.ptr<f16, gm>, %arg2: !pto.ptr<f16, gm>, %arg3: !pto.ptr<f32, gm>, %arg4: i64, %arg5: i64) attributes {pto.entry} {
+      call @hw_native_flash_attention_serial_cube_h128_s1t128_qr128__ptodsl_d415195fc4(%arg0, %arg1, %arg2, %arg4, %arg5) : (!pto.ptr<f16, gm>, !pto.ptr<f16, gm>, !pto.ptr<f16, gm>, i64, i64) -> ()
+      call @hw_native_flash_attention_serial_vector_h128_s1t128_qr128__ptodsl_aa834e5908(%arg3, %arg4, %arg5) : (!pto.ptr<f32, gm>, i64, i64) -> ()
+      return
+    }
+    func.func private @hw_native_flash_attention_serial_cube_h128_s1t128_qr128__ptodsl_d415195fc4(!pto.ptr<f16, gm>, !pto.ptr<f16, gm>, !pto.ptr<f16, gm>, i64, i64) attributes {pto.ptodsl.logical_name = "hw_native_flash_attention_serial_cube_h128_s1t128_qr128"}
+    func.func private @hw_native_flash_attention_serial_vector_h128_s1t128_qr128__ptodsl_aa834e5908(!pto.ptr<f32, gm>, i64, i64) attributes {pto.ptodsl.logical_name = "hw_native_flash_attention_serial_vector_h128_s1t128_qr128"}
+  }
+  module attributes {pto.backend = "emitc", pto.kernel_kind = #pto.kernel_kind<cube>, pto.target_arch = "a5"} {
+    func.func public @hw_native_flash_attention_serial_cube_h128_s1t128_qr128__ptodsl_d415195fc4(%arg0: !pto.ptr<f16, gm>, %arg1: !pto.ptr<f16, gm>, %arg2: !pto.ptr<f16, gm>, %arg3: i64, %arg4: i64) attributes {pto.kernel_kind = #pto.kernel_kind<cube>, pto.ptodsl.logical_name = "hw_native_flash_attention_serial_cube_h128_s1t128_qr128", pto.visibility = "external"} {
+      %0 = arith.index_cast %arg3 : i64 to index
+      %1 = arith.index_cast %arg4 : i64 to index
+      %c128 = arith.constant 128 : index
+      %2 = arith.floordivsi %1, %c128 : index
+      %3 = pto.get_block_num
+      %4 = arith.index_cast %3 : i64 to index
+      %5 = pto.get_block_idx
+      %6 = arith.index_cast %5 : i64 to index
+      %c8 = arith.constant 8 : index
+      %7 = arith.floordivsi %c8, %4 : index
+      %c8_0 = arith.constant 8 : index
+      %8 = arith.remsi %c8_0, %4 : index
+      %c1 = arith.constant 1 : index
+      %9 = arith.addi %7, %c1 : index
+      %10 = arith.muli %6, %9 : index
+      %c1_1 = arith.constant 1 : index
+      %11 = arith.addi %7, %c1_1 : index
+      %12 = arith.muli %8, %11 : index
+      %13 = arith.subi %6, %8 : index
+      %14 = arith.muli %13, %7 : index
+      %15 = arith.addi %12, %14 : index
+      %16 = arith.cmpi slt, %6, %8 : index
+      %17 = arith.select %16, %10, %15 : index
+      %18 = arith.cmpi slt, %6, %8 : index
+      %c1_2 = arith.constant 1 : index
+      %19 = arith.addi %7, %c1_2 : index
+      %20 = arith.select %18, %19, %7 : index
+      %21 = arith.addi %17, %20 : index
+      %22 = pto.import_reserved_buffer{name = "hw_native_flash_attention_serial_h128_s1t128_qr128_qk_c2v_fifo", peer_func = @hw_native_flash_attention_serial_vector_h128_s1t128_qr128} -> i32
+      %23 = pto.import_reserved_buffer{name = "hw_native_flash_attention_serial_h128_s1t128_qr128_pv_c2v_fifo", peer_func = @hw_native_flash_attention_serial_vector_h128_s1t128_qr128} -> i32
+      %24 = pto.reserve_buffer{name = "hw_native_flash_attention_serial_h128_s1t128_qr128_p_v2c_fifo", size = 32768, location = <mat>, auto = true} -> i32
+      pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 8192}(c2v_consumer_buf = %22 : i32)
+      pto.aic_initialize_pipe {id = 1, dir_mask = 2, slot_size = 4096}(v2c_consumer_buf = %24 : i32)
+      pto.aic_initialize_pipe {id = 2, dir_mask = 1, slot_size = 8192}(c2v_consumer_buf = %23 : i32)
+      %25 = pto.alloc_tile : !pto.tile_buf<mat, 16x128xf16, blayout=col_major, slayout=row_major>
+      %26 = pto.alloc_tile : !pto.tile_buf<left, 16x128xf16, blayout=col_major, slayout=row_major>
+      %27 = pto.alloc_tile : !pto.tile_buf<mat, 128x128xf16, slayout=col_major>
+      %28 = pto.alloc_tile : !pto.tile_buf<right, 128x128xf16, slayout=col_major>
+      %29 = pto.alloc_tile : !pto.tile_buf<acc, 16x128xf32, blayout=col_major, slayout=row_major>
+      %30 = pto.alloc_tile : !pto.tile_buf<mat, 16x128xf16, blayout=col_major, slayout=row_major>
+      %31 = pto.alloc_tile : !pto.tile_buf<left, 16x128xf16, blayout=col_major, slayout=row_major>
+      %32 = pto.alloc_tile : !pto.tile_buf<mat, 128x128xf16, blayout=col_major, slayout=row_major>
+      %33 = pto.alloc_tile : !pto.tile_buf<right, 128x128xf16, slayout=col_major>
+      %34 = pto.alloc_tile : !pto.tile_buf<acc, 16x128xf32, blayout=col_major, slayout=row_major>
+      %c128_3 = arith.constant 128 : index
+      %c128_4 = arith.constant 128 : index
+      %c1_5 = arith.constant 1 : index
+      %35 = pto.make_tensor_view %arg0, shape = [%0, %c128_3], strides = [%c128_4, %c1_5] : !pto.tensor_view<?x?xf16>
+      %c128_6 = arith.constant 128 : index
+      %c1_7 = arith.constant 1 : index
+      %c128_8 = arith.constant 128 : index
+      %36 = pto.make_tensor_view %arg1, shape = [%c128_6, %1], strides = [%c1_7, %c128_8] {layout = #pto.layout<dn>} : !pto.tensor_view<?x?xf16>
+      %c128_9 = arith.constant 128 : index
+      %c128_10 = arith.constant 128 : index
+      %c1_11 = arith.constant 1 : index
+      %37 = pto.make_tensor_view %arg2, shape = [%1, %c128_9], strides = [%c128_10, %c1_11] : !pto.tensor_view<?x?xf16>
+      %c1_12 = arith.constant 1 : index
+      scf.for %arg5 = %17 to %21 step %c1_12 {
+        %c16 = arith.constant 16 : index
+        %38 = arith.muli %arg5, %c16 : index
+        %c0 = arith.constant 0 : index
+        %c16_13 = arith.constant 16 : index
+        %c128_14 = arith.constant 128 : index
+        %39 = pto.partition_view %35, offsets = [%38, %c0], sizes = [%c16_13, %c128_14] : !pto.tensor_view<?x?xf16>
+        pto.tload ins(%39 : !pto.partition_tensor_view<16x128xf16>) outs(%25 : !pto.tile_buf<mat, 16x128xf16, blayout=col_major, slayout=row_major>)
+        pto.tmov ins(%25 : !pto.tile_buf<mat, 16x128xf16, blayout=col_major, slayout=row_major>) outs(%26 : !pto.tile_buf<left, 16x128xf16, blayout=col_major, slayout=row_major>)
+        %c0_15 = arith.constant 0 : index
+        %c1_16 = arith.constant 1 : index
+        scf.for %arg6 = %c0_15 to %2 step %c1_16 {
+          %c128_17 = arith.constant 128 : index
+          %40 = arith.muli %arg6, %c128_17 : index
+          %c0_18 = arith.constant 0 : index
+          %c128_19 = arith.constant 128 : index
+          %c128_20 = arith.constant 128 : index
+          %41 = pto.partition_view %36, offsets = [%c0_18, %40], sizes = [%c128_19, %c128_20] : !pto.tensor_view<?x?xf16>
+          pto.tload ins(%41 : !pto.partition_tensor_view<128x128xf16>) outs(%27 : !pto.tile_buf<mat, 128x128xf16, slayout=col_major>)
+          pto.tmov ins(%27 : !pto.tile_buf<mat, 128x128xf16, slayout=col_major>) outs(%28 : !pto.tile_buf<right, 128x128xf16, slayout=col_major>)
+          pto.tmatmul ins(%26, %28 : !pto.tile_buf<left, 16x128xf16, blayout=col_major, slayout=row_major>, !pto.tile_buf<right, 128x128xf16, slayout=col_major>) outs(%29 : !pto.tile_buf<acc, 16x128xf32, blayout=col_major, slayout=row_major>)
+          pto.tpush_to_aiv(%29 : !pto.tile_buf<acc, 16x128xf32, blayout=col_major, slayout=row_major>) { split = 1}
+          %42 = pto.tpop_from_aiv {id = 1, split = 1} -> !pto.tile_buf<mat, 16x128xf16, blayout=col_major, slayout=row_major>
+          pto.tmov ins(%42 : !pto.tile_buf<mat, 16x128xf16, blayout=col_major, slayout=row_major>) outs(%31 : !pto.tile_buf<left, 16x128xf16, blayout=col_major, slayout=row_major>)
+          pto.tfree_from_aiv {id = 1, split = 1}
+          %c0_21 = arith.constant 0 : index
+          %c128_22 = arith.constant 128 : index
+          %c128_23 = arith.constant 128 : index
+          %43 = pto.partition_view %37, offsets = [%40, %c0_21], sizes = [%c128_22, %c128_23] : !pto.tensor_view<?x?xf16>
+          pto.tload ins(%43 : !pto.partition_tensor_view<128x128xf16>) outs(%32 : !pto.tile_buf<mat, 128x128xf16, blayout=col_major, slayout=row_major>)
+          pto.tmov ins(%32 : !pto.tile_buf<mat, 128x128xf16, blayout=col_major, slayout=row_major>) outs(%33 : !pto.tile_buf<right, 128x128xf16, slayout=col_major>)
+          pto.tmatmul ins(%31, %33 : !pto.tile_buf<left, 16x128xf16, blayout=col_major, slayout=row_major>, !pto.tile_buf<right, 128x128xf16, slayout=col_major>) outs(%34 : !pto.tile_buf<acc, 16x128xf32, blayout=col_major, slayout=row_major>)
+          pto.tpush_to_aiv(%34 : !pto.tile_buf<acc, 16x128xf32, blayout=col_major, slayout=row_major>) {id = 2, split = 1}
+        }
+      }
+      return
+    }
+  }
+  module attributes {pto.backend = "emitc", pto.kernel_kind = #pto.kernel_kind<vector>, pto.target_arch = "a5"} {
+    func.func public @hw_native_flash_attention_serial_vector_h128_s1t128_qr128__ptodsl_aa834e5908(%arg0: !pto.ptr<f32, gm>, %arg1: i64, %arg2: i64) attributes {pto.kernel_kind = #pto.kernel_kind<vector>, pto.ptodsl.logical_name = "hw_native_flash_attention_serial_vector_h128_s1t128_qr128", pto.visibility = "external"} {
+      %0 = arith.index_cast %arg1 : i64 to index
+      %1 = arith.index_cast %arg2 : i64 to index
+      %c128 = arith.constant 128 : index
+      %2 = arith.floordivsi %1, %c128 : index
+      %3 = pto.get_block_num
+      %4 = arith.index_cast %3 : i64 to index
+      %5 = pto.get_block_idx
+      %6 = arith.index_cast %5 : i64 to index
+      %c8 = arith.constant 8 : index
+      %7 = arith.floordivsi %c8, %4 : index
+      %c8_0 = arith.constant 8 : index
+      %8 = arith.remsi %c8_0, %4 : index
+      %c1 = arith.constant 1 : index
+      %9 = arith.addi %7, %c1 : index
+      %10 = arith.muli %6, %9 : index
+      %c1_1 = arith.constant 1 : index
+      %11 = arith.addi %7, %c1_1 : index
+      %12 = arith.muli %8, %11 : index
+      %13 = arith.subi %6, %8 : index
+      %14 = arith.muli %13, %7 : index
+      %15 = arith.addi %12, %14 : index
+      %16 = arith.cmpi slt, %6, %8 : index
+      %17 = arith.select %16, %10, %15 : index
+      %18 = arith.cmpi slt, %6, %8 : index
+      %c1_2 = arith.constant 1 : index
+      %19 = arith.addi %7, %c1_2 : index
+      %20 = arith.select %18, %19, %7 : index
+      %21 = arith.addi %17, %20 : index
+      %22 = pto.reserve_buffer{name = "hw_native_flash_attention_serial_h128_s1t128_qr128_qk_c2v_fifo", size = 65536, location = <vec>, auto = true} -> i32
+      %23 = pto.reserve_buffer{name = "hw_native_flash_attention_serial_h128_s1t128_qr128_pv_c2v_fifo", size = 65536, location = <vec>, auto = true} -> i32
+      %24 = pto.import_reserved_buffer{name = "hw_native_flash_attention_serial_h128_s1t128_qr128_p_v2c_fifo", peer_func = @hw_native_flash_attention_serial_cube_h128_s1t128_qr128} -> i32
+      pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 8192}(c2v_consumer_buf = %22 : i32)
+      pto.aiv_initialize_pipe {id = 1, dir_mask = 2, slot_size = 4096}(v2c_consumer_buf = %24 : i32)
+      pto.aiv_initialize_pipe {id = 2, dir_mask = 1, slot_size = 8192}(c2v_consumer_buf = %23 : i32)
+      %25 = pto.alloc_tile : !pto.tile_buf<vec, 8x128xf32>
+      %26 = pto.alloc_tile : !pto.tile_buf<vec, 8x128xf32>
+      %27 = pto.alloc_tile : !pto.tile_buf<vec, 8x128xf32>
+      %28 = pto.alloc_tile : !pto.tile_buf<vec, 8x128xf32>
+      %29 = pto.alloc_tile : !pto.tile_buf<vec, 8x128xf16>
+      %30 = pto.alloc_tile : !pto.tile_buf<vec, 8x128xf16, blayout=col_major, slayout=row_major>
+      %31 = pto.alloc_tile : !pto.tile_buf<vec, 8x128xf32>
+      %32 = pto.alloc_tile : !pto.tile_buf<vec, 8x1xf32, blayout=col_major>
+      %33 = pto.alloc_tile : !pto.tile_buf<vec, 8x1xf32, blayout=col_major>
+      %34 = pto.alloc_tile : !pto.tile_buf<vec, 8x1xf32, blayout=col_major>
+      %35 = pto.alloc_tile : !pto.tile_buf<vec, 8x1xf32, blayout=col_major>
+      %36 = pto.alloc_tile : !pto.tile_buf<vec, 8x1xf32, blayout=col_major>
+      %37 = pto.get_subblock_idx
+      %38 = arith.index_cast %37 : i64 to index
+      %c128_3 = arith.constant 128 : index
+      %c128_4 = arith.constant 128 : index
+      %c1_5 = arith.constant 1 : index
+      %39 = pto.make_tensor_view %arg0, shape = [%0, %c128_3], strides = [%c128_4, %c1_5] : !pto.tensor_view<?x?xf32>
+      %40 = pto.treshape %32 : !pto.tile_buf<vec, 8x1xf32, blayout=col_major> -> !pto.tile_buf<vec, 1x8xf32>
+      %41 = pto.treshape %33 : !pto.tile_buf<vec, 8x1xf32, blayout=col_major> -> !pto.tile_buf<vec, 1x8xf32>
+      %42 = pto.treshape %34 : !pto.tile_buf<vec, 8x1xf32, blayout=col_major> -> !pto.tile_buf<vec, 1x8xf32>
+      %43 = pto.treshape %35 : !pto.tile_buf<vec, 8x1xf32, blayout=col_major> -> !pto.tile_buf<vec, 1x8xf32>
+      %44 = pto.treshape %36 : !pto.tile_buf<vec, 8x1xf32, blayout=col_major> -> !pto.tile_buf<vec, 1x8xf32>
+      %c1_6 = arith.constant 1 : index
+      scf.for %arg3 = %17 to %21 step %c1_6 {
+        %45 = pto.tpop_from_aic { split = 1} -> !pto.tile_buf<vec, 8x128xf32>
+        pto.trowmax ins(%45, %27 : !pto.tile_buf<vec, 8x128xf32>, !pto.tile_buf<vec, 8x128xf32>) outs(%32 : !pto.tile_buf<vec, 8x1xf32, blayout=col_major>)
+        pto.trowexpandsub ins(%45, %32 : !pto.tile_buf<vec, 8x128xf32>, !pto.tile_buf<vec, 8x1xf32, blayout=col_major>) outs(%28 : !pto.tile_buf<vec, 8x128xf32>)
+        pto.tmov ins(%40 : !pto.tile_buf<vec, 1x8xf32>) outs(%42 : !pto.tile_buf<vec, 1x8xf32>)
+        %cst = arith.constant 0.0883883461 : f32
+        pto.tmuls ins(%28, %cst : !pto.tile_buf<vec, 8x128xf32>, f32) outs(%28 : !pto.tile_buf<vec, 8x128xf32>)
+        pto.texp ins(%28 : !pto.tile_buf<vec, 8x128xf32>) outs(%28 : !pto.tile_buf<vec, 8x128xf32>)
+        pto.trowsum ins(%28, %27 : !pto.tile_buf<vec, 8x128xf32>, !pto.tile_buf<vec, 8x128xf32>) outs(%35 : !pto.tile_buf<vec, 8x1xf32, blayout=col_major>)
+        pto.tcvt ins(%28 {rmode = #pto<round_mode CAST_RINT>, satmode = #pto<saturation_mode OFF>} : !pto.tile_buf<vec, 8x128xf32>) outs(%29 : !pto.tile_buf<vec, 8x128xf16>)
+        pto.tmov ins(%29 : !pto.tile_buf<vec, 8x128xf16>) outs(%30 : !pto.tile_buf<vec, 8x128xf16, blayout=col_major, slayout=row_major>)
+        pto.tpush_to_aic(%30 : !pto.tile_buf<vec, 8x128xf16, blayout=col_major, slayout=row_major>) {id = 1, split = 1}
+        pto.tfree_from_aic { split = 1}
+        %46 = pto.tpop_from_aic {id = 2, split = 1} -> !pto.tile_buf<vec, 8x128xf32>
+        pto.tmov ins(%46 : !pto.tile_buf<vec, 8x128xf32>) outs(%31 : !pto.tile_buf<vec, 8x128xf32>)
+        pto.tfree_from_aic {id = 2, split = 1}
+        %c1_7 = arith.constant 1 : index
+        %c1_8 = arith.constant 1 : index
+        scf.for %arg4 = %c1_7 to %2 step %c1_8 {
+          %51 = pto.tpop_from_aic { split = 1} -> !pto.tile_buf<vec, 8x128xf32>
+          pto.trowmax ins(%51, %27 : !pto.tile_buf<vec, 8x128xf32>, !pto.tile_buf<vec, 8x128xf32>) outs(%32 : !pto.tile_buf<vec, 8x1xf32, blayout=col_major>)
+          pto.tmax ins(%40, %42 : !pto.tile_buf<vec, 1x8xf32>, !pto.tile_buf<vec, 1x8xf32>) outs(%40 : !pto.tile_buf<vec, 1x8xf32>)
+          pto.tsub ins(%42, %40 : !pto.tile_buf<vec, 1x8xf32>, !pto.tile_buf<vec, 1x8xf32>) outs(%44 : !pto.tile_buf<vec, 1x8xf32>)
+          pto.tmov ins(%40 : !pto.tile_buf<vec, 1x8xf32>) outs(%42 : !pto.tile_buf<vec, 1x8xf32>)
+          pto.trowexpandsub ins(%51, %32 : !pto.tile_buf<vec, 8x128xf32>, !pto.tile_buf<vec, 8x1xf32, blayout=col_major>) outs(%28 : !pto.tile_buf<vec, 8x128xf32>)
+          %cst_12 = arith.constant 0.0883883461 : f32
+          pto.tmuls ins(%44, %cst_12 : !pto.tile_buf<vec, 1x8xf32>, f32) outs(%44 : !pto.tile_buf<vec, 1x8xf32>)
+          pto.texp ins(%44 : !pto.tile_buf<vec, 1x8xf32>) outs(%44 : !pto.tile_buf<vec, 1x8xf32>)
+          %cst_13 = arith.constant 0.0883883461 : f32
+          pto.tmuls ins(%28, %cst_13 : !pto.tile_buf<vec, 8x128xf32>, f32) outs(%28 : !pto.tile_buf<vec, 8x128xf32>)
+          pto.texp ins(%28 : !pto.tile_buf<vec, 8x128xf32>) outs(%28 : !pto.tile_buf<vec, 8x128xf32>)
+          pto.tmul ins(%43, %44 : !pto.tile_buf<vec, 1x8xf32>, !pto.tile_buf<vec, 1x8xf32>) outs(%43 : !pto.tile_buf<vec, 1x8xf32>)
+          pto.trowsum ins(%28, %27 : !pto.tile_buf<vec, 8x128xf32>, !pto.tile_buf<vec, 8x128xf32>) outs(%33 : !pto.tile_buf<vec, 8x1xf32, blayout=col_major>)
+          pto.tadd ins(%43, %41 : !pto.tile_buf<vec, 1x8xf32>, !pto.tile_buf<vec, 1x8xf32>) outs(%43 : !pto.tile_buf<vec, 1x8xf32>)
+          pto.tcvt ins(%28 {rmode = #pto<round_mode CAST_RINT>, satmode = #pto<saturation_mode OFF>} : !pto.tile_buf<vec, 8x128xf32>) outs(%29 : !pto.tile_buf<vec, 8x128xf16>)
+          pto.tmov ins(%29 : !pto.tile_buf<vec, 8x128xf16>) outs(%30 : !pto.tile_buf<vec, 8x128xf16, blayout=col_major, slayout=row_major>)
+          pto.tpush_to_aic(%30 : !pto.tile_buf<vec, 8x128xf16, blayout=col_major, slayout=row_major>) {id = 1, split = 1}
+          pto.tfree_from_aic { split = 1}
+          %52 = pto.tpop_from_aic {id = 2, split = 1} -> !pto.tile_buf<vec, 8x128xf32>
+          pto.trowexpandmul ins(%31, %36 : !pto.tile_buf<vec, 8x128xf32>, !pto.tile_buf<vec, 8x1xf32, blayout=col_major>) outs(%31 : !pto.tile_buf<vec, 8x128xf32>)
+          pto.tadd ins(%31, %52 : !pto.tile_buf<vec, 8x128xf32>, !pto.tile_buf<vec, 8x128xf32>) outs(%31 : !pto.tile_buf<vec, 8x128xf32>)
+          pto.tfree_from_aic {id = 2, split = 1}
+        }
+        pto.trowexpanddiv ins(%31, %35 : !pto.tile_buf<vec, 8x128xf32>, !pto.tile_buf<vec, 8x1xf32, blayout=col_major>) outs(%31 : !pto.tile_buf<vec, 8x128xf32>) {precisionType = #pto<div_precision default>}
+        %c16 = arith.constant 16 : index
+        %47 = arith.muli %arg3, %c16 : index
+        %c8_9 = arith.constant 8 : index
+        %48 = arith.muli %38, %c8_9 : index
+        %49 = arith.addi %47, %48 : index
+        %c0 = arith.constant 0 : index
+        %c8_10 = arith.constant 8 : index
+        %c128_11 = arith.constant 128 : index
+        %50 = pto.partition_view %39, offsets = [%49, %c0], sizes = [%c8_10, %c128_11] : !pto.tensor_view<?x?xf32>
+        pto.tstore ins(%31 : !pto.tile_buf<vec, 8x128xf32>) outs(%50 : !pto.partition_tensor_view<8x128xf32>)
+      }
+      return
+    }
+  }
+}

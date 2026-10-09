@@ -24,6 +24,9 @@ from pto_costmodel.wire import ContractError, encode, fingerprint, integer, publ
 
 
 def search_candidates(package, preloads):
+    from pto_costmodel.contract import SEMANTICS
+    require(package["manifest"]["semantics_version"] == SEMANTICS, "UNSUPPORTED_FEATURE",
+            "structured assemblies require a phase-aware adapter before candidate search")
     require(isinstance(preloads, list) and 0 < len(preloads) <= MAX_CANDIDATES,
             "RANGE", "provide 1..32 preload candidates")
     result, rejected = [], []
