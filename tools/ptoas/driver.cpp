@@ -320,7 +320,8 @@ static bool isBackendPartitionedContainer(ModuleOp module) {
 }
 
 static bool isUserVisibleIROutputRequested() {
-  return mlir::pto::emitMlirIR || mlir::pto::emitVPTO ||
+  return mlir::pto::emitCVCostModelIR || mlir::pto::emitMlirIR ||
+         mlir::pto::emitVPTO ||
          mlir::pto::emitVPTOLLVMDialect || mlir::pto::ptoPrintSeamIR ||
          !mlir::pto::ptoSeamIRFile.empty();
 }
@@ -1051,7 +1052,9 @@ LogicalResult EmitCBackendJob::run(PTOASContext &context) {
   OwningOpRef<ModuleOp> singleChildJobModule;
   OwningOpRef<ModuleOp> *compileUnit = &module;
   ModuleOp op = module.get();
-  op->setAttr("pto.backend", StringAttr::get(op.getContext(), "emitc"));
+  if (!mlir::pto::emitCVCostModelIR || op.getOps<ModuleOp>().empty()) {
+    op->setAttr("pto.backend", StringAttr::get(op.getContext(), "emitc"));
+  }
 
   SmallVector<ModuleOp, mlir::pto::kValue4> children(op.getOps<ModuleOp>());
   if (!isUserVisibleIROutputRequested() && children.size() == 1 &&
@@ -1084,7 +1087,9 @@ LogicalResult VPTOBackendJob::run(PTOASContext &context) {
   OwningOpRef<ModuleOp> singleChildJobModule;
   OwningOpRef<ModuleOp> *compileUnit = &module;
   ModuleOp op = module.get();
-  op->setAttr("pto.backend", StringAttr::get(op.getContext(), "vpto"));
+  if (!mlir::pto::emitCVCostModelIR || op.getOps<ModuleOp>().empty()) {
+    op->setAttr("pto.backend", StringAttr::get(op.getContext(), "vpto"));
+  }
 
   SmallVector<ModuleOp, mlir::pto::kValue4> children(op.getOps<ModuleOp>());
   // PTODSL emits a backend-partitioned outer container even when there is only
@@ -1236,6 +1241,13 @@ static LogicalResult resolveSingleBackend(
     mlir::pto::PTOBackend defaultBackend, ModuleOp module,
     std::optional<mlir::pto::PTOBackend> &singleBackend) {
   singleBackend = std::nullopt;
+  // A checkpoint is one module-preserving IR job, never a set of object jobs.
+  // Backend selection below is for actual code generation only.
+  if (mlir::pto::emitCVCostModelIR) {
+    singleBackend = cliBackendSpecified ? defaultBackend
+                                       : moduleBackend.value_or(defaultBackend);
+    return success();
+  }
   if (cliBackendSpecified) {
     SmallVector<ModuleOp, mlir::pto::kValue4> children(module.getOps<ModuleOp>());
     if (!isUserVisibleIROutputRequested() && children.size() > 1 &&
@@ -1315,7 +1327,8 @@ static LogicalResult buildBackendInfo(ModuleOp module, bool cliBackendSpecified,
   if (backendInfo.singleBackend) {
     backendInfo.requiresToolchain =
         *backendInfo.singleBackend == mlir::pto::PTOBackend::VPTO &&
-        !mlir::pto::emitMlirIR && !mlir::pto::emitVPTO &&
+        !mlir::pto::emitCVCostModelIR && !mlir::pto::emitMlirIR &&
+        !mlir::pto::emitVPTO &&
         !mlir::pto::emitVPTOLLVMDialect;
     return success();
   }

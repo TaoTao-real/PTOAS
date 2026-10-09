@@ -19,7 +19,7 @@
 using namespace mlir;
 using namespace pto;
 
-static llvm::cl::opt<bool> emitCVCostModelIR(
+llvm::cl::opt<bool> mlir::pto::emitCVCostModelIR(
     "emit-cv-costmodel-ir",
     llvm::cl::desc("Emit A5 serial PTO after pipe validation for CV cost model exchange"),
     llvm::cl::init(false));
@@ -594,7 +594,7 @@ static SmallVector<func::FuncOp> collectSharedPipelineFunctions(ModuleOp module)
   // Object compilation promotes backend children to top-level compile units.
   // Preserve recursive traversal only for user-visible IR modes, which retain
   // the authored container shape for debugging.
-  if (emitMlirIR) {
+  if (emitMlirIR || emitCVCostModelIR) {
     module.walk([&functions](func::FuncOp funcOp) { functions.push_back(funcOp); });
   } else {
     llvm::append_range(functions, module.getOps<func::FuncOp>());
@@ -1284,6 +1284,24 @@ static LogicalResult validateCompileOptions(ModuleOp module,
              : success();
 }
 
+namespace {
+struct VerifyCVCostModelFunctionsPass
+    : public PassWrapper<VerifyCVCostModelFunctionsPass,
+                         OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(VerifyCVCostModelFunctionsPass)
+  void runOnOperation() override {
+    OpPassManager functions(func::FuncOp::getOperationName());
+    functions.addPass(pto::createPTOVerifyTFreePass());
+    for (func::FuncOp func : collectSharedPipelineFunctions(getOperation())) {
+      if (failed(runPipeline(functions, func))) {
+        signalPassFailure();
+        return;
+      }
+    }
+  }
+};
+} // namespace
+
 static LogicalResult emitCVCostModelCheckpoint(ModuleOp module,
                                               PTOASCompileResult &result) {
   auto arch = module->getAttrOfType<StringAttr>("pto.target_arch");
@@ -1295,7 +1313,7 @@ static LogicalResult emitCVCostModelCheckpoint(ModuleOp module,
   pm.enableVerifier();
   pm.addPass(createSerialFrontendPipeLoweringPass());
   pm.addPass(pto::createPTOInferValidatePipeInitPass());
-  pm.addNestedPass<func::FuncOp>(pto::createPTOVerifyTFreePass());
+  pm.addPass(std::make_unique<VerifyCVCostModelFunctionsPass>());
   if (failed(pm.run(module))) {
     return failure();
   }
