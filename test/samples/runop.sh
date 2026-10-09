@@ -333,6 +333,26 @@ process_one_dir() {
     return 0
   fi
 
+  # CVCostModel contains parameterized experiment tools, not no-argument IR
+  # generators. Run its compiler-backed contracts instead of invoking launchers
+  # without inputs (or counting an empty helper's output as a generated kernel).
+  if [[ "${A}" == "CVCostModel" ]]; then
+    local suite test_script test_log
+    for suite in exchange v2 g2 runtime driver structured; do
+      test_script="${REPO_ROOT}/test/lit/pto/Inputs/cv_costmodel_${suite}_test.py"
+      if [[ "${suite}" == "exchange" ]]; then
+        test_script="${REPO_ROOT}/test/lit/pto/Inputs/cv_costmodel_test.py"
+      fi
+      test_log="${out_dir}/CVCostModel-${suite}.log"
+      if "$python" "$test_script" -v >"$test_log" 2>&1; then
+        printf 'CVCostModel(%s)\tOK\tcompiler contract suite; log: %s\n' "$suite" "$test_log"
+      else
+        printf 'CVCostModel(%s)\tFAIL\tcompiler contract suite; log: %s\n' "$suite" "$test_log"
+      fi
+    done
+    return 0
+  fi
+
   # Run every .py file in this directory (no requirement that name matches folder).
   local f mlir ptobc_file decoded_pto cpp base overall=0
   for f in "$dir"/*.py; do
