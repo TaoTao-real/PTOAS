@@ -342,11 +342,14 @@ llvm::cl::opt<bool> enableShapeInference(
 
 llvm::cl::opt<bool> enableVfSimCostmodelOptimization(
     "enable-vfsim-costmodel-optimization",
-    llvm::cl::desc("Enable optional VfSimulator costmodel-driven fusion "
-                   "optimization. Requires the A5 tile-fusion pipeline. This "
-                   "may annotate pto.fusion.row/col_unroll_factor; pass "
-                   "--enable-unroll-after-loop-fusion to consume those "
-                   "attributes in the VPTO backend."),
+    llvm::cl::desc("Enable optional VfSimulator costmodel-driven unroll "
+                   "planning. Requires the A5 tile-fusion pipeline. On the "
+                   "tile-fusion route the planner runs inside pto-fusion-plan "
+                   "and annotates pto.fusion.row/col_unroll_factor, consumed "
+                   "by --enable-unroll-after-loop-fusion. On the VMI route "
+                   "(--enable-vmi) it runs at VPTO emission and annotates "
+                   "pto.vfsim.unroll_factor, consumed by the built-in "
+                   "pto-unroll-loops."),
     llvm::cl::init(false));
 
 llvm::cl::opt<bool> dumpVfSimUnrollTest(
@@ -395,9 +398,9 @@ llvm::cl::opt<bool> enableVMIFunctionDSE(
 llvm::cl::opt<bool> enableVMIUnrollHeuristic(
     "enable-vmi-unroll-heuristic",
     llvm::cl::desc("Fill missing pto.fusion.row/col_unroll_factor on VMI "
-                   "fusion regions heuristically (VfSim-set factors always "
-                   "win). Consumed by --enable-unroll-after-loop-fusion "
-                   "(default: false)"),
+                   "fusion regions heuristically. Consumed by "
+                   "--enable-unroll-after-loop-fusion and independent of the "
+                   "emission-stage VfSim planner (default: false)"),
     llvm::cl::init(false));
 
 llvm::cl::opt<bool> mlir::pto::emitMlirIR(

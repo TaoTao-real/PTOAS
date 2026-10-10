@@ -1,0 +1,3 @@
+[submodule "3rdparty/VfSimulator"]
+	path = 3rdparty/VfSimulator
+	url = https://github.com/wang-chonghao/VfSimulator.git

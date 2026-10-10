@@ -75,6 +75,7 @@ add_mlir_dialect_library(PTOTransforms
   PTOVmiLoadStoreElision.cpp
   PTOVmiFunctionDSE.cpp
   PTOVmiUnrollHeuristic.cpp
+  PTOVfSimUnrollPlanner.cpp
   VmiMemoryLocation.cpp
   TileShapeStateAnalysis.cpp
   SelectTemplateCandidate.cpp

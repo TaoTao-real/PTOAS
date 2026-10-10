@@ -1,0 +1,97 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software; you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You should not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root directory of the software repository for the full text of the License.
+
+// VMI-route VfSimulator cost-model coverage, no-unroll side.  On the VMI
+// route the planner runs late: `pto-vfsim-unroll-planner` sits after
+// VPTOCombineReductions and CSE at VPTO emission time and annotates
+// `pto.vfsim.unroll_factor` on the fused loop; the built-in
+// `pto-unroll-loops` right behind it consumes the annotation.  (The tile
+// route keeps the FusionPlan-embedded planner and annotates
+// pto.fusion.row/col_unroll_factor instead; that path is covered by the
+// tile_fusion vfsim tests.)
+//
+// Decisions below are cost-model snapshots for the pinned VfSimulator commit
+// f4ba4ecaf1fc ("Align legacy template selection with PTOAS").  If the
+// submodule is ever bumped and a decision changes, update the expected values
+// together with the bump.
+//
+// A plain tadd+tmul pair on a 1x128 tile (streaming trip count 2) makes the
+// model keep NO_UNROLL (cycles=60; a factor of 2 costs 61).  The planner
+// still annotates the loop, this time with a planned factor of 1, and the
+// consumer drops it as a no-op: the loop keeps step 64 with a single
+// vadd/vmul pair.  The sibling test vmi_vfsim_unroll_tadd_tmul.pto covers
+// the unrolling decision.
+
+// REQUIRES: vfsim-costmodel
+// RUN: ptoas --enable-vmi --enable-vfsim-costmodel-optimization --dump-vfsim-unroll-test --pto-backend=vpto --pto-arch=a5 --pto-level=level2 --enable-op-fusion=true --emit-vpto %s -o /dev/null 2>&1 | FileCheck %s --check-prefix=VFSIM
+// RUN: ptoas --enable-vmi --enable-vfsim-costmodel-optimization --pto-backend=vpto --pto-arch=a5 --pto-level=level2 --enable-op-fusion=true --emit-vpto %s --mlir-print-ir-after=pto-vfsim-unroll-planner -o /dev/null 2>&1 | FileCheck %s --check-prefix=PLANNER
+// RUN: ptoas --enable-vmi --enable-vfsim-costmodel-optimization --pto-backend=vpto --pto-arch=a5 --pto-level=level2 --enable-op-fusion=true --emit-vpto %s --mlir-print-ir-after=pto-unroll-loops -o /dev/null 2>&1 | FileCheck %s --check-prefix=UNROLL
+
+// VFSIM: selected mode=NO_UNROLL factor=1 cycles=60
+
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+  func.func @vmi_vfsim_nounroll_tadd_tmul(
+      %b_ptr: !pto.ptr<f32>, %c_ptr: !pto.ptr<f32>, %d_ptr: !pto.ptr<f32>) attributes {pto.kernel} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c1r = arith.constant 1 : index
+    %c128 = arith.constant 128 : index
+    %b_view = pto.make_tensor_view %b_ptr,
+      shape = [%c1r, %c128], strides = [%c128, %c1]
+      : !pto.tensor_view<?x?xf32>
+    %c_view = pto.make_tensor_view %c_ptr,
+      shape = [%c1r, %c128], strides = [%c128, %c1]
+      : !pto.tensor_view<?x?xf32>
+    %d_view = pto.make_tensor_view %d_ptr,
+      shape = [%c1r, %c128], strides = [%c128, %c1]
+      : !pto.tensor_view<?x?xf32>
+    %b_part = pto.partition_view %b_view,
+      offsets = [%c0, %c0], sizes = [%c1r, %c128]
+      : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<1x128xf32>
+    %c_part = pto.partition_view %c_view,
+      offsets = [%c0, %c0], sizes = [%c1r, %c128]
+      : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<1x128xf32>
+    %d_part = pto.partition_view %d_view,
+      offsets = [%c0, %c0], sizes = [%c1r, %c128]
+      : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<1x128xf32>
+    %b = pto.alloc_tile : !pto.tile_buf<vec, 1x128xf32>
+    %c = pto.alloc_tile : !pto.tile_buf<vec, 1x128xf32>
+    %a = pto.alloc_tile : !pto.tile_buf<vec, 1x128xf32>
+    %d = pto.alloc_tile : !pto.tile_buf<vec, 1x128xf32>
+    pto.tload ins(%b_part : !pto.partition_tensor_view<1x128xf32>)
+              outs(%b : !pto.tile_buf<vec, 1x128xf32>)
+    pto.tload ins(%c_part : !pto.partition_tensor_view<1x128xf32>)
+              outs(%c : !pto.tile_buf<vec, 1x128xf32>)
+    pto.tadd ins(%b, %c : !pto.tile_buf<vec, 1x128xf32>, !pto.tile_buf<vec, 1x128xf32>)
+             outs(%a : !pto.tile_buf<vec, 1x128xf32>)
+    pto.tmul ins(%a, %b : !pto.tile_buf<vec, 1x128xf32>, !pto.tile_buf<vec, 1x128xf32>)
+             outs(%d : !pto.tile_buf<vec, 1x128xf32>)
+    pto.tstore ins(%d : !pto.tile_buf<vec, 1x128xf32>)
+               outs(%d_part : !pto.partition_tensor_view<1x128xf32>)
+    return
+  }
+}
+
+// The planner strips the loop-fusion markers while annotating the factor;
+// a planned factor of 1 records a no-unroll decision the same way.
+//
+// PLANNER: } {pto.tilelib.impl = "vmi", pto.vfsim.unroll_factor = 1 : i32, pto.vmi.fusion.principal_loop, pto.vmi.fusion.source = "tilelib"}
+
+// pto-unroll-loops runs twice per compile: once early in the
+// persistent-fragment chain, before the planner has annotated anything, and
+// once right after the planner.  With a single kernel the two dumps below are
+// therefore strictly ordered.  The planned factor of 1 is dropped as a no-op
+// in the late run, so both dumps show the untouched step-64 loop (the early
+// one still carrying the loop-fusion markers).
+//
+// UNROLL: scf.for %{{[a-zA-Z0-9]+}} = %c0 to %c128 step %c64 {
+// UNROLL: } {pto.tilelib.impl = "vmi", pto.vmi.fusion.principal_loop, pto.vmi.fusion.source = "tilelib", pto.vmi.loop_fused, pto.vmi.loop_fusion.id = 0 : i64}
+// UNROLL: scf.for %{{[a-zA-Z0-9]+}} = %c0 to %c128 step %c64 iter_args
+// UNROLL-COUNT-2: pto.v{{add|mul}}
+// UNROLL: } {pto.tilelib.impl = "vmi", pto.vmi.fusion.principal_loop, pto.vmi.fusion.source = "tilelib"}
+// UNROLL-NOT: pto.vfsim.unroll_factor

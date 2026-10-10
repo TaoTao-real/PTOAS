@@ -58,29 +58,76 @@ inline std::optional<int64_t> getStaticTripCount(scf::ForOp forOp) {
   return static_cast<int64_t>(count);
 }
 
-/// Validate the loop-unroll hint attributes on *forOp*.  Emits a hard error
-/// for anything malformed: a wrongly typed attribute, an unknown `pto.unroll`
-/// value, both attributes on one loop, or an out-of-contract factor.  Shared
-/// by pto-unroll-loops and pto-promote-persistent-fragment-loops (which must
-/// not silently overwrite a malformed hint with "full").
-inline LogicalResult validateLoopUnrollHint(scf::ForOp forOp) {
+/// Read the three loop-unroll hint attributes off *forOp* and check their
+/// types, writing the typed views through the out-parameters.  Emits a hard
+/// error and returns failure when a raw attribute exists but has the wrong
+/// type: the typed getters alone would return null and the loop would
+/// silently keep a malformed annotation all the way down the pipeline.
+inline LogicalResult getTypedHintAttrs(scf::ForOp forOp,
+                                       StringAttr &unrollAttr,
+                                       IntegerAttr &factorAttr,
+                                       IntegerAttr &vfsimAttr) {
   Attribute unrollRaw = forOp->getAttr(pto::kUnrollAttrName);
   Attribute factorRaw = forOp->getAttr(pto::kUnrollFactorAttrName);
+  Attribute vfsimRaw = forOp->getAttr(pto::kVfSimUnrollFactorAttrName);
 
-  // Wrong attribute *types* must not slip through as "no hint": the typed
-  // getters below would return null and the loop would silently keep a
-  // malformed annotation all the way down the pipeline.
-  auto unrollAttr = dyn_cast_if_present<StringAttr>(unrollRaw);
+  unrollAttr = dyn_cast_if_present<StringAttr>(unrollRaw);
+  factorAttr = dyn_cast_if_present<IntegerAttr>(factorRaw);
+  vfsimAttr = dyn_cast_if_present<IntegerAttr>(vfsimRaw);
+
   if (unrollRaw && !unrollAttr) {
     forOp.emitError() << "'" << pto::kUnrollAttrName
                       << "' must be a string attribute, got " << unrollRaw;
     return failure();
   }
-  auto factorAttr = dyn_cast_if_present<IntegerAttr>(factorRaw);
   if (factorRaw && !factorAttr) {
     forOp.emitError() << "'" << pto::kUnrollFactorAttrName
                       << "' must be a signless i32 attribute, got "
                       << factorRaw;
+    return failure();
+  }
+  if (vfsimRaw && !vfsimAttr) {
+    forOp.emitError() << "'" << pto::kVfSimUnrollFactorAttrName
+                      << "' must be a signless i32 attribute, got "
+                      << vfsimRaw;
+    return failure();
+  }
+  return success();
+}
+
+/// Check that a numeric unroll-factor attribute (hand-written or
+/// VfSimulator-planned) is a positive signless i32, emitting a targeted
+/// error otherwise.
+inline LogicalResult validatePositiveFactorAttr(scf::ForOp forOp,
+                                                IntegerAttr factorAttr,
+                                                StringRef factorAttrName) {
+  if (factorAttr && !pto::isValidUnrollFactorAttr(factorAttr)) {
+    if (!factorAttr.getType().isSignlessInteger(kUnrollFactorAttrBitWidth)) {
+      forOp.emitError() << "'" << factorAttrName
+                        << "' must be a signless i32 attribute, got "
+                        << factorAttr.getType();
+    } else {
+      forOp.emitError() << "'" << factorAttrName
+                        << "' must be a positive integer, got "
+                        << factorAttr.getInt();
+    }
+    return failure();
+  }
+  return success();
+}
+
+/// Validate the loop-unroll hint attributes on *forOp*, including the
+/// VfSimulator-planned `pto.vfsim.unroll_factor`.  Emits a hard error for
+/// anything malformed: a wrongly typed attribute, an unknown `pto.unroll`
+/// value, any two of the three attributes on one loop, or an out-of-contract
+/// factor.  Shared by pto-unroll-loops and
+/// pto-promote-persistent-fragment-loops (which must not silently overwrite
+/// a malformed hint with "full").
+inline LogicalResult validateLoopUnrollHint(scf::ForOp forOp) {
+  StringAttr unrollAttr;
+  IntegerAttr factorAttr;
+  IntegerAttr vfsimAttr;
+  if (failed(getTypedHintAttrs(forOp, unrollAttr, factorAttr, vfsimAttr))) {
     return failure();
   }
 
@@ -88,6 +135,16 @@ inline LogicalResult validateLoopUnrollHint(scf::ForOp forOp) {
     forOp.emitError() << "'" << pto::kUnrollAttrName << "' and '"
                       << pto::kUnrollFactorAttrName
                       << "' are mutually exclusive on one loop";
+    return failure();
+  }
+
+  // The VfSim factor is a cost-model decision; combining it with a
+  // hand-written hint would make the winner depend on pass ordering.
+  if (vfsimAttr && (unrollAttr || factorAttr)) {
+    forOp.emitError() << "'" << pto::kVfSimUnrollFactorAttrName
+                      << "' cannot be combined with the hand-written '"
+                      << pto::kUnrollAttrName << "' or '"
+                      << pto::kUnrollFactorAttrName << "' on one loop";
     return failure();
   }
 
@@ -102,20 +159,12 @@ inline LogicalResult validateLoopUnrollHint(scf::ForOp forOp) {
     return failure();
   }
 
-  if (factorAttr && !pto::isValidUnrollFactorAttr(factorAttr)) {
-    if (!factorAttr.getType().isSignlessInteger(kUnrollFactorAttrBitWidth)) {
-      forOp.emitError() << "'" << pto::kUnrollFactorAttrName
-                        << "' must be a signless i32 attribute, got "
-                        << factorAttr.getType();
-    } else {
-      forOp.emitError() << "'" << pto::kUnrollFactorAttrName
-                        << "' must be a positive integer, got "
-                        << factorAttr.getInt();
-    }
+  if (failed(validatePositiveFactorAttr(forOp, factorAttr,
+                                        pto::kUnrollFactorAttrName))) {
     return failure();
   }
-
-  return success();
+  return validatePositiveFactorAttr(forOp, vfsimAttr,
+                                    pto::kVfSimUnrollFactorAttrName);
 }
 
 } // namespace pto

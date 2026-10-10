@@ -9,9 +9,10 @@
 
 // Heuristic unroll-factor provider for the VMI fusion pipeline.
 //
-// pto.fusion.row/col_unroll_factor has exactly one producer today: the VfSim
-// planner (PTO_ENABLE_VFSIM_IR_PLANNER), which is not part of this build, so
-// --enable-unroll-after-loop-fusion is a no-op here.  This pass fills the gap
+// pto.fusion.row/col_unroll_factor has no producer on the VMI route in a
+// default build: the VfSim planner (PTO_ENABLE_VFSIM_IR_PLANNER) plans VMI
+// unroll at VPTO emission with pto.vfsim.unroll_factor instead, which is not
+// what --enable-unroll-after-loop-fusion consumes.  This pass fills the gap
 // conservatively: for every fusion_region that carries NEITHER factor
 // attribute it derives one factor from the region's leaf loops and sets
 // pto.fusion.row_unroll_factor (the streaming leaf of a fused VMI region is
@@ -20,7 +21,8 @@
 // Rules (deliberately conservative; the factor is a hint, the consumer still
 // applies its own gates):
 //   - A region that already carries either factor attribute is left alone:
-//     an explicit decision (VfSim or a future planner) always wins.
+//     an explicit decision (a hand annotation or a future planner) always
+//     wins.
 //   - Every leaf scf.for must have a compile-time-constant trip count, and
 //     the candidate factor must divide it (the consumer skips indivisible
 //     leaves; requiring divisibility of all leaves keeps the region's

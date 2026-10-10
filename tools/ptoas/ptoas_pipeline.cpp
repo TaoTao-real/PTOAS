@@ -712,10 +712,8 @@ static void addPersistentFragmentLowering(OpPassManager &kernelModulePM) {
   kernelModulePM.addPass(pto::createPTOOutlineSIMTSectionsPass());
 }
 
-static void prepareVPTOForEmission(PassManager &pm,
-                                   VPTOSchedulerCLIMode schedulerMode,
-                                   bool rematerialize) {
-  auto &kernelModulePM = pm.nest<ModuleOp>();
+/// Prepare VPTO IR and insert the mainline vecscope memory barriers.
+static void appendVPTOIRPreparationPasses(OpPassManager &kernelModulePM) {
   // VPTO LLVM emission lowers pto.barrier to the backend barrier intrinsic.
   // A5 does not support a standalone PIPE_V barrier; vector barriers are either
   // unnecessary or must be removed before LLVM emission. Upper-level
@@ -746,13 +744,29 @@ static void prepareVPTOForEmission(PassManager &pm,
   if (enableSoftPostUpdate) {
     kernelModulePM.addPass(pto::createVPTOSoftPostUpdatePass());
   }
+}
+
+/// Scalar cleanup right before scheduling: guarded LICM, loop-counter
+/// narrowing, soft-library expansion, generic-op lowering, reduction-tree
+/// reconstruction and ctrl-state optimization.  With the VMI VfSim planner
+/// active, counter narrowing is deferred past the planner-driven unroll
+/// block that follows reduction reconstruction.
+static void appendVPTOPreSchedulingPasses(OpPassManager &kernelModulePM,
+                                          bool enableVmiVfSimPlanner) {
   // Hoist loop-invariant guarded address chains out of scf.if regions before
   // the generic LICM (which only inspects top-level loop-body operations).
   kernelModulePM.addNestedPass<func::FuncOp>(
       pto::createVPTOGuardedLICMPass());
   kernelModulePM.addPass(createLoopInvariantCodeMotionPass());
-  kernelModulePM.addNestedPass<func::FuncOp>(
-      pto::createPTONarrowVPTOLoopCountersPass());
+  // Keep counters in index form while the VMI VfSim planner is active: the
+  // native unroll utility in the planner block below only supports index
+  // induction variables, while this pass rewrites them to i16.  Narrowing
+  // is deferred to the end of that block, so ordinary builds keep the
+  // master ordering unchanged.
+  if (!enableVmiVfSimPlanner) {
+    kernelModulePM.addNestedPass<func::FuncOp>(
+        pto::createPTONarrowVPTOLoopCountersPass());
+  }
   kernelModulePM.addPass(createCanonicalizerPass());
   kernelModulePM.addPass(createCSEPass());
   // SoftOps are materialized only after all VPTO optimization and layout
@@ -773,12 +787,41 @@ static void prepareVPTOForEmission(PassManager &pm,
   // scheduler sees the final MI instruction set and dependencies.
   kernelModulePM.addPass(pto::createVPTOCombineReductionsPass());
   kernelModulePM.addPass(createCSEPass());
+  if (enableVmiVfSimPlanner) {
+    // Restored VMI-route VfSim integration point: after VPTOCombineReductions
+    // and CSE the MI instruction mix is final, so the cost model evaluates
+    // the emitted ops.  pto-unroll-loops consumes the planned
+    // pto.vfsim.unroll_factor in the same block, and counter narrowing runs
+    // last because the native unroll utility requires index induction
+    // variables.
+    pto::PTOVfSimUnrollPlannerOptions plannerOptions;
+    plannerOptions.maxUnrollFactor = 8;
+    plannerOptions.dumpCandidates = dumpVfSimUnrollTest;
+    kernelModulePM.addPass(
+        pto::createPTOVfSimUnrollPlannerPass(plannerOptions));
+    kernelModulePM.addNestedPass<func::FuncOp>(
+        pto::createPTOUnrollLoopsPass());
+    kernelModulePM.addPass(createSCCPPass());
+    kernelModulePM.addPass(createCanonicalizerPass());
+    kernelModulePM.addPass(createCSEPass());
+    kernelModulePM.addNestedPass<func::FuncOp>(
+        pto::createPTONarrowVPTOLoopCountersPass());
+  }
   // Materialize the minimal CTRL accesses before scheduling: a surviving
   // ctrl_state_guard is region-bearing and would make every guarded raw MAD
   // a scheduling boundary, splitting cube loop bodies and blocking the
   // MTE/MAD interleave the scheduler exists to find.
   kernelModulePM.addNestedPass<func::FuncOp>(
       pto::createVPTOOptimizeCtrlStatePass());
+}
+
+static void prepareVPTOForEmission(PassManager &pm,
+                                   VPTOSchedulerCLIMode schedulerMode,
+                                   bool rematerialize,
+                                   bool enableVmiVfSimPlanner) {
+  auto &kernelModulePM = pm.nest<ModuleOp>();
+  appendVPTOIRPreparationPasses(kernelModulePM);
+  appendVPTOPreSchedulingPasses(kernelModulePM, enableVmiVfSimPlanner);
   if (schedulerMode != VPTOSchedulerCLIMode::Off) {
     pto::VPTOSchedulerOptions schedulerOptions;
     schedulerOptions.mode =
@@ -1035,10 +1078,17 @@ static LogicalResult runVPTOBackendPipeline(
   VPTOSchedulerCLIMode schedulerMode = getEffectiveVPTOSchedulerMode(arch);
   bool rematerialize =
       getEffectiveVPTOSchedulerRematerialization(arch, schedulerMode);
-  prepareVPTOForEmission(pm, schedulerMode, rematerialize);
+  // Restored dual VfSim integration: the tile-fusion route plans unroll
+  // inside pto-fusion-plan, while the VMI route plans here at emission,
+  // after VPTOCombineReductions + CSE have fixed the MI instruction mix.
+  const bool enableVmiVfSimPlanner =
+      enableVfSimCostmodelOptimization && useVMIFusionPipeline;
+  prepareVPTOForEmission(pm, schedulerMode, rematerialize,
+                         enableVmiVfSimPlanner);
   if (failed(applyConfiguredPassManagerCLOptions(
-          pm, "VPTO unified emission pipeline")))
+          pm, "VPTO unified emission pipeline"))) {
     return failure();
+  }
   if (failed(pm.run(module.get()))) {
     llvm::errs() << "Error: VPTO emission pipeline failed.\n";
     return failure();
@@ -1256,12 +1306,15 @@ static LogicalResult validateFusionConfiguration(const CompilePipelineState &sta
                     "inserted under other backends.\n";
     return failure();
   }
-  if (enableUnrollAfterLoopFusion && !enableVfSimCostmodelOptimization &&
-      !enableVMIUnrollHeuristic) {
+  // On the VMI route the VfSim planner plans unroll at VPTO emission with
+  // pto.vfsim.unroll_factor, so it is not a pto.fusion.* producer there;
+  // the tile-fusion route keeps the tile-layer planner as the producer.
+  if (enableUnrollAfterLoopFusion && !enableVMIUnrollHeuristic &&
+      !(enableVfSimCostmodelOptimization && !enableVMI)) {
     llvm::errs() << "Warning: --enable-unroll-after-loop-fusion consumes "
                     "pto.fusion.row/col_unroll_factor, which is produced by "
-                    "--enable-vfsim-costmodel-optimization or filled by "
-                    "--enable-vmi-unroll-heuristic.\n";
+                    "--enable-vfsim-costmodel-optimization on the tile-fusion "
+                    "route or filled by --enable-vmi-unroll-heuristic.\n";
   }
   return success();
 }
@@ -1286,8 +1339,11 @@ static void setFusionPipelineFlags(CompilePipelineState &state,
                     "the VPTO backend; use --pto-backend=vpto for unroll "
                     "consumption.\n";
   }
+  // On the VMI route the VfSim planner runs at VPTO emission and its
+  // pto.vfsim.unroll_factor is consumed by the built-in pto-unroll-loops,
+  // so the missing --enable-unroll-after-loop-fusion is not a lost unroll.
   if (enableVfSimCostmodelOptimization && state.enableA5VPTOFusionPath &&
-      !enableUnrollAfterLoopFusion) {
+      !enableVMI && !enableUnrollAfterLoopFusion) {
     llvm::errs() << "Warning: --enable-vfsim-costmodel-optimization may "
                     "annotate pto.fusion.row/col_unroll_factor, but "
                     "--enable-unroll-after-loop-fusion is not enabled; unroll "
@@ -1469,9 +1525,14 @@ static LogicalResult appendFusionFrontendPasses(
   }
   pto::FusionPlanOptions fusionPlanOpts;
   fusionPlanOpts.enableShapeInference = enableShapeInference;
+  // Route gate: the tile-layer VfSim planner serves the tile-fusion route
+  // only.  The VMI route plans unroll later, at VPTO emission, where the MI
+  // instruction mix is already fixed (see runVPTOBackendPipeline).
+  const bool useVMIFusionPipeline = enableVMI && enableA5VPTOFusionPath;
   fusionPlanOpts.enableVfSimCostmodelOptimization =
-      enableVfSimCostmodelOptimization;
-  fusionPlanOpts.dumpVfSimUnrollTest = dumpVfSimUnrollTest;
+      enableVfSimCostmodelOptimization && !useVMIFusionPipeline;
+  fusionPlanOpts.dumpVfSimUnrollTest =
+      dumpVfSimUnrollTest && !useVMIFusionPipeline;
   if (enableA5EmitCFusionPath) {
     appendFusionFrontendPassesForBackend(pm, fusionPlanOpts);
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOMarkLastUsePass());

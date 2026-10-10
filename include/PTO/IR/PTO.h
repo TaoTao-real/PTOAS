@@ -241,6 +241,16 @@ inline constexpr llvm::StringLiteral kUnrollFullValue = "full";
 inline constexpr llvm::StringLiteral kUnrollFactorAttrName =
     "pto.unroll_factor";
 
+/// VfSimulator-planned unroll factor written by `pto-vfsim-unroll-planner`
+/// on VMI-route compiles at VPTO emission time.  A signless i32 holding a
+/// positive factor; kept under a dedicated name so a cost-model decision is
+/// never confused with user intent.  Mutually exclusive with both hand hint
+/// attributes on one loop (a hard error), and consumed by
+/// `pto-unroll-loops` right after the planner, exactly like
+/// `pto.unroll_factor`.
+inline constexpr llvm::StringLiteral kVfSimUnrollFactorAttrName =
+    "pto.vfsim.unroll_factor";
+
 /// Unit attribute marking an `llvm.alloca` as a persistent SIMT fragment
 /// buffer.  Shared by the persistent-fragment analysis and the loop
 /// promotion pass (used as the discovery entry point).
