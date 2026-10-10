@@ -12,6 +12,16 @@
 from ptodsl import pto
 
 from .._row_reductions import register_row_extreme
+from .._vmi_common import (
+    canonical_vmi_template,
+    emit_row_reduce_vmi,
+    emit_row_reduce_streaming_vmi,
+)
+from .._vmi_reduce_common import (
+    ROW_REDUCE_ROW_KWARGS,
+    ROW_REDUCE_SINKHORN_ROW_KWARGS,
+    ROW_REDUCE_TILE_KWARGS,
+)
 
 
 template_trowmax = register_row_extreme(
@@ -20,3 +30,35 @@ template_trowmax = register_row_extreme(
     reduce_op=pto.vcmax,
     combine_op=pto.vmax,
 )
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="trowmax",
+    name="vmi_trowmax",
+    **ROW_REDUCE_TILE_KWARGS,
+)
+def vmi_trowmax(src: pto.Tile, workspace: pto.Tile, dst: pto.Tile):
+    emit_row_reduce_vmi(src, workspace, dst, kind="max")
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="trowmax",
+    name="vmi_trowmax_row",
+    **ROW_REDUCE_ROW_KWARGS,
+)
+def vmi_trowmax_row(src: pto.Tile, workspace: pto.Tile, dst: pto.Tile):
+    emit_row_reduce_streaming_vmi(src, workspace, dst, kind="max")
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="trowmax",
+    name="vmi_trowmax_sinkhorn_row",
+    **ROW_REDUCE_SINKHORN_ROW_KWARGS,
+)
+def vmi_trowmax_sinkhorn_row(
+    src: pto.Tile, workspace: pto.Tile, dst: pto.Tile
+):
+    emit_row_reduce_streaming_vmi(src, workspace, dst, kind="max")

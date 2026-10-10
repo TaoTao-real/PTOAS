@@ -9,6 +9,7 @@
 
 """PTODSL TileLib template for pto.tcolexpanddiv — default precision only."""
 
+from SoftOps import div_i32_soft
 from ptodsl import pto
 import ptodsl.tilelib as tilelib
 
@@ -19,7 +20,11 @@ from ._expand_binary import (
     register_column_expand_binary,
     UNSIGNED_SIGNATURES,
 )
-from SoftOps import div_i32_soft
+from ._vmi_common import (
+    canonical_vmi_template,
+    col_expand_binary_vmi_constraint,
+    emit_col_expand_binary_vmi,
+)
 
 
 def _divide_i16(lhs, rhs, mask, f32_mask):
@@ -80,3 +85,18 @@ template_tcolexpanddiv = register_column_expand_binary(
 )
 def template_tcolexpanddiv_i32(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
     _emit_column_expand_integer_div(src0, src1, dst, _divide_i16, div_i32_soft)
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="tcolexpanddiv",
+    name="vmi_tcolexpanddiv",
+    dtypes=(("f32", "f32", "f32"),),
+    # ExpandTileOp::appendOpContextAttrs unconditionally adds a `precisionType`
+    # context attr to TColExpandDivOp (even when default), and validate_context_attrs
+    # rejects attrs the candidate did not declare, so the candidate declares it.
+    context_constraints={"precisionType": ("default",)},
+    constraints=(col_expand_binary_vmi_constraint,),
+)
+def vmi_tcolexpanddiv(src: pto.Tile, col_values: pto.Tile, dst: pto.Tile):
+    emit_col_expand_binary_vmi(src, col_values, dst, binop="div")

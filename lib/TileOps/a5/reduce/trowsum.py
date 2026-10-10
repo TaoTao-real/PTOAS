@@ -10,6 +10,47 @@
 """PTODSL TileLib template for pto.trowsum."""
 
 from .._row_reductions import register_rowsum
+from .._vmi_common import (
+    Tile,
+    canonical_vmi_template,
+    emit_row_reduce_vmi,
+    emit_row_reduce_streaming_vmi,
+)
+from .._vmi_reduce_common import (
+    ROW_REDUCE_ROW_KWARGS,
+    ROW_REDUCE_SINKHORN_ROW_KWARGS,
+    ROW_REDUCE_TILE_KWARGS,
+)
 
 
 template_trowsum = register_rowsum()
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="trowsum",
+    name="vmi_trowsum",
+    **ROW_REDUCE_TILE_KWARGS,
+)
+def vmi_trowsum(src: Tile, workspace: Tile, dst: Tile):
+    emit_row_reduce_vmi(src, workspace, dst, kind="sum")
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="trowsum",
+    name="vmi_trowsum_row",
+    **ROW_REDUCE_ROW_KWARGS,
+)
+def vmi_trowsum_row(src: Tile, workspace: Tile, dst: Tile):
+    emit_row_reduce_streaming_vmi(src, workspace, dst, kind="sum")
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="trowsum",
+    name="vmi_trowsum_sinkhorn_row",
+    **ROW_REDUCE_SINKHORN_ROW_KWARGS,
+)
+def vmi_trowsum_sinkhorn_row(src: Tile, workspace: Tile, dst: Tile):
+    emit_row_reduce_streaming_vmi(src, workspace, dst, kind="sum")

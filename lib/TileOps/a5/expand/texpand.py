@@ -9,7 +9,17 @@
 
 """PTODSL TileLib template for pto.texpands."""
 
+from ptodsl import pto
+
 from .._elementwise import register_scalar_fill
+from .._vmi_common import (
+    bf16,
+    canonical_vmi_template,
+    emit_scalar_fill_vmi,
+    f16,
+    f32,
+    i32,
+)
 
 
 _DTYPES = [
@@ -37,3 +47,44 @@ template_texpands_1d = register_scalar_fill(
     dtypes=_DTYPES,
     traversal="1d",
 )
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="texpands",
+    name="vmi_texpands",
+    dtypes=(("f32", "f32"),),
+    min_row_bytes=128,
+)
+def vmi_texpands(scalar: f32, dst: pto.Tile):
+    emit_scalar_fill_vmi(scalar, dst)
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="texpands",
+    name="vmi_texpands_i32",
+    dtypes=(("i32", "i32"),),
+)
+def vmi_texpands_i32(scalar: i32, dst: pto.Tile):
+    emit_scalar_fill_vmi(scalar, dst, allowed_dtypes=(i32,))
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="texpands",
+    name="vmi_texpands_f16",
+    dtypes=(("f16", "f16"),),
+)
+def vmi_texpands_f16(scalar: f16, dst: pto.Tile):
+    emit_scalar_fill_vmi(scalar, dst, allowed_dtypes=(f16,))
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="texpands",
+    name="vmi_texpands_bf16",
+    dtypes=(("bf16", "bf16"),),
+)
+def vmi_texpands_bf16(scalar: bf16, dst: pto.Tile):
+    emit_scalar_fill_vmi(scalar, dst, allowed_dtypes=(bf16,))

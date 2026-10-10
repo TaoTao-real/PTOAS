@@ -1,0 +1,83 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software; you can redistribute it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details.
+// You should not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// VMI candidate-selection witnesses for the last ops whose candidates had no
+// lit assertion at all (coverage2: tcolexpandadd/sub/div and texp).  The
+// [rows, cols] + [1, cols] -> [rows, cols] col-expand-binary forms (cols within
+// the 128-byte..256-lane window) select vmi_tcolexpandadd/sub/div; texp splits
+// by shape -- 16x64 f32 (256 row bytes) selects vmi_texp_block64, the 8x8
+// compact form (32 row bytes, below the block64 minimum) selects
+// vmi_texp_sinkhorn_compact.  The rejection side (cols > 256 falls back to the
+// ordinary chunked template) is already locked by ptodsl_vmi_wide_col_fallback.pto;
+// this file locks the admitted-shape selection side, asserting each candidate
+// name at the expand stage and the lowered vector op in the final IR.
+
+// RUN: ptoas --enable-vmi --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-expand-tile-op 2>&1 | FileCheck %s --check-prefix=EXPAND
+// RUN: ptoas --enable-vmi --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --emit-vpto %s -o - | FileCheck %s --check-prefix=FINAL
+
+module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+  func.func @colexpand_add() {
+    %src = pto.alloc_tile : !pto.tile_buf<vec, 8x64xf32>
+    %row = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    %dst = pto.alloc_tile : !pto.tile_buf<vec, 8x64xf32>
+    // EXPAND-LABEL: func.func @colexpand_add
+    // EXPAND: call @{{.*}}__vmi_tcolexpandadd
+    // FINAL-LABEL: func.func @colexpand_add
+    // FINAL: pto.vadd
+    pto.tcolexpandadd ins(%src, %row : !pto.tile_buf<vec, 8x64xf32>, !pto.tile_buf<vec, 1x64xf32>)
+      outs(%dst : !pto.tile_buf<vec, 8x64xf32>)
+    return
+  }
+  func.func @colexpand_sub() {
+    %src = pto.alloc_tile : !pto.tile_buf<vec, 8x64xf32>
+    %row = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    %dst = pto.alloc_tile : !pto.tile_buf<vec, 8x64xf32>
+    // EXPAND-LABEL: func.func @colexpand_sub
+    // EXPAND: call @{{.*}}__vmi_tcolexpandsub
+    // FINAL-LABEL: func.func @colexpand_sub
+    // FINAL: pto.vsub
+    pto.tcolexpandsub ins(%src, %row : !pto.tile_buf<vec, 8x64xf32>, !pto.tile_buf<vec, 1x64xf32>)
+      outs(%dst : !pto.tile_buf<vec, 8x64xf32>)
+    return
+  }
+  func.func @colexpand_div() {
+    %src = pto.alloc_tile : !pto.tile_buf<vec, 8x64xf32>
+    %row = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    %dst = pto.alloc_tile : !pto.tile_buf<vec, 8x64xf32>
+    // EXPAND-LABEL: func.func @colexpand_div
+    // EXPAND: call @{{.*}}__vmi_tcolexpanddiv
+    // FINAL-LABEL: func.func @colexpand_div
+    // FINAL: pto.vdiv
+    pto.tcolexpanddiv ins(%src, %row : !pto.tile_buf<vec, 8x64xf32>, !pto.tile_buf<vec, 1x64xf32>)
+      outs(%dst : !pto.tile_buf<vec, 8x64xf32>)
+    return
+  }
+  func.func @texp_block64() {
+    %a = pto.alloc_tile : !pto.tile_buf<vec, 16x64xf32>
+    %dst = pto.alloc_tile : !pto.tile_buf<vec, 16x64xf32>
+    // EXPAND-LABEL: func.func @texp_block64
+    // EXPAND: call @{{.*}}__vmi_texp_block64
+    // FINAL-LABEL: func.func @texp_block64
+    // FINAL: pto.vexp
+    pto.texp ins(%a : !pto.tile_buf<vec, 16x64xf32>)
+      outs(%dst : !pto.tile_buf<vec, 16x64xf32>)
+    return
+  }
+  func.func @texp_sinkhorn_compact() {
+    %a = pto.alloc_tile : !pto.tile_buf<vec, 8x8xf32>
+    %dst = pto.alloc_tile : !pto.tile_buf<vec, 8x8xf32>
+    // EXPAND-LABEL: func.func @texp_sinkhorn_compact
+    // EXPAND: call @{{.*}}__vmi_texp_sinkhorn_compact
+    // FINAL-LABEL: func.func @texp_sinkhorn_compact
+    // FINAL: pto.vexp
+    pto.texp ins(%a : !pto.tile_buf<vec, 8x8xf32>)
+      outs(%dst : !pto.tile_buf<vec, 8x8xf32>)
+    return
+  }
+}

@@ -1210,10 +1210,21 @@ class TileLibCatalogTest(unittest.TestCase):
                 "a5",
             )
         ]
-        by_id = {descriptor.metadata.id: descriptor for descriptor in candidates}
+        # VMI candidates registered by ptodsl.vmi_tilelib occupy a separate id
+        # range (>= 1000, see _vmi_common._next_vmi_candidate_id) and are
+        # constraint-selected instead of being paired with a flattened `_1d`
+        # twin, so the pairing invariant below covers the ordinary family only.
+        ordinary = [
+            descriptor for descriptor in candidates if descriptor.metadata.id < 1000
+        ]
+        vmi = [
+            descriptor for descriptor in candidates if descriptor.metadata.id >= 1000
+        ]
+        by_id = {descriptor.metadata.id: descriptor for descriptor in ordinary}
 
-        self.assertEqual(len(candidates), 78)
+        self.assertEqual(len(ordinary), 78)
         self.assertEqual(set(by_id), set(range(78)))
+        self.assertEqual([descriptor.name for descriptor in vmi], ["vmi_tcvt"])
         for fallback_id in range(39):
             with self.subTest(fallback_id=fallback_id):
                 fallback = by_id[fallback_id]
@@ -1238,9 +1249,38 @@ class TileLibCatalogTest(unittest.TestCase):
             src_dtype, dst_dtype = descriptor.metadata.dtypes[0]
             specs = _tcvt_specs_for(src_dtype, dst_dtype)
             with self.subTest(candidate=descriptor.name):
-                selected = select("pto.tcvt", "a5", specs, candidate_id=descriptor.name)
-                mlir = selected.specialize(**specs).mlir_text()
+                context_attrs = None
+                if descriptor.name == "vmi_tcvt":
+                    # The first VMI signature is bf16 -> f32. Selection and
+                    # materialization must receive the same legal route/context.
+                    context_attrs = {
+                        "enable_vmi": "true",
+                        "round_mode": "ROUND",
+                        "sat_mode": "DEFAULT",
+                    }
+                selected = select(
+                    "pto.tcvt", "a5", specs,
+                    context_attrs=context_attrs,
+                    candidate_id=descriptor.name,
+                )
+                mlir = selected.specialize(context_attrs=context_attrs, **specs).mlir_text()
                 self.assertIn(f"func.func @{descriptor.name}", mlir)
+
+    def test_vmi_tcvt_rejects_missing_or_disabled_context(self):
+        specs = _tcvt_specs_for("bf16", "f32")
+        disabled_context = {
+            "enable_vmi": "false",
+            "round_mode": "ROUND",
+            "sat_mode": "DEFAULT",
+        }
+        for context_attrs in (None, disabled_context):
+            with self.subTest(context_attrs=context_attrs):
+                with self.assertRaises(tilelib.NoMatchingTemplate):
+                    select(
+                        "pto.tcvt", "a5", specs,
+                        context_attrs=context_attrs,
+                        candidate_id="vmi_tcvt",
+                    )
 
     def test_tcvt_templates_use_native_python_loop_syntax(self):
         from ptodsl.tilelib.templates.a5 import tcvt

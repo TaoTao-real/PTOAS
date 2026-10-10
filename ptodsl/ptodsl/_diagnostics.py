@@ -35,6 +35,18 @@ class PTODSLDeprecationWarning(UserWarning):
     """Warning emitted when a deprecated PTODSL interface is called."""
 
 
+class PTODSLConstraintDefectWarning(UserWarning):
+    """Warning emitted when a template constraint raises instead of answering.
+
+    A predicate that returns ``False`` says "this candidate does not apply to
+    these operands", which is the ordinary, expected rejection and stays quiet.
+    A predicate that *raises* says nothing about the operands -- in practice it
+    means the provider reads a field or calls a helper that no longer exists, so
+    the candidate becomes silently unselectable.  Surfacing it distinguishes a
+    missing fusion opportunity from a broken provider.
+    """
+
+
 def deprecated(reason: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """Mark a PTODSL callable as deprecated and warn when it is called.
 
@@ -611,6 +623,7 @@ def unsupported_public_surface_error(name: str) -> AttributeError:
 
 
 __all__ = [
+    "PTODSLConstraintDefectWarning",
     "PTODSLDeprecationWarning",
     "PTODSLTracingMisuseError",
     "deprecated",

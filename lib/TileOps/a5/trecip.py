@@ -13,6 +13,11 @@ from ptodsl import pto
 import ptodsl.tilelib as tilelib
 
 from ._elementwise import emit_unary_1d, emit_unary_2d, traversal_metadata
+from ._vmi_common import (
+    _context_attr,
+    canonical_vmi_template,
+    emit_recip_vmi,
+)
 
 
 _DTYPES = [
@@ -82,3 +87,19 @@ template_trecip_1d = _register_trecip(
     name="template_trecip_1d",
     traversal="1d",
 )
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="trecip",
+    name="vmi_trecip",
+    dtypes=(("f16", "f16"), ("f32", "f32")),
+    context_constraints={"precisionType": ("default", "high_precision")},
+)
+def vmi_trecip(src: pto.Tile, dst: pto.Tile):
+    emit_recip_vmi(
+        src,
+        dst,
+        high_precision=_context_attr(src, "precisionType", "default")
+        == "high_precision",
+    )

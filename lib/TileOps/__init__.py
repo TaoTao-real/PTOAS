@@ -70,6 +70,7 @@ _TEMPLATE_MODULES = {
     ("a5", "pto.tmatmul.mx.bias"): ".a5.matmul.tmatmul_mx",
     ("a5", "pto.tmov"): (
         ".a5.memory.tmov",
+        ".a5.memory.tmov_nd2nz",
         ".a5.memory.tmov2bias",
         ".a5.memory.tmov2left",
         ".a5.memory.tmov2right",

@@ -1167,6 +1167,9 @@ static LogicalResult initializeCompilePipelineState(
   module->getOperation()->setAttr(
       "pto.target_arch",
       mlir::StringAttr::get(module->getContext(), state.arch));
+  if (enableVMI)
+    module->getOperation()->setAttr("pto.enable_vmi",
+                                    UnitAttr::get(module->getContext()));
   if (failed(mlir::verify(module.get()))) {
     llvm::errs() << "Error: input module verification failed.\n";
     return failure();

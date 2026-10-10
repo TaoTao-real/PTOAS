@@ -156,6 +156,7 @@ extern llvm::cl::opt<std::string> ptoBuildLevel;
 extern llvm::cl::opt<bool> disableInferLayout;
 extern llvm::cl::opt<bool> enableSoftPostUpdate;
 extern llvm::cl::opt<bool> emitAddPtrTrace;
+extern llvm::cl::opt<bool> enableVMI;
 extern llvm::cl::opt<bool> dumpVPTOIR;
 
 // Name-hint machinery (ptoas_name_hints.cpp).

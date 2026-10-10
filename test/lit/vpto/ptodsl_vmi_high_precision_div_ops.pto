@@ -1,0 +1,108 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// Verify VMI TileLib candidate selection for tdiv/tdivs/trecip/trsqrt ops.
+//
+// The historical version of this test covered default mode only, because the
+// IEEE754 soft-div path behind precisionType=high_precision fed signless
+// i32/i16 into the exponent compares, which the VMI verifier rejects; the
+// header of that file called it "a separate library fix".  That fix is the
+// divide-family restore (the two `_div_ieee754_*_vmi` helpers now retype those
+// fields as si16/si32), so the second function below covers high precision as
+// well and pins the signedness in the emitted IR.
+
+// RUN: ptoas --enable-vmi --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-expand-tile-op 2>&1 | FileCheck %s --check-prefix=EXPAND
+// RUN: ptoas --enable-vmi --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-inline-libcall 2>&1 | FileCheck %s --check-prefix=INLINE --implicit-check-not=__pto_ptodsl_vmi
+// RUN: ptoas --enable-vmi --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --emit-vpto %s -o - | FileCheck %s --check-prefix=FINAL --implicit-check-not=__pto_ptodsl_vmi
+// RUN: ptoas --enable-vmi --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-expand-tile-op 2>&1 | FileCheck %s --check-prefix=HP-EXPAND
+// RUN: ptoas --enable-vmi --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-inline-libcall 2>&1 | FileCheck %s --check-prefix=HP-INLINE
+
+module {
+  func.func @ptodsl_vmi_high_precision_div_ops() {
+    %src0_f32 = pto.alloc_tile : !pto.tile_buf<vec, 2x64xf32>
+    %src1_f32 = pto.alloc_tile : !pto.tile_buf<vec, 2x64xf32>
+    %dst_f32 = pto.alloc_tile : !pto.tile_buf<vec, 2x64xf32>
+    %src0_f16 = pto.alloc_tile : !pto.tile_buf<vec, 2x128xf16>
+    %src1_f16 = pto.alloc_tile : !pto.tile_buf<vec, 2x128xf16>
+    %dst_f16 = pto.alloc_tile : !pto.tile_buf<vec, 2x128xf16>
+    %tmp_f32 = pto.alloc_tile : !pto.tile_buf<vec, 1x16xf32>
+    %scalar = arith.constant 2.000000e+00 : f32
+
+    pto.tdiv
+      ins(%src0_f32, %src1_f32 : !pto.tile_buf<vec, 2x64xf32>, !pto.tile_buf<vec, 2x64xf32>)
+      outs(%dst_f32 : !pto.tile_buf<vec, 2x64xf32>)
+    pto.tdiv
+      ins(%src0_f16, %src1_f16 : !pto.tile_buf<vec, 2x128xf16>, !pto.tile_buf<vec, 2x128xf16>)
+      outs(%dst_f16 : !pto.tile_buf<vec, 2x128xf16>)
+    pto.tdivs
+      ins(%src0_f32, %scalar : !pto.tile_buf<vec, 2x64xf32>, f32)
+      outs(%dst_f32 : !pto.tile_buf<vec, 2x64xf32>)
+    pto.tdivs
+      ins(%scalar, %src0_f32 : f32, !pto.tile_buf<vec, 2x64xf32>)
+      outs(%dst_f32 : !pto.tile_buf<vec, 2x64xf32>)
+    pto.trecip
+      ins(%src0_f32 : !pto.tile_buf<vec, 2x64xf32>)
+      outs(%dst_f32 : !pto.tile_buf<vec, 2x64xf32>)
+    pto.trsqrt
+      ins(%src0_f32, %tmp_f32 : !pto.tile_buf<vec, 2x64xf32>, !pto.tile_buf<vec, 1x16xf32>)
+      outs(%dst_f32 : !pto.tile_buf<vec, 2x64xf32>)
+    return
+  }
+
+  // precisionType = high_precision takes the ieee754 soft-div body.  The f32
+  // and f16 cases cover both restored helpers; the exponent compares and bias
+  // arithmetic must come out signed (si32 / si16), which is what the old
+  // signless spelling could not produce.
+  func.func @ptodsl_vmi_high_precision_div_ops_hp() {
+    %src0_f32 = pto.alloc_tile : !pto.tile_buf<vec, 2x64xf32>
+    %src1_f32 = pto.alloc_tile : !pto.tile_buf<vec, 2x64xf32>
+    %dst_f32 = pto.alloc_tile : !pto.tile_buf<vec, 2x64xf32>
+    %src0_f16 = pto.alloc_tile : !pto.tile_buf<vec, 2x128xf16>
+    %src1_f16 = pto.alloc_tile : !pto.tile_buf<vec, 2x128xf16>
+    %dst_f16 = pto.alloc_tile : !pto.tile_buf<vec, 2x128xf16>
+    %scalar = arith.constant 2.000000e+00 : f32
+
+    pto.tdiv
+      ins(%src0_f32, %src1_f32 : !pto.tile_buf<vec, 2x64xf32>, !pto.tile_buf<vec, 2x64xf32>)
+      outs(%dst_f32 : !pto.tile_buf<vec, 2x64xf32>)
+      {precisionType = #pto<div_precision high_precision>}
+    pto.tdiv
+      ins(%src0_f16, %src1_f16 : !pto.tile_buf<vec, 2x128xf16>, !pto.tile_buf<vec, 2x128xf16>)
+      outs(%dst_f16 : !pto.tile_buf<vec, 2x128xf16>)
+      {precisionType = #pto<div_precision high_precision>}
+    pto.tdivs
+      ins(%src0_f32, %scalar : !pto.tile_buf<vec, 2x64xf32>, f32)
+      outs(%dst_f32 : !pto.tile_buf<vec, 2x64xf32>)
+      {precisionType = #pto<div_precision high_precision>}
+    return
+  }
+}
+
+// EXPAND: call @__pto_tilelang_a5_{{.*}}_ctx_enable_vmi_true__vmi_tdiv(
+// EXPAND: call @__pto_tilelang_a5_{{.*}}_ctx_enable_vmi_true__vmi_tdivs(
+// EXPAND: call @__pto_tilelang_a5_{{.*}}_ctx_enable_vmi_true__vmi_tdivs_scalar_tile(
+// EXPAND: call @__pto_tilelang_a5_{{.*}}_ctx_enable_vmi_true__vmi_trecip(
+// EXPAND: call @__pto_tilelang_a5_{{.*}}_ctx_enable_vmi_true__vmi_trsqrt_with_tmp(
+
+// INLINE: pto.vmi.vdiv
+// INLINE-NOT: __pto_tilelang_a5
+
+// FINAL: pto.vdiv
+// FINAL-NOT: __pto_tilelang_a5
+
+// The second function below runs the same ops with precisionType=high_precision.
+// HP-EXPAND: call @__pto_tilelang_a5_tdiv_tile_f32_{{.*}}_precisionType_high_precision_ctx_enable_vmi_true__vmi_tdiv(
+// HP-EXPAND: call @__pto_tilelang_a5_tdiv_tile_f16_{{.*}}_precisionType_high_precision_ctx_enable_vmi_true__vmi_tdiv(
+// HP-EXPAND: call @__pto_tilelang_a5_tdivs_{{.*}}_precisionType_high_precision_ctx_enable_vmi_true__vmi_tdivs(
+//
+// The ieee754 body does its exponent bookkeeping in *signed* integers.  This is
+// the assertion the historical test could not make: with the signless i32/i16
+// spelling this path did not even compile (the VMI verifier rejects signless
+// operands for those ops), which is why the file only covered default mode.
+// HP-INLINE: !pto.vmi.vreg<{{[0-9]+}}xsi32>
+// HP-INLINE: !pto.vmi.vreg<{{[0-9]+}}xsi16>

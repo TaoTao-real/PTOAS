@@ -51,6 +51,21 @@ class CandidateLegality:
 
     legal: bool
     reason: str | None = None
+    # Set when the rejection came from a constraint predicate *raising* rather
+    # than answering False.  Callers use it to tell a candidate that does not
+    # apply from a provider that is broken.
+    raised: bool = False
+
+
+@dataclass(frozen=True)
+class PredicateOutcome:
+    """Result of running one candidate's constraint predicates."""
+
+    satisfied: bool
+    # Human-readable cause, set only when a predicate raised.
+    detail: str | None = None
+    # True when ``detail`` describes an exception rather than a "no" answer.
+    raised: bool = False
 
 
 @dataclass(frozen=True)
@@ -61,6 +76,7 @@ class _ConfigView:
     s_layout: str
     s_fractal_size: int | None
     compact_mode: str | int | None
+    pad_value: str | None = None
 
 
 @dataclass
@@ -237,6 +253,7 @@ def _record_tile_context(name, spec, context, accumulators):
                 s_layout=s_layout,
                 s_fractal_size=s_fractal_size,
                 compact_mode=compact_mode,
+                pad_value=getattr(spec, "pad_value", None),
             ),
         }
     )
@@ -358,8 +375,13 @@ def evaluate_candidate(
         for name, value in context_attrs.items():
             context.setdefault(name, value)
 
-    if not passes(metadata.constraints, context):
-        return CandidateLegality(False, "custom constraints are not satisfied")
+    outcome = evaluate_predicates(metadata.constraints, context)
+    if not outcome.satisfied:
+        return CandidateLegality(
+            False,
+            outcome.detail or "custom constraints are not satisfied",
+            outcome.raised,
+        )
 
     return CandidateLegality(True)
 
@@ -745,39 +767,71 @@ def _has_gap_free_row_stride(compact_mode) -> bool:
     }
 
 
-def passes(predicates, context: dict) -> bool:
-    """Return True iff every predicate is satisfied for *context* (legality filter)."""
+def _bind_predicate_kwargs(signature, context: dict) -> dict | None:
+    """Bind *context* entries to *signature*'s parameters by name.
+
+    Returns ``None`` when a required parameter cannot be supplied, which the
+    caller treats as "not satisfiable".
+    """
+    kwargs: dict = {}
+    for parameter in signature.parameters.values():
+        if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+            for key, value in context.items():
+                kwargs.setdefault(key, value)
+            continue
+        if parameter.kind == inspect.Parameter.VAR_POSITIONAL:
+            continue
+        if parameter.name in context:
+            kwargs[parameter.name] = context[parameter.name]
+        elif parameter.default is not inspect.Parameter.empty:
+            continue
+        else:
+            # A required parameter we can't supply -> treat as not satisfiable.
+            return None
+    return kwargs
+
+
+def evaluate_predicates(predicates, context: dict) -> PredicateOutcome:
+    """Evaluate *predicates* against *context*, keeping the failure cause.
+
+    A predicate answering ``False`` is an ordinary rejection -- the shape or
+    dtype simply does not apply -- and carries no detail.  A predicate
+    *raising* is a provider defect, and reporting it as "constraints are not
+    satisfied" is how a whole candidate family goes silently unselectable; this
+    entry point reports the exception instead.  ``passes`` remains the bool-only
+    view of the same evaluation.
+    """
     for predicate in predicates:
         try:
             signature = inspect.signature(predicate)
         except (TypeError, ValueError):
-            return False
-        kwargs: dict = {}
-        for parameter in signature.parameters.values():
-            if parameter.kind == inspect.Parameter.VAR_KEYWORD:
-                for key, value in context.items():
-                    kwargs.setdefault(key, value)
-                continue
-            if parameter.kind == inspect.Parameter.VAR_POSITIONAL:
-                continue
-            if parameter.name in context:
-                kwargs[parameter.name] = context[parameter.name]
-            elif parameter.default is not inspect.Parameter.empty:
-                continue
-            else:
-                # A required parameter we can't supply -> treat as not satisfiable.
-                return False
+            return PredicateOutcome(False)
+        kwargs = _bind_predicate_kwargs(signature, context)
+        if kwargs is None:
+            return PredicateOutcome(False)
         try:
-            if not predicate(**kwargs):
-                return False
-        except Exception:
-            return False
-    return True
+            satisfied = predicate(**kwargs)
+        except Exception as exc:
+            return PredicateOutcome(
+                False,
+                f"{getattr(predicate, '__name__', repr(predicate))} raised "
+                f"{type(exc).__name__}: {exc}",
+                True,
+            )
+        if not satisfied:
+            return PredicateOutcome(False)
+    return PredicateOutcome(True)
+
+
+def passes(predicates, context: dict) -> bool:
+    """Return True iff every predicate is satisfied for *context* (legality filter)."""
+    return evaluate_predicates(predicates, context).satisfied
 
 
 __all__ = [
     "BLayout",
     "CandidateLegality",
+    "PredicateOutcome",
     "SLayout",
     "build_context",
     "check_layout",
@@ -785,6 +839,7 @@ __all__ = [
     "check_s_layout",
     "check_type",
     "evaluate_candidate",
+    "evaluate_predicates",
     "passes",
     "require_contiguous",
     "require_conversion_1d",

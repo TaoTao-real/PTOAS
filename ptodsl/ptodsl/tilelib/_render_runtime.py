@@ -61,6 +61,11 @@ class _TemplateTile(TileValue):
 
     def __init__(self, value, spec: TileSpec):
         elem = _resolve(scalar_descriptor(spec.dtype))
+        # Historical VMI TileLib emitters access the concrete TileSpec through
+        # ``_spec``.  Keep that compatibility alias on the current renderer's
+        # template tile so shared emitters can inspect physical/valid shape and
+        # layout without depending on TileValue internals.
+        self._spec = spec
         super().__init__(
             value,
             shape=tuple(spec.shape),
@@ -82,6 +87,11 @@ class _TemplateTile(TileValue):
     @property
     def element_type(self):
         return self.dtype
+
+    @property
+    def spec(self) -> TileSpec:
+        """Public read access to the tile spec for collaborator modules."""
+        return self._spec
 
     @property
     def config(self):

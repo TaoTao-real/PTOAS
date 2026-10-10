@@ -12,6 +12,12 @@
 from ptodsl import pto
 import ptodsl.tilelib as tilelib
 
+from .._vmi_common import (
+    canonical_vmi_template,
+    col_expand_vmi_constraint,
+    emit_col_expand_vmi,
+)
+
 
 def _valid_column_expand(src_valid_shape=(), dst_valid_shape=(), **_):
     return (
@@ -62,3 +68,16 @@ def template_tcolexpand(src: pto.Tile, dst: pto.Tile):
             mask, remained = pto.make_mask(dtype, remained)
             value = pto.vlds(src[0, col:])
             pto.vsts(value, dst[row, col:], mask)
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="tcolexpand",
+    name="vmi_tcolexpand",
+    dtypes=(("f32", "f32"),),
+    constraints=(col_expand_vmi_constraint,),
+    requires_full_physical_row=False,
+    tags=("supports_partial_valid_shape",),
+)
+def vmi_tcolexpand(src: pto.Tile, dst: pto.Tile):
+    emit_col_expand_vmi(src, dst)

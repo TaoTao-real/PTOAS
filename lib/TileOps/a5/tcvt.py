@@ -16,15 +16,20 @@ their existing logical-element addressing and distribution modes.
 
 from dataclasses import replace
 
+from ptoas.mlir.dialects import pto as _pto
 from ptodsl import pto
 from ptodsl._ast_rewrite import rewrite_jit_function
 from ptodsl._surface_values import unwrap_surface_value, wrap_surface_value
 import ptodsl.tilelib as tilelib
-from ptoas.mlir.dialects import pto as _pto
 
 from ._elementwise import (
     FALLBACK_TRAVERSAL_PRIORITY,
     PREFERRED_TRAVERSAL_PRIORITY,
+)
+from ._vmi_common import (
+    canonical_vmi_template,
+    convert_vmi_constraint,
+    emit_convert_vmi,
 )
 
 
@@ -866,13 +871,13 @@ def template_tcvt_f16_to_si8(src: pto.Tile, dst: pto.Tile):
 def _render_tcvt_f16_to_si8_1d(src: pto.Tile, dst: pto.Tile):
     src_ptr = src.as_ptr()
     dst_ptr = dst.as_ptr()
-    pg = pto.make_mask(src.dtype, pto.PAT.ALL)
     full_mask, _ = pto.make_mask(
         src.dtype,
         pto.elements_per_vreg(src.dtype),
     )
 
     def emit_chunk(offset, store_mask):
+        pg = pto.make_mask(src.dtype, pto.PAT.ALL)
         vec_f16 = pto.vlds(src_ptr, offset)
         vec_i16 = pto.vcvt(
             vec_f16,
@@ -1847,3 +1852,27 @@ def _register_deferred_tcvt_1d():
 
 
 _register_deferred_tcvt_1d()
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="tcvt",
+    name="vmi_tcvt",
+    dtypes=(
+        ("bf16", "f32"),
+        ("f16", "f32"),
+        ("i32", "f32"),
+        ("f32", "bf16"),
+        ("f32", "f16"),
+        ("f32", "i32"),
+        ("i32", "f16"),
+    ),
+    context_constraints={
+        "round_mode": ("RINT", "ROUND", "TRUNC"),
+        "sat_mode": ("DEFAULT", "ON", "OFF"),
+    },
+    constraints=(convert_vmi_constraint,),
+    min_row_bytes=128,
+)
+def vmi_tcvt(src: pto.Tile, dst: pto.Tile):
+    emit_convert_vmi(src, dst)

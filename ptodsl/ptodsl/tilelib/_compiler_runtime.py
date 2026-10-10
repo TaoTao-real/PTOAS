@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 
 from ._render_runtime import _TemplateTrace
+from .._tile_template_tracing import _TraceBuilder
 from ._selection import _select_descriptor_and_specs, metadata_request
 
 
@@ -62,11 +63,27 @@ def materialize(
         context_attrs,
         candidate_id or None,
     )
-    module = _TemplateTrace(
-        descriptor,
-        tile_specs,
-        context_attrs=context_attrs,
-    ).build_module_in_context(context)
+    # VMI templates are authored against the tracing runtime: their emitters
+    # need the trace/session handle for VMI pointer access, canonical block
+    # coordinates, and loop-carried vector values.  The newer standalone
+    # renderer intentionally exposes ordinary TileValue handles and is kept
+    # for legacy/non-VMI templates.  Selecting the runtime from the descriptor
+    # makes this boundary explicit instead of relying on duck-typed aliases.
+    is_vmi = getattr(descriptor.metadata, "tags", ()) and "vmi" in descriptor.metadata.tags
+    if is_vmi:
+        runtime = _TraceBuilder(
+            descriptor,
+            tile_specs,
+            context_attrs=context_attrs,
+        )
+        built = runtime.build_module_in_context(context)
+        module = built[0] if isinstance(built, tuple) else built
+    else:
+        module = _TemplateTrace(
+            descriptor,
+            tile_specs,
+            context_attrs=context_attrs,
+        ).build_module_in_context(context)
     module.operation.verify()
     return module, descriptor.name
 

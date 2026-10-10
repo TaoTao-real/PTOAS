@@ -1,0 +1,41 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: ptoas --enable-vmi --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --emit-vpto %S/../../samples/FlashAttention/flash_attention_softmax.pto -o /dev/null --mlir-print-ir-after=pto-expand-tile-op 2>&1 | FileCheck %s --check-prefix=EXPAND
+// RUN: ptoas --enable-vmi --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --emit-vpto %S/../../samples/FlashAttention/flash_attention_softmax.pto -o /dev/null --mlir-print-ir-after=pto-inline-libcall 2>&1 | FileCheck %s --check-prefix=INLINE --implicit-check-not=__pto_ptodsl_vmi
+// RUN: ptoas --enable-vmi --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --emit-vpto %S/../../samples/FlashAttention/flash_attention_softmax.pto -o - | FileCheck %s --check-prefix=FINAL --implicit-check-not=__pto_ptodsl_vmi
+
+// NOTE: the historical version of this test also expected __vmi_tmaxs and
+// __vmi_tmins here.  On this mainline those two scalar min/max operands fall
+// back to the ordinary template (the VMI candidates require a 256-byte physical
+// row and this sample is narrower); whether that constraint should be relaxed is
+// an open question, so the test does not assert either way.  __vmi_tdivs is
+// absent for a related reason with a concrete number: the sample's tdivs tile is
+// 32x32xf32, i.e. a 128-byte row, and vmi_tdivs requires 256 while vmi_tdiv only
+// requires 128 -- an asymmetry worth settling in the boundary-enrichment plan.
+// EXPAND: call {{.*}}__vmi_tmuls
+// EXPAND: call {{.*}}__vmi_tmul
+// EXPAND: call {{.*}}__vmi_tadd
+// EXPAND: call {{.*}}__vmi_tadds
+
+// INLINE: IR Dump After PTOInlineLibCall
+// INLINE-LABEL: func.func @flash_attention_softmax_block
+// INLINE: pto.vmi.vmuls
+// INLINE: pto.vmi.vmul
+// INLINE: pto.vmi.vadd
+// INLINE: pto.vmi.vadds
+
+// FINAL-LABEL: func.func @flash_attention_softmax_block
+// FINAL: pto.vecscope
+// FINAL-DAG: pto.vmuls
+// FINAL-DAG: pto.vmaxs
+// FINAL-DAG: pto.vmins
+// FINAL-DAG: pto.vmul
+// FINAL-DAG: pto.vadd
+// FINAL-DAG: pto.vadds
+// FINAL-DAG: pto.vdiv

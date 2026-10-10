@@ -460,6 +460,18 @@ static std::optional<std::string> getTCvtRoundModeString(pto::TCvtOp op) {
   return std::nullopt;
 }
 
+// Reports the explicit TCvt saturation mode, or "DEFAULT" when the op leaves it
+// implicit.  The VMI conversion candidate admits only the DEFAULT/ON/OFF
+// spellings, and treats DEFAULT as the A5 narrowing overload default (SAT).
+static std::string getTCvtSaturationModeString(pto::TCvtOp op) {
+  auto explicitMode =
+      op->getAttrOfType<pto::SaturationModeAttr>("sat_mode");
+  if (!explicitMode) {
+    return "DEFAULT";
+  }
+  return stringifySaturationMode(explicitMode.getValue()).str();
+}
+
 static StringRef getPrecisionTypeString(pto::DivPrecision precision) {
   switch (precision) {
   case pto::DivPrecision::Default:
@@ -572,6 +584,7 @@ static void appendOpContextAttrs(
     if (auto roundMode = getTCvtRoundModeString(tcvt)) {
       attrs.emplace_back("round_mode", *roundMode);
     }
+    attrs.emplace_back("sat_mode", getTCvtSaturationModeString(tcvt));
   }
   if (auto trandom = dyn_cast<pto::TRandomOp>(op)) {
     attrs.emplace_back("rounds", std::to_string(trandom.getRounds()));
@@ -616,6 +629,13 @@ static void appendOpContextAttrs(
 static std::string buildContextAttrsJson(Operation *operation) {
   SmallVector<std::pair<std::string, std::string>, mlir::pto::kValue4> attrs;
   appendOpContextAttrs(operation, attrs);
+  // VMI candidates are an opt-in semantic route.  Carry the pipeline switch
+  // into metadata selection so ordinary VPTO tests do not silently change
+  // implementation merely because a VMI provider is installed.
+  if (auto module = operation->getParentOfType<ModuleOp>()) {
+    bool enabled = module->hasAttr("pto.enable_vmi");
+    attrs.emplace_back("enable_vmi", enabled ? "true" : "false");
+  }
 
   std::string json = "{";
   for (auto [index, attr] : llvm::enumerate(attrs)) {

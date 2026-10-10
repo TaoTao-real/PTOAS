@@ -12,6 +12,11 @@
 from ptodsl import pto
 
 from .._expand_binary import NUMERIC_SIGNATURES, register_column_expand_binary
+from .._vmi_common import (
+    canonical_vmi_template,
+    col_expand_binary_vmi_constraint,
+    emit_col_expand_binary_vmi,
+)
 
 
 template_tcolexpandsub = register_column_expand_binary(
@@ -20,3 +25,14 @@ template_tcolexpandsub = register_column_expand_binary(
     vector_op=pto.vsub,
     dtypes=NUMERIC_SIGNATURES,
 )
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="tcolexpandsub",
+    name="vmi_tcolexpandsub",
+    dtypes=(("f32", "f32", "f32"),),
+    constraints=(col_expand_binary_vmi_constraint,),
+)
+def vmi_tcolexpandsub(src: pto.Tile, col_values: pto.Tile, dst: pto.Tile):
+    emit_col_expand_binary_vmi(src, col_values, dst, binop="sub")

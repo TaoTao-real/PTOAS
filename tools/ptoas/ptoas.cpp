@@ -371,6 +371,11 @@ llvm::cl::opt<bool> emitAddPtrTrace(
     llvm::cl::desc("Emit addptr trace comments in generated C++ output"),
     llvm::cl::init(false));
 
+llvm::cl::opt<bool> enableVMI(
+    "enable-vmi",
+    llvm::cl::desc("Enable the VMI fusion pipeline for A5 VPTO TileLib input"),
+    llvm::cl::init(false));
+
 llvm::cl::opt<bool> mlir::pto::emitMlirIR(
     "emit-pto-ir",
     llvm::cl::desc("Emit PTO IR after lowering instead of C++"),

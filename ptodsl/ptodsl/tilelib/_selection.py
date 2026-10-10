@@ -11,6 +11,9 @@
 
 from __future__ import annotations
 
+import warnings
+
+from .._diagnostics import PTODSLConstraintDefectWarning
 from . import constraints as _constraints
 from . import registry as _registry
 from ._template_package import load_template
@@ -191,7 +194,7 @@ def _legal_candidate_specs(
         try:
             specs = _build_tile_specs(descriptor, operand_specs)
         except Exception as exc:
-            evaluated.append((descriptor, None, f"operand binding failed: {exc}"))
+            evaluated.append((descriptor, None, f"operand binding failed: {exc}", False))
             continue
 
         legality = _constraints.evaluate_candidate(
@@ -206,25 +209,48 @@ def _legal_candidate_specs(
                 descriptor,
                 specs,
                 legality.reason if not legality.legal else None,
+                legality.raised,
             )
         )
 
     legal = [
         (descriptor, specs)
-        for descriptor, specs, reason in evaluated
+        for descriptor, specs, reason, _raised in evaluated
         if specs is not None and reason is None
     ]
     if not legal:
         reasons = "; ".join(
             f"{descriptor.name}: {reason}"
-            for descriptor, _, reason in evaluated
+            for descriptor, _, reason, _raised in evaluated
         )
         raise _registry.NoMatchingTemplate(
             f"no legal template for op={op!r} target={target!r}; {reasons}"
         )
 
+    _warn_about_raising_candidates(target, op, evaluated)
+
     legal.sort(key=lambda pair: _registry.candidate_sort_key(pair[0]))
     return legal
+
+
+def _warn_about_raising_candidates(target: str, op: str, evaluated: list) -> None:
+    """Report candidates that lost to a constraint exception rather than a "no".
+
+    Without this, a winning candidate hides every defective one behind it: the
+    legal list is returned without the reasons that were collected on the way,
+    so a provider reading a field that no longer exists looks exactly like a
+    candidate whose operands did not qualify.
+    """
+    for descriptor, _specs, reason, raised in evaluated:
+        if not raised or reason is None:
+            continue
+        warnings.warn(
+            f"template {descriptor.name!r} for op={op!r} target={target!r} was "
+            f"rejected because its constraint raised, which means the provider is "
+            f"broken rather than the operands ineligible: {reason}",
+            PTODSLConstraintDefectWarning,
+            stacklevel=3,
+        )
 
 
 def _require_unambiguous_top_candidate(target: str, op: str, legal: list) -> None:

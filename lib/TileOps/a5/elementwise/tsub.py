@@ -13,6 +13,12 @@ from ptodsl import pto
 
 from .._common import same_dtype_signatures
 from .._elementwise import register_binary
+from .._vmi_common import (
+    NUMERIC_DTYPES,
+    _sub as _vmi_sub,
+    canonical_vmi_template,
+    emit_elementwise_vmi,
+)
 
 
 def _vsub(lhs, rhs, mask):
@@ -20,6 +26,13 @@ def _vsub(lhs, rhs, mask):
 
 
 _DTYPES = same_dtype_signatures(3)
+
+# VMI candidate dtype set: A5 tsub ODS accepts i8/i16/i32/ui8/ui16/ui32/f16/f32
+# and rejects bf16 (tmax shares this exact set); the order mirrors the
+# historical literal triplets.
+_VMI_DTYPES = tuple(
+    same_dtype_signatures(3, ("f32", "f16", "i8", "i16", "i32", "ui8", "ui16", "ui32"))
+)
 
 
 template_tsub = register_binary(
@@ -37,3 +50,16 @@ template_tsub_1d = register_binary(
     dtypes=_DTYPES,
     traversal="1d",
 )
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="tsub",
+    name="vmi_tsub",
+    dtypes=_VMI_DTYPES,
+    min_row_bytes=128,
+)
+def vmi_tsub(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
+    # A5 tsub ODS rejects bf16 (only i8/i16/i32/ui8/ui16/ui32/f16/f32); bf16 tsub
+    # conservatively falls back to the ordinary PTODSL path.
+    emit_elementwise_vmi(dst, (src0, src1), _vmi_sub, allowed_dtypes=NUMERIC_DTYPES)

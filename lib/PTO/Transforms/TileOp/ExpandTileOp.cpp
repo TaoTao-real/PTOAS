@@ -452,6 +452,18 @@ static std::optional<std::string> getTCvtRoundModeString(pto::TCvtOp op) {
   return std::nullopt;
 }
 
+// Reports the explicit TCvt saturation mode, or "DEFAULT" when the op leaves it
+// implicit.  The VMI conversion candidate admits only the DEFAULT/ON/OFF
+// spellings, and treats DEFAULT as the A5 narrowing overload default (SAT).
+static std::string getTCvtSaturationModeString(pto::TCvtOp op) {
+  auto explicitMode =
+      op->getAttrOfType<pto::SaturationModeAttr>("sat_mode");
+  if (!explicitMode) {
+    return "DEFAULT";
+  }
+  return stringifySaturationMode(explicitMode.getValue()).str();
+}
+
 static StringRef getPrecisionTypeString(pto::DivPrecision precision) {
   switch (precision) {
   case pto::DivPrecision::Default:
@@ -554,14 +566,18 @@ static std::string getTRandomRoundsString(pto::TRandomOp op) {
   return std::to_string(op.getRounds());
 }
 
-// Appends the round_mode context attr for a TCvt op, when present.
-static void appendTCvtRoundModeAttr(
+// Appends the round_mode / sat_mode context attrs for a TCvt op.  Both are
+// required by the VMI conversion candidate's context constraints, so a
+// conversion op is only eligible for that candidate when the metadata query
+// carries them.
+static void appendTCvtContextAttrs(
     pto::TCvtOp tcvt,
     SmallVectorImpl<std::pair<std::string, std::string>> &attrs) {
   std::optional<std::string> roundMode = getTCvtRoundModeString(tcvt);
   if (roundMode) {
     attrs.emplace_back("round_mode", *roundMode);
   }
+  attrs.emplace_back("sat_mode", getTCvtSaturationModeString(tcvt));
 }
 
 // Returns the cmp_mode context attr for TCmpOp / TCmpSOp, when present.
@@ -676,7 +692,7 @@ static LogicalResult appendOpContextAttrs(
     Operation *op,
     SmallVectorImpl<std::pair<std::string, std::string>> &attrs) {
   if (auto tcvt = dyn_cast<pto::TCvtOp>(op)) {
-    appendTCvtRoundModeAttr(tcvt, attrs);
+    appendTCvtContextAttrs(tcvt, attrs);
   }
   if (auto trandom = dyn_cast<pto::TRandomOp>(op)) {
     attrs.emplace_back("rounds", getTRandomRoundsString(trandom));
@@ -982,6 +998,11 @@ static FailureOr<SpecKey> buildSpecKey(Operation *op) {
 
   if (failed(appendOpContextAttrs(op, key.contextAttrs))) {
     return failure();
+  }
+  if (auto module = op->getParentOfType<ModuleOp>()) {
+    key.contextAttrs.emplace_back("enable_vmi",
+                                 module->hasAttr("pto.enable_vmi") ? "true"
+                                                                     : "false");
   }
   return key;
 }

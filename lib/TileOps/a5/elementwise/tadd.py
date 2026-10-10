@@ -13,6 +13,13 @@ from ptodsl import pto
 
 from .._common import same_dtype_signatures
 from .._elementwise import register_binary
+from .._vmi_common import (
+    NUMERIC_DTYPES,
+    _add as _vmi_add,
+    canonical_vmi_template,
+    emit_elementwise_vmi,
+    sinkhorn_compact_elementwise_vmi_constraint,
+)
 
 
 def _vadd(lhs, rhs, mask):
@@ -20,6 +27,21 @@ def _vadd(lhs, rhs, mask):
 
 
 _DTYPES = same_dtype_signatures(3)
+
+# VMI candidate dtype set: A5 tadd ODS accepts all of i8/i16/i32/ui8/ui16/
+# ui32/f16/bf16/f32 — the only binary elementwise op with full NUMERIC_DTYPES
+# coverage (incl. bf16).
+_VMI_DTYPES = (
+    ("f32", "f32", "f32"),
+    ("f16", "f16", "f16"),
+    ("bf16", "bf16", "bf16"),
+    ("i8", "i8", "i8"),
+    ("i16", "i16", "i16"),
+    ("i32", "i32", "i32"),
+    ("ui8", "ui8", "ui8"),
+    ("ui16", "ui16", "ui16"),
+    ("ui32", "ui32", "ui32"),
+)
 
 
 template_tadd = register_binary(
@@ -37,3 +59,27 @@ template_tadd_1d = register_binary(
     dtypes=_DTYPES,
     traversal="1d",
 )
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="tadd",
+    name="vmi_tadd_block64",
+    dtypes=_VMI_DTYPES,
+    min_row_bytes=128,
+)
+def vmi_tadd_block64(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
+    emit_elementwise_vmi(dst, (src0, src1), _vmi_add, allowed_dtypes=NUMERIC_DTYPES)
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="tadd",
+    name="vmi_tadd_sinkhorn_compact",
+    dtypes=_VMI_DTYPES,
+    constraints=(sinkhorn_compact_elementwise_vmi_constraint,),
+    requires_full_physical_row=False,
+    tags=("supports_partial_valid_shape",),
+)
+def vmi_tadd_sinkhorn_compact(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
+    emit_elementwise_vmi(dst, (src0, src1), _vmi_add, allowed_dtypes=NUMERIC_DTYPES)

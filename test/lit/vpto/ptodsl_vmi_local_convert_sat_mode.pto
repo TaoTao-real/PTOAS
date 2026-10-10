@@ -1,0 +1,80 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software; you can redistribute it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details.
+// You should not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// Lock the saturation plumbing of the VMI tcvt candidate end to end.  The
+// TileOp saturation mode must stay distinguishable through both lowering
+// stages: an explicit OFF lowers to NOSAT, while ON and the attribute-omitted
+// form both lower to SAT, because every narrowing form this candidate admits
+// uses the A5 TCVT overload default, which saturates.  Widening conversions
+// have no saturation semantics and must not grow the attribute even when the
+// TileOp asks for OFF.  Candidate selection itself is locked by
+// ptodsl_vmi_local_convert_candidates.pto and the EmitC fallback forms by
+// pto/tcvt_emitc.pto; the fp-to-int / int-to-fp pairs stay out of scope here
+// because the VMI vcvt verifier rejects signless integers (recorded in the
+// candidates file header).
+
+// RUN: ptoas --enable-vmi --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --emit-vpto %s -o /dev/null --mlir-print-ir-after=pto-inline-libcall 2>&1 | FileCheck %s --check-prefix=INLINE --implicit-check-not=__pto_ptodsl_vmi
+// RUN: ptoas --enable-vmi --enable-op-fusion --pto-arch=a5 --pto-backend=vpto --emit-vpto %s -o - | FileCheck %s --check-prefix=FINAL
+
+module {
+  func.func @narrow_default() {
+    %f32 = pto.alloc_tile : !pto.tile_buf<vec, 8x128xf32>
+    %bf16 = pto.alloc_tile : !pto.tile_buf<vec, 8x128xbf16>
+    pto.tcvt ins(%f32 {rmode = #pto<round_mode RINT>} : !pto.tile_buf<vec, 8x128xf32>)
+      outs(%bf16 : !pto.tile_buf<vec, 8x128xbf16>)
+    return
+  }
+  func.func @narrow_on() {
+    %f32 = pto.alloc_tile : !pto.tile_buf<vec, 8x128xf32>
+    %bf16 = pto.alloc_tile : !pto.tile_buf<vec, 8x128xbf16>
+    pto.tcvt ins(%f32 {rmode = #pto<round_mode RINT>, satmode = #pto<saturation_mode ON>} : !pto.tile_buf<vec, 8x128xf32>)
+      outs(%bf16 : !pto.tile_buf<vec, 8x128xbf16>)
+    return
+  }
+  func.func @narrow_off() {
+    %f32 = pto.alloc_tile : !pto.tile_buf<vec, 8x128xf32>
+    %bf16 = pto.alloc_tile : !pto.tile_buf<vec, 8x128xbf16>
+    pto.tcvt ins(%f32 {rmode = #pto<round_mode RINT>, satmode = #pto<saturation_mode OFF>} : !pto.tile_buf<vec, 8x128xf32>)
+      outs(%bf16 : !pto.tile_buf<vec, 8x128xbf16>)
+    return
+  }
+  func.func @widen_off() {
+    %bf16 = pto.alloc_tile : !pto.tile_buf<vec, 8x128xbf16>
+    %f32 = pto.alloc_tile : !pto.tile_buf<vec, 8x128xf32>
+    pto.tcvt ins(%bf16 {rmode = #pto<round_mode ROUND>, satmode = #pto<saturation_mode OFF>} : !pto.tile_buf<vec, 8x128xbf16>)
+      outs(%f32 : !pto.tile_buf<vec, 8x128xf32>)
+    return
+  }
+}
+
+// INLINE-LABEL: func.func @narrow_default(
+// INLINE: pto.vmi.vcvt {{.*}} {rounding = "R", saturate = "SAT"}
+// INLINE-NOT: NOSAT
+// INLINE-LABEL: func.func @narrow_on(
+// INLINE: pto.vmi.vcvt {{.*}} {rounding = "R", saturate = "SAT"}
+// INLINE-NOT: NOSAT
+// INLINE-LABEL: func.func @narrow_off(
+// INLINE: pto.vmi.vcvt {{.*}} {rounding = "R", saturate = "NOSAT"}
+// INLINE-NOT: saturate = "SAT"
+// INLINE-LABEL: func.func @widen_off(
+// INLINE: pto.vmi.vcvt {{.*}} : !pto.vmi.vreg
+// INLINE-NOT: saturate
+
+// FINAL-LABEL: func.func @narrow_default(
+// FINAL: pto.vcvt {{.*}} {part = "EVEN", rnd = "R", sat = "SAT"}
+// FINAL-NOT: NOSAT
+// FINAL-LABEL: func.func @narrow_on(
+// FINAL: pto.vcvt {{.*}} {part = "EVEN", rnd = "R", sat = "SAT"}
+// FINAL-NOT: NOSAT
+// FINAL-LABEL: func.func @narrow_off(
+// FINAL: pto.vcvt {{.*}} {part = "EVEN", rnd = "R", sat = "NOSAT"}
+// FINAL-NOT: sat = "SAT"
+// FINAL-LABEL: func.func @widen_off(
+// FINAL: pto.vcvt {{.*}} {part = "EVEN"} :
+// FINAL-NOT: sat =

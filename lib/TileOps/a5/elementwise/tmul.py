@@ -13,6 +13,12 @@ from ptodsl import pto
 
 from .._common import same_dtype_signatures
 from .._elementwise import register_binary
+from .._vmi_common import (
+    NUMERIC_DTYPES,
+    _mul as _vmi_mul,
+    canonical_vmi_template,
+    emit_elementwise_vmi,
+)
 
 
 def _vmul(lhs, rhs, mask):
@@ -37,3 +43,23 @@ template_tmul_1d = register_binary(
     dtypes=_DTYPES,
     traversal="1d",
 )
+
+
+@canonical_vmi_template(
+    target="a5",
+    op="tmul",
+    name="vmi_tmul",
+    dtypes=(
+        ("f32", "f32", "f32"),
+        ("f16", "f16", "f16"),
+        ("i16", "i16", "i16"),
+        ("i32", "i32", "i32"),
+        ("ui16", "ui16", "ui16"),
+        ("ui32", "ui32", "ui32"),
+    ),
+    min_row_bytes=128,
+)
+def vmi_tmul(src0: pto.Tile, src1: pto.Tile, dst: pto.Tile):
+    # A5 tmul ODS rejects i8/ui8/bf16 (only i16/i32/ui16/ui32/f16/f32); bf16/i8
+    # tmul conservatively falls back to the ordinary PTODSL path.
+    emit_elementwise_vmi(dst, (src0, src1), _vmi_mul, allowed_dtypes=NUMERIC_DTYPES)
