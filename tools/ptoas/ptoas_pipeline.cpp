@@ -676,7 +676,8 @@ static bool shouldDeclareVariablesAtTop(ModuleOp module) {
          llvm::any_of(module.getOps<emitc::FuncOp>(), hasMultiBlockFunc);
 }
 
-static void appendVMISemanticPipeline(OpPassManager &pm);
+static void appendVMISemanticPipeline(OpPassManager &pm,
+                                      bool enableFusionPipeline);
 
 static VPTOSchedulerCLIMode
 getEffectiveVPTOSchedulerMode(llvm::StringRef arch) {
@@ -820,14 +821,20 @@ static void appendA5VPTOPostLoweringFusionPipeline(OpPassManager &kernelModulePM
   kernelModulePM.addPass(mlir::createCSEPass());
 }
 
-static void lowerPTOToVPTOBackend(PassManager &pm, ModuleOp module) {
+static void lowerPTOToVPTOBackend(PassManager &pm, ModuleOp module,
+                                  bool useVMIFusionPipeline) {
   auto &kernelModulePM = pm.nest<ModuleOp>();
   auto moduleArchAttr =
       module->getAttrOfType<mlir::StringAttr>("pto.target_arch");
   const bool isA2A3 = moduleArchAttr && isA2A3Arch(moduleArchAttr.getValue());
   const bool opFusionEnabled = enableOpFusion == llvm::cl::BOU_TRUE;
+  // The VMI route owns loop fusion and load/store elision, so it bypasses the
+  // non-VMI A5 post-lowering fusion lifecycle -- and only it does. With VMI
+  // off this condition is exactly the mainline one, so the non-VMI route keeps
+  // its original behavior.
   const bool enableA5VPTOPostLoweringFusionLifecycle =
-      opFusionEnabled && moduleArchAttr && moduleArchAttr.getValue() == "a5";
+      !useVMIFusionPipeline && opFusionEnabled && moduleArchAttr &&
+      moduleArchAttr.getValue() == "a5";
 
   kernelModulePM.addNestedPass<mlir::func::FuncOp>(
       pto::createLowerPTOTensorDumpPass());
@@ -996,8 +1003,9 @@ static int emitVPTOBackendResult(ModuleOp module, PTOASCompileResult &result,
   return 0;
 }
 
-static LogicalResult runVPTOBackendPipeline(OwningOpRef<ModuleOp> &module,
-                                            bool hasTileOpsToExpand) {
+static LogicalResult runVPTOBackendPipeline(
+    OwningOpRef<ModuleOp> &module, bool hasTileOpsToExpand,
+    bool useVMIFusionPipeline) {
   PassManager pm(module->getContext());
   pm.enableVerifier();
   if (!hasTileOpsToExpand) {
@@ -1012,7 +1020,7 @@ static LogicalResult runVPTOBackendPipeline(OwningOpRef<ModuleOp> &module,
   pm.addPass(pto::createVPTOSplitCVModulePass());
   pm.addPass(pto::createVPTONormalizeContainerPass());
   if (hasTileOpsToExpand) {
-    lowerPTOToVPTOBackend(pm, module.get());
+    lowerPTOToVPTOBackend(pm, module.get(), useVMIFusionPipeline);
   }
   auto &kernelModulePM = pm.nest<ModuleOp>();
   // Inline legal direct calls before VMI layout assignment so private helper
@@ -1022,7 +1030,7 @@ static LogicalResult runVPTOBackendPipeline(OwningOpRef<ModuleOp> &module,
   // the pipeline can use MLIR's standard Func inliner implementation.
   kernelModulePM.addPass(std::make_unique<ApplySIMTEntryNoInlinePass>());
   kernelModulePM.addPass(createInlinerPass());
-  appendVMISemanticPipeline(kernelModulePM);
+  appendVMISemanticPipeline(kernelModulePM, useVMIFusionPipeline);
   std::string arch = resolveEffectiveTargetArch(*module, ptoTargetArch);
   VPTOSchedulerCLIMode schedulerMode = getEffectiveVPTOSchedulerMode(arch);
   bool rematerialize =
@@ -1038,7 +1046,37 @@ static LogicalResult runVPTOBackendPipeline(OwningOpRef<ModuleOp> &module,
   return success();
 }
 
-static void appendVMISemanticPipeline(OpPassManager &pm) {
+/// Run the fusion passes before unified VMI lowering and layout assignment.
+static void appendVMIFusionPipelinePasses(OpPassManager &pm,
+                                          bool enableFusionPipeline) {
+  if (enableFusionPipeline && enableVMILoopFusion) {
+    pm.addPass(pto::createPTOVmiLoopFusionPass());
+  }
+  if (enableFusionPipeline && enableVMILoadStoreElision) {
+    pm.addNestedPass<func::FuncOp>(
+        pto::createPTOVmiLoadStoreElisionPass());
+  }
+  // Function-level dead-store elimination runs after the region-local elision
+  // (it only reconsiders stores the elision kept) and before the unified-to-
+  // legacy lowering (vstores have no post-update results to preserve yet).
+  if (enableFusionPipeline && enableVMIFunctionDSE) {
+    pm.addNestedPass<func::FuncOp>(pto::createPTOVmiFunctionDSEPass());
+  }
+  // Unroll-after-loop-fusion on the VMI path: the heuristic fills missing
+  // factors (dead stores are already gone, so the body is not replicated),
+  // then the shared consumer applies them to the leaf loops.
+  if (enableFusionPipeline && enableUnrollAfterLoopFusion) {
+    if (enableVMIUnrollHeuristic) {
+      pm.addNestedPass<func::FuncOp>(pto::createPTOVmiUnrollHeuristicPass());
+    }
+    pm.addNestedPass<func::FuncOp>(
+        pto::createPTOUnrollAfterLoopFusionPass());
+    pm.addPass(createCanonicalizerPass());
+  }
+}
+
+/// Normalize and validate VMI before assigning layouts.
+static void appendVMIUnifiedToLegacyPipelinePasses(OpPassManager &pm) {
   // Materialize unsigned carriers for sign-sensitive VMI ops before any
   // verifier, layout, or lowering pass sees signless integer element types.
   pm.addNestedPass<func::FuncOp>(
@@ -1057,6 +1095,10 @@ static void appendVMISemanticPipeline(OpPassManager &pm) {
   pm.addPass(createCSEPass());
   pm.addPass(pto::createVMILegalizeArithSelectPass());
   pm.addPass(pto::createVMIMaskGranularityAssignmentPass());
+}
+
+/// Assign layouts, lower to VPTO and remove the fusion-region wrapper.
+static void appendVMILayoutAndVPTOLoweringPasses(OpPassManager &pm) {
   pm.addPass(pto::createVMILayoutRematerializeWeakProducersPass());
   pm.addPass(pto::createVMILayoutAssignmentPass());
   pm.addPass(createCanonicalizerPass());
@@ -1083,6 +1125,19 @@ static void appendVMISemanticPipeline(OpPassManager &pm) {
   vmiToVPTOOptions.enableVmiFastmath = enableVmiFastmath;
   pm.addPass(pto::createVMIToVPTOPass(vmiToVPTOOptions));
   pm.addPass(pto::createVPTOStatefulStreamFusionPass());
+  // VMI fusion operates while the structured fusion-region is still intact.
+  // The official SCF-to-CF conversion cannot legally run with a fusion_region
+  // containing the resulting multi-block CFG, so remove the structural wrapper
+  // only after VMI lowering and before emission.
+  pm.addNestedPass<mlir::func::FuncOp>(
+      pto::createPTOFlattenFusionRegionPass());
+}
+
+static void appendVMISemanticPipeline(OpPassManager &pm,
+                                      bool enableFusionPipeline) {
+  appendVMIFusionPipelinePasses(pm, enableFusionPipeline);
+  appendVMIUnifiedToLegacyPipelinePasses(pm);
+  appendVMILayoutAndVPTOLoweringPasses(pm);
 }
 
 /// Reject statically invalid scf.for steps at the PTOAS input boundary.
@@ -1167,9 +1222,10 @@ static LogicalResult initializeCompilePipelineState(
   module->getOperation()->setAttr(
       "pto.target_arch",
       mlir::StringAttr::get(module->getContext(), state.arch));
-  if (enableVMI)
+  if (enableVMI) {
     module->getOperation()->setAttr("pto.enable_vmi",
                                     UnitAttr::get(module->getContext()));
+  }
   if (failed(mlir::verify(module.get()))) {
     llvm::errs() << "Error: input module verification failed.\n";
     return failure();
@@ -1200,10 +1256,12 @@ static LogicalResult validateFusionConfiguration(const CompilePipelineState &sta
                     "inserted under other backends.\n";
     return failure();
   }
-  if (enableUnrollAfterLoopFusion && !enableVfSimCostmodelOptimization) {
+  if (enableUnrollAfterLoopFusion && !enableVfSimCostmodelOptimization &&
+      !enableVMIUnrollHeuristic) {
     llvm::errs() << "Warning: --enable-unroll-after-loop-fusion consumes "
                     "pto.fusion.row/col_unroll_factor, which is produced by "
-                    "--enable-vfsim-costmodel-optimization.\n";
+                    "--enable-vfsim-costmodel-optimization or filled by "
+                    "--enable-vmi-unroll-heuristic.\n";
   }
   return success();
 }
@@ -1420,6 +1478,9 @@ static LogicalResult appendFusionFrontendPasses(
     return success();
   }
   if (enableA5VPTOFusionPath) {
+    if (enableVMI) {
+      fusionPlanOpts.strategy = "vmi-ub-disjoint";
+    }
     appendFusionFrontendPassesForBackend(pm, fusionPlanOpts);
     pm.addNestedPass<mlir::func::FuncOp>(
         pto::createPTOFusionRegionGenPass());
@@ -1617,7 +1678,8 @@ static LogicalResult appendMainLoweringTailPasses(PassManager &pm,
 static LogicalResult finishVPTOMainPipeline(
     OwningOpRef<ModuleOp> &module, PassManager &pm,
     PTOASCompileResult &result, PTOASContext &context, bool emitVPTOHostStub,
-    bool hasTileOpsToExpand, bool &handled, int &exitCode) {
+    bool hasTileOpsToExpand, bool useVMIFusionPipeline, bool &handled,
+    int &exitCode) {
   if (failed(pm.run(*module))) {
     llvm::errs() << "Error: Pass execution failed.\n";
     return failure();
@@ -1634,7 +1696,8 @@ static LogicalResult finishVPTOMainPipeline(
     return failure();
   }
 
-  if (failed(runVPTOBackendPipeline(module, hasTileOpsToExpand))) {
+  if (failed(runVPTOBackendPipeline(module, hasTileOpsToExpand,
+                                    useVMIFusionPipeline))) {
     return failure();
   }
   handled = true;
@@ -1651,6 +1714,9 @@ static LogicalResult runMainLoweringPipeline(
   handled = false;
   exitCode = 0;
   const bool hasTileOpsToExpand = state.hasTileOpsToExpand;
+  const bool useVMIFusionPipeline =
+      enableVMI && state.enableA5VPTOFusionPath;
+  context.setVmiDeviceRoute(useVMIFusionPipeline);
 
   // Main PassManager
   PassManager pm(module->getContext());
@@ -1684,7 +1750,7 @@ static LogicalResult runMainLoweringPipeline(
   if (effectiveBackend == PTOBackend::VPTO) {
     return finishVPTOMainPipeline(module, pm, result, context,
                                   emitVPTOHostStub, hasTileOpsToExpand,
-                                  handled, exitCode);
+                                  useVMIFusionPipeline, handled, exitCode);
   }
 
   if (failed(pm.run(*module))) {
@@ -1718,7 +1784,11 @@ static int runVPTOSkipMainlinePipeline(OwningOpRef<ModuleOp> &module,
     llvm::errs() << "Error: VPTO bridge pipeline failed.\n";
     return 1;
   }
-  if (failed(runVPTOBackendPipeline(module, state.hasTileOpsToExpand))) {
+  const bool useVMIFusionPipeline =
+      enableVMI && state.enableA5VPTOFusionPath;
+  context.setVmiDeviceRoute(useVMIFusionPipeline);
+  if (failed(runVPTOBackendPipeline(module, state.hasTileOpsToExpand,
+                                    useVMIFusionPipeline))) {
     return 1;
   }
   return emitVPTOBackendResult(

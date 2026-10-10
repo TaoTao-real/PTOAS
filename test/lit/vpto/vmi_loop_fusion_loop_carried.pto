@@ -1,0 +1,119 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software; you can redistribute it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details.
+// You should not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// PTOVmiLoopFusion member-result dependency guard.  First-version iter-arg
+// handling only concatenates INDEPENDENT loop-carried state, so a candidate
+// loop that consumes any result of an earlier member must be rejected --
+// whether it threads that result as an iter-arg init or merely captures it in
+// its body.  vmi_loop_fusion_cross_iter.pto deliberately seeds every second
+// loop from %seed0 to stay out of this shape; the cases here walk straight
+// into it:
+//   INIT_ARG - consumer iter_args init = producer loop's result -> block (2).
+//   CAPTURED - consumer body consumes the producer result as an operand
+//              (no init-arg threading at all) -> block (2).
+//   CONTROL  - same bodies with independent seed threading -> fuse (1),
+//              proving the block comes from the dependency, not the shape.
+
+// RUN: pto-test-opt %s -pto-vmi-loop-fusion \
+// RUN:   | FileCheck %s --check-prefix=FUSE
+
+module {
+  // INIT_ARG: consumer threads the producer's result as its init arg -> block.
+  func.func @loop_carried_init_arg() -> (!pto.vmi.vreg<64xf32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c0 = arith.constant 0 : index
+    %c64 = arith.constant 64 : index
+    %c1 = arith.constant 1 : index
+    %c0f = arith.constant 0.0 : f32
+    %ub = pto.castptr %c0_i64 : i64 -> !pto.ptr<f32, ub>
+    %mask = pto.vmi.create_mask %c64 : index -> !pto.vmi.mask<64xpred>
+    %seed0 = pto.vmi.broadcast %c0f : f32 -> !pto.vmi.vreg<64xf32>
+    // FUSE-LABEL: func.func @loop_carried_init_arg
+    // FUSE-COUNT-2: scf.for
+    // FUSE-NOT: scf.for
+    %r = pto.fusion_region {
+      %a = scf.for %iv = %c0 to %c64 step %c1 iter_args(%acc = %seed0) -> (!pto.vmi.vreg<64xf32>) {
+        %off = arith.muli %iv, %c64 : index
+        %s = pto.vmi.vload %ub[%off] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+        pto.vmi.vstore %s, %ub[%off], %mask : !pto.vmi.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.vmi.mask<64xpred>
+        scf.yield %acc : !pto.vmi.vreg<64xf32>
+      } {pto.tilelib.impl = "vmi", pto.vmi.fusion.source = "tilelib", pto.vmi.fusion.principal_loop}
+      %b = scf.for %iv = %c0 to %c64 step %c1 iter_args(%acc2 = %a) -> (!pto.vmi.vreg<64xf32>) {
+        %off = arith.muli %iv, %c64 : index
+        %l = pto.vmi.vload %ub[%off] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+        %m = pto.vmi.vadd %acc2, %l : !pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32> -> !pto.vmi.vreg<64xf32>
+        scf.yield %m : !pto.vmi.vreg<64xf32>
+      } {pto.tilelib.impl = "vmi", pto.vmi.fusion.source = "tilelib", pto.vmi.fusion.principal_loop}
+      pto.yield(%b) : (!pto.vmi.vreg<64xf32>) -> ()
+    } : !pto.vmi.vreg<64xf32>
+    return %r : !pto.vmi.vreg<64xf32>
+  }
+
+  // CAPTURED: consumer body uses the producer result as a plain operand -> block.
+  func.func @loop_carried_captured() -> (!pto.vmi.vreg<64xf32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c0 = arith.constant 0 : index
+    %c64 = arith.constant 64 : index
+    %c1 = arith.constant 1 : index
+    %c0f = arith.constant 0.0 : f32
+    %ub = pto.castptr %c0_i64 : i64 -> !pto.ptr<f32, ub>
+    %mask = pto.vmi.create_mask %c64 : index -> !pto.vmi.mask<64xpred>
+    %seed0 = pto.vmi.broadcast %c0f : f32 -> !pto.vmi.vreg<64xf32>
+    // FUSE-LABEL: func.func @loop_carried_captured
+    // FUSE-COUNT-2: scf.for
+    // FUSE-NOT: scf.for
+    %r = pto.fusion_region {
+      %a = scf.for %iv = %c0 to %c64 step %c1 iter_args(%acc = %seed0) -> (!pto.vmi.vreg<64xf32>) {
+        %off = arith.muli %iv, %c64 : index
+        %s = pto.vmi.vload %ub[%off] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+        pto.vmi.vstore %s, %ub[%off], %mask : !pto.vmi.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.vmi.mask<64xpred>
+        scf.yield %s : !pto.vmi.vreg<64xf32>
+      } {pto.tilelib.impl = "vmi", pto.vmi.fusion.source = "tilelib", pto.vmi.fusion.principal_loop}
+      %b = scf.for %iv = %c0 to %c64 step %c1 iter_args(%acc2 = %seed0) -> (!pto.vmi.vreg<64xf32>) {
+        %off = arith.muli %iv, %c64 : index
+        %l = pto.vmi.vload %ub[%off] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+        %m = pto.vmi.vadd %a, %l : !pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32> -> !pto.vmi.vreg<64xf32>
+        scf.yield %m : !pto.vmi.vreg<64xf32>
+      } {pto.tilelib.impl = "vmi", pto.vmi.fusion.source = "tilelib", pto.vmi.fusion.principal_loop}
+      pto.yield(%b) : (!pto.vmi.vreg<64xf32>) -> ()
+    } : !pto.vmi.vreg<64xf32>
+    return %r : !pto.vmi.vreg<64xf32>
+  }
+
+  // CONTROL: same bodies, but the consumer threads its own seed -> fuse.
+  func.func @independent_state_control() -> (!pto.vmi.vreg<64xf32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c0 = arith.constant 0 : index
+    %c64 = arith.constant 64 : index
+    %c1 = arith.constant 1 : index
+    %c0f = arith.constant 0.0 : f32
+    %ub = pto.castptr %c0_i64 : i64 -> !pto.ptr<f32, ub>
+    %mask = pto.vmi.create_mask %c64 : index -> !pto.vmi.mask<64xpred>
+    %seed0 = pto.vmi.broadcast %c0f : f32 -> !pto.vmi.vreg<64xf32>
+    // FUSE-LABEL: func.func @independent_state_control
+    // FUSE-COUNT-1: scf.for
+    // FUSE-NOT: scf.for
+    %r = pto.fusion_region {
+      %a = scf.for %iv = %c0 to %c64 step %c1 iter_args(%acc = %seed0) -> (!pto.vmi.vreg<64xf32>) {
+        %off = arith.muli %iv, %c64 : index
+        %s = pto.vmi.vload %ub[%off] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+        pto.vmi.vstore %s, %ub[%off], %mask : !pto.vmi.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.vmi.mask<64xpred>
+        scf.yield %acc : !pto.vmi.vreg<64xf32>
+      } {pto.tilelib.impl = "vmi", pto.vmi.fusion.source = "tilelib", pto.vmi.fusion.principal_loop}
+      %b = scf.for %iv = %c0 to %c64 step %c1 iter_args(%acc2 = %seed0) -> (!pto.vmi.vreg<64xf32>) {
+        %off = arith.muli %iv, %c64 : index
+        %l = pto.vmi.vload %ub[%off] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+        %m = pto.vmi.vadd %acc2, %l : !pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32> -> !pto.vmi.vreg<64xf32>
+        scf.yield %m : !pto.vmi.vreg<64xf32>
+      } {pto.tilelib.impl = "vmi", pto.vmi.fusion.source = "tilelib", pto.vmi.fusion.principal_loop}
+      pto.yield(%b) : (!pto.vmi.vreg<64xf32>) -> ()
+    } : !pto.vmi.vreg<64xf32>
+    return %r : !pto.vmi.vreg<64xf32>
+  }
+}

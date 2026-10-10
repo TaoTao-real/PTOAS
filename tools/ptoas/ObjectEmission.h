@@ -144,7 +144,8 @@ LogicalResult emitVPTOVectorDeviceObject(
     llvm::StringRef stderrPath, llvm::raw_ostream& diagOS,
     BishengSchedulerMode schedulerMode = BishengSchedulerMode::Auto,
     BridgeLinkInputs bridge = {},
-    PrintDTDataMode printMode = PrintDTDataMode::None);
+    PrintDTDataMode printMode = PrintDTDataMode::None,
+    bool vmiDeviceRoute = false);
 
 LogicalResult emitVPTOCubeDeviceObject(
     llvm::Module &module, llvm::StringRef llPath, llvm::StringRef outObjPath,
@@ -160,7 +161,8 @@ LogicalResult emitFatobjLLVM(
     VFSIMTSizeFixMode vfsimtSizeFixMode, llvm::raw_ostream& diagOS,
     BishengSchedulerMode schedulerMode = BishengSchedulerMode::Auto,
     llvm::ArrayRef<BridgeWrapperTU> bridgeWrappers = {},
-    PrintDTDataMode printMode = PrintDTDataMode::None);
+    PrintDTDataMode printMode = PrintDTDataMode::None,
+    bool vmiDeviceRoute = false);
 
 LogicalResult mergeDeviceObjects(llvm::ArrayRef<std::string> deviceObjPaths,
                                  llvm::StringRef outObjPath,
@@ -185,7 +187,8 @@ LogicalResult emitFatobjLLVMWithRuntime(
     VFSIMTSizeFixMode vfsimtSizeFixMode, llvm::raw_ostream& diagOS,
     BishengSchedulerMode schedulerMode = BishengSchedulerMode::Auto,
     llvm::ArrayRef<BridgeWrapperTU> bridgeWrappers = {},
-    PrintDTDataMode printMode = PrintDTDataMode::None);
+    PrintDTDataMode printMode = PrintDTDataMode::None,
+    bool vmiDeviceRoute = false);
 
 } // namespace mlir::pto
 

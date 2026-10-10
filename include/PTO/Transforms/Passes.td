@@ -281,7 +281,10 @@ def FusionPlan : Pass<"pto-fusion-plan", "func::FuncOp"> {
            "bool", /*default=*/"false",
            "Print VfSimulator unroll candidate timings for accepted fusion "
            "groups. This is a debug dump only and does not enable or disable "
-           "the VfSimulator planner.">
+           "the VfSimulator planner.">,
+    Option<"strategy", "fusion-strategy", "std::string",
+           /*default=*/"\"conservative-dag-greedy\"",
+           "Fusion strategy: conservative-dag-greedy or vmi-ub-disjoint.">
   ];
 }
 
@@ -1164,6 +1167,34 @@ def PTOInsertVecScopeMemBarAll : Pass<"pto-insert-vecscope-membar-all", "func::F
   let dependentDialects = ["mlir::pto::PTODialect"];
 }
 
+def SelectTemplateCandidate
+    : Pass<"pto-select-template-candidate", "ModuleOp"> {
+  let summary = "Select one implementation from each tile operation's candidates";
+  let description = [{
+    Applies candidate-selection policy before fusion planning. Hard-boundary
+    operations and candidates never select VMI implementations. For the
+    remaining operations, `prefer-vmi` selects a fusion-eligible VMI
+    implementation when its shape capability and candidate resource contract
+    fit the configured vector-byte budget, then falls back to an ordinary
+    PTODSL implementation.
+    `ordinary-only` excludes VMI implementations. The selected implementation
+    and any VMI fusion boundary are recorded for ExpandTileOp to consume.
+  }];
+  let constructor = "mlir::pto::createSelectTemplateCandidatePass()";
+  let dependentDialects = ["mlir::pto::PTODialect"];
+  let options = [
+    Option<"selectionPolicy", "selection-policy", "std::string",
+           /*default=*/"\"prefer-vmi\"",
+           "Candidate policy: prefer-vmi or ordinary-only">,
+    Option<"maxCandidateVectorBytes", "max-candidate-vector-bytes", "int64_t",
+           /*default=*/"6144",
+           "Maximum estimated peak vector bytes for one VMI candidate; zero disables the resource guard">,
+    Option<"emitResourceRemarks", "emit-resource-remarks", "bool",
+           /*default=*/"false",
+           "Emit candidate resource selection and fallback remarks">
+  ];
+}
+
 def PTOValidateVPTOIR : Pass<"pto-validate-vpto-ir", "ModuleOp"> {
   let summary =
       "Validate authoring-stage VPTO legality before ptr-boundary canonicalization";
@@ -1741,6 +1772,73 @@ def PTOFlattenFusionRegion : Pass<"pto-flatten-fusion-region", "func::FuncOp"> {
   }];
   let constructor = "mlir::pto::createPTOFlattenFusionRegionPass()";
   let dependentDialects = ["mlir::pto::PTODialect"];
+}
+
+def PTOVmiLoadStoreElision : Pass<"pto-vmi-load-store-elision", "func::FuncOp"> {
+  let summary = "Forward and elide fusion-region-local VMI loads/stores";
+  let description = [{
+    Within a pto.fusion_region, forwards VMI loads to their last store when
+    the store fully covers the load region and no intervening side-effecting
+    op invalidates the dependency. Eliminates redundant VMI load/store pairs
+    that were introduced by template expansion.
+  }];
+  let constructor = "mlir::pto::createPTOVmiLoadStoreElisionPass()";
+  let dependentDialects = ["mlir::pto::PTODialect",
+                           "mlir::scf::SCFDialect",
+                           "mlir::memref::MemRefDialect",
+                           "mlir::arith::ArithDialect",
+                           "mlir::func::FuncDialect"];
+}
+
+def PTOVmiFunctionDSE : Pass<"pto-vmi-function-dse", "func::FuncOp"> {
+  let summary = "Erase function-level dead VMI UB stores";
+  let description = [{
+    Erases pto.vmi.vstore operations whose written UB bytes provably have no
+    later reader anywhere in the function, complementing the fusion-region-local
+    PTOVmiLoadStoreElision: a store that survives region-local forwarding and
+    overwrite rules can still be dead when every potential reader executes
+    earlier (for example a loop that reads each location before overwriting it,
+    with no consumer after the loop). Conservative by design: untrackable
+    bases, unknown masks or store shapes, calls, and unknown side-effecting
+    ops block erasure.
+  }];
+  let constructor = "mlir::pto::createPTOVmiFunctionDSEPass()";
+  let dependentDialects = ["mlir::pto::PTODialect",
+                           "mlir::scf::SCFDialect",
+                           "mlir::memref::MemRefDialect",
+                           "mlir::arith::ArithDialect",
+                           "mlir::func::FuncDialect"];
+}
+
+def PTOVmiUnrollHeuristic : Pass<"pto-vmi-unroll-heuristic", "func::FuncOp"> {
+  let summary = "Fill missing VMI fusion-region unroll factors heuristically";
+  let description = [{
+    Sets pto.fusion.row_unroll_factor on fusion regions that carry neither
+    unroll-factor attribute, deriving one conservative factor from the
+    region's leaf loops (constant divisible trip counts, bounded unrolled
+    vload count). Regions with an explicit factor are never touched, so a
+    VfSim-planned factor always wins. Runs right before
+    pto-unroll-after-loop-fusion in the VMI semantic pipeline.
+  }];
+  let constructor = "mlir::pto::createPTOVmiUnrollHeuristicPass()";
+  let dependentDialects = ["mlir::pto::PTODialect",
+                           "mlir::scf::SCFDialect",
+                           "mlir::func::FuncDialect"];
+}
+
+def PTOVmiLoopFusion : Pass<"pto-vmi-loop-fusion", "ModuleOp"> {
+  let summary = "Fuse same-header VMI loops inside pto.fusion_region";
+  let description = [{
+    Identifies VMI TileLib scf.for loops with identical iteration domains
+    inside the same pto.fusion_region and fuses them conservatively while
+    preserving SSA dependencies and loop-carried values.
+  }];
+  let constructor = "mlir::pto::createPTOVmiLoopFusionPass()";
+  let dependentDialects = ["mlir::pto::PTODialect",
+                           "mlir::scf::SCFDialect",
+                           "mlir::memref::MemRefDialect",
+                           "mlir::arith::ArithDialect",
+                           "mlir::func::FuncDialect"];
 }
 
 def VPTOPtrNormalize

@@ -89,6 +89,8 @@ public:
   VFSIMTSizeFixMode getVFSIMTSizeFixMode() const;
   void setBishengSchedulerMode(BishengSchedulerMode value);
   BishengSchedulerMode getBishengSchedulerMode() const;
+  void setVmiDeviceRoute(bool value);
+  bool getVmiDeviceRoute() const;
 
   llvm::StringRef getOutputPath() const;
   std::string allocModuleId() const;
@@ -108,6 +110,7 @@ private:
   BackendInfo backendInfo;
   VFSIMTSizeFixMode vfsimtSizeFixMode = VFSIMTSizeFixMode::Auto;
   BishengSchedulerMode schedulerMode = BishengSchedulerMode::Auto;
+  bool vmiDeviceRoute = false;
   CANNVersion cannVersion = kDefaultCANNVersion;
   std::optional<CANNToolchain> toolchain;
   TempFileRegistry tempFiles;

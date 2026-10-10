@@ -819,6 +819,10 @@ void mlir::pto::PTOASContext::setBishengSchedulerMode(BishengSchedulerMode value
 
 mlir::pto::BishengSchedulerMode mlir::pto::PTOASContext::getBishengSchedulerMode() const { return schedulerMode; }
 
+void mlir::pto::PTOASContext::setVmiDeviceRoute(bool value) { vmiDeviceRoute = value; }
+
+bool mlir::pto::PTOASContext::getVmiDeviceRoute() const { return vmiDeviceRoute; }
+
 llvm::StringRef mlir::pto::PTOASContext::getOutputPath() const {
   return outputPath;
 }
@@ -1160,7 +1164,7 @@ static LogicalResult emitVPTOLLVMFatobj(
               jobResult.vptoCubeModule.module.get(), jobResult.vptoVectorModule.module.get(), stubSource, outputPath,
               moduleId, *toolchain, context.getTempFiles(), context.getVFSIMTSizeFixMode(), llvm::errs(),
               context.getBishengSchedulerMode(), jobResult.vptoBridgeWrappers,
-              jobResult.vptoPrintMode))) {
+              jobResult.vptoPrintMode, context.getVmiDeviceRoute()))) {
       return failure();
   }
   return success();

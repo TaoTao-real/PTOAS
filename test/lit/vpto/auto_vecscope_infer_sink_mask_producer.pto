@@ -1,0 +1,46 @@
+// RUN: ptoas --pto-arch=a5 --pto-backend=vpto --emit-vpto %s -o - | FileCheck %s --check-prefix=FINAL
+// RUN: pto-test-opt %s --pass-pipeline='builtin.module(builtin.module(func.func(pto-infer-vpto-vecscope)))' | FileCheck %s --check-prefix=SCOPE
+
+module attributes {pto.target_arch = "a5"} {
+  module attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
+  func.func @auto_vecscope_sink_mask_producer() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %c0_i64 = arith.constant 0 : i64
+    %ub = pto.castptr %c0_i64 : i64 -> !pto.ptr<f32, ub>
+
+    %prefix = pto.pge_b32 "PAT_VL32" : !pto.mask<b32>
+    pto.barrier #pto.pipe<PIPE_ALL>
+
+    scf.for %i = %c0 to %c2 step %c1 {
+      %all = pto.pset_b32 "PAT_ALL" : !pto.mask<b32>
+      %mask = pto.pand %prefix, %all, %all
+        : !pto.mask<b32>, !pto.mask<b32>, !pto.mask<b32> -> !pto.mask<b32>
+      %vec = pto.vlds %ub[%i] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
+      pto.vsts %vec, %ub[%i], %mask
+        : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
+    }
+    return
+  }
+  }
+}
+
+// Check sinking before mainline mask simplification folds the static pand.
+// SCOPE-LABEL: func.func @auto_vecscope_sink_mask_producer
+// SCOPE: pto.barrier
+// SCOPE-NEXT: pto.vecscope {
+// SCOPE: %[[PREFIX:.*]] = pto.pge_b32 "PAT_VL32"
+// SCOPE: scf.for
+// SCOPE: %[[MASK:.*]] = pto.pand %[[PREFIX]]
+// SCOPE: pto.vsts {{.*}}, %[[MASK]]
+// SCOPE: }
+
+// The final pipeline preserves the same 32 active lanes inside the scope.
+// FINAL-LABEL: func.func @auto_vecscope_sink_mask_producer
+// FINAL: pto.barrier
+// FINAL-NEXT: pto.vecscope {
+// FINAL: %[[PREFIX:.*]] = pto.pset_b32 "PAT_VL32"
+// FINAL: scf.for
+// FINAL: pto.vsts {{.*}}, %[[PREFIX]]
+// FINAL: }

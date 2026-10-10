@@ -1,0 +1,1 @@
+--pto-arch a5 --pto-backend=vpto --enable-vmi --enable-op-fusion=true --enable-vmi-loop-fusion --enable-vmi-load-store-elision --enable-vmi-function-dse

@@ -1,0 +1,111 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use it in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of software repository for the full text of the License.
+
+// Element-wise division of two f32 tiles with precisionType = high_precision on
+// the VMI route: the numeric end of the divide-family restore.  The ieee754
+// soft-div body behind the VMI candidate tests the quotient range with
+// scale = exp0 - exp1 + 127, whose underflow branches (scale == -23,
+// scale < -23) and overflow branch (scale > 255) are the signed fields'
+// business.  The signless spelling that preceded the restore does not reach
+// these rows at all -- it fails to materialize, because the ui32 vreg it
+// produces for `vabs(scale)` is not an element type pto.vmi.vabs accepts (see
+// test/lit/vpto/ptodsl_vmi_high_precision_div_ops.pto, which pins that).  What
+// the deep-underflow rows below pin numerically is the bias arithmetic of a
+// body that does build: with it, 1e-30 / 1e30 must come back zero rather than
+// the largest quotient the exponent field can spell.
+//
+// Shape 16x32 f32 (= 128 B per row, the row size the vmi_tdiv candidate asks
+// for).  Rows are grouped into bands that compare.py checks separately:
+//   rows  0- 4: ordinary range, mixed signs  (rtol 1e-6)
+//   rows  5- 7: quotient underflow, gold = +-0
+//   rows  8-10: quotient overflow, gold = +-inf
+//   rows 11-13: quotient underflow behind a negative sign combination
+//   rows 14-15: representable quotients over a wide exponent span
+//
+// The second entry point divides the same two tiles with the default
+// precisionType, i.e. straight through the vector divide instruction with no
+// soft-div body in between.  It is the control that keeps the NaN the
+// high-precision body produces on the overflow rows (see compare.py) from
+// being blamed on the case, the simulator or the wrapper: the same inputs
+// through the other route must give the IEEE answer, signs included.
+//
+// Input  : a [16,32] f32, b [16,32] f32 (golden.py writes v1.bin / v2.bin)
+// Output : c [16,32] f32 (v3.bin, high precision)
+//          d [16,32] f32 (v4.bin, default precision)
+
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+  func.func @tdiv_hp_f32_16x32(%a: !pto.ptr<f32, gm>,
+                               %b: !pto.ptr<f32, gm>,
+                               %c: !pto.ptr<f32, gm>) attributes {pto.kernel} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c16 = arith.constant 16 : index
+    %c32 = arith.constant 32 : index
+
+    %a_tv = pto.make_tensor_view %a, shape = [%c16, %c32], strides = [%c32, %c1] : !pto.tensor_view<?x?xf32>
+    %b_tv = pto.make_tensor_view %b, shape = [%c16, %c32], strides = [%c32, %c1] : !pto.tensor_view<?x?xf32>
+    %c_tv = pto.make_tensor_view %c, shape = [%c16, %c32], strides = [%c32, %c1] : !pto.tensor_view<?x?xf32>
+
+    %a_pt = pto.partition_view %a_tv, offsets = [%c0, %c0], sizes = [%c16, %c32] : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<16x32xf32>
+    %b_pt = pto.partition_view %b_tv, offsets = [%c0, %c0], sizes = [%c16, %c32] : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<16x32xf32>
+    %c_pt = pto.partition_view %c_tv, offsets = [%c0, %c0], sizes = [%c16, %c32] : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<16x32xf32>
+
+    %a_buf = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %b_buf = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %c_buf = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    pto.tload ins(%a_pt : !pto.partition_tensor_view<16x32xf32>) outs(%a_buf : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tload ins(%b_pt : !pto.partition_tensor_view<16x32xf32>) outs(%b_buf : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.set_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
+    pto.wait_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
+
+    pto.tdiv ins(%a_buf, %b_buf : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%c_buf : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+      {precisionType = #pto<div_precision high_precision>}
+
+    pto.set_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
+    pto.wait_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
+    pto.tstore ins(%c_buf : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%c_pt : !pto.partition_tensor_view<16x32xf32>)
+
+    return
+  }
+
+  func.func @tdiv_default_f32_16x32(%a: !pto.ptr<f32, gm>,
+                                    %b: !pto.ptr<f32, gm>,
+                                    %d: !pto.ptr<f32, gm>) attributes {pto.kernel} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c16 = arith.constant 16 : index
+    %c32 = arith.constant 32 : index
+
+    %a_tv = pto.make_tensor_view %a, shape = [%c16, %c32], strides = [%c32, %c1] : !pto.tensor_view<?x?xf32>
+    %b_tv = pto.make_tensor_view %b, shape = [%c16, %c32], strides = [%c32, %c1] : !pto.tensor_view<?x?xf32>
+    %d_tv = pto.make_tensor_view %d, shape = [%c16, %c32], strides = [%c32, %c1] : !pto.tensor_view<?x?xf32>
+
+    %a_pt = pto.partition_view %a_tv, offsets = [%c0, %c0], sizes = [%c16, %c32] : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<16x32xf32>
+    %b_pt = pto.partition_view %b_tv, offsets = [%c0, %c0], sizes = [%c16, %c32] : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<16x32xf32>
+    %d_pt = pto.partition_view %d_tv, offsets = [%c0, %c0], sizes = [%c16, %c32] : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<16x32xf32>
+
+    %a_buf = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %b_buf = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %d_buf = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+
+    pto.tload ins(%a_pt : !pto.partition_tensor_view<16x32xf32>) outs(%a_buf : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.tload ins(%b_pt : !pto.partition_tensor_view<16x32xf32>) outs(%b_buf : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+    pto.set_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
+    pto.wait_flag["PIPE_MTE2", "PIPE_V", "EVENT_ID0"]
+
+    pto.tdiv ins(%a_buf, %b_buf : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%d_buf : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>)
+      {precisionType = #pto<div_precision default>}
+
+    pto.set_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
+    pto.wait_flag["PIPE_V", "PIPE_MTE3", "EVENT_ID0"]
+    pto.tstore ins(%d_buf : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=32, v_row=16, v_col=32, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%d_pt : !pto.partition_tensor_view<16x32xf32>)
+
+    return
+  }
+}

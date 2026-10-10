@@ -1,0 +1,116 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software; you can redistribute it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details.
+// You should not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// Region-escaping MTE transfers in PTOVmiLoadStoreElision.  mte_ub_gm reads a
+// UB out of the region (an escape READ): the vload still forwards to the
+// preceding store, but that store becomes observable and must survive a later
+// covering store.  mte_gm_ub redefines a UB from GM (an escape WRITE): tracked
+// content goes stale and a later vload must NOT forward.  The covering store
+// here writes a DIFFERENT value on purpose -- two same-value stores hit the
+// redundant-store rule instead (covered by vmi_loadstore_elision_partial.pto)
+// and would not exercise overwrite-DSE at all.
+//
+//   ESC-RD  - store1 -> vload -> mte_ub_gm -> covering store2: vload erased
+//             (forwarded), BOTH stores kept.
+//   CONTROL - same shape without the escape read: store1 dies under the
+//             covering store2 (overwrite-DSE), so the pair above proves the
+//             escape read is what keeps store1.
+//   ESC-WR  - store -> mte_gm_ub -> vload: content redefined, vload kept.
+
+// RUN: pto-test-opt %s -pto-vmi-load-store-elision \
+// RUN:   | FileCheck %s --check-prefix=ELIDE
+
+module {
+  // ESC-RD: the escape read keeps store1 alive even though store2 covers it.
+  func.func @escape_read_keeps_store(%gm_in: !pto.ptr<f32, gm>) -> (!pto.vmi.vreg<64xf32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c0 = arith.constant 0 : index
+    %c128_i64 = arith.constant 128 : i64
+    %c32_i64 = arith.constant 32 : i64
+    %c64 = arith.constant 64 : index
+    %c1 = arith.constant 1.0 : f32
+    %c2f = arith.constant 2.0 : f32
+    %ub = pto.castptr %c0_i64 : i64 -> !pto.ptr<f32, ub>
+    %mask = pto.vmi.create_mask %c64 : index -> !pto.vmi.mask<64xpred>
+    %seed = pto.vmi.broadcast %c1 : f32 -> !pto.vmi.vreg<64xf32>
+    %seed2 = pto.vmi.broadcast %c2f : f32 -> !pto.vmi.vreg<64xf32>
+    // ELIDE-LABEL: func.func @escape_read_keeps_store
+    // ELIDE: pto.vmi.vstore
+    // ELIDE-NOT: pto.vmi.vload
+    // ELIDE: pto.mte_ub_gm
+    // ELIDE-NOT: pto.vmi.vload
+    // ELIDE: pto.vmi.vstore
+    // ELIDE-NOT: pto.vmi.vstore
+    %r = pto.fusion_region {
+      pto.vmi.vstore %seed, %ub[%c0], %mask : !pto.vmi.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.vmi.mask<64xpred>
+      %l = pto.vmi.vload %ub[%c0] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+      %u = pto.vmi.vadd %l, %seed : !pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32> -> !pto.vmi.vreg<64xf32>
+      pto.mte_ub_gm %ub, %gm_in, %c128_i64
+        nburst(%c32_i64, %c128_i64, %c128_i64)
+        : !pto.ptr<f32, ub>, !pto.ptr<f32, gm>, i64, i64, i64, i64
+      pto.vmi.vstore %seed2, %ub[%c0], %mask : !pto.vmi.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.vmi.mask<64xpred>
+      pto.yield(%u) : (!pto.vmi.vreg<64xf32>) -> ()
+    } : !pto.vmi.vreg<64xf32>
+    return %r : !pto.vmi.vreg<64xf32>
+  }
+
+  // CONTROL: without the escape read the covering store kills store1.
+  func.func @overwrite_dse_control(%gm_in: !pto.ptr<f32, gm>) -> (!pto.vmi.vreg<64xf32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c0 = arith.constant 0 : index
+    %c64 = arith.constant 64 : index
+    %c1 = arith.constant 1.0 : f32
+    %c2f = arith.constant 2.0 : f32
+    %ub = pto.castptr %c0_i64 : i64 -> !pto.ptr<f32, ub>
+    %mask = pto.vmi.create_mask %c64 : index -> !pto.vmi.mask<64xpred>
+    %seed = pto.vmi.broadcast %c1 : f32 -> !pto.vmi.vreg<64xf32>
+    %seed2 = pto.vmi.broadcast %c2f : f32 -> !pto.vmi.vreg<64xf32>
+    // ELIDE-LABEL: func.func @overwrite_dse_control
+    // ELIDE-NOT: pto.vmi.vload
+    // ELIDE-COUNT-1: pto.vmi.vstore
+    // ELIDE-NOT: pto.vmi.vstore
+    %r = pto.fusion_region {
+      pto.vmi.vstore %seed, %ub[%c0], %mask : !pto.vmi.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.vmi.mask<64xpred>
+      %l = pto.vmi.vload %ub[%c0] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+      %u = pto.vmi.vadd %l, %seed : !pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32> -> !pto.vmi.vreg<64xf32>
+      pto.vmi.vstore %seed2, %ub[%c0], %mask : !pto.vmi.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.vmi.mask<64xpred>
+      pto.yield(%u) : (!pto.vmi.vreg<64xf32>) -> ()
+    } : !pto.vmi.vreg<64xf32>
+    return %r : !pto.vmi.vreg<64xf32>
+  }
+
+  // ESC-WR: mte_gm_ub redefines the UB, so the vload must not forward.
+  func.func @escape_write_flushes(%gm_in: !pto.ptr<f32, gm>) -> (!pto.vmi.vreg<64xf32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c0 = arith.constant 0 : index
+    %c128_i64 = arith.constant 128 : i64
+    %c32_i64 = arith.constant 32 : i64
+    %c64 = arith.constant 64 : index
+    %c1 = arith.constant 1.0 : f32
+    %ub = pto.castptr %c0_i64 : i64 -> !pto.ptr<f32, ub>
+    %mask = pto.vmi.create_mask %c64 : index -> !pto.vmi.mask<64xpred>
+    %seed = pto.vmi.broadcast %c1 : f32 -> !pto.vmi.vreg<64xf32>
+    // ELIDE-LABEL: func.func @escape_write_flushes
+    // ELIDE: pto.vmi.vstore
+    // ELIDE: pto.mte_gm_ub
+    // ELIDE-COUNT-1: pto.vmi.vload
+    // ELIDE-NOT: pto.vmi.vload
+    // ELIDE-NOT: pto.vmi.vstore
+    %r = pto.fusion_region {
+      pto.vmi.vstore %seed, %ub[%c0], %mask : !pto.vmi.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.vmi.mask<64xpred>
+      pto.mte_gm_ub %gm_in, %ub, %c0_i64, %c128_i64
+        nburst(%c32_i64, %c128_i64, %c128_i64)
+        : !pto.ptr<f32, gm>, !pto.ptr<f32, ub>, i64, i64, i64, i64, i64
+      %l = pto.vmi.vload %ub[%c0] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+      %u = pto.vmi.vadd %l, %seed : !pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32> -> !pto.vmi.vreg<64xf32>
+      pto.yield(%u) : (!pto.vmi.vreg<64xf32>) -> ()
+    } : !pto.vmi.vreg<64xf32>
+    return %r : !pto.vmi.vreg<64xf32>
+  }
+}

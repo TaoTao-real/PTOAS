@@ -32,6 +32,8 @@ enum class FusionComputeFamily {
   RowBroadcastBinary,
   ReduceRow,
   ReduceCol,
+  ColBroadcastBinary,
+  Convert,
 };
 
 struct FusionOpSemantics {
@@ -45,6 +47,7 @@ struct FusionOpSemantics {
 };
 
 bool isSupportedPreFusionComputeOp(StringRef opName);
+bool isFusionTransparentScaffold(Operation *op);
 FailureOr<FusionOpSemantics> getFusionOpSemantics(Operation *op);
 
 } // namespace pto

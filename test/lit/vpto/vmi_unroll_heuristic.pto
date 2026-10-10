@@ -1,0 +1,182 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software; you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// You may refer to the License for details.
+// You should not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// PTOVmiUnrollHeuristic: fills pto.fusion.row_unroll_factor only on fusion
+// regions that carry neither factor attribute, and only when every leaf loop
+// has a constant trip count divisible by the candidate factor and the
+// unrolled vload count stays bounded.
+//
+//   FILL-4    - two leaves with trips 32/128, 1..4 vloads: factor 4 set on
+//               the region (the FA-softmax shape).
+//   KEEP      - a region that already carries a factor (here: a consumed
+//               marker of 1): untouched.
+//   FALLBACK-2 - a trip of 30 rejects 4 (indivisible); 5 vloads x 4 would
+//                exceed the bound of 16 anyway, so the region gets factor 2.
+//   ODD-TRIP   - an odd trip count rejects 4 and 2: nothing set.
+//   NONCONST   - a runtime bound: nothing set.
+//   NOREGION   - a leaf outside any fusion_region: nothing set.
+
+// RUN: pto-test-opt %s -pto-vmi-unroll-heuristic \
+// RUN:   | FileCheck %s --check-prefix=HEUR
+
+module {
+  // FILL-4: the FA shape (reduction leaf trip 32 + streaming leaf trip 128).
+  func.func @fill_fa_shape() -> () {
+    %c0_i64 = arith.constant 0 : i64
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %c64 = arith.constant 64 : index
+    %c128 = arith.constant 128 : index
+    %cst = arith.constant 1.0 : f32
+    %x = pto.castptr %c0_i64 {pto.tile_shape = array<i64: 128, 64>} : i64 -> !pto.ptr<f32, ub>
+    %mask = pto.vmi.create_mask %c64 : index -> !pto.vmi.mask<64xpred>
+    %seed = pto.vmi.broadcast %cst : f32 -> !pto.vmi.vreg<64xf32>
+    // HEUR-LABEL: func.func @fill_fa_shape
+    // HEUR: pto.fusion.row_unroll_factor = 4 : i64
+    %r:2 = pto.fusion_region {
+      %acc = scf.for %iv = %c0 to %c128 step %c4 iter_args(%a = %seed) -> (!pto.vmi.vreg<64xf32>) {
+        %o1 = arith.muli %iv, %c64 : index
+        %l1 = pto.vmi.vload %x[%o1] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+        %a2 = pto.vmi.vadd %a, %l1, %mask : !pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32>, !pto.vmi.mask<64xpred> -> !pto.vmi.vreg<64xf32>
+        scf.yield %a2 : !pto.vmi.vreg<64xf32>
+      }
+      %acc2 = scf.for %iv = %c0 to %c128 step %c1 iter_args(%a = %seed) -> (!pto.vmi.vreg<64xf32>) {
+        %o2 = arith.muli %iv, %c64 : index
+        %l2 = pto.vmi.vload %x[%o2] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+        %a3 = pto.vmi.vadd %a, %l2, %mask : !pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32>, !pto.vmi.mask<64xpred> -> !pto.vmi.vreg<64xf32>
+        scf.yield %a3 : !pto.vmi.vreg<64xf32>
+      }
+      pto.yield(%acc, %acc2) : (!pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32>) -> ()
+    } : !pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32>
+    return
+  }
+
+  // KEEP: an explicit factor (even a consumed 1) always wins.
+  func.func @keep_existing_factor() -> () {
+    %c0_i64 = arith.constant 0 : i64
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c64 = arith.constant 64 : index
+    %c128 = arith.constant 128 : index
+    %cst = arith.constant 1.0 : f32
+    %x = pto.castptr %c0_i64 {pto.tile_shape = array<i64: 128, 64>} : i64 -> !pto.ptr<f32, ub>
+    %mask = pto.vmi.create_mask %c64 : index -> !pto.vmi.mask<64xpred>
+    %seed = pto.vmi.broadcast %cst : f32 -> !pto.vmi.vreg<64xf32>
+    // HEUR-LABEL: func.func @keep_existing_factor
+    // HEUR: pto.fusion.row_unroll_factor = 1 : i64
+    // HEUR-NOT: pto.fusion.col_unroll_factor
+    %r = pto.fusion_region {
+      %acc = scf.for %iv = %c0 to %c128 step %c1 iter_args(%a = %seed) -> (!pto.vmi.vreg<64xf32>) {
+        %o = arith.muli %iv, %c64 : index
+        %l = pto.vmi.vload %x[%o] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+        %a2 = pto.vmi.vadd %a, %l, %mask : !pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32>, !pto.vmi.mask<64xpred> -> !pto.vmi.vreg<64xf32>
+        scf.yield %a2 : !pto.vmi.vreg<64xf32>
+      }
+      pto.yield(%acc) : (!pto.vmi.vreg<64xf32>) -> ()
+    } {pto.fusion.row_unroll_factor = 1 : i64} : !pto.vmi.vreg<64xf32>
+    return
+  }
+
+  // FALLBACK-2: trip 30 is indivisible by 4 (and 5 vloads x 4 = 20 would
+  // exceed the pressure bound anyway); factor 2 divides 30 and 5 x 2 <= 16.
+  func.func @pressure_falls_back_to_2() -> () {
+    %c0_i64 = arith.constant 0 : i64
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c64 = arith.constant 64 : index
+    %c32 = arith.constant 32 : index
+    %c30 = arith.constant 30 : index
+    %cst = arith.constant 1.0 : f32
+    %x = pto.castptr %c0_i64 {pto.tile_shape = array<i64: 128, 64>} : i64 -> !pto.ptr<f32, ub>
+    %y = pto.castptr %c0_i64 {pto.tile_shape = array<i64: 128, 64>} : i64 -> !pto.ptr<f32, ub>
+    %mask = pto.vmi.create_mask %c64 : index -> !pto.vmi.mask<64xpred>
+    %seed = pto.vmi.broadcast %cst : f32 -> !pto.vmi.vreg<64xf32>
+    // HEUR-LABEL: func.func @pressure_falls_back_to_2
+    // HEUR: pto.fusion.row_unroll_factor = 2 : i64
+    %r = pto.fusion_region {
+      %acc = scf.for %iv = %c0 to %c30 step %c1 iter_args(%a = %seed) -> (!pto.vmi.vreg<64xf32>) {
+        %o1 = arith.muli %iv, %c64 : index
+        %o2 = arith.muli %iv, %c32 : index
+        %l1 = pto.vmi.vload %x[%o1] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+        %l2 = pto.vmi.vload %x[%o2] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+        %l3 = pto.vmi.vload %y[%o1] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+        %l4 = pto.vmi.vload %y[%o2] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+        %l5 = pto.vmi.vload %x[%o1] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+        %s1 = pto.vmi.vadd %l1, %l2, %mask : !pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32>, !pto.vmi.mask<64xpred> -> !pto.vmi.vreg<64xf32>
+        %s2 = pto.vmi.vadd %s1, %l3, %mask : !pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32>, !pto.vmi.mask<64xpred> -> !pto.vmi.vreg<64xf32>
+        %s3 = pto.vmi.vadd %s2, %l4, %mask : !pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32>, !pto.vmi.mask<64xpred> -> !pto.vmi.vreg<64xf32>
+        %a2 = pto.vmi.vadd %a, %l5, %mask : !pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32>, !pto.vmi.mask<64xpred> -> !pto.vmi.vreg<64xf32>
+        %a3 = pto.vmi.vadd %a2, %s3, %mask : !pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32>, !pto.vmi.mask<64xpred> -> !pto.vmi.vreg<64xf32>
+        scf.yield %a3 : !pto.vmi.vreg<64xf32>
+      }
+      pto.yield(%acc) : (!pto.vmi.vreg<64xf32>) -> ()
+    } : !pto.vmi.vreg<64xf32>
+    return
+  }
+
+  // ODD-TRIP: an odd trip count rejects both candidates.
+  func.func @odd_trip_sets_nothing() -> () {
+    %c0_i64 = arith.constant 0 : i64
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c64 = arith.constant 64 : index
+    %c31 = arith.constant 31 : index
+    %cst = arith.constant 1.0 : f32
+    %x = pto.castptr %c0_i64 {pto.tile_shape = array<i64: 128, 64>} : i64 -> !pto.ptr<f32, ub>
+    %mask = pto.vmi.create_mask %c64 : index -> !pto.vmi.mask<64xpred>
+    %seed = pto.vmi.broadcast %cst : f32 -> !pto.vmi.vreg<64xf32>
+    // HEUR-LABEL: func.func @odd_trip_sets_nothing
+    // HEUR-NOT: pto.fusion.row_unroll_factor
+    // HEUR-NOT: pto.fusion.col_unroll_factor
+    %r = pto.fusion_region {
+      %acc = scf.for %iv = %c0 to %c31 step %c1 iter_args(%a = %seed) -> (!pto.vmi.vreg<64xf32>) {
+        %o = arith.muli %iv, %c64 : index
+        %l = pto.vmi.vload %x[%o] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+        %a2 = pto.vmi.vadd %a, %l, %mask : !pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32>, !pto.vmi.mask<64xpred> -> !pto.vmi.vreg<64xf32>
+        scf.yield %a2 : !pto.vmi.vreg<64xf32>
+      }
+      pto.yield(%acc) : (!pto.vmi.vreg<64xf32>) -> ()
+    } : !pto.vmi.vreg<64xf32>
+    return
+  }
+
+  // NONCONST: runtime upper bound -> nothing set.  NOREGION: the leaf outside
+  // any fusion_region is not the pass's business.
+  func.func @nonconst_and_noregion(%n : index) -> () {
+    %c0_i64 = arith.constant 0 : i64
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c64 = arith.constant 64 : index
+    %c128 = arith.constant 128 : index
+    %cst = arith.constant 1.0 : f32
+    %x = pto.castptr %c0_i64 {pto.tile_shape = array<i64: 128, 64>} : i64 -> !pto.ptr<f32, ub>
+    %mask = pto.vmi.create_mask %c64 : index -> !pto.vmi.mask<64xpred>
+    %seed = pto.vmi.broadcast %cst : f32 -> !pto.vmi.vreg<64xf32>
+    // HEUR-LABEL: func.func @nonconst_and_noregion
+    // HEUR-NOT: pto.fusion.row_unroll_factor
+    // HEUR-NOT: pto.fusion.col_unroll_factor
+    %r = pto.fusion_region {
+      %acc = scf.for %iv = %c0 to %n step %c1 iter_args(%a = %seed) -> (!pto.vmi.vreg<64xf32>) {
+        %o = arith.muli %iv, %c64 : index
+        %l = pto.vmi.vload %x[%o] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+        %a2 = pto.vmi.vadd %a, %l, %mask : !pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32>, !pto.vmi.mask<64xpred> -> !pto.vmi.vreg<64xf32>
+        scf.yield %a2 : !pto.vmi.vreg<64xf32>
+      }
+      pto.yield(%acc) : (!pto.vmi.vreg<64xf32>) -> ()
+    } : !pto.vmi.vreg<64xf32>
+    %acc2 = scf.for %iv = %c0 to %c128 step %c1 iter_args(%a = %seed) -> (!pto.vmi.vreg<64xf32>) {
+      %o = arith.muli %iv, %c64 : index
+      %l = pto.vmi.vload %x[%o] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+      %a2 = pto.vmi.vadd %a, %l, %mask : !pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32>, !pto.vmi.mask<64xpred> -> !pto.vmi.vreg<64xf32>
+      scf.yield %a2 : !pto.vmi.vreg<64xf32>
+    }
+    return
+  }
+}

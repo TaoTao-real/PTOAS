@@ -12,6 +12,7 @@
 
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
+#include "PTO/Transforms/VmiMemoryLocation.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -565,6 +566,126 @@ public:
   }
 };
 
+// VMI planning is deliberately driven by the selected provider, not by an
+// op-name whitelist.  A PTODSL fallback therefore closes the VMI region even
+// when it has the same tile op name as a supported VMI implementation.
+//
+// On top of that provenance gate, the VMI strategy partitions by memory
+// access: a fusion region reorders and interleaves its members, so two nodes
+// may only share one when their tile accesses are either proven must-alias
+// (identical byte interval -- the dataflow graph already orders them) or
+// proven no-alias (disjoint intervals, or distinct allocations).  Anything
+// merely *possibly* overlapping -- partial overlap, an unknown extent, an
+// unknown offset, an unattributable storage root -- must land in a different
+// region.  The non-VMI strategies are untouched by this rule.
+static SmallVector<pto::VmiTileAccess, 8>
+collectVmiTileAccesses(const pto::FusionComputeNode &node) {
+  SmallVector<pto::VmiTileAccess, 8> accesses;
+  auto collect = [&](ArrayRef<Value> values) {
+    for (Value value : values) {
+      if (auto access = pto::resolveVmiTileAccess(value)) {
+        accesses.push_back(*access);
+      }
+    }
+  };
+  collect(node.semantics.tileInputs);
+  collect(node.semantics.tileOutputs);
+  return accesses;
+}
+
+static bool areVmiAccessesRegionCompatible(const pto::FusionComputeNode &a,
+                                           const pto::FusionComputeNode &b) {
+  SmallVector<pto::VmiTileAccess, 8> lhs = collectVmiTileAccesses(a);
+  SmallVector<pto::VmiTileAccess, 8> rhs = collectVmiTileAccesses(b);
+  for (const pto::VmiTileAccess &l : lhs) {
+    for (const pto::VmiTileAccess &r : rhs) {
+      if (pto::mayAliasVmiTileAccess(l, r)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+static bool hasIncompatibleAccessWithRun(
+    ArrayRef<const pto::FusionComputeNode *> run,
+    const pto::FusionComputeNode &candidate) {
+  for (const pto::FusionComputeNode *member : run) {
+    if (!areVmiAccessesRegionCompatible(*member, candidate)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+class VMISelectedStrategyEngine final : public StrategyEngine {
+public:
+  SmallVector<PlannedFusionGroup, 8>
+  planBlock(const PlanningContext &ctx,
+            const CostModel &) const override {
+    const auto &block = ctx.blockAnalysis;
+    SmallVector<PlannedFusionGroup, 8> groups;
+    SmallVector<const pto::FusionComputeNode *, 8> current;
+    auto flush = [&]() {
+      if (!current.empty()) {
+        groups.push_back({buildStableInGroupOrder(current)});
+        current.clear();
+      }
+    };
+    // VMI F3-adjacency run building: every compute node joins the current loose
+    // group; only a non-plannable op sitting between two compute nodes closes
+    // it. The resulting fusion_region is a container, not a fusion mandate —
+    // PTOVmiLoopFusion still decides which same-header loops may actually
+    // merge, and rejects any run whose UB exchange is not a proven
+    // same-iteration injective-affine transfer.
+    DenseMap<unsigned, bool> precededByNonPlannable;
+    DenseMap<Operation *, unsigned> nodeIdByOp;
+    for (const pto::FusionComputeNode &n : block.computeNodes) {
+      nodeIdByOp[n.op] = n.id;
+    }
+    bool sawCompute = false;
+    bool hardBoundarySinceCompute = false;
+    for (Operation &op : *block.block) {
+      auto it = nodeIdByOp.find(&op);
+      if (it != nodeIdByOp.end()) {
+        precededByNonPlannable[it->second] =
+            sawCompute && hardBoundarySinceCompute;
+        sawCompute = true;
+        hardBoundarySinceCompute = false;
+        continue;
+      }
+      if (pto::isFusionTransparentScaffold(&op)) {
+        continue;
+      }
+      FailureOr<pto::FusionOpSemantics> semanticsOr =
+          pto::getFusionOpSemantics(&op);
+      if (failed(semanticsOr) ||
+          semanticsOr->kind == pto::FusionOpKind::HardBoundary ||
+          (semanticsOr->kind == pto::FusionOpKind::LocalBoundary &&
+           !op.hasAttr("pto.vmi.fusion.boundary"))) {
+        hardBoundarySinceCompute = true;
+      }
+    }
+
+    for (const pto::FusionComputeNode &node : block.computeNodes) {
+      auto precIt = precededByNonPlannable.find(node.id);
+      if (precIt != precededByNonPlannable.end() && precIt->second) {
+        flush();
+      }
+      // Second guard: never co-locate a node whose tile accesses may overlap a
+      // member's. The historical container semantics leave this to the loop
+      // fusion pass; keeping it here narrows the container to accesses that are
+      // must-alias or provably disjoint.
+      if (hasIncompatibleAccessWithRun(current, node)) {
+        flush();
+      }
+      current.push_back(&node);
+    }
+    flush();
+    return groups;
+  }
+};
+
 static void clearPlanningAttrs(func::FuncOp func) {
   func.walk([](Operation *op) {
     op->removeAttr(kFusionGroupIdAttr);
@@ -622,12 +743,22 @@ struct FusionPlanPass : public pto::impl::FusionPlanBase<FusionPlanPass> {
     MLIRContext *ctx = &getContext();
     int64_t nextGroupId = 0;
     ConservativeDAGGreedyCostModel costModel;
-    ConservativeDAGGreedyStrategyEngine strategyEngine;
+    std::unique_ptr<StrategyEngine> strategyEngine;
+    if (strategy.getValue() == "vmi-ub-disjoint") {
+      strategyEngine = std::make_unique<VMISelectedStrategyEngine>();
+    } else if (strategy.getValue() == "conservative-dag-greedy") {
+      strategyEngine = std::make_unique<ConservativeDAGGreedyStrategyEngine>();
+    } else {
+      emitError(getOperation()->getLoc())
+          << "unknown fusion strategy " << strategy.getValue();
+      signalPassFailure();
+      return;
+    }
 
     for (const pto::FusionBlockAnalysis &blockAnalysis : analysis.blocks) {
       PlanningContext planningCtx{blockAnalysis};
       SmallVector<PlannedFusionGroup, mlir::pto::kValue8> groups =
-          strategyEngine.planBlock(planningCtx, costModel);
+          strategyEngine->planBlock(planningCtx, costModel);
       assignStableGroupMetadata(groups, ctx, nextGroupId);
     }
 

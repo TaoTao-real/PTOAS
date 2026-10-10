@@ -1,0 +1,86 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software; you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// Fusion-region planning across the slots of one multi_tile_buf.
+//
+// Two VMI computes write two slots of the same multi_tile_buf.  The slot
+// index -- not the slot tile config -- decides the relation: the same slot
+// twice is must-alias and distinct slots are no-alias, so all four variants
+// merge into one region.  (An earlier revision forced non-default slot
+// configs to an unknown split; that guard was removed, and these assertions
+// pin the post-removal behavior.)
+//
+// Type aliases are kept so the slot configs read side by side.
+
+// RUN: pto-test-opt %s '--pto-fusion-plan=fusion-strategy=vmi-ub-disjoint' --pto-fusion-region-gen | FileCheck %s
+
+!slot_def = !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+!slot_nd  = !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0>
+!mb_def = !pto.multi_tile_buf<!slot_def, count=2>
+!mb_nd  = !pto.multi_tile_buf<!slot_nd, count=2>
+
+module {
+  // slot 0 twice -> must-alias -> one region
+  // CHECK-LABEL: func.func @mt_default_same_slot
+  // CHECK: pto.fusion_region
+  // CHECK-NOT: pto.fusion_region
+  func.func @mt_default_same_slot(%a: !slot_def, %b: !slot_def, %c: !slot_def) {
+    %c0 = arith.constant 0 : index
+    %addr = arith.constant 0 : i64
+    %mb = pto.alloc_multi_tile addr = %addr : !mb_def
+    %s0 = pto.multi_tile_get %mb[%c0] : !mb_def -> !slot_def
+    %s0b = pto.multi_tile_get %mb[%c0] : !mb_def -> !slot_def
+    pto.tmul ins(%a, %b : !slot_def, !slot_def) outs(%s0 : !slot_def) {pto.tilelib.impl = "vmi"}
+    pto.tadd ins(%s0, %c : !slot_def, !slot_def) outs(%s0b : !slot_def) {pto.tilelib.impl = "vmi"}
+    return
+  }
+  // slots 0 and 1 -> no-alias -> one region
+  // CHECK-LABEL: func.func @mt_default_disjoint
+  // CHECK: pto.fusion_region
+  // CHECK-NOT: pto.fusion_region
+  func.func @mt_default_disjoint(%a: !slot_def, %b: !slot_def, %c: !slot_def) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %addr = arith.constant 0 : i64
+    %mb = pto.alloc_multi_tile addr = %addr : !mb_def
+    %s0 = pto.multi_tile_get %mb[%c0] : !mb_def -> !slot_def
+    %s1 = pto.multi_tile_get %mb[%c1] : !mb_def -> !slot_def
+    pto.tmul ins(%a, %b : !slot_def, !slot_def) outs(%s0 : !slot_def) {pto.tilelib.impl = "vmi"}
+    pto.tadd ins(%s0, %c : !slot_def, !slot_def) outs(%s1 : !slot_def) {pto.tilelib.impl = "vmi"}
+    return
+  }
+  // non-default slot config, slot 0 twice -> still must-alias -> one region
+  // CHECK-LABEL: func.func @mt_nondefault_same_slot
+  // CHECK: pto.fusion_region
+  // CHECK-NOT: pto.fusion_region
+  func.func @mt_nondefault_same_slot(%a: !slot_nd, %b: !slot_nd, %c: !slot_nd) {
+    %c0 = arith.constant 0 : index
+    %addr = arith.constant 0 : i64
+    %mb = pto.alloc_multi_tile addr = %addr : !mb_nd
+    %s0 = pto.multi_tile_get %mb[%c0] : !mb_nd -> !slot_nd
+    %s0b = pto.multi_tile_get %mb[%c0] : !mb_nd -> !slot_nd
+    pto.tmul ins(%a, %b : !slot_nd, !slot_nd) outs(%s0 : !slot_nd) {pto.tilelib.impl = "vmi"}
+    pto.tadd ins(%s0, %c : !slot_nd, !slot_nd) outs(%s0b : !slot_nd) {pto.tilelib.impl = "vmi"}
+    return
+  }
+  // non-default slot config, slots 0 and 1 -> still no-alias -> one region
+  // CHECK-LABEL: func.func @mt_nondefault_disjoint
+  // CHECK: pto.fusion_region
+  // CHECK-NOT: pto.fusion_region
+  func.func @mt_nondefault_disjoint(%a: !slot_nd, %b: !slot_nd, %c: !slot_nd) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %addr = arith.constant 0 : i64
+    %mb = pto.alloc_multi_tile addr = %addr : !mb_nd
+    %s0 = pto.multi_tile_get %mb[%c0] : !mb_nd -> !slot_nd
+    %s1 = pto.multi_tile_get %mb[%c1] : !mb_nd -> !slot_nd
+    pto.tmul ins(%a, %b : !slot_nd, !slot_nd) outs(%s0 : !slot_nd) {pto.tilelib.impl = "vmi"}
+    pto.tadd ins(%s0, %c : !slot_nd, !slot_nd) outs(%s1 : !slot_nd) {pto.tilelib.impl = "vmi"}
+    return
+  }
+}

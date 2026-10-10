@@ -1,0 +1,123 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software; you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// The eight-row device-route argv matrix.  The VMI route owns the six Bisheng
+// VF disabling flags and defaults auto-sync and the vector scheduler to off;
+// an explicit --bisheng-vf-auto-sync / --bisheng-vec-misched still wins over
+// those defaults.  The ordinary route passes none of the VMI-only flags: the
+// scheduler stays Auto (a usage probe, no explicit misched flag), and the
+// explicit choices pass through unchanged.  The vecscope mem-bar insertion
+// flag is not part of the VMI route predicate and leaves the ordinary route
+// untouched.  Every RUN records the final Bisheng argv with the fake
+// toolchain and each row is asserted on its own log.
+// RUN: rm -rf %t.toolchain && mkdir -p %t.toolchain/bin %t.toolchain/tools/bisheng_compiler/bin %t.toolchain/include %t.toolchain/pkg_inc
+// RUN: cp %S/../resources/fake_bisheng.sh %t.toolchain/bin/bisheng
+// RUN: cp %S/../resources/fake_bisheng.sh %t.toolchain/tools/bisheng_compiler/bin/bisheng
+// RUN: cp %S/../resources/fake_ld_lld.sh %t.toolchain/bin/ld.lld
+// RUN: cp %S/../resources/fake_ld_lld.sh %t.toolchain/bin/cce-ld
+// RUN: chmod +x %t.toolchain/bin/bisheng %t.toolchain/tools/bisheng_compiler/bin/bisheng %t.toolchain/bin/ld.lld %t.toolchain/bin/cce-ld
+// RUN: touch %t.toolchain/include/__clang_cce_runtime_wrapper.h
+// RUN: env ASCEND_HOME_PATH=%t.toolchain FAKE_BISHENG_LOG=%t.r1.log ptoas --enable-vmi --enable-op-fusion=true --enable-vmi-loop-fusion --enable-vmi-load-store-elision --pto-arch=a5 --pto-backend=vpto %s -o %t.r1.o
+// RUN: env ASCEND_HOME_PATH=%t.toolchain FAKE_BISHENG_LOG=%t.r2.log ptoas --enable-vmi --enable-op-fusion=true --enable-vmi-loop-fusion --enable-vmi-load-store-elision --bisheng-vec-misched=on --pto-arch=a5 --pto-backend=vpto %s -o %t.r2.o
+// RUN: env ASCEND_HOME_PATH=%t.toolchain FAKE_BISHENG_LOG=%t.r2b.log ptoas --enable-vmi --enable-op-fusion=true --enable-vmi-loop-fusion --enable-vmi-load-store-elision --bisheng-vec-misched=off --pto-arch=a5 --pto-backend=vpto %s -o %t.r2b.o
+// RUN: env ASCEND_HOME_PATH=%t.toolchain FAKE_BISHENG_LOG=%t.r3.log ptoas --enable-vmi --enable-op-fusion=true --enable-vmi-loop-fusion --enable-vmi-load-store-elision --bisheng-vf-auto-sync=global --pto-arch=a5 --pto-backend=vpto %s -o %t.r3.o
+// RUN: env ASCEND_HOME_PATH=%t.toolchain FAKE_BISHENG_LOG=%t.r4.log ptoas --enable-op-fusion=false --pto-arch=a5 --pto-backend=vpto %s -o %t.r4.o
+// RUN: env ASCEND_HOME_PATH=%t.toolchain FAKE_BISHENG_LOG=%t.r4b.log ptoas --enable-op-fusion=false --bisheng-vf-auto-sync=off --pto-arch=a5 --pto-backend=vpto %s -o %t.r4b.o
+// RUN: env ASCEND_HOME_PATH=%t.toolchain FAKE_BISHENG_LOG=%t.r4c.log ptoas --enable-op-fusion=false --bisheng-vec-misched=off --pto-arch=a5 --pto-backend=vpto %s -o %t.r4c.o
+// RUN: env ASCEND_HOME_PATH=%t.toolchain FAKE_BISHENG_LOG=%t.r5.log ptoas --enable-op-fusion=false --enable-vecscope-mem-bar --pto-arch=a5 --pto-backend=vpto %s -o %t.r5.o
+// RUN: FileCheck %s --check-prefix=R1 < %t.r1.log
+// RUN: FileCheck %s --check-prefix=R2 < %t.r2.log
+// RUN: FileCheck %s --check-prefix=R2B < %t.r2b.log
+// RUN: FileCheck %s --check-prefix=R3 < %t.r3.log
+// RUN: FileCheck %s --check-prefix=R4 < %t.r4.log
+// RUN: FileCheck %s --check-prefix=R4B < %t.r4b.log
+// RUN: FileCheck %s --check-prefix=R4C < %t.r4c.log
+// RUN: FileCheck %s --check-prefix=R5 < %t.r5.log
+
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+  func.func @bisheng_vf_route_argv_matrix() attributes {pto.kernel} {
+    return
+  }
+}
+
+// r1: VMI route, nothing explicit.  All six VF passes stand down, auto-sync
+// and the vector scheduler default to off, and no usage probe is issued.
+// R1: -cce-vf-auto-sync=off
+// R1: -cce-vf-enable-vf-fusion=false
+// R1: -cce-vf-enable-vf-loop-extender=false
+// R1: -cce-vf-enable-loop-fusion=false
+// R1: -cce-vf-enable-vf-ldst-elimination=false
+// R1: -cce-vf-enable-ub-dead-st-elimination=false
+// R1: -cce-vf-enable-vf-ifelse-extender=false
+// R1: --cce-aicore-vec-misched=0
+// R1-NOT: --cce-res-usage
+
+// r2: an explicit --bisheng-vec-misched=on keeps the toolchain default, so
+// the misched flag disappears entirely while the VMI contract stays.
+// R2: -cce-vf-auto-sync=off
+// R2: -cce-vf-enable-vf-fusion=false
+// R2: -cce-vf-enable-vf-loop-extender=false
+// R2: -cce-vf-enable-loop-fusion=false
+// R2: -cce-vf-enable-vf-ldst-elimination=false
+// R2: -cce-vf-enable-ub-dead-st-elimination=false
+// R2: -cce-vf-enable-vf-ifelse-extender=false
+// R2-NOT: --cce-aicore-vec-misched
+// R2-NOT: --cce-res-usage
+
+// r2b: an explicit off is forwarded as =0; identical to r1 otherwise.
+// R2B: -cce-vf-auto-sync=off
+// R2B: -cce-vf-enable-vf-fusion=false
+// R2B: -cce-vf-enable-vf-loop-extender=false
+// R2B: -cce-vf-enable-loop-fusion=false
+// R2B: -cce-vf-enable-vf-ldst-elimination=false
+// R2B: -cce-vf-enable-ub-dead-st-elimination=false
+// R2B: -cce-vf-enable-vf-ifelse-extender=false
+// R2B: --cce-aicore-vec-misched=0
+// R2B-NOT: --cce-res-usage
+
+// r3: an explicit --bisheng-vf-auto-sync is honoured, not overridden.
+// R3-NOT: -cce-vf-auto-sync=off
+// R3: -cce-vf-auto-sync=global
+// R3: -cce-vf-enable-vf-fusion=false
+// R3: -cce-vf-enable-vf-loop-extender=false
+// R3: -cce-vf-enable-loop-fusion=false
+// R3: -cce-vf-enable-vf-ldst-elimination=false
+// R3: -cce-vf-enable-ub-dead-st-elimination=false
+// R3: -cce-vf-enable-vf-ifelse-extender=false
+// R3: --cce-aicore-vec-misched=0
+// R3-NOT: --cce-res-usage
+
+// r4: the ordinary route sends no VMI-only flag at all.  The scheduler stays
+// Auto, which probes usage and passes no explicit misched flag.
+// R4-NOT: -cce-vf-enable-{{[a-z-]+=false}}
+// R4-NOT: -cce-vf-auto-sync=
+// R4-NOT: --cce-aicore-vec-misched
+// R4: --cce-res-usage
+
+// r4b: the explicit auto-sync choice passes through unchanged on the
+// ordinary route; the scheduler still runs its Auto usage probe.
+// R4B-NOT: -cce-vf-enable-{{[a-z-]+=false}}
+// R4B: -cce-vf-auto-sync=off
+// R4B-NOT: --cce-aicore-vec-misched
+// R4B: --cce-res-usage
+
+// r4c: an explicit scheduler off skips the Auto usage probe and forwards
+// the misched flag itself.
+// R4C-NOT: -cce-vf-enable-{{[a-z-]+=false}}
+// R4C-NOT: -cce-vf-auto-sync=
+// R4C: --cce-aicore-vec-misched=0
+// R4C-NOT: --cce-res-usage
+
+// r5: the vecscope mem-bar insertion flag does not widen the VMI route
+// predicate.  On the ordinary route the device compiler keeps its default
+// auto-sync, no VF pass is told to stand down, and the scheduler still runs
+// its Auto usage probe.
+// R5-NOT: -cce-vf-enable-{{[a-z-]+=false}}
+// R5-NOT: -cce-vf-auto-sync=
+// R5-NOT: --cce-aicore-vec-misched
+// R5: --cce-res-usage

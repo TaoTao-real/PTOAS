@@ -376,6 +376,30 @@ llvm::cl::opt<bool> enableVMI(
     llvm::cl::desc("Enable the VMI fusion pipeline for A5 VPTO TileLib input"),
     llvm::cl::init(false));
 
+llvm::cl::opt<bool> enableVMILoopFusion(
+    "enable-vmi-loop-fusion",
+    llvm::cl::desc("Enable VMI loop fusion inside fusion regions"),
+    llvm::cl::init(true));
+
+llvm::cl::opt<bool> enableVMILoadStoreElision(
+    "enable-vmi-load-store-elision",
+    llvm::cl::desc("Enable VMI load/store forwarding inside fusion regions"),
+    llvm::cl::init(true));
+
+llvm::cl::opt<bool> enableVMIFunctionDSE(
+    "enable-vmi-function-dse",
+    llvm::cl::desc("Enable function-level dead VMI UB store elimination "
+                   "after load/store elision (default: false)"),
+    llvm::cl::init(false));
+
+llvm::cl::opt<bool> enableVMIUnrollHeuristic(
+    "enable-vmi-unroll-heuristic",
+    llvm::cl::desc("Fill missing pto.fusion.row/col_unroll_factor on VMI "
+                   "fusion regions heuristically (VfSim-set factors always "
+                   "win). Consumed by --enable-unroll-after-loop-fusion "
+                   "(default: false)"),
+    llvm::cl::init(false));
+
 llvm::cl::opt<bool> mlir::pto::emitMlirIR(
     "emit-pto-ir",
     llvm::cl::desc("Emit PTO IR after lowering instead of C++"),

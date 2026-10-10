@@ -1,0 +1,91 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software; you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// You may refer to the License for details.
+// You should not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// Function-level dead-store elimination in PTOVmiFunctionDSE: a pto.vmi.vstore
+// whose written UB bytes have no later reader anywhere in the function is
+// erased.  The region-local elision deliberately has no terminal no-later-
+// reader rule; these cases exercise exactly the patterns that rule covers.
+//
+//   DEAD-SEQ   - a straight-line store with no reader at all: erased.
+//   DEAD-LOOP  - the FA-softmax shape: a loop whose body reads X[i] and then
+//                writes X[i] (identical affine offset key, per-iteration
+//                stride == write width, so later iterations re-read disjoint
+//                bytes) and nothing reads X after the loop: erased.  The live
+//                tile store in the same loop is kept by a vload after the
+//                loop, proving stores are not erased wholesale.
+//   READ-AFTER - a later vload of the same location observes the store: kept.
+
+// RUN: pto-test-opt %s -pto-vmi-function-dse \
+// RUN:   | FileCheck %s --check-prefix=DSE
+
+module {
+  // DEAD-SEQ: nothing ever reads the stored bytes.
+  func.func @dead_store_no_reader() -> () {
+    %c0_i64 = arith.constant 0 : i64
+    %c0 = arith.constant 0 : index
+    %c64 = arith.constant 64 : index
+    %c1 = arith.constant 1.0 : f32
+    %ub = pto.castptr %c0_i64 {pto.tile_shape = array<i64: 4, 64>} : i64 -> !pto.ptr<f32, ub>
+    %mask = pto.vmi.create_mask %c64 : index -> !pto.vmi.mask<64xpred>
+    %seed = pto.vmi.broadcast %c1 : f32 -> !pto.vmi.vreg<64xf32>
+    // DSE-LABEL: func.func @dead_store_no_reader
+    // DSE-NOT: pto.vmi.vstore
+    pto.vmi.vstore %seed, %ub[%c0], %mask : !pto.vmi.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.vmi.mask<64xpred>
+    return
+  }
+
+  // DEAD-LOOP: read X[i] before writing X[i] with stride == width; the tile
+  // store is observed by the vload after the loop and must survive.
+  func.func @loop_read_before_overwrite() -> () {
+    %c0_i64 = arith.constant 0 : i64
+    %c32768_i64 = arith.constant 32768 : i64
+    %c0 = arith.constant 0 : index
+    %c64 = arith.constant 64 : index
+    %c128 = arith.constant 128 : index
+    %c1 = arith.constant 1 : index
+    %cf = arith.constant 1.0 : f32
+    %x = pto.castptr %c0_i64 {pto.tile_shape = array<i64: 128, 64>} : i64 -> !pto.ptr<f32, ub>
+    %tile = pto.castptr %c32768_i64 {pto.tile_shape = array<i64: 1, 64>} : i64 -> !pto.ptr<f32, ub>
+    %mask = pto.vmi.create_mask %c64 : index -> !pto.vmi.mask<64xpred>
+    %seed = pto.vmi.broadcast %cf : f32 -> !pto.vmi.vreg<64xf32>
+    // DSE-LABEL: func.func @loop_read_before_overwrite
+    // DSE-COUNT-1: pto.vmi.vstore
+    // DSE-NOT: pto.vmi.vstore
+    %sum = scf.for %iv = %c0 to %c128 step %c1 iter_args(%acc = %seed) -> (!pto.vmi.vreg<64xf32>) {
+      %off = arith.muli %iv, %c64 : index
+      %row = pto.vmi.vload %x[%off] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+      %scaled = pto.vmi.vmuls %row, %cf, %mask : !pto.vmi.vreg<64xf32>, f32, !pto.vmi.mask<64xpred> -> !pto.vmi.vreg<64xf32>
+      pto.vmi.vstore %scaled, %x[%off], %mask : !pto.vmi.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.vmi.mask<64xpred>
+      %acc2 = pto.vmi.vadd %acc, %scaled, %mask : !pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32>, !pto.vmi.mask<64xpred> -> !pto.vmi.vreg<64xf32>
+      pto.vmi.vstore %acc2, %tile[%c0], %mask : !pto.vmi.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.vmi.mask<64xpred>
+      scf.yield %acc2 : !pto.vmi.vreg<64xf32>
+    }
+    %last = pto.vmi.vload %tile[%c0] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+    return
+  }
+
+  // READ-AFTER: the vload after the store observes the written bytes.
+  func.func @store_read_after_keeps() -> (!pto.vmi.vreg<64xf32>) {
+    %c0_i64 = arith.constant 0 : i64
+    %c0 = arith.constant 0 : index
+    %c64 = arith.constant 64 : index
+    %c1 = arith.constant 1.0 : f32
+    %ub = pto.castptr %c0_i64 {pto.tile_shape = array<i64: 4, 64>} : i64 -> !pto.ptr<f32, ub>
+    %mask = pto.vmi.create_mask %c64 : index -> !pto.vmi.mask<64xpred>
+    %seed = pto.vmi.broadcast %c1 : f32 -> !pto.vmi.vreg<64xf32>
+    // DSE-LABEL: func.func @store_read_after_keeps
+    // DSE-COUNT-1: pto.vmi.vstore
+    // DSE-NOT: pto.vmi.vstore
+    // DSE-COUNT-1: pto.vmi.vload
+    // DSE-NOT: pto.vmi.vload
+    pto.vmi.vstore %seed, %ub[%c0], %mask : !pto.vmi.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.vmi.mask<64xpred>
+    %l = pto.vmi.vload %ub[%c0] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+    return %l : !pto.vmi.vreg<64xf32>
+  }
+}

@@ -9,6 +9,9 @@
 //===- PTOValidateVMIIR.cpp - VMI boundary verifier ----------------------===//
 // Type checks use MLIR subelement walking so both stage gates and hidden
 // attribute checks reach nested containers, including recursive type graphs.
+// Element types and group shapes follow op verifiers and VMILayoutSupport's
+// executable capabilities. TileLib candidate restrictions are not dialect-wide
+// limits: direct VMI programs also use packed conversions and multi-part groups.
 //===----------------------------------------------------------------------===//
 
 #include "PTO/IR/PTO.h"

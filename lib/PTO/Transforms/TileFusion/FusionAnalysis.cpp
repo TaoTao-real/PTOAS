@@ -428,6 +428,36 @@ static void applyRowBroadcastConstraints(ShapeConstraintContext &context,
   }
 }
 
+static void applyColBroadcastConstraints(ShapeConstraintContext &context,
+                                         const FusionOpSemantics &semantics) {
+  // Col-expand (tcolexpandsub/add/mul/div): reads [1,cols] col_values and
+  // [rows,cols] src, writes [rows,cols]. Merge src and output fully (they share
+  // the [R,C] iteration domain), but constrain col_values to [1,cols] only: its
+  // cols equal the output cols (broadcast across rows), and its rows is fixed to
+  // 1. Forcing col_values.rows into the same equivalence class as src/output rows
+  // would over-constrain R == 1 and produce a spurious InconsistentShape for any
+  // static R > 1 (mirrors the RowBroadcastBinary treatment of the [rows,1]
+  // broadcast operand).
+  if (semantics.tileOutputs.empty()) {
+    return;
+  }
+  ShapeValueDims output = getValueDims(context, semantics.tileOutputs.front());
+  if (!semantics.tileInputs.empty()) {
+    mergeShapes(context.solver, getValueDims(context, semantics.tileInputs[0]),
+                output);
+    bool hasColInput = semantics.tileInputs.size() >= mlir::pto::kValue2;
+    if (hasColInput) {
+      ShapeValueDims colInput = getValueDims(context, semantics.tileInputs[1]);
+      mergeCols(context.solver, colInput, output);
+      context.solver.bindConstant(colInput.rows, 1);
+    }
+  }
+  for (Value extraOutput :
+       ArrayRef<Value>(semantics.tileOutputs).drop_front()) {
+    mergeShapes(context.solver, output, getValueDims(context, extraOutput));
+  }
+}
+
 static void applyReductionConstraints(ShapeConstraintContext &context,
                                       const FusionOpSemantics &semantics) {
   mergeAllShapes(context, semantics.tileInputs);
@@ -455,7 +485,8 @@ static void applyShapeConstraintsForNode(ShapeConstraintContext &context,
                                          const FusionComputeNode &node) {
   const FusionOpSemantics &semantics = node.semantics;
   switch (semantics.computeFamily) {
-  case FusionComputeFamily::Elementwise: {
+  case FusionComputeFamily::Elementwise:
+  case FusionComputeFamily::Convert: {
     SmallVector<Value, mlir::pto::kValue6> values;
     values.append(semantics.tileInputs.begin(), semantics.tileInputs.end());
     values.append(semantics.tileOutputs.begin(), semantics.tileOutputs.end());
@@ -467,6 +498,9 @@ static void applyShapeConstraintsForNode(ShapeConstraintContext &context,
     return;
   case FusionComputeFamily::RowBroadcastBinary:
     applyRowBroadcastConstraints(context, semantics);
+    return;
+  case FusionComputeFamily::ColBroadcastBinary:
+    applyColBroadcastConstraints(context, semantics);
     return;
   case FusionComputeFamily::ReduceRow:
   case FusionComputeFamily::ReduceCol:
@@ -482,8 +516,10 @@ static ShapeValueDims getIterationDomainDimsForNode(
   const FusionOpSemantics &semantics = node.semantics;
   switch (semantics.computeFamily) {
   case FusionComputeFamily::Elementwise:
+  case FusionComputeFamily::Convert:
   case FusionComputeFamily::ScalarExpand:
   case FusionComputeFamily::RowBroadcastBinary:
+  case FusionComputeFamily::ColBroadcastBinary:
     if (!semantics.tileOutputs.empty()) {
       return getValueDims(context, semantics.tileOutputs.front());
     }
@@ -648,7 +684,8 @@ inferConsensusIterationDomain(ArrayRef<Value> anchorValues) {
 static IterationDomainInfo
 inferIterationDomainInfo(const FusionOpSemantics &semantics) {
   switch (semantics.computeFamily) {
-  case FusionComputeFamily::Elementwise: {
+  case FusionComputeFamily::Elementwise:
+  case FusionComputeFamily::Convert: {
     SmallVector<Value, mlir::pto::kValue6> anchors;
     anchors.append(semantics.tileInputs.begin(), semantics.tileInputs.end());
     anchors.append(semantics.tileOutputs.begin(), semantics.tileOutputs.end());
@@ -656,6 +693,7 @@ inferIterationDomainInfo(const FusionOpSemantics &semantics) {
   }
   case FusionComputeFamily::ScalarExpand:
   case FusionComputeFamily::RowBroadcastBinary:
+  case FusionComputeFamily::ColBroadcastBinary:
     return inferConsensusIterationDomain(semantics.tileOutputs);
   case FusionComputeFamily::ReduceRow:
   case FusionComputeFamily::ReduceCol:
@@ -1058,6 +1096,23 @@ static void recordComputeNode(Operation &op,
   node.blockOrder = blockOrder;
   node.op = &op;
   node.semantics = semantics;
+  if (auto impl = op.getAttrOfType<StringAttr>("pto.tilelib.impl")) {
+    node.selectedVMI = impl.getValue() == "vmi";
+  }
+  // Candidate discovery runs before fusion planning in the current mainline.
+  // When the dedicated selection pass is absent, the first priority-ranked
+  // candidate is the materialization decision; preserve that provenance here
+  // instead of guessing from the tile-op name or loop shape.
+  if (!node.selectedVMI) {
+    if (auto candidates = op.getAttrOfType<ArrayAttr>("candidates");
+        candidates && !candidates.empty()) {
+      if (auto first = dyn_cast<DictionaryAttr>(candidates[0])) {
+        if (auto name = first.getAs<StringAttr>("name")) {
+          node.selectedVMI = name.getValue().starts_with("vmi_");
+        }
+      }
+    }
+  }
   state.computeNodeByOp[&op] = node.id;
   recordNodeOutputs(node, state);
   recordNodeInputs(node, analysis, state);

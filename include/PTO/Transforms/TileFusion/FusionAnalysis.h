@@ -91,6 +91,9 @@ struct FusionComputeNode {
   unsigned blockOrder = 0;
   Operation *op = nullptr;
   FusionOpSemantics semantics;
+  // True only when candidate selection chose a VMI TileLib implementation.
+  // The planner must not infer this from the op name or loop shape.
+  bool selectedVMI = false;
   unsigned iterationDomainClass = 0;
   SmallVector<unsigned, mlir::pto::kValue4> incomingEdges;
   SmallVector<unsigned, mlir::pto::kValue4> outgoingEdges;

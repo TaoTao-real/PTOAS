@@ -9,6 +9,7 @@
 #include "PTO/Support/CodeConstants.h"
 #include "ObjectEmission.h"
 #include "PrintHostSource.h"
+#include "ptoas.h"
 
 #include "PTO/Transforms/VPTOLLVMEmitter.h"
 #include "VFSIMTSizePatcher.h"
@@ -528,6 +529,7 @@ public:
                         const mlir::pto::CANNToolchain &toolchain,
                         mlir::pto::VFSIMTSizeFixMode vfsimtSizeFixMode,
                         mlir::pto::BishengSchedulerMode schedulerMode,
+                        bool vmiDeviceRoute,
                         llvm::raw_ostream &diagOS) {
     if (!module) {
       return true;
@@ -547,7 +549,7 @@ public:
     }
     if (failed(mlir::pto::emitVPTOVectorDeviceObject(
             *module, vectorLLPath, rawVectorObjPath, toolchain, stderrPath,
-            diagOS, schedulerMode, bridge, printMode))) {
+            diagOS, schedulerMode, bridge, printMode, vmiDeviceRoute))) {
       return false;
     }
     if (vfsimtSizeFixMode == mlir::pto::VFSIMTSizeFixMode::Off) {
@@ -754,12 +756,11 @@ static bool runCommandWithStderr(llvm::StringRef program,
   return false;
 }
 
-// The fixed part of the device compile: target, codegen policy and the
-// VF auto-sync and fastmath selections the driver resolved.
-static llvm::SmallVector<std::string, mlir::pto::kValue24>
-buildDeviceCompileArgs(llvm::StringRef targetCPU, llvm::StringRef bishengPath,
-                       bool needsPrintSupport) {
-    llvm::SmallVector<std::string, mlir::pto::kValue24> args = {
+static void appendBishengDeviceBaseArgs(llvm::SmallVectorImpl<std::string>& args,
+                                        llvm::StringRef bishengPath,
+                                        llvm::StringRef targetCPU)
+{
+    args.append({
         bishengPath.str(),
         std::string("--cce-aicore-arch=") + targetCPU.str(),
         "--cce-aicore-only",
@@ -771,8 +772,23 @@ buildDeviceCompileArgs(llvm::StringRef targetCPU, llvm::StringRef bishengPath,
         "--cce-long-scbz=true",
         "-mllvm",
         "-cce-dyn-kernel-stack-size=true",
-    };
-    switch (bishengVFAutoSyncMode) {
+    });
+}
+
+static void appendBishengVFAutoSyncArgs(llvm::SmallVectorImpl<std::string>& args,
+                                        bool vmiDeviceRoute)
+{
+    // The VMI pipeline already formed the fused loops and emitted the
+    // synchronization that ties them to the memory pipeline, so Bisheng must
+    // stand down rather than rewrite that IR a second time. Its vector
+    // scheduler is pinned off as well, because the schedule in the IR was
+    // chosen for precisely this loop structure. An explicit command-line choice
+    // still wins.
+    BishengVFAutoSyncMode autoSync = bishengVFAutoSyncMode;
+    if (vmiDeviceRoute && autoSync == BishengVFAutoSyncMode::Unspecified) {
+        autoSync = BishengVFAutoSyncMode::Off;
+    }
+    switch (autoSync) {
         case BishengVFAutoSyncMode::Unspecified:
             break;
         case BishengVFAutoSyncMode::Off:
@@ -785,6 +801,52 @@ buildDeviceCompileArgs(llvm::StringRef targetCPU, llvm::StringRef bishengPath,
             args.append({"-mllvm", "-cce-vf-auto-sync=global"});
             break;
     }
+}
+
+static void appendVMIDeviceRouteArgs(llvm::SmallVectorImpl<std::string>& args)
+{
+    for (llvm::StringRef flag : {
+             "-cce-vf-enable-vf-fusion=false",
+             "-cce-vf-enable-vf-loop-extender=false",
+             "-cce-vf-enable-loop-fusion=false",
+             "-cce-vf-enable-vf-ldst-elimination=false",
+             "-cce-vf-enable-ub-dead-st-elimination=false",
+             "-cce-vf-enable-vf-ifelse-extender=false",
+         }) {
+        args.push_back("-mllvm");
+        args.push_back(flag.str());
+    }
+}
+
+// Compile one scheduling variant of the device LLVM IR: `enabled` selects the
+// Bisheng vector scheduler, `reportUsage` adds the resource-usage report.
+static bool compileDeviceObjectVariant(const llvm::SmallVector<std::string, mlir::pto::kValue24>& args,
+                                       llvm::StringRef bishengPath, llvm::StringRef llPath,
+                                       bool enabled, bool reportUsage, llvm::StringRef object,
+                                       llvm::StringRef log, llvm::raw_ostream& diagnostics)
+{
+    auto variantArgs = args;
+    // On retains the toolchain's default; =1 is not equivalent on all versions.
+    if (!enabled) {
+        variantArgs.append({"-mllvm", "--cce-aicore-vec-misched=0"});
+    }
+    if (reportUsage) {
+        variantArgs.append({"-mllvm", "--cce-res-usage"});
+    }
+    variantArgs.append({"-c", "-x", "ir", "-", "-o", object.str()});
+    return runCommandWithStderr(bishengPath, variantArgs, log, diagnostics, "device LLVM compilation", llPath);
+}
+
+static llvm::SmallVector<std::string, mlir::pto::kValue24>
+buildDeviceCompileArgs(llvm::StringRef targetCPU, llvm::StringRef bishengPath,
+                       bool needsPrintSupport, bool vmiDeviceRoute)
+{
+    llvm::SmallVector<std::string, mlir::pto::kValue24> args;
+    appendBishengDeviceBaseArgs(args, bishengPath, targetCPU);
+    appendBishengVFAutoSyncArgs(args, vmiDeviceRoute);
+    if (vmiDeviceRoute) {
+        appendVMIDeviceRouteArgs(args);
+    }
     args.push_back("-mllvm");
     args.push_back(std::string("--cce-simt-fpmath-combine=") + (enableSimtFastMath ? "true" : "false"));
     if (needsPrintSupport) {
@@ -796,26 +858,22 @@ buildDeviceCompileArgs(llvm::StringRef targetCPU, llvm::StringRef bishengPath,
 static bool compileDeviceLLVMToObject(
     llvm::StringRef llPath, llvm::StringRef outObjPath, llvm::StringRef targetCPU, llvm::StringRef bishengPath,
     llvm::StringRef stderrPath, llvm::raw_ostream& diagOS, mlir::pto::BishengSchedulerMode schedulerMode,
-    bool needsPrintSupport = false)
+    bool needsPrintSupport = false, bool vmiDeviceRoute = false)
 {
-    const auto args = buildDeviceCompileArgs(targetCPU, bishengPath, needsPrintSupport);
+    const auto args = buildDeviceCompileArgs(targetCPU, bishengPath, needsPrintSupport, vmiDeviceRoute);
     auto compile = [&args, bishengPath, llPath](
                        bool enabled, bool reportUsage, llvm::StringRef object, llvm::StringRef log,
                        llvm::raw_ostream& diagnostics) {
-        auto variantArgs = args;
-        // On retains the toolchain's default; =1 is not equivalent on all versions.
-        if (!enabled) {
-            variantArgs.append({"-mllvm", "--cce-aicore-vec-misched=0"});
-        }
-        if (reportUsage) {
-            variantArgs.append({"-mllvm", "--cce-res-usage"});
-        }
-        variantArgs.append({"-c", "-x", "ir", "-", "-o", object.str()});
-        return runCommandWithStderr(bishengPath, variantArgs, log, diagnostics, "device LLVM compilation", llPath);
+        return compileDeviceObjectVariant(args, bishengPath, llPath, enabled, reportUsage, object, log,
+                                          diagnostics);
     };
     // One scheduler policy drives every device module. Only the vector target
     // participates in auto selection; cube falls back to off unless the user
     // asked for an explicit on, which must be preserved here as well.
+    if (vmiDeviceRoute && mlir::pto::bishengSchedulerMode.getNumOccurrences() == 0 &&
+        mlir::pto::enableBishengVecMISched.getNumOccurrences() == 0) {
+        schedulerMode = mlir::pto::BishengSchedulerMode::Off;
+    }
     auto mode = mlir::pto::getBishengSchedulerModeForTarget(schedulerMode, targetCPU.ends_with("-vec"));
     return mlir::pto::compileWithBishengScheduler(mode, outObjPath, stderrPath, compile, diagOS);
 }
@@ -1246,7 +1304,9 @@ mlir::LogicalResult mlir::pto::compileLLVMToDeviceObject(
     BishengSchedulerMode schedulerMode) {
   return compileDeviceLLVMToObject(llPath, outObjPath, getTargetCPU(target),
                                    toolchain.bishengPath, stderrPath, diagOS,
-                                   schedulerMode)
+                                   schedulerMode,
+                                   /*needsPrintSupport=*/false,
+                                   /*vmiDeviceRoute=*/false)
              ? success()
              : failure();
 }
@@ -1358,7 +1418,8 @@ static mlir::LogicalResult emitVPTODeviceObject(
     mlir::pto::ObjectEmissionDeviceTarget target,
     const mlir::pto::CANNToolchain &toolchain, llvm::StringRef stderrPath,
     llvm::raw_ostream &diagOS, mlir::pto::BishengSchedulerMode schedulerMode,
-    mlir::pto::BridgeLinkInputs bridge, mlir::pto::PrintDTDataMode printMode) {
+    mlir::pto::BridgeLinkInputs bridge, mlir::pto::PrintDTDataMode printMode,
+    bool vmiDeviceRoute = false) {
   if (mlir::failed(applyVPTOLLVMABINames(
           module, toolchain.vptoPublicABISuffix(target), diagOS))) {
     return mlir::failure();
@@ -1379,7 +1440,7 @@ static mlir::LogicalResult emitVPTODeviceObject(
   const bool compiled = compileDeviceLLVMToObject(
       compileInput, outObjPath, resolveTargetCPU(module, target),
       toolchain.bishengPath, stderrPath, diagOS, schedulerMode,
-      printMode != mlir::pto::PrintDTDataMode::None);
+      printMode != mlir::pto::PrintDTDataMode::None, vmiDeviceRoute);
   return compiled ? mlir::success() : mlir::failure();
 }
 
@@ -1388,11 +1449,11 @@ mlir::LogicalResult mlir::pto::emitVPTOVectorDeviceObject(
     const CANNToolchain &toolchain, llvm::StringRef stderrPath,
     llvm::raw_ostream &diagOS,
     BishengSchedulerMode schedulerMode, BridgeLinkInputs bridge,
-    PrintDTDataMode printMode) {
+    PrintDTDataMode printMode, bool vmiDeviceRoute) {
   return emitVPTODeviceObject(module, llPath, outObjPath,
                               ObjectEmissionDeviceTarget::Vector, toolchain,
                               stderrPath, diagOS, schedulerMode, bridge,
-                              printMode);
+                              printMode, vmiDeviceRoute);
 }
 
 mlir::LogicalResult mlir::pto::emitVPTOCubeDeviceObject(
@@ -1415,7 +1476,7 @@ mlir::LogicalResult mlir::pto::emitFatobjLLVM(
     llvm::raw_ostream &diagOS,
     BishengSchedulerMode schedulerMode,
     llvm::ArrayRef<BridgeWrapperTU> bridgeWrappers,
-    PrintDTDataMode printMode) {
+    PrintDTDataMode printMode, bool vmiDeviceRoute) {
   if (!cubeModule && !vectorModule) {
     diagOS << "Error: VPTO fatobj emission requires at least one LLVM module.\n";
     return failure();
@@ -1438,7 +1499,8 @@ mlir::LogicalResult mlir::pto::emitFatobjLLVM(
     return failure();
   }
   if (!artifacts.emitVectorObject(vectorModule, toolchain,
-                                  vfsimtSizeFixMode, schedulerMode, diagOS)) {
+                                  vfsimtSizeFixMode, schedulerMode,
+                                  vmiDeviceRoute, diagOS)) {
     return failure();
   }
   if (!artifacts.mergeDeviceObjects(toolchain, diagOS)) {
@@ -1492,7 +1554,7 @@ mlir::LogicalResult mlir::pto::emitFatobjLLVMWithRuntime(
     llvm::raw_ostream &diagOS,
     BishengSchedulerMode schedulerMode,
     llvm::ArrayRef<BridgeWrapperTU> bridgeWrappers,
-    PrintDTDataMode printMode) {
+    PrintDTDataMode printMode, bool vmiDeviceRoute) {
   if (!cubeModule && !vectorModule) {
     diagOS << "Error: VPTO fatobj emission requires at least one LLVM module.\n";
     return failure();
@@ -1522,7 +1584,8 @@ mlir::LogicalResult mlir::pto::emitFatobjLLVMWithRuntime(
     return failure();
   }
   if (!artifacts.emitVectorObject(vectorModule, *toolchain,
-                                  vfsimtSizeFixMode, schedulerMode, diagOS)) {
+                                  vfsimtSizeFixMode, schedulerMode,
+                                  vmiDeviceRoute, diagOS)) {
     return failure();
   }
 

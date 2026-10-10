@@ -1,0 +1,148 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software; you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// Which tile_buf config fields may close the fusion-region gate.  The gate asks
+// one question -- can the row-major element math place this tile's bytes? -- so
+// the fields are graded instead of testing the whole config with isDefault():
+//
+//   bLayout      moves bytes  getNoneBoxPointerStrides() builds the strides
+//                             from it                        (kept gated)
+//   sLayout      moves bytes  a boxed layout pulls s_fractal_size into the
+//                             pointer arithmetic             (kept gated)
+//   compactMode  moves bytes  RowPlusOne adds one element to the outer stride,
+//                             which the footprint product does not count
+//                                                            (kept gated)
+//   sFractalSize inert here   getFractalInnerDims() is only reachable from the
+//                             boxed path, and the tile verifier reads the
+//                             fractal only after sLayout != NoneBox
+//   pad          inert here   a fill value for copies (TFillPad), never part of
+//                             a footprint
+//
+// So a row_major / none_box / non-compact tile is placed exactly like the
+// default config whatever its fractal or pad says: those two fields no longer
+// split a group, while every config that can still move a byte keeps reporting
+// unknown (a split) rather than being guessed.  col_major cannot be driven
+// through an elementwise compute at all -- pto.tmul verifies row-major
+// src/dst -- so its gate is covered by the two negative controls below plus the
+// code authority above.
+//
+// RUN: pto-test-opt %s '--pto-fusion-plan=fusion-strategy=vmi-ub-disjoint' --pto-fusion-region-gen | FileCheck %s --check-prefix=GATE
+
+module {
+
+  // reference: default config, same window -> must-alias, one region
+  // GATE-LABEL: func.func @gate_default_same_window
+  // GATE: pto.fusion_region
+  // GATE-NOT: pto.fusion_region
+  func.func @gate_default_same_window(
+      %a: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+      %b: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>,
+      %c: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 0 : index
+    %c2 = arith.constant 0 : index
+    %base = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=64, v_row=32, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %v1 = pto.subview %base[%c0, %c0] sizes [16, 64] : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=64, v_row=32, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0> -> !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    %v2 = pto.subview %base[%c2, %c0] sizes [16, 64] : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=64, v_row=32, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0> -> !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>
+    pto.tmul ins(%a, %b : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%v1 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>) {pto.tilelib.impl = "vmi"}
+    pto.tadd ins(%v1, %c : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>) outs(%v2 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0>) {pto.tilelib.impl = "vmi"}
+    return
+  }
+  // fractal=1024 on a row_major/none_box tile does not move bytes -> one region
+  // GATE-LABEL: func.func @gate_fractal_same_window
+  // GATE: pto.fusion_region
+  // GATE-NOT: pto.fusion_region
+  func.func @gate_fractal_same_window(
+      %a: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0>,
+      %b: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0>,
+      %c: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 0 : index
+    %c2 = arith.constant 0 : index
+    %base = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=64, v_row=32, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0>
+    %v1 = pto.subview %base[%c0, %c0] sizes [16, 64] : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=64, v_row=32, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0> -> !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0>
+    %v2 = pto.subview %base[%c2, %c0] sizes [16, 64] : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=64, v_row=32, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0> -> !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0>
+    pto.tmul ins(%a, %b : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0>) outs(%v1 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0>) {pto.tilelib.impl = "vmi"}
+    pto.tadd ins(%v1, %c : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0>) outs(%v2 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0>) {pto.tilelib.impl = "vmi"}
+    return
+  }
+  // same config, provably disjoint windows -> no-alias, still one region
+  // GATE-LABEL: func.func @gate_fractal_disjoint_windows
+  // GATE: pto.fusion_region
+  // GATE-NOT: pto.fusion_region
+  func.func @gate_fractal_disjoint_windows(
+      %a: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0>,
+      %b: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0>,
+      %c: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 0 : index
+    %c2 = arith.constant 16 : index
+    %base = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=64, v_row=32, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0>
+    %v1 = pto.subview %base[%c0, %c0] sizes [16, 64] : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=64, v_row=32, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0> -> !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0>
+    %v2 = pto.subview %base[%c2, %c0] sizes [16, 64] : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=64, v_row=32, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0> -> !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0>
+    pto.tmul ins(%a, %b : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0>) outs(%v1 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0>) {pto.tilelib.impl = "vmi"}
+    pto.tadd ins(%v1, %c : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0>) outs(%v2 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=1024, pad=0>) {pto.tilelib.impl = "vmi"}
+    return
+  }
+  // sLayout=row_major boxes the tile: s_fractal_size drives the real strides -> unknown -> 2
+  // GATE-LABEL: func.func @gate_boxed_still_unknown
+  // GATE: pto.fusion_region
+  // GATE: pto.fusion_region
+  // GATE-NOT: pto.fusion_region
+  func.func @gate_boxed_still_unknown(
+      %a: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=row_major, fractal=512, pad=0>,
+      %b: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=row_major, fractal=512, pad=0>,
+      %c: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=row_major, fractal=512, pad=0>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 0 : index
+    %c2 = arith.constant 0 : index
+    %base = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=64, v_row=32, v_col=64, blayout=row_major, slayout=row_major, fractal=512, pad=0>
+    %v1 = pto.subview %base[%c0, %c0] sizes [16, 64] : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=64, v_row=32, v_col=64, blayout=row_major, slayout=row_major, fractal=512, pad=0> -> !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=row_major, fractal=512, pad=0>
+    %v2 = pto.subview %base[%c2, %c0] sizes [16, 64] : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=64, v_row=32, v_col=64, blayout=row_major, slayout=row_major, fractal=512, pad=0> -> !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=row_major, fractal=512, pad=0>
+    pto.tmul ins(%a, %b : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=row_major, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=row_major, fractal=512, pad=0>) outs(%v1 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=row_major, fractal=512, pad=0>) {pto.tilelib.impl = "vmi"}
+    pto.tadd ins(%v1, %c : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=row_major, fractal=512, pad=0>, !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=row_major, fractal=512, pad=0>) outs(%v2 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=row_major, fractal=512, pad=0>) {pto.tilelib.impl = "vmi"}
+    return
+  }
+  // compact=RowPlusOne adds one element to the outer stride -> unknown -> 2
+  // GATE-LABEL: func.func @gate_rowplusone_still_unknown
+  // GATE: pto.fusion_region
+  // GATE: pto.fusion_region
+  // GATE-NOT: pto.fusion_region
+  func.func @gate_rowplusone_still_unknown(
+      %a: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0, compact=2>,
+      %b: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0, compact=2>,
+      %c: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0, compact=2>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 0 : index
+    %c2 = arith.constant 0 : index
+    %base = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=64, v_row=32, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0, compact=2>
+    %v1 = pto.subview %base[%c0, %c0] sizes [16, 64] : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=64, v_row=32, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0, compact=2> -> !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0, compact=2>
+    %v2 = pto.subview %base[%c2, %c0] sizes [16, 64] : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=64, v_row=32, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0, compact=2> -> !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0, compact=2>
+    pto.tmul ins(%a, %b : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0, compact=2>, !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0, compact=2>) outs(%v1 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0, compact=2>) {pto.tilelib.impl = "vmi"}
+    pto.tadd ins(%v1, %c : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0, compact=2>, !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0, compact=2>) outs(%v2 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=0, compact=2>) {pto.tilelib.impl = "vmi"}
+    return
+  }
+  // pad is a copy fill value, not part of the footprint -> one region
+  // GATE-LABEL: func.func @gate_pad_is_inert
+  // GATE: pto.fusion_region
+  // GATE-NOT: pto.fusion_region
+  func.func @gate_pad_is_inert(
+      %a: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=1>,
+      %b: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=1>,
+      %c: !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=1>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 0 : index
+    %c2 = arith.constant 0 : index
+    %base = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=64, v_row=32, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=1>
+    %v1 = pto.subview %base[%c0, %c0] sizes [16, 64] : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=64, v_row=32, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=1> -> !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=1>
+    %v2 = pto.subview %base[%c2, %c0] sizes [16, 64] : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=64, v_row=32, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=1> -> !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=1>
+    pto.tmul ins(%a, %b : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=1>, !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=1>) outs(%v1 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=1>) {pto.tilelib.impl = "vmi"}
+    pto.tadd ins(%v1, %c : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=1>, !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=1>) outs(%v2 : !pto.tile_buf<loc=vec, dtype=f32, rows=16, cols=64, v_row=16, v_col=64, blayout=row_major, slayout=none_box, fractal=512, pad=1>) {pto.tilelib.impl = "vmi"}
+    return
+  }
+}

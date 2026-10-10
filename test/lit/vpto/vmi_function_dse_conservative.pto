@@ -1,0 +1,106 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software; you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// You may refer to the License for details.
+// You should not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// Conservative cases of PTOVmiFunctionDSE: every store here has a potential
+// later observer and must be kept.
+//
+//   ESC-RD   - an mte_ub_gm drain after the store, through an
+//              addptr(castptr, 0) source (the pipeline's usual view form, and
+//              the reason the pass peels constant addptr chains): kept.
+//   OVERLAP  - a read before the store in the same loop whose affine key has
+//              stride < write width (later iterations re-read the stored
+//              bytes): kept.
+//   UNTRACK  - a store through a block-argument UB pointer (untrackable
+//              base): kept.
+//   CALL     - a func.call after the store (reads anywhere): kept.
+
+// RUN: pto-test-opt %s -pto-vmi-function-dse \
+// RUN:   | FileCheck %s --check-prefix=DSE
+
+module {
+  // ESC-RD: the escape drain reads the whole storage root after the store.
+  func.func @escape_read_keeps(%gm_out: !pto.ptr<f32, gm>) -> () {
+    %c0_i64 = arith.constant 0 : i64
+    %c0 = arith.constant 0 : index
+    %c64 = arith.constant 64 : index
+    %c128_i64 = arith.constant 128 : i64
+    %c32_i64 = arith.constant 32 : i64
+    %c1 = arith.constant 1.0 : f32
+    %ub = pto.castptr %c0_i64 {pto.tile_shape = array<i64: 4, 64>} : i64 -> !pto.ptr<f32, ub>
+    %ub1 = pto.addptr %ub, %c0 : <f32, ub> -> <f32, ub>
+    %mask = pto.vmi.create_mask %c64 : index -> !pto.vmi.mask<64xpred>
+    %seed = pto.vmi.broadcast %c1 : f32 -> !pto.vmi.vreg<64xf32>
+    // DSE-LABEL: func.func @escape_read_keeps
+    // DSE-COUNT-1: pto.vmi.vstore
+    // DSE-NOT: pto.vmi.vstore
+    // DSE: pto.mte_ub_gm
+    pto.vmi.vstore %seed, %ub[%c0], %mask : !pto.vmi.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.vmi.mask<64xpred>
+    pto.mte_ub_gm %ub1, %gm_out, %c128_i64
+      nburst(%c32_i64, %c128_i64, %c128_i64)
+      : !pto.ptr<f32, ub>, !pto.ptr<f32, gm>, i64, i64, i64, i64
+    return
+  }
+
+  // OVERLAP: stride 32 elements (128 bytes) < write width 256 bytes, so the
+  // read of iteration i+1 overlaps the write of iteration i.
+  func.func @cross_iteration_overlap_keeps() -> () {
+    %c0_i64 = arith.constant 0 : i64
+    %c0 = arith.constant 0 : index
+    %c32 = arith.constant 32 : index
+    %c64 = arith.constant 64 : index
+    %c128 = arith.constant 128 : index
+    %c1 = arith.constant 1 : index
+    %cf = arith.constant 1.0 : f32
+    %x = pto.castptr %c0_i64 {pto.tile_shape = array<i64: 128, 64>} : i64 -> !pto.ptr<f32, ub>
+    %mask = pto.vmi.create_mask %c64 : index -> !pto.vmi.mask<64xpred>
+    // DSE-LABEL: func.func @cross_iteration_overlap_keeps
+    // DSE-COUNT-1: pto.vmi.vstore
+    // DSE-NOT: pto.vmi.vstore
+    scf.for %iv = %c0 to %c128 step %c1 {
+      %off = arith.muli %iv, %c32 : index
+      %row = pto.vmi.vload %x[%off] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+      %scaled = pto.vmi.vmuls %row, %cf, %mask : !pto.vmi.vreg<64xf32>, f32, !pto.vmi.mask<64xpred> -> !pto.vmi.vreg<64xf32>
+      pto.vmi.vstore %scaled, %x[%off], %mask : !pto.vmi.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.vmi.mask<64xpred>
+      scf.yield
+    }
+    return
+  }
+
+  // UNTRACK: the destination is a block argument; no root can be proven.
+  func.func @untrackable_base_keeps(%raw: !pto.ptr<f32, ub>) -> () {
+    %c0 = arith.constant 0 : index
+    %c64 = arith.constant 64 : index
+    %c1 = arith.constant 1.0 : f32
+    %mask = pto.vmi.create_mask %c64 : index -> !pto.vmi.mask<64xpred>
+    %seed = pto.vmi.broadcast %c1 : f32 -> !pto.vmi.vreg<64xf32>
+    // DSE-LABEL: func.func @untrackable_base_keeps
+    // DSE-COUNT-1: pto.vmi.vstore
+    // DSE-NOT: pto.vmi.vstore
+    pto.vmi.vstore %seed, %raw[%c0], %mask : !pto.vmi.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.vmi.mask<64xpred>
+    return
+  }
+
+  // CALL: a call after the store may read any memory the function can name.
+  func.func private @sink(%v: !pto.vmi.vreg<64xf32>) -> ()
+  func.func @call_keeps() -> () {
+    %c0_i64 = arith.constant 0 : i64
+    %c0 = arith.constant 0 : index
+    %c64 = arith.constant 64 : index
+    %c1 = arith.constant 1.0 : f32
+    %ub = pto.castptr %c0_i64 {pto.tile_shape = array<i64: 4, 64>} : i64 -> !pto.ptr<f32, ub>
+    %mask = pto.vmi.create_mask %c64 : index -> !pto.vmi.mask<64xpred>
+    %seed = pto.vmi.broadcast %c1 : f32 -> !pto.vmi.vreg<64xf32>
+    // DSE-LABEL: func.func @call_keeps
+    // DSE-COUNT-1: pto.vmi.vstore
+    // DSE-NOT: pto.vmi.vstore
+    pto.vmi.vstore %seed, %ub[%c0], %mask : !pto.vmi.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.vmi.mask<64xpred>
+    func.call @sink(%seed) : (!pto.vmi.vreg<64xf32>) -> ()
+    return
+  }
+}

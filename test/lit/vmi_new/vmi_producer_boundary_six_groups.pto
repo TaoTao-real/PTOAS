@@ -1,0 +1,34 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: pto-test-opt %s -vmi-lower-unified-to-legacy -pto-validate-vmi-ir -vmi-mask-granularity-assignment -vmi-layout-assignment -pto-validate-vmi-layout-ir | FileCheck %s
+
+module {
+  func.func @vmi_producer_boundary_six_groups(
+      %source: !pto.vmi.vreg<192xf32>,
+      %mask: !pto.vmi.mask<192xpred>,
+      %dst: !pto.ptr<f32, ub>,
+      %off: index) {
+    %c1 = arith.constant 1 : index
+    %sum = pto.vmi.vcadd %source, %mask
+        {group = 6, reassoc}
+        : !pto.vmi.vreg<192xf32>, !pto.vmi.mask<192xpred>
+        -> !pto.vmi.vreg<6xf32>
+    pto.vmi.vstore %sum, %dst[%off], %c1 {group = 6}
+        : !pto.vmi.vreg<6xf32>, !pto.ptr<f32, ub>
+    return
+  }
+}
+
+// A six-group tail has a dense executable layout. Both stage gates must use
+// that capability rather than imposing a physical instruction group limit.
+// CHECK-LABEL: func.func @vmi_producer_boundary_six_groups
+// CHECK: pto.vmi.group_reduce_addf
+// CHECK-SAME: -> !pto.vmi.vreg<6xf32, #pto.vmi.layout<num_groups = 6, slots = 1>>
+// CHECK: pto.vmi.group_store
+// CHECK-SAME: {num_groups = 6 : i64}
