@@ -87,3 +87,23 @@ retest. This report does not transfer results across those toolchain versions.
 The PR-branch backport is independently rebuilt and validated under experiment
 `20261015-fa-pr1554-integration-r7`; keep its results separate from the
 upstream-based compiler and historical performance experiments.
+
+Implementation source freeze: `cfe04b9f1c1414f28654c5bdae03d9c333bb47c1`.
+All 8018 tracked source files match the native build input byte for byte.
+Subsequent documentation-only evidence updates do not change that code freeze.
+
+| PR-branch check | Result |
+|---|---|
+| Focused contract/storage lit entries | 7 passed, including 13 new storage scenarios |
+| Full compiler lit | 1957 passed, 1 unsupported, 0 failed |
+| Full sample generation/compilation smoke | 877 passed, 19 skipped, 0 failed |
+| Original FA | Required 3840 bytes / available 2048 bytes; no object generated |
+| Corrected M32 FA on A5 | 16/16 repeated runs passed |
+| Independent NumPy golden | Passed; reference difference <=1.67e-16 |
+| Comparison with upstream-based R6 | All 16 captured output files bit identical |
+
+The four actual allones Q/K/V input sets were also inspected: every stored FP16
+value is exactly one. Constant output error is zero. Pattern errors and all
+toolchain limitations remain as stated above. The sample pass result here is
+for the PR branch; it does not replace the separately recorded mainline sample
+failure in `Img2col/timg2col_runtime.py`.
