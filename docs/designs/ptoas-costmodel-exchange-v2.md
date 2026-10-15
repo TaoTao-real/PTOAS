@@ -283,9 +283,10 @@ checks reader completion before free/overwrite, and rejects cycles in the augmen
 graph. Unknown engines, missing completion edges or unimplemented reuse return `unknown`.
 Wrong versions, live clobbers, cycles or known layout overflow return `fail`.
 
-Target library storage geometry is part of the gate. The retained 16x16 interface micro has an
-8-row vector NZ tile, while installed A5 ND-to-NZ rounds row stride to 16. That device-invalid
-shape is explicitly rejected. Device fixtures use 32x32 matrices and 16 rows per AIV; all Q/K/V
+Target library storage geometry is part of the gate. The original 16x16 interface micro had an
+8-row vector NZ tile, while installed A5 ND-to-NZ rounds row stride to 16. The TMOV verifier now
+rejects insufficient destination storage before export or lowering. The current interface and
+device fixtures use 32x32 matrices and 16 rows per AIV. For the device fixtures, all Q/K/V
 and output iterations are distinct. No tolerance relaxation is used to accommodate the failure.
 The feedback boundary is final PTO. Bisheng/library lowering, stack spills and device execution
 remain separately bound target evidence; this profile does not certify arbitrary native layouts.

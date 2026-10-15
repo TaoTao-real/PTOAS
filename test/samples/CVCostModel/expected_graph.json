@@ -19,20 +19,20 @@
   "pipe_backing_buffers": 3,
   "local_allocation_bytes": {
     "cube": [
-      1024,
-      1024,
-      1024,
-      1024,
-      1024
+      4096,
+      4096,
+      4096,
+      4096,
+      4096
     ],
     "vector": [
-      512,
-      512,
-      512
+      2048,
+      2048,
+      2048
     ]
   },
   "reserved_bytes": {
-    "cube": 4096,
-    "vector": 8192
+    "cube": 16384,
+    "vector": 32768
   }
 }

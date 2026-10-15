@@ -11,7 +11,8 @@
 static LogicalResult verifyTMovGeneric(TMovOp op, bool isA5) {
   if (failed(verifyTMovGenericPreconditions(op, isA5)) ||
       failed(verifyTMovGenericPairing(op, isA5)) ||
-      failed(verifyTMovGenericFpForm(op, isA5))) {
+      failed(verifyTMovGenericFpForm(op, isA5)) ||
+      failed(verifyA5NdToNzStorage(op, isA5))) {
     return failure();
   }
   return success();

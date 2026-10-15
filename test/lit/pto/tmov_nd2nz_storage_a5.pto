@@ -1,0 +1,136 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: split-file %s %t
+// RUN: not ptoas --pto-arch=a5 --emit-pto-ir %t/f16_overrun.pto 2>&1 | FileCheck %s --check-prefix=F16-CAPACITY
+// RUN: not ptoas --pto-arch=a5 --emit-pto-ir %t/f32_overrun.pto 2>&1 | FileCheck %s --check-prefix=F32-CAPACITY
+// RUN: not ptoas --pto-arch=a5 --emit-pto-ir %t/rowplus_overrun.pto 2>&1 | FileCheck %s --check-prefix=ROWPLUS-CAPACITY
+// RUN: not ptoas --pto-arch=a5 --emit-pto-ir %t/dynamic_overrun.pto 2>&1 | FileCheck %s --check-prefix=DYNAMIC-CAPACITY
+// RUN: not ptoas --pto-arch=a5 --emit-pto-ir %t/zero_rows.pto 2>&1 | FileCheck %s --check-prefix=ZERO-ROWS
+// RUN: not ptoas --pto-arch=a5 --emit-pto-ir %t/overflow.pto 2>&1 | FileCheck %s --check-prefix=OVERFLOW
+// RUN: ptoas --pto-arch=a5 --emit-pto-ir %t/aligned.pto -o /dev/null
+// RUN: ptoas --pto-arch=a5 --emit-pto-ir %t/padded.pto -o /dev/null
+// RUN: ptoas --pto-arch=a5 --emit-pto-ir %t/rowplus_padded.pto -o /dev/null
+// RUN: ptoas --pto-arch=a5 --emit-pto-ir %t/single_c0.pto -o /dev/null
+// RUN: ptoas --pto-arch=a5 --emit-pto-ir %t/dynamic_safe.pto -o /dev/null
+// RUN: ptoas --pto-arch=a5 --emit-pto-ir %t/zero_columns.pto -o /dev/null
+// RUN: ptoas --pto-arch=a5 --emit-pto-ir %t/ordinary_nd.pto -o /dev/null
+
+// Padded storage acceptance here only verifies the conversion. Pipe peer
+// geometry remains a separate requirement. A blanket Rows >= 16 rule would
+// reject the safe single_c0 boundary case.
+// F16-CAPACITY: write span requires 3840 bytes, but the physical tile provides 2048 bytes
+// F32-CAPACITY: write span requires 7936 bytes, but the physical tile provides 4096 bytes
+// ROWPLUS-CAPACITY: write span requires 4064 bytes, but the physical tile provides 2302 bytes
+// DYNAMIC-CAPACITY: write span requires 3840 bytes
+// ZERO-ROWS: expects positive source and destination valid rows
+// OVERFLOW: cannot compute A5 ND-to-NZ destination storage bounds without overflow
+
+//--- f16_overrun.pto
+module {
+  func.func @f16_overrun(%src: !pto.tile_buf<vec, 8x128xf16>, %dst: !pto.tile_buf<vec, 8x128xf16, blayout=col_major, slayout=row_major>) {
+    pto.tmov ins(%src : !pto.tile_buf<vec, 8x128xf16>) outs(%dst : !pto.tile_buf<vec, 8x128xf16, blayout=col_major, slayout=row_major>)
+    return
+  }
+}
+
+//--- f32_overrun.pto
+module {
+  func.func @f32_overrun(%src: !pto.tile_buf<vec, 8x128xf32>, %dst: !pto.tile_buf<vec, 8x128xf32, blayout=col_major, slayout=row_major>) {
+    pto.tmov ins(%src : !pto.tile_buf<vec, 8x128xf32>) outs(%dst : !pto.tile_buf<vec, 8x128xf32, blayout=col_major, slayout=row_major>)
+    return
+  }
+}
+
+//--- rowplus_overrun.pto
+module {
+  func.func @rowplus_overrun(%src: !pto.tile_buf<vec, 8x128xf16>, %dst: !pto.tile_buf<vec, 8x128xf16, blayout=col_major, slayout=row_major, compact=2>) {
+    pto.tmov ins(%src : !pto.tile_buf<vec, 8x128xf16>) outs(%dst : !pto.tile_buf<vec, 8x128xf16, blayout=col_major, slayout=row_major, compact=2>)
+    return
+  }
+}
+
+//--- dynamic_overrun.pto
+module {
+  func.func @dynamic_overrun(%src: !pto.tile_buf<vec, 8x128xf16, valid=?x128>, %dst: !pto.tile_buf<vec, 8x128xf16, valid=?x128, blayout=col_major, slayout=row_major>) {
+    pto.tmov ins(%src : !pto.tile_buf<vec, 8x128xf16, valid=?x128>) outs(%dst : !pto.tile_buf<vec, 8x128xf16, valid=?x128, blayout=col_major, slayout=row_major>)
+    return
+  }
+}
+
+//--- zero_rows.pto
+module {
+  func.func @zero_rows(%src: !pto.tile_buf<vec, 16x128xf16, valid=0x128>, %dst: !pto.tile_buf<vec, 16x128xf16, valid=0x128, blayout=col_major, slayout=row_major>) {
+    pto.tmov ins(%src : !pto.tile_buf<vec, 16x128xf16, valid=0x128>) outs(%dst : !pto.tile_buf<vec, 16x128xf16, valid=0x128, blayout=col_major, slayout=row_major>)
+    return
+  }
+}
+
+//--- overflow.pto
+module {
+  func.func @overflow(%src: !pto.tile_buf<vec, 16x16xf16>, %dst: !pto.tile_buf<vec, 4611686018427387904x16xf16, blayout=col_major, slayout=row_major>) {
+    pto.tmov ins(%src : !pto.tile_buf<vec, 16x16xf16>) outs(%dst : !pto.tile_buf<vec, 4611686018427387904x16xf16, blayout=col_major, slayout=row_major>)
+    return
+  }
+}
+
+//--- aligned.pto
+module {
+  func.func @aligned(%src: !pto.tile_buf<vec, 16x128xf16>, %dst: !pto.tile_buf<vec, 16x128xf16, blayout=col_major, slayout=row_major>) {
+    pto.tmov ins(%src : !pto.tile_buf<vec, 16x128xf16>) outs(%dst : !pto.tile_buf<vec, 16x128xf16, blayout=col_major, slayout=row_major>)
+    return
+  }
+}
+
+//--- padded.pto
+module {
+  func.func @padded(%src: !pto.tile_buf<vec, 8x128xf16>, %dst: !pto.tile_buf<vec, 16x128xf16, valid=8x128, blayout=col_major, slayout=row_major>) {
+    pto.tmov ins(%src : !pto.tile_buf<vec, 8x128xf16>) outs(%dst : !pto.tile_buf<vec, 16x128xf16, valid=8x128, blayout=col_major, slayout=row_major>)
+    return
+  }
+}
+
+//--- rowplus_padded.pto
+module {
+  func.func @rowplus_padded(%src: !pto.tile_buf<vec, 8x128xf16>, %dst: !pto.tile_buf<vec, 16x128xf16, valid=8x128, blayout=col_major, slayout=row_major, compact=2>) {
+    pto.tmov ins(%src : !pto.tile_buf<vec, 8x128xf16>) outs(%dst : !pto.tile_buf<vec, 16x128xf16, valid=8x128, blayout=col_major, slayout=row_major, compact=2>)
+    return
+  }
+}
+
+//--- single_c0.pto
+module {
+  func.func @single_c0(%src: !pto.tile_buf<vec, 8x16xf16>, %dst: !pto.tile_buf<vec, 8x16xf16, blayout=col_major, slayout=row_major>) {
+    pto.tmov ins(%src : !pto.tile_buf<vec, 8x16xf16>) outs(%dst : !pto.tile_buf<vec, 8x16xf16, blayout=col_major, slayout=row_major>)
+    return
+  }
+}
+
+//--- dynamic_safe.pto
+module {
+  func.func @dynamic_safe(%src: !pto.tile_buf<vec, 16x128xf16, valid=?x128>, %dst: !pto.tile_buf<vec, 16x128xf16, valid=?x128, blayout=col_major, slayout=row_major>) {
+    pto.tmov ins(%src : !pto.tile_buf<vec, 16x128xf16, valid=?x128>) outs(%dst : !pto.tile_buf<vec, 16x128xf16, valid=?x128, blayout=col_major, slayout=row_major>)
+    return
+  }
+}
+
+//--- zero_columns.pto
+module {
+  func.func @zero_columns(%src: !pto.tile_buf<vec, 16x128xf16, valid=0x0>, %dst: !pto.tile_buf<vec, 16x128xf16, valid=0x0, blayout=col_major, slayout=row_major>) {
+    pto.tmov ins(%src : !pto.tile_buf<vec, 16x128xf16, valid=0x0>) outs(%dst : !pto.tile_buf<vec, 16x128xf16, valid=0x0, blayout=col_major, slayout=row_major>)
+    return
+  }
+}
+
+//--- ordinary_nd.pto
+module {
+  func.func @ordinary_nd(%src: !pto.tile_buf<vec, 8x128xf16>, %dst: !pto.tile_buf<vec, 8x128xf16>) {
+    pto.tmov ins(%src : !pto.tile_buf<vec, 8x128xf16>) outs(%dst : !pto.tile_buf<vec, 8x128xf16>)
+    return
+  }
+}

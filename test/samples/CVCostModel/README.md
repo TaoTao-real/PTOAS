@@ -16,7 +16,7 @@ checkpoint preserves backend-partitioned wrapper/Cube/Vector modules and lowers
 and checks their pipes recursively. Ordinary code generation keeps the mainline
 backend routing and toolchain requirements.
 
-`flash_attention_serial.pto` is the downstream assembly regression. Its v2 export
+`flash_attention_serial_m32.pto` is the corrected downstream assembly regression. Its v2 export
 uses explicitly negotiated `pto.structured_cv.1` semantics, preserving symbolic
 loop bounds, function calls and module ownership. See the
 [structured assembly ADR](../../../docs/designs/ptoas-costmodel-structured-assembly.md)
@@ -24,6 +24,16 @@ for bindings and Buffer-only annotation plans. This path is G1 only: the current
 static four-stage TileSim/materializer path cannot yet schedule the FA Vector
 prologue and recurrent loop. It must not claim a latency or certified optimization.
 The existing flat micro v1/v2 contract and commands below remain unchanged.
+
+The original `flash_attention_serial.pto` is retained as an invalid-input regression:
+its 8-row FP16 NZ destination declares 2048 bytes but the installed A5 conversion
+writes across 3840 bytes. PTOAS now rejects it before code generation. Use the
+M32/AIV16 file for device validation. It keeps the original exported function names
+so the customer's matching `runtime_check.cpp` can link without a symbol change.
+The compiler does not automatically rewrite the original input. See the
+[FA layout validation report](../../../docs/designs/ptoas-fa-layout-validation-20261015.md)
+for reproduction steps, numerical results and toolchain limits. Re-export packages
+and regenerate plans after changing the input; old fingerprints are invalid.
 
 The cost model reads the package and returns a plan in the format described in
 [the exchange ADR](../../../docs/designs/ptoas-cv-costmodel-exchange-v1.md).
@@ -123,10 +133,11 @@ a model-certified performance choice. Keep `summary.json` and the complete run d
 
 ## Fixed-candidate G2/G3 device validation
 
-The interface micro above is deliberately retained. It is **not a device golden fixture**:
-its 8-row vector NZ tile is undersized for the installed A5 ND-to-NZ 16-row stride.
-Native G2 reports `NATIVE_LAYOUT_OVERFLOW` for that configuration. `runtime_fixture.py`
-uses 32x32 FP32 matrices (16 rows per AIV), distinct Q/K/V per iteration, and independent
+The interface micro now uses 32x32 FP32 matrices (16 rows per AIV), with matching
+pipe geometry and manually specified allocation-byte expectations. It repeats the
+same inputs and is **not a device golden fixture**. Previously accepted undersized
+8-row NZ conversions are rejected by the TMOV verifier. `runtime_fixture.py`
+keeps the existing 32x32 geometry, distinct Q/K/V per iteration, and independent
 integer NumPy golden. Basic computes `2*(-Q@K)@V`; crossing computes `(-Q@K)@V-Q@K`.
 
 ```bash

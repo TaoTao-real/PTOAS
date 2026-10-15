@@ -188,18 +188,16 @@ class FeedbackTest(unittest.TestCase):
         self.assertEqual(memory["allocations"], self.memory["allocations"])
         self.assertEqual(memory["usage"], self.memory["usage"])
 
-    def test_undersized_native_nz_layout_rejected(self):
+    def test_interface_nz_geometry_compiles(self):
         profile = read_json(SAMPLE / "a5_profile.json")
-        export_v2(SAMPLE / "four_stage_serial.pto", profile, self.root / "tiny")
-        bindings = read_package(self.root / "tiny")["bindings"]
+        export_v2(SAMPLE / "four_stage_serial.pto", profile, self.root / "interface")
+        bindings = read_package(self.root / "interface")["bindings"]
         bindings["alias_contract"] = "disjoint"
-        export_v2(SAMPLE / "four_stage_serial.pto", profile, self.root / "tiny-bound", bindings)
-        package = read_package(self.root / "tiny-bound")
-        report = apply_candidate(self.root / "tiny-bound", configuration(package["program"], 0),
-                                 self.root / "tiny-out", "compile_serial")
-        self.assertEqual(report["validation"]["G2"], "fail")
-        validation = read_json(self.root / "tiny-out" / "validation_report.json")
-        self.assertIn("NATIVE_LAYOUT_OVERFLOW", {e["code"] for e in validation["completion"]["unresolved"]})
+        export_v2(SAMPLE / "four_stage_serial.pto", profile, self.root / "interface-bound", bindings)
+        package = read_package(self.root / "interface-bound")
+        report = apply_candidate(self.root / "interface-bound", configuration(package["program"], 0),
+                                 self.root / "interface-out", "compile_serial")
+        self.assertEqual(report["validation"]["G2"], "pass")
 
     def test_native_library_changes_compiler_identity(self):
         from types import SimpleNamespace

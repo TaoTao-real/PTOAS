@@ -18,17 +18,14 @@ def source_text(count, crossing=False):
     integer(count, "iterations")
     require(count <= 8, "RANGE", "runtime fixture accepts at most eight iterations")
     source = Path(__file__).with_name("four_stage_serial.pto").read_text(encoding="utf-8")
-    # A5 ND->NZ rounds its row stride to 16. A split 16x16 matrix
-    # would produce an 8-row NZ tile whose declared storage is too small.
-    source = source.replace("16", "32").replace("8", "16")
+    # The interface fixture already uses legal 32x32 / AIV16 geometry.
     capacity = max(4, count)
     source = source.replace("%c2 = arith.constant 2 : index", f"%c2 = arith.constant {count} : index")
     source = source.replace("%c32 = arith.constant 32 : index",
                             f"%c32 = arith.constant 32 : index\n    %rows = arith.constant {max(32, count*32)} : index")
     source = source.replace("shape=[%c32,%c32]", "shape=[%rows,%c32]")
-    source = source.replace("size=4096", f"size={4096*capacity}")
+    source = source.replace("size=16384", f"size={4096*capacity}")
     source = source.replace("slot_num=4", f"slot_num={capacity}")
-    source = source.replace("slot_size=1024", "slot_size=4096")
     lines, cube_views, vector_views = [], [], []
     for line in source.splitlines():
         if "pto.partition_view" in line:

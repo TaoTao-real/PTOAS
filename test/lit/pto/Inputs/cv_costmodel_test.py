@@ -77,7 +77,7 @@ class ExchangeTest(unittest.TestCase):
         self.assertEqual({(p["producer_task_id"], p["consumer_task_id"]) for p in manifest["pipes"]},
                          {("C_QK", "V_P"), ("V_P", "C_PV"), ("C_PV", "V_O")})
         for pipe in manifest["pipes"]:
-            self.assertEqual((pipe["split"], pipe["effective_slot_num"], pipe["slot_size_bytes"]), (1, 4, 1024))
+            self.assertEqual((pipe["split"], pipe["effective_slot_num"], pipe["slot_size_bytes"]), (1, 4, 4096))
         for scope, size in expected["reserved_bytes"].items():
             self.assertEqual(sum(b["allocation_bytes"] for b in manifest["buffers"]
                                  if b["owner"] == "pipe_backing" and b["source_scope"] == scope), size)
@@ -311,13 +311,13 @@ class ExchangeTest(unittest.TestCase):
     def test_shape_changed(self):
         source = self.output("shape.pto")
         text = self.source.read_text(encoding="utf-8")
-        replacements = (("16x16", "32x32"), ("8x16", "16x32"),
-                        ("rows=16", "rows=32"), ("cols=16", "cols=32"),
-                        ("v_row=16", "v_row=32"), ("v_col=16", "v_col=32"),
-                        ("rows=8", "rows=16"), ("v_row=8", "v_row=16"),
+        replacements = (("32x32", "64x64"), ("16x32", "32x64"),
+                        ("rows=32", "rows=64"), ("cols=32", "cols=64"),
+                        ("v_row=32", "v_row=64"), ("v_col=32", "v_col=64"),
+                        ("rows=16", "rows=32"), ("v_row=16", "v_row=32"),
+                        ("constant 32 : index", "constant 64 : index"),
                         ("constant 16 : index", "constant 32 : index"),
-                        ("constant 8 : index", "constant 16 : index"),
-                        ("size=4096,", "size=16384,"), ("slot_size=1024", "slot_size=4096"))
+                        ("size=16384,", "size=65536,"), ("slot_size=4096", "slot_size=16384"))
         for before, after in replacements:
             text = text.replace(before, after)
         source.write_text(text, encoding="utf-8")

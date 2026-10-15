@@ -35,7 +35,7 @@ class StructuredTest(unittest.TestCase):
         cls.temp = tempfile.TemporaryDirectory(prefix="pto-structured-")
         cls.root = Path(cls.temp.name)
         cls.profile = read_json(SAMPLE / "a5_profile.json")
-        cls.source = SAMPLE / "flash_attention_serial.pto"
+        cls.source = SAMPLE / "flash_attention_serial_m32.pto"
         cls.path = cls.root / "package"
         export_v2(cls.source, cls.profile, cls.path)
         cls.package = read_package(cls.path)
@@ -77,6 +77,9 @@ class StructuredTest(unittest.TestCase):
         for call in p["calls"]:
             self.assertIn(call["callee_id"], {f["id"] for f in p["functions"] if f["role"] in ("cube", "vector")})
             self.assertTrue(call["argument_map"])
+
+    def test_original_undersized_attachment_rejected(self):
+        self.reject("COMPILER", canonicalize, SAMPLE / "flash_attention_serial.pto")
 
     def test_recursive_tfree_validation(self):
         source = self.output(".pto")

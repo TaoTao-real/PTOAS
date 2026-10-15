@@ -62,7 +62,7 @@ class ExchangeV2Test(unittest.TestCase):
         self.assertEqual(len([b for b in program["buffers"] if b["owner"] == "local"]), 8)
         matmul = next(o for o in program["operations"] if o["name"] == "pto.tmatmul")
         self.assertEqual(matmul["attributes"]["accPhase"], "unspecified")
-        self.assertEqual(program["values"][matmul["operands"][0]]["shape"], [16, 16])
+        self.assertEqual(program["values"][matmul["operands"][0]]["shape"], [32, 32])
         self.assertNotIn("!pto", encode(program))
 
     def test_no_native_dependency(self):

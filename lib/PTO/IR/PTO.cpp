@@ -62,6 +62,7 @@
 #include "PTOTile/PTOGatherVerification.cpp"
 #include "PTOTile/PTOGatherAndExtremaOps.cpp"
 #include "PTOTile/PTOMoveLayoutVerification.cpp"
+#include "PTOTile/PTONd2NzStorageVerification.cpp"
 #include "PTOTile/PTOMoveScalarAndCacheOps.cpp"
 
 // Cache, buffer, gather/scatter, merge, and quantization operations.

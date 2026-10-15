@@ -62,7 +62,7 @@ are not integration strategies.
 ## File interface and replay
 
 ```sh
-ptoas costmodel v2 export flash_attention_serial.pto \
+ptoas costmodel v2 export flash_attention_serial_m32.pto \
   --profile a5_profile.json --output fa-package
 ptoas costmodel v2 validate fa-package --plan buffer-plan.json
 ptoas costmodel v2 apply fa-package --plan buffer-plan.json --output fa-annotated
