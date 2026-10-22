@@ -235,7 +235,7 @@ def prepare(args):
         if row['buffer_id'].endswith('_mix_aiv:buffer:0'): row['count']=1
     cv.annotate_plan(bpath/'package',plan,root/'invalid.pto')
     try:
-        cv._invoke(args.compiler,[root/'invalid.pto',*cv._flags(target),'--cv-apply-vf','--emit-pto-ir','-o',root/'invalid-output.pto'],root/'invalid.log')
+        cv._invoke(args.compiler,[root/'invalid.pto',*cv._flags(target),'--cv-apply-vf','--enable-insert-sync','--enable-vecscope-mem-bar','--emit-pto-ir','-o',root/'invalid-output.pto'],root/'invalid.log')
     except RuntimeError:
         require('INSUFFICIENT_SLOTS' in (root/'invalid.log').read_text(),'invalid candidate failed for wrong reason')
     else: raise ValueError('insufficient slots accepted')
