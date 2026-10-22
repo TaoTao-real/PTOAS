@@ -1,0 +1,44 @@
+// RUN: pto-test-opt %s --pto-inline-libcall | FileCheck %s
+// CHECK-LABEL: func.func @authored_scope
+// CHECK: pto.vecscope {
+// CHECK-NOT: pto.vecscope
+// CHECK: pto.vmi.create_mask
+// CHECK: pto.vmi.vstore
+// CHECK-LABEL: func.func @authored_strict_scope
+// CHECK: pto.strict_vecscope {
+// CHECK-NOT: pto.vecscope
+// CHECK: pto.vmi.create_mask
+// CHECK: pto.vmi.vstore
+// CHECK-LABEL: func.func @no_scope
+// CHECK: pto.vecscope {
+// CHECK-NOT: pto.vecscope
+// CHECK: pto.vmi.create_mask
+// CHECK: pto.vmi.vstore
+module {
+  func.func @authored_scope(%p: !pto.ptr<f32, ub>) {
+    pto.vecscope {
+      func.call @template(%p) : (!pto.ptr<f32, ub>) -> ()
+    }
+    return
+  }
+  func.func @authored_strict_scope(%p: !pto.ptr<f32, ub>) {
+    pto.strict_vecscope {
+      func.call @template(%p) : (!pto.ptr<f32, ub>) -> ()
+    }
+    return
+  }
+  func.func @no_scope(%p: !pto.ptr<f32, ub>) {
+    func.call @template(%p) : (!pto.ptr<f32, ub>) -> ()
+    return
+  }
+  func.func private @template(%p: !pto.ptr<f32, ub>) attributes {pto.tilelang.instance, pto.tilelib.impl = "vmi"} {
+    pto.vecscope {
+      %c0 = arith.constant 0 : index
+      %c64 = arith.constant 64 : index
+      %m = pto.vmi.create_mask %c64 : index -> !pto.vmi.mask<64xpred>
+      %v = pto.vmi.vload %p[%c0] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+      pto.vmi.vstore %v, %p[%c0], %m : !pto.vmi.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.vmi.mask<64xpred>
+    }
+    return
+  }
+}

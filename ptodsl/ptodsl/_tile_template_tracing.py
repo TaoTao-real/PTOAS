@@ -613,6 +613,10 @@ class _TraceBuilder(TracingRuntime):
             # without it FoldTileBufIntrinsics tries to resolve its formal
             # tile_buf arguments as if they were caller-owned alloc_tile values.
             ir_fn.attributes["pto.tilelang.instance"] = UnitAttr.get()
+            if self.descriptor.ir_level == "vmi":
+                # The inliner can reuse an authored caller scope instead of
+                # nesting this template's implicit vector-scope carrier.
+                ir_fn.attributes["pto.tilelib.impl"] = StringAttr.get("vmi")
             session = self.create_session(module, ir_fn)
             entry = ir_fn.add_entry_block()
             with InsertionPoint(entry), activate_runtime(self), activate_session(session):

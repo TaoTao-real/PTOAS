@@ -179,7 +179,26 @@ static LogicalResult inlineCall(func::CallOp call, func::FuncOp callee) {
        llvm::zip(entry.getArguments(), call.getOperands()))
     mapping.map(arg, operand);
 
+  SmallVector<Operation *> operations;
+  auto impl = callee->getAttrOfType<StringAttr>("pto.tilelib.impl");
+  bool reuseCallerScope = impl && impl.getValue() == "vmi" &&
+      (call->getParentOfType<pto::VecScopeOp>() ||
+       call->getParentOfType<pto::StrictVecScopeOp>());
   for (Operation &op : entry.without_terminator()) {
+    // VMI TileLib adds an implicit resultless scope to its source function.
+    // Reuse an existing caller scope, preserving its original boundary. Do
+    // not unwrap authored strict scopes or scopes from other implementations.
+    if (reuseCallerScope) {
+      if (auto scope = dyn_cast<pto::VecScopeOp>(&op)) {
+        for (Operation &nested : scope.getBody().front())
+          operations.push_back(&nested);
+        continue;
+      }
+    }
+    operations.push_back(&op);
+  }
+  for (Operation *sourceOp : operations) {
+    Operation &op = *sourceOp;
     FailureOr<bool> handledOr =
         pto::tryCloneOpLibInlineBridgeOp(builder, op, mapping);
     if (failed(handledOr)) {
