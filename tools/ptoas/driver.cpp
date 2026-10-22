@@ -1401,6 +1401,7 @@ static LogicalResult writeTextOutput(llvm::StringRef output,
 struct DriverInvocationOptions {
   bool cliArchSpecified = false;
   bool cliBackendSpecified = false;
+  bool disableThreading = false;
 };
 
 static FailureOr<DriverInvocationOptions>
@@ -1424,6 +1425,11 @@ parseDriverInvocation(const std::vector<std::string> &args,
   std::vector<const char *> argViews = toCommandLineViews(args);
   llvm::cl::ParseCommandLineOptions(static_cast<int>(argViews.size()),
                                     argViews.data(), "PTO Assembler (ptoas)\n");
+  options.disableThreading = llvm::any_of(args, [](const std::string &arg) {
+    return arg == "--mlir-disable-threading" ||
+           arg == "--mlir-disable-threading=true" ||
+           arg == "--mlir-disable-threading=1";
+  });
   bool newSchedulerOption = mlir::pto::bishengSchedulerMode.getNumOccurrences() != 0;
   bool oldSchedulerOption = mlir::pto::enableBishengVecMISched.getNumOccurrences() != 0;
   if (newSchedulerOption && oldSchedulerOption) {
@@ -1436,12 +1442,17 @@ parseDriverInvocation(const std::vector<std::string> &args,
 
 static std::unique_ptr<PTOASContext>
 createDriverContext(DialectRegistry &registry, MLIRContext *borrowedContext,
-                    const DriverInvocationOptions &) {
+                    const DriverInvocationOptions &options) {
   std::unique_ptr<PTOASContext> context;
   if (borrowedContext) {
     context = std::make_unique<PTOASContext>(borrowedContext, outputFilename);
   } else {
     context = std::make_unique<PTOASContext>(registry, outputFilename);
+  }
+  // Python can create the borrowed context before LLVM parses the command
+  // line. Apply an explicit request to that context as well as new contexts.
+  if (options.disableThreading) {
+    context->getMLIRContext().disableMultithreading();
   }
   auto mode = mlir::pto::bishengSchedulerMode.getValue();
   bool explicitLegacy = mlir::pto::enableBishengVecMISched.getNumOccurrences() != 0;

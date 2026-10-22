@@ -5,7 +5,7 @@
 // CHECK: pto.vmi.create_mask
 // CHECK: pto.vmi.vstore
 // CHECK-LABEL: func.func @authored_strict_scope
-// CHECK: pto.strict_vecscope {
+// CHECK: pto.strict_vecscope
 // CHECK-NOT: pto.vecscope
 // CHECK: pto.vmi.create_mask
 // CHECK: pto.vmi.vstore
@@ -22,9 +22,10 @@ module {
     return
   }
   func.func @authored_strict_scope(%p: !pto.ptr<f32, ub>) {
-    pto.strict_vecscope {
-      func.call @template(%p) : (!pto.ptr<f32, ub>) -> ()
-    }
+    pto.strict_vecscope(%p) {
+    ^bb0(%inner: !pto.ptr<f32, ub>):
+      func.call @template(%inner) : (!pto.ptr<f32, ub>) -> ()
+    } : (!pto.ptr<f32, ub>) -> ()
     return
   }
   func.func @no_scope(%p: !pto.ptr<f32, ub>) {
