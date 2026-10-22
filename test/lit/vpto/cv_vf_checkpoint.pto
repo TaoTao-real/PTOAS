@@ -1,0 +1,18 @@
+// RUN: ptoas %s --pto-arch=a5 --pto-level=level3 --pto-backend=vpto --enable-vmi --enable-op-fusion --enable-insert-sync --enable-vecscope-mem-bar --cv-freeze-vf --emit-vpto -o %t.freeze
+// RUN: ptoas %t.freeze --pto-arch=a5 --pto-level=level3 --pto-backend=vpto --enable-vmi --enable-op-fusion --cv-emit-frozen-vf --emit-vpto -o %t.resume
+// RUN: diff %t.freeze %t.resume
+// RUN: not ptoas %t.freeze --pto-arch=a5 --pto-level=level3 --pto-backend=vpto --enable-vmi --enable-op-fusion --emit-vpto -o /dev/null 2>&1 | FileCheck %s --check-prefix=NOFLAG
+// RUN: sed 's/physical-v2/physical-v1/' %t.freeze > %t.stale
+// RUN: not ptoas %t.stale --pto-arch=a5 --pto-level=level3 --pto-backend=vpto --enable-vmi --enable-op-fusion --cv-emit-frozen-vf --emit-vpto -o /dev/null 2>&1 | FileCheck %s --check-prefix=STALE
+// RUN: sed 's/checkpoint_kernel/changed_kernel/' %t.freeze > %t.modified
+// RUN: not ptoas %t.modified --pto-arch=a5 --pto-level=level3 --pto-backend=vpto --enable-vmi --enable-op-fusion --cv-emit-frozen-vf --emit-vpto -o /dev/null 2>&1 | FileCheck %s --check-prefix=STALE
+// NOFLAG: CV VF checkpoint input requires --cv-emit-frozen-vf
+// STALE: CV VF checkpoint identity, digest or prepared IR does not match
+
+module attributes {pto.backend = "vpto", pto.target_arch = "a5"} {
+  module attributes {pto.backend = "vpto", pto.kernel_kind = #pto.kernel_kind<vector>, pto.target_arch = "a5"} {
+    func.func @checkpoint_kernel() attributes {pto.entry} {
+      return
+    }
+  }
+}

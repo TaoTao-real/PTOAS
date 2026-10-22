@@ -12,6 +12,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "ptoas_internal.h"
+
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/Support/SHA256.h"
 #include "PTO/Transforms/VPTOBridgeTokens.h"
 
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -21,6 +24,31 @@ using namespace mlir;
 using namespace pto;
 
 namespace {
+// Opt-in diagnostic artifacts; these options do not enable CV optimization.
+static llvm::cl::opt<bool> cvFreezeVF(
+    "cv-freeze-vf", llvm::cl::desc("Export a prepared A5 VMI VF checkpoint"),
+    llvm::cl::init(false));
+static llvm::cl::opt<bool> cvEmitFrozenVF(
+    "cv-emit-frozen-vf", llvm::cl::desc("Emit a checked VF checkpoint without preparing VF again"),
+    llvm::cl::init(false));
+
+static Attribute cvCANNIdentity(MLIRContext *ctx, const pto::CANNVersion &version) {
+  return Builder(ctx).getI64ArrayAttr({version.major, version.minor,
+                                     version.patch, version.beta});
+}
+
+// Debug locations are not printed. Origin is provenance, not executable content.
+static std::string cvVFContentDigest(ModuleOp module) {
+  OwningOpRef<ModuleOp> copy = cast<ModuleOp>(module->clone());
+  (*copy)->removeAttr("pto.cv.vf_digest");
+  (*copy)->removeAttr("pto.cv.vf_origin");
+  std::string text;
+  llvm::raw_string_ostream os(text);
+  copy->print(os);
+  os.flush();
+  return llvm::toHex(llvm::SHA256::hash(llvm::arrayRefFromStringRef(text)), true);
+}
+
 /// Materialize the implicit no-inline semantics of `pto.simt_entry` using the
 /// standard Func dialect attribute understood by MLIR's public inliner
 /// extension and by later LLVM lowering.
@@ -1015,6 +1043,17 @@ static int emitVPTOTextResult(ModuleOp module, PTOASCompileResult &result,
 static int emitVPTOBackendResult(ModuleOp module, PTOASCompileResult &result,
                                  bool emitHostStub,
                                  const pto::CANNVersion &cannVersion) {
+  if (cvFreezeVF) {
+    Builder builder(module.getContext());
+    module->setAttr("pto.cv.vf_state", builder.getStringAttr("physical-v2"));
+    module->setAttr("pto.cv.vf_arch", builder.getStringAttr("a5"));
+    module->setAttr("pto.cv.vf_build_level", builder.getStringAttr("level3"));
+    module->setAttr("pto.cv.vf_cann", cvCANNIdentity(module.getContext(), cannVersion));
+    module->setAttr("pto.cv.vf_sync", builder.getStringAttr("ptoas-v1"));
+    auto digest = builder.getStringAttr(cvVFContentDigest(module));
+    module->setAttr("pto.cv.vf_digest", digest);
+    module->setAttr("pto.cv.vf_origin", digest);
+  }
   if (emitVPTO || emitVPTOLLVMDialect) {
     return emitVPTOTextResult(module, result, cannVersion);
   }
@@ -1952,6 +1991,46 @@ int mlir::pto::compilePTOASModule(
   if (failed(initializeCompilePipelineState(module, context, effectiveBackend,
                                             state)) ||
       failed(validateFusionConfiguration(state, effectiveBackend))) {
+    return 1;
+  }
+  if (cvFreezeVF || cvEmitFrozenVF) {
+    if (cvFreezeVF == cvEmitFrozenVF || state.arch != "a5" ||
+        effectiveBackend != PTOBackend::VPTO || state.level != PTOBuildLevel::Level3 ||
+        !enableVMI || !state.opFusionEnabled ||
+        (cvFreezeVF && (!emitVPTO || !enableInsertSync || !enableVecScopeMemBar ||
+                        enableVecScopeMemBarAll || emitMlirIR))) {
+      module->emitError("CV VF checkpoints require separate A5 level3 VMI VPTO phases; "
+                        "freeze also requires emit-vpto, InsertSync and vecscope membar");
+      return 1;
+    }
+  }
+  if (cvEmitFrozenVF) {
+    auto getString = [&](StringRef name) {
+      auto attr = (*module)->getAttrOfType<StringAttr>(name);
+      return attr ? attr.getValue() : StringRef();
+    };
+    auto cannVersion = resolveEffectiveCANNVersion(context.getCANNVersionOrDefault());
+    if (getString("pto.cv.vf_state") != "physical-v2" ||
+        getString("pto.cv.vf_arch") != "a5" ||
+        getString("pto.cv.vf_build_level") != "level3" ||
+        getString("pto.cv.vf_sync") != "ptoas-v1" ||
+        (*module)->getAttr("pto.cv.vf_cann") != cvCANNIdentity(module->getContext(), cannVersion) ||
+        getString("pto.cv.vf_origin").empty() ||
+        getString("pto.cv.vf_digest") != cvVFContentDigest(*module) ||
+        hasUnexpandedTileOps(*module)) {
+      module->emitError("CV VF checkpoint identity, digest or prepared IR does not match");
+      return 1;
+    }
+    PassManager verifyPM(module->getContext());
+    verifyPM.enableVerifier();
+    verifyPM.nest<ModuleOp>().addPass(pto::createPTOValidateVPTOEmissionIRPass());
+    if (failed(verifyPM.run(*module)))
+      return 1;
+    context.setVmiDeviceRoute(true);
+    return emitVPTOBackendResult(*module, result, emitVPTOHostStub, cannVersion);
+  }
+  if ((*module)->hasAttr("pto.cv.vf_state")) {
+    module->emitError("CV VF checkpoint input requires --cv-emit-frozen-vf");
     return 1;
   }
   setFusionPipelineFlags(state, effectiveBackend);
