@@ -12,19 +12,27 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from threading import local
 
-_ACTIVE_RUNTIME_STACK = []
-_ACTIVE_SESSION_STACK = []
+
+class _ActiveTracingState(local):
+    def __init__(self):
+        # Parallel template materialization needs independent nested scopes.
+        self.runtime_stack = []
+        self.session_stack = []
+
+
+_ACTIVE_STATE = _ActiveTracingState()
 
 
 @contextmanager
 def activate_runtime(runtime):
     """Push *runtime* as the current active tracing runtime."""
-    _ACTIVE_RUNTIME_STACK.append(runtime)
+    _ACTIVE_STATE.runtime_stack.append(runtime)
     try:
         yield runtime
     finally:
-        popped = _ACTIVE_RUNTIME_STACK.pop()
+        popped = _ACTIVE_STATE.runtime_stack.pop()
         if popped is not runtime:
             raise RuntimeError("PTODSL active tracing runtime stack corruption detected")
 
@@ -32,20 +40,20 @@ def activate_runtime(runtime):
 @contextmanager
 def activate_session(session):
     """Push *session* as the current active trace session."""
-    _ACTIVE_SESSION_STACK.append(session)
+    _ACTIVE_STATE.session_stack.append(session)
     try:
         yield session
     finally:
-        popped = _ACTIVE_SESSION_STACK.pop()
+        popped = _ACTIVE_STATE.session_stack.pop()
         if popped is not session:
             raise RuntimeError("PTODSL active trace-session stack corruption detected")
 
 
 def current_runtime(expected_type=None):
     """Return the current active tracing runtime, or ``None`` if inactive."""
-    if not _ACTIVE_RUNTIME_STACK:
+    if not _ACTIVE_STATE.runtime_stack:
         return None
-    runtime = _ACTIVE_RUNTIME_STACK[-1]
+    runtime = _ACTIVE_STATE.runtime_stack[-1]
     if expected_type is not None and not isinstance(runtime, expected_type):
         return None
     return runtime
@@ -53,9 +61,9 @@ def current_runtime(expected_type=None):
 
 def current_session():
     """Return the current active trace session, or ``None`` if inactive."""
-    if not _ACTIVE_SESSION_STACK:
+    if not _ACTIVE_STATE.session_stack:
         return None
-    return _ACTIVE_SESSION_STACK[-1]
+    return _ACTIVE_STATE.session_stack[-1]
 
 
 def require_active_runtime(surface: str, expected_type=None):
