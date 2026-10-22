@@ -252,3 +252,30 @@ python test/samples/CVCostModel/prepare_vf_candidate.py \
 这个命令保留输入包、编译器生成的 schedule、最低槽数、回填 PTO、LLVM 和同次编译反馈。
 它使用手工固定候选，不代表模型推荐，也不代表已通过 G2/G3 或性能签收。
 当前 native 反馈的完整完成条件/FIFO 证明尚缺，禁止把旧路径的验收结果转记到新路径。
+
+### Native prepared-VF mechanism validation
+
+`native_ablation.py` validates the native compiler path introduced after MR289.
+It does not use the legacy fixed-address Python materializer and does not claim
+that the fixed candidate was selected by TileSim.
+
+The matrix is frozen before board execution: crossing, N=8, 32x32 FP32,
+A=serial/one slot, P0=expanded P=0/one slot, M=P0/three P slots,
+B=expanded P=2/three P slots. VF fusion and synchronization are identical.
+The compiler option `--cv-drain-before-free` drains outer core pipelines before
+borrowed-entry release and return. It leaves the prepared VF instructions intact.
+
+The external `pto.cv.restricted_micro_g2.v1` certificate accepts only this exact
+generated source and its disjoint argument contract. It checks same-compilation
+IR/product hashes, actual allocation bounds (rejecting physical overlap), both
+AIV domains, native schedules, nonempty absolute sync coverage, completion
+drains and three-stream FIFO progress. It does not promote the generic compiler
+feedback from `evidence_incomplete` to a universal G2 claim.
+
+Run `--mode prepare --compiler <wrapper> --output <new-matrix>` with the matching
+PTOAS Python package. Then use `build`, `correctness` and `performance` modes
+with `--matrix`, `--artifacts` and `--experiment`. Performance additionally
+requires `--g3 <correctness.json>` from the same binaries/device. Execute device
+modes through the private experiment helpers and the exclusive device queue.
+`--mode summarize` verifies the raw evidence and reports 20 paired blocks,
+10,000 bootstrap resamples and the independent mechanism benefit gate.

@@ -1,0 +1,1 @@
+// RUN: %ptoas_python %S/../../samples/CVCostModel/test_native_ablation.py -v

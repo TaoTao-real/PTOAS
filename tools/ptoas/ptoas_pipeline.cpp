@@ -59,6 +59,9 @@ static llvm::cl::opt<bool> cvAnalyzeSchedule(
 static llvm::cl::opt<std::string> cvFeedbackPath(
     "cv-feedback", llvm::cl::desc("Write same-compilation CV memory and validation feedback"),
     llvm::cl::init(""));
+static llvm::cl::opt<bool> cvDrainBeforeFree(
+    "cv-drain-before-free", llvm::cl::desc("Drain outer core pipes before borrowed-entry release and return (bounded CV validation)"),
+    llvm::cl::init(false));
 
 // Debug locations are not printed. Origin is provenance, not executable content.
 static std::string cvVFContentDigest(ModuleOp module) {
@@ -1498,9 +1501,34 @@ struct CaptureCVFeedbackPass final
         {"prediction_reusable_without_final_evaluation", false},
         {"functions", std::move(functions)},
         {"planned_ir_sha256", llvm::toHex(llvm::SHA256::hash(llvm::arrayRefFromStringRef(ir)), true)},
+        {"planned_ir", ir},
+        {"completion_policy", cvDrainBeforeFree ? "drain_before_free_and_return.v1" : "inferred_sync"},
         {"g2_status", "evidence_incomplete"},
         {"unverified", llvm::json::Array{"final asynchronous completion coverage", "paired C/V FIFO progress"}}};
     llvm::raw_string_ostream os(*output); os << llvm::formatv("{0:2}", llvm::json::Value(std::move(feedback)));
+  }
+};
+
+// The bounded validation path closes borrowed-entry lifetimes explicitly.
+// This is deliberately outside prepared VFs: it does not serialize the fused
+// vector instructions. Local RAW/WAR/WAW hazards still require the sync oracle.
+struct CVDrainBeforeFreePass final
+    : PassWrapper<CVDrainBeforeFreePass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(CVDrainBeforeFreePass)
+  void runOnOperation() final {
+    SmallVector<Operation *> points;
+    getOperation().walk([&](func::FuncOp function) {
+      if (function->hasAttr("pto.cv.prepared_vf")) return;
+      function.walk([&](Operation *op) {
+        if (isa<pto::TFreeOp, func::ReturnOp>(op)) points.push_back(op);
+      });
+    });
+    OpBuilder builder(&getContext());
+    for (Operation *op : points) {
+      builder.setInsertionPoint(op);
+      builder.create<pto::BarrierOp>(op->getLoc(),
+          pto::PipeAttr::get(&getContext(), pto::PIPE::PIPE_ALL));
+    }
   }
 };
 
@@ -2008,6 +2036,7 @@ static LogicalResult populateMainLoweringPasses(PassManager &pm,
     pm.addPass(pto::createCVValidateVFPass());
     pm.addPass(pto::createCVApplySchedulePass(cvAnalyzeSchedule));
     if (cvAnalyzeSchedule) return success();
+    if (cvDrainBeforeFree) pm.addPass(std::make_unique<CVDrainBeforeFreePass>());
     pm.addNestedPass<func::FuncOp>(pto::createPTOVerifyTFreePass());
     return appendLateStorageAndSyncPasses(pm, effectiveBackend, state);
   }
@@ -2349,6 +2378,10 @@ int mlir::pto::compilePTOASModule(
   }
   if (!cvFeedbackPath.empty() && !cvApplyVF) {
     module->emitError("cv-feedback requires cv-apply-vf"); return 1;
+  }
+  if (cvDrainBeforeFree && (!cvApplyVF || cvAnalyzeSchedule)) {
+    module->emitError("cv-drain-before-free requires candidate compilation with cv-apply-vf");
+    return 1;
   }
   if (!cvCostModelFinalIRFile.empty() &&
       (effectiveBackend != PTOBackend::EmitC || state.arch != "a5" ||
