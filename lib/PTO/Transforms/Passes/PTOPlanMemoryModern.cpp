@@ -14,6 +14,8 @@
 #include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/Support/CodeConstants.h"
 #include "PTO/Transforms/Passes.h"
+#include "PTO/Transforms/CVVF.h"
+#include "PTO/Transforms/MemoryRangeAllocator.h"
 #include "Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -431,10 +433,13 @@ struct PlannerAnalysis {
   DenseMap<Value, unsigned> rootIndexByValue;
   ConflictFacts facts;
   bool failed = false;
+  bool cvPreparedMode = false;
 
   explicit PlannerAnalysis(func::FuncOp func) : func(func) {
     facts.targetHazardEnabled =
         getTargetArch(func.getOperation()) == PTOArch::A3;
+    for (Operation *parent = func->getParentOp(); parent; parent = parent->getParentOp())
+      cvPreparedMode |= parent->hasAttr("pto.cv.prepared");
   }
 
   RootList getRoots(Value value) const {
@@ -1038,7 +1043,13 @@ struct PlannerAnalysis {
 
   // Root aliasing: propagate roots through value-forwarding ops.
   void recordRootAliases(Operation *op) {
-    if (auto multiGet = dyn_cast<pto::MultiTileGetOp>(op)) {
+    if (auto address = dyn_cast<pto::TileBufAddrOp>(op)) {
+      setRoots(address.getDst(), getRoots(address.getSrc()));
+    } else if (auto cast = dyn_cast<pto::CastPtrOp>(op)) {
+      setRoots(cast.getResult(), getRoots(cast.getInput()));
+    } else if (auto add = dyn_cast<pto::AddPtrOp>(op)) {
+      setRoots(add.getResult(), getRoots(add.getPtr()));
+    } else if (auto multiGet = dyn_cast<pto::MultiTileGetOp>(op)) {
       setRoots(multiGet.getResult(), getRoots(multiGet.getSource()));
       propagateSplitTpopDerived(multiGet.getResult(),
                                 ValueRange{multiGet.getSource()});
@@ -1069,6 +1080,34 @@ struct PlannerAnalysis {
   // Reads/writes: mark every non-DPS-init operand as a use; DPS inits are
   // marked read when the op has a read effect and always marked written.
   void recordAccesses(Operation *op, unsigned index, ValueRange dpsInits) {
+    if (cvPreparedMode && isa<pto::TileBufAddrOp, pto::CastPtrOp, pto::AddPtrOp>(op))
+      return; // Computing a handle does not access its data.
+    if (auto call = dyn_cast<func::CallOp>(op)) {
+      auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(call, call.getCalleeAttr());
+      if (callee && callee->hasAttr("pto.cv.prepared_vf")) {
+        auto effects = getCVVFEffects(callee);
+        if (mlir::failed(effects)) { failed = true; return; }
+        OpAccess access;
+        access.op = op; access.pipe = PIPE::PIPE_V;
+        access.opIndex = facts.opAccesses.size(); access.inLoop = isInsideLoop(op);
+        for (auto [i, operand] : llvm::enumerate(call.getOperands())) {
+          if (effects->reads[i]) {
+            markUse(operand, index); appendAccessRoots(access.reads, operand);
+          }
+          if (effects->writes[i]) {
+            // A VF write may be partial. Never shorten its lifetime on the
+            // assumption that the whole allocation was overwritten.
+            markWrite(operand, index, false); appendAccessRoots(access.writes, operand);
+          }
+        }
+        for (Value written : access.writes) {
+          for (Value read : access.reads) addForbidAlias(written, read);
+          for (Value other : access.writes) addForbidAlias(written, other);
+        }
+        facts.opAccesses.push_back(std::move(access));
+        return;
+      }
+    }
     for (Value operand : op->getOperands()) {
       if (llvm::is_contained(dpsInits, operand)) {
         continue;
@@ -1530,33 +1569,10 @@ static FailureOr<uint64_t> planReserveBufferBase(
     SmallVectorImpl<std::pair<uint64_t, uint64_t>> &occupied) {
   uint64_t sizeBytes =
       alignUp(static_cast<uint64_t>(reserveOp.getSize()), spec.alignmentBytes);
-  llvm::sort(occupied, [](const auto &lhs, const auto &rhs) {
-    return lhs.first < rhs.first;
-  });
-
-  SmallVector<std::pair<uint64_t, uint64_t>> merged;
-  for (const auto &interval : occupied) {
-    if (merged.empty() || interval.first > merged.back().second) {
-      merged.push_back(interval);
-      continue;
-    }
-    merged.back().second = std::max(merged.back().second, interval.second);
-  }
-
-  uint64_t cursor = 0;
-  for (const auto &interval : merged) {
-    cursor = alignUp(cursor, spec.alignmentBytes);
-    if (cursor + sizeBytes <= interval.first) {
-      return cursor;
-    }
-    cursor = std::max(cursor, interval.second);
-  }
-  cursor = alignUp(cursor, spec.alignmentBytes);
-  if (cursor + sizeBytes > spec.capacityBytes) {
-    return failure();
-  }
-  occupied.push_back({cursor, cursor + sizeBytes});
-  return cursor;
+  auto base = mlir::pto::detail::reserveMemoryRange(occupied, sizeBytes,
+                                         spec.alignmentBytes, spec.capacityBytes);
+  if (!base) return failure();
+  return *base;
 }
 
 static LogicalResult
@@ -1892,13 +1908,45 @@ static LogicalResult runModernPlanMemory(func::FuncOp func,
 
   planReserveBuffers(func, analysis.roots, analysis.failed);
 
-  if (analysis.failed ||
-      mlir::failed(materializePlannedOffsets(func, buffer2Offsets))) {
-    return failure();
+  if (analysis.failed) return failure();
+  bool cvMode = false;
+  for (Operation *parent = func->getParentOp(); parent; parent = parent->getParentOp())
+    cvMode |= parent->hasAttr("pto.cv.prepared");
+  // Record logical roots before materialization replaces their defining ops.
+  if (cvMode) {
+    Builder b(func.getContext());
+    SmallVector<Attribute> allocations;
+    for (const RootInfo &root : analysis.roots) {
+      auto identity = root.defOp->getAttrOfType<StringAttr>("pto.costmodel.buffer_id");
+      std::string fallback = (func.getSymName() + ":compiler:" + Twine(root.stableOrder)).str();
+      SmallVector<int64_t> offsets(root.offsets.begin(), root.offsets.end());
+      allocations.push_back(b.getDictionaryAttr({
+          b.getNamedAttr("buffer_id", identity ? identity : b.getStringAttr(fallback)),
+          b.getNamedAttr("ownership", b.getStringAttr("local")),
+          b.getNamedAttr("space", b.getStringAttr(stringifyEnum(root.space))),
+          b.getNamedAttr("slot_bytes", b.getI64IntegerAttr(root.slotBytes)),
+          b.getNamedAttr("alignment", b.getI64IntegerAttr(root.alignmentBytes)),
+          b.getNamedAttr("compiler_budget_bytes", b.getI64IntegerAttr(getMemSpec(getTargetArch(func), root.space).capacityBytes)),
+          b.getNamedAttr("addresses", b.getDenseI64ArrayAttr(offsets)),
+          b.getNamedAttr("first_access", b.getI64IntegerAttr(root.allocIndex)),
+          b.getNamedAttr("last_access", b.getI64IntegerAttr(root.freeIndex))}));
+    }
+    func->setAttr("pto.cv.memory_plan", b.getArrayAttr(allocations));
+    SmallVector<Attribute> reservations;
+    func.walk([&](pto::ReserveBufferOp reserve) {
+      reservations.push_back(b.getDictionaryAttr({
+          b.getNamedAttr("name", reserve.getNameAttr()),
+          b.getNamedAttr("space", b.getStringAttr(stringifyEnum(reserve.getLocation().getAddressSpace()))),
+          b.getNamedAttr("address", reserve.getBaseAttr()),
+          b.getNamedAttr("allocated_bytes", b.getI64IntegerAttr(alignUp(reserve.getSize(), getMemSpec(getTargetArch(func), reserve.getLocation().getAddressSpace()).alignmentBytes))),
+          b.getNamedAttr("compiler_budget_bytes", b.getI64IntegerAttr(getMemSpec(getTargetArch(func), reserve.getLocation().getAddressSpace()).capacityBytes)),
+          b.getNamedAttr("bytes", b.getI64IntegerAttr(reserve.getSize()))}));
+    });
+    func->setAttr("pto.cv.reservations", b.getArrayAttr(reservations));
   }
-  if (failed(verifySemanticNoAliasRanges(func))) {
-    return failure();
-  }
+
+  if (mlir::failed(materializePlannedOffsets(func, buffer2Offsets)) ||
+      failed(verifySemanticNoAliasRanges(func))) return failure();
 
   return verifyNoUnplannedAllocTile(func);
 }
@@ -1928,12 +1976,14 @@ struct PlanMemoryModernPass
 
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
+    if (moduleOp->hasAttr("pto.cv.prepared"))
+      moduleOp->setAttr("pto.cv.memory_planner_invoked", BoolAttr::get(&getContext(), enabled));
     SmallVector<func::FuncOp> funcs;
     moduleOp.walk([&funcs](func::FuncOp funcOp) {
       // `pto.tileop.helper` identifies compute-only helpers, not whether a
       // child module needs memory planning.  Skip those helpers themselves,
       // while planning every ordinary function in nested backend modules.
-      if (!funcOp->hasAttr("pto.tileop.helper")) {
+      if (!funcOp->hasAttr("pto.tileop.helper") && !funcOp->hasAttr("pto.cv.prepared_vf")) {
         funcs.push_back(funcOp);
       }
     });

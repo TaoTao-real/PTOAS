@@ -190,6 +190,19 @@ def PTOMaterializeImplicitTmp
   ];
 }
 
+def CVOutlineVF : Pass<"pto-cv-outline-vf", "ModuleOp"> {
+  let summary = "Outline address-parameterized vector computation for CV scheduling";
+  let constructor = "mlir::pto::createCVOutlineVFPass()";
+}
+def CVValidateVF : Pass<"pto-cv-validate-vf", "ModuleOp"> {
+  let summary = "Derive and validate prepared VF memory effects";
+  let constructor = "mlir::pto::createCVValidateVFPass()";
+}
+def CVApplySchedule : Pass<"pto-cv-apply-schedule", "ModuleOp"> {
+  let summary = "Apply a bounded static prefix/suffix CV schedule and buffer slots";
+  let constructor = "mlir::pto::createCVApplySchedulePass()";
+}
+
 def PlanMemory : Pass<"pto-plan-memory", "ModuleOp"> {
  let summary = "Plan memory for PTO Ops";
   let constructor = "mlir::pto::createPlanMemoryModernPass()";

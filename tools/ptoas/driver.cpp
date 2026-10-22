@@ -39,6 +39,9 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/JSON.h"
+#include "llvm/Support/SHA256.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Process.h"
 #include "llvm/Support/Regex.h"
@@ -320,7 +323,7 @@ static bool isBackendPartitionedContainer(ModuleOp module) {
 }
 
 static bool isUserVisibleIROutputRequested() {
-  return mlir::pto::emitMlirIR || mlir::pto::emitVPTO ||
+  return mlir::pto::isCVCostModelIROutputRequested() || mlir::pto::emitMlirIR || mlir::pto::emitVPTO ||
          mlir::pto::emitVPTOLLVMDialect || mlir::pto::ptoPrintSeamIR ||
          !mlir::pto::ptoSeamIRFile.empty();
 }
@@ -1141,7 +1144,11 @@ LogicalResult VPTOBackendJob::run(PTOASContext &context) {
     return failure();
   }
 
+  std::string feedback = std::move(result.cvFeedbackText);
+  std::string feedbackPath = std::move(result.cvFeedbackPath);
   result.reset();
+  result.cvFeedbackText = std::move(feedback);
+  result.cvFeedbackPath = std::move(feedbackPath);
   result.kind = mlir::pto::PTOASCompileResultKind::MixedObject;
   return success();
 }
@@ -1249,7 +1256,7 @@ static LogicalResult resolveSingleBackend(
   // child compile jobs would invalidate that digest before verification. Keep
   // it on the existing paired VPTO emission route; compilePTOASModule checks
   // the explicit resume flag, target, CANN and content before emitting code.
-  if (module->hasAttr("pto.cv.vf_state")) {
+  if (module->hasAttr("pto.cv.vf_state") || module->hasAttr("pto.cv.prepared")) {
     if ((cliBackendSpecified &&
          defaultBackend != mlir::pto::PTOBackend::VPTO) ||
         (moduleBackend &&
@@ -1549,7 +1556,23 @@ static int runPTOASDriver(const std::vector<std::string> &args,
   if (failed(runPTOASJobs(module, *context, result))) {
     return 1;
   }
-  return finishDriverResult(result, context->getOutputPath());
+  if (finishDriverResult(result, context->getOutputPath())) return 1;
+  if (!result.cvFeedbackText.empty()) {
+    auto feedback = llvm::json::parse(result.cvFeedbackText);
+    if (!feedback || !feedback->getAsObject()) return 1;
+    std::string product = result.textOutput;
+    if (result.kind != mlir::pto::PTOASCompileResultKind::Text) {
+      auto object = llvm::MemoryBuffer::getFile(context->getOutputPath(), false);
+      if (!object) return 1;
+      product = (*object)->getBuffer().str();
+    }
+    (*feedback->getAsObject())["product_sha256"] = llvm::toHex(
+        llvm::SHA256::hash(llvm::arrayRefFromStringRef(product)), true);
+    std::string text;
+    llvm::raw_string_ostream os(text); os << llvm::formatv("{0:2}", *feedback); os.flush();
+    if (failed(writeTextOutput(text + "\n", result.cvFeedbackPath))) return 1;
+  }
+  return 0;
 }
 
 int mlir::pto::runPTOAS(int argc, char **argv) {

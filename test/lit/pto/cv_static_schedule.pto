@@ -1,0 +1,46 @@
+// RUN: pto-test-opt %s -pto-cv-apply-schedule | FileCheck %s
+// RUN: pto-test-opt %s -pto-cv-apply-schedule -pto-plan-memory -pto-resolve-buffer-select | FileCheck %s --check-prefix=BOUND
+// RUN: sed 's/multi_buffer_count = 3/multi_buffer_count = 2/' %s > %t.insufficient
+// RUN: not pto-test-opt %t.insufficient -pto-cv-apply-schedule 2>&1 | FileCheck %s --check-prefix=INSUFFICIENT
+
+module attributes {pto.target_arch = "a5"} {
+  func.func @crossing() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %input = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
+    %p = pto.alloc_tile {pto.costmodel.buffer_id = "P", pto.pipeline.multi_buffer_count = 3 : i64} : !pto.tile_buf<vec, 32x32xf32>
+    %output = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
+    scf.for %i = %c0 to %c4 step %c1 {
+      pto.tneg ins(%input : !pto.tile_buf<vec, 32x32xf32>) outs(%p : !pto.tile_buf<vec, 32x32xf32>)
+      pto.tadd ins(%p, %p : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%output : !pto.tile_buf<vec, 32x32xf32>) {pto.cv.stage = "suffix"}
+    } {pto.cv_preload_count = 2 : i64}
+    return
+  }
+}
+// CHECK: pto.alloc_multi_tile
+// CHECK-SAME: pto.costmodel.buffer_id = "P"
+// CHECK-SAME: pto.cv.required_slots = 3
+// CHECK: pto.tneg
+// CHECK-SAME: pto.cv.iteration = 0
+// CHECK: pto.tneg
+// CHECK-SAME: pto.cv.iteration = 1
+// CHECK: pto.tneg
+// CHECK-SAME: pto.cv.iteration = 2
+// CHECK: pto.tadd
+// CHECK-SAME: pto.cv.iteration = 0
+// CHECK: pto.tneg
+// CHECK-SAME: pto.cv.iteration = 3
+// CHECK: pto.tadd
+// CHECK-SAME: pto.cv.iteration = 1
+// CHECK: pto.tadd
+// CHECK-SAME: pto.cv.iteration = 2
+// CHECK: pto.tadd
+// CHECK-SAME: pto.cv.iteration = 3
+// BOUND: pto.costmodel.buffer_id = "P"
+// BOUND-SAME: pto.cv.slot = 0
+// BOUND: pto.costmodel.buffer_id = "P"
+// BOUND-SAME: pto.cv.slot = 1
+// BOUND: pto.costmodel.buffer_id = "P"
+// BOUND-SAME: pto.cv.slot = 2
+// INSUFFICIENT: INSUFFICIENT_SLOTS

@@ -1,0 +1,1 @@
+// RUN: %ptoas_python %S/Inputs/cv_static_schedule_test.py pto-test-opt -v

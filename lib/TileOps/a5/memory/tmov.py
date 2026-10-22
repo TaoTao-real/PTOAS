@@ -54,7 +54,15 @@ def _vmi_tmov_physicalization_supported(**metadata):
     dst_config = metadata.get("dst_config")
     if dst_config is None:
         return True
-    return getattr(dst_config, "b_layout", "row_major") in {"row_major", "col_major"}
+    layout = getattr(dst_config, "b_layout", "row_major")
+    if layout == "col_major":
+        shape = metadata.get("src_valid_shape", metadata.get("src_shape", ()))
+        # The VMI implementation constructs a logical vreg and mask of this
+        # exact width. Reject unsupported formal PTODSL widths before template
+        # selection so the existing MI ND->NZ template can handle them.
+        if len(shape) != 2 or shape[1] not in {1, 2, 4, 8, 64, 128, 256}:
+            return False
+    return layout in {"row_major", "col_major"}
 
 
 @tilelib.tile_template(

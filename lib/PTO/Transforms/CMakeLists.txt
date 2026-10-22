@@ -49,6 +49,9 @@ set_source_files_properties(${_ptoas_vmi_split_units} PROPERTIES HEADER_FILE_ONL
 add_mlir_dialect_library(PTOTransforms
   ENABLE_AGGREGATION
 
+  CVVF.cpp
+  CVSchedule.cpp
+
   TileFusion/FusionAnalysis.cpp
   TileFusion/FusionOpSemantics.cpp
   TileFusion/PTOPreFusionAnalysis.cpp

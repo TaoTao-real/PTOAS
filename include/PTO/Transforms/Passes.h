@@ -27,6 +27,7 @@
 #include "mlir/Pass/Pass.h"
 #include "PTO/IR/PTODialect.h"
 #include "PTO/Transforms/TileLibService.h"
+#include "PTO/Transforms/CVVF.h"
 #include "PTO/Transforms/VPTOBridgeWhitelist.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"

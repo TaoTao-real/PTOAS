@@ -1,0 +1,2 @@
+// RUN: pto-memory-range-test | FileCheck %s
+// CHECK: MEMORY_RANGE_PASS: hole reservations, overlap, capacity, alignment overflow

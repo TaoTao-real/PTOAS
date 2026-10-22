@@ -1,0 +1,24 @@
+// RUN: ptoas %s --pto-arch=a5 --pto-level=level2 --pto-backend=vpto --enable-vmi --enable-op-fusion --cann-output-version=9.2.0 --cv-prepare-vf --emit-pto-ir -o %t.prepared
+// RUN: FileCheck %s --check-prefix=PREPARED < %t.prepared
+// RUN: ptoas %t.prepared --pto-arch=a5 --pto-level=level2 --pto-backend=vpto --enable-vmi --enable-op-fusion --cann-output-version=9.2.0 --cv-apply-vf --enable-insert-sync --enable-vecscope-mem-bar --emit-vpto -o %t.final
+// RUN: FileCheck %s --check-prefix=FINAL < %t.final
+
+module attributes {pto.target_arch = "a5", pto.backend = "vpto", pto.kernel_kind = #pto.kernel_kind<vector>} {
+  func.func @auto_fusion() attributes {pto.entry, pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %scale = arith.constant 0.5 : f32
+    %a = pto.alloc_tile : !pto.tile_buf<vec, 16x128xf32>
+    %tmp = pto.alloc_tile : !pto.tile_buf<vec, 16x128xf32>
+    %b = pto.alloc_tile : !pto.tile_buf<vec, 16x128xf32>
+    pto.tmuls ins(%a, %scale : !pto.tile_buf<vec, 16x128xf32>, f32) outs(%tmp : !pto.tile_buf<vec, 16x128xf32>)
+    pto.texp ins(%tmp : !pto.tile_buf<vec, 16x128xf32>) outs(%b : !pto.tile_buf<vec, 16x128xf32>)
+    return
+  }
+}
+// PREPARED-DAG: pto.cv.prepared = "1.0"
+// PREPARED-DAG: callee = @auto_fusion__cv_vf_0
+// PREPARED-DAG: sym_name = "auto_fusion__cv_vf_0"
+// PREPARED-DAG: "pto.vmuls"
+// PREPARED-DAG: "pto.vexp"
+// PREPARED-DAG: pto.vmi.loop_fused
+// FINAL: pto.cv.memory_planner_invoked = true
+// FINAL: call @auto_fusion__cv_vf_0

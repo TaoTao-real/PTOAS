@@ -13,6 +13,7 @@
 
 #include "PTO/Transforms/InsertSync/PTOIRTranslator.h"
 #include "PTO/IR/PTOMultiBuffer.h"
+#include "PTO/Transforms/CVVF.h"
 #include "PTO/IR/PTOTypeUtils.h"
 #include "PTO/Transforms/InsertSync/SyncMacroModel.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -263,7 +264,8 @@ static func::FuncOp lookupSyncHelper(func::CallOp callOp) {
   if (!callee) {
     return {};
   }
-  if (!callee->hasAttr("pto.tileop.helper") &&
+  if (!callee->hasAttr("pto.cv.prepared_vf") &&
+      !callee->hasAttr("pto.tileop.helper") &&
       !callee->hasAttr("pto.ptodsl.subkernel_helper")) {
     return {};
   }
@@ -271,6 +273,7 @@ static func::FuncOp lookupSyncHelper(func::CallOp callOp) {
 }
 
 static std::optional<pto::PipelineType> getSyncHelperPipe(func::FuncOp callee) {
+  if (callee->hasAttr("pto.cv.prepared_vf")) return pto::PipelineType::PIPE_V;
   if (auto roleAttr = callee->getAttrOfType<mlir::StringAttr>(
           "pto.ptodsl.subkernel_helper")) {
     return llvm::StringSwitch<std::optional<pto::PipelineType>>(
@@ -404,7 +407,9 @@ PTOIRTranslator::dispatchAllocOp(Operation *op) {
 // --- Case B: 别名/视图操作 ---
 std::optional<WalkResult>
 PTOIRTranslator::dispatchAliasViewOp(Operation *op) {
-  if (auto makeViewOp = dyn_cast<pto::MakeTensorViewOp>(op)) {
+  if (auto address = dyn_cast<pto::TileBufAddrOp>(op)) {
+    UpdateAliasBufferInfo(address.getDst(), address.getSrc());
+  } else if (auto makeViewOp = dyn_cast<pto::MakeTensorViewOp>(op)) {
     UpdateAliasBufferInfo(makeViewOp.getResult(), makeViewOp.getPtr());
   } else if (auto subViewOp = dyn_cast<pto::PartitionViewOp>(op)) {
     UpdateAliasBufferInfo(subViewOp.getResult(), subViewOp.getSource());
@@ -775,6 +780,12 @@ void PTOIRTranslator::UpdateHelperCallInfo(func::CallOp callOp) {
   SmallVector<const BaseMemInfo *> defVec;
   SmallVector<const BaseMemInfo *> useVec;
   auto effects = callee->getAttrOfType<ArrayAttr>(kTileOpEffectsAttr);
+  std::optional<pto::CVVFEffects> verifiedEffects;
+  if (callee->hasAttr("pto.cv.prepared_vf")) {
+    auto derived = pto::getCVVFEffects(callee);
+    if (failed(derived)) return;
+    verifiedEffects = std::move(*derived);
+  }
   bool hasPreciseEffects = effects && effects.size() == callOp.getNumOperands();
   for (auto [operandIndex, operand] : llvm::enumerate(callOp.getOperands())) {
     if (!isSyncHelperMemoryOperand(operand.getType())) {
@@ -782,7 +793,10 @@ void PTOIRTranslator::UpdateHelperCallInfo(func::CallOp callOp) {
     }
 
     StringRef effect = "readwrite";
-    if (hasPreciseEffects) {
+    if (verifiedEffects) {
+      bool read = verifiedEffects->reads[operandIndex], write = verifiedEffects->writes[operandIndex];
+      effect = read ? (write ? "readwrite" : "read") : (write ? "write" : "none");
+    } else if (hasPreciseEffects) {
       if (auto effectAttr = dyn_cast<StringAttr>(effects[operandIndex])) {
         effect = effectAttr.getValue();
       }

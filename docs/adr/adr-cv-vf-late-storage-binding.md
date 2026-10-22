@@ -1,7 +1,7 @@
 # 融合 VF 与 CV 寻优的可重绑定存储接口
 
 日期：2026-10-22
-状态：proposed
+状态：proposed；受限实验实现已开始，完整验收未通过
 实现及验收计划：[cv-vf-planmemory-implementation-plan.md](../designs/cv-vf-planmemory-implementation-plan.md)
 
 ## 目标
@@ -23,6 +23,11 @@
 
 当前自动规划路径先做前端 FusionPlan/分组，再做 PlanMemory，之后才进行
 VMI 循环融合、访存消除和 VPTO 准备。不能把前端分组称为 VF 实质融合。
+
+2026-10-23 实现更新：新显式路径已经在逻辑地址上准备 VF，并由 native CV pass
+生成受限候选，再实际调用 PlanMemory。普通编译路径保持原来的顺序。
+新接口、支持范围和未通过项见 [prepared interface](../designs/cv-vf-prepared-interface.md)。
+编译反馈仍报告 `evidence_incomplete`，不能把编译产物解释为 G2/G3 或性能认证。
 
 ## 决策
 

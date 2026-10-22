@@ -1,0 +1,39 @@
+// RUN: ptoas %s --pto-arch=a5 --pto-level=level2 --pto-backend=vpto --enable-vmi --enable-op-fusion --cann-output-version=9.2.0 --cv-prepare-vf --emit-pto-ir -o %t.prepared
+// RUN: FileCheck %s --check-prefix=PREPARED < %t.prepared
+// RUN: ptoas %t.prepared --pto-arch=a5 --pto-level=level2 --pto-backend=vpto --enable-vmi --enable-op-fusion --cann-output-version=9.2.0 --cv-apply-vf --enable-insert-sync --enable-vecscope-mem-bar --cv-feedback=%t.feedback --emit-vpto -o %t.final
+// RUN: FileCheck %s --check-prefix=FINAL < %t.final
+// RUN: FileCheck %s --check-prefix=FEEDBACK < %t.feedback
+// RUN: not ptoas %t.prepared --pto-arch=a5 --pto-level=level2 --pto-backend=vpto --enable-vmi --enable-op-fusion --cann-output-version=9.2.0 --cv-apply-vf --enable-insert-sync --enable-vecscope-mem-bar --enable-plan-memory=false --emit-vpto -o /dev/null 2>&1 | FileCheck %s --check-prefix=DISABLED
+// RUN: sed 's/late_binding/changed_binding/g' %t.prepared > %t.changed
+// RUN: not ptoas %t.changed --pto-arch=a5 --pto-level=level2 --pto-backend=vpto --enable-vmi --enable-op-fusion --cann-output-version=9.2.0 --cv-apply-vf --enable-insert-sync --enable-vecscope-mem-bar --emit-vpto -o /dev/null 2>&1 | FileCheck %s --check-prefix=STALE
+
+module attributes {pto.target_arch = "a5", pto.backend = "vpto", pto.kernel_kind = #pto.kernel_kind<vector>} {
+  func.func @late_binding() attributes {pto.entry, pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %src = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    %dst = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    %a = pto.tile_buf_addr %src : !pto.tile_buf<vec, 1x64xf32> -> !pto.ptr<f32, ub>
+    %b = pto.tile_buf_addr %dst : !pto.tile_buf<vec, 1x64xf32> -> !pto.ptr<f32, ub>
+    pto.vecscope {
+      %v = pto.vmi.vload %a[%c0] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+      %w = pto.vmi.vmul %v, %v : !pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32> -> !pto.vmi.vreg<64xf32>
+      pto.vmi.vstore %w, %b[%c0] : !pto.vmi.vreg<64xf32>, !pto.ptr<f32, ub>
+    }
+    return
+  }
+}
+// PREPARED-DAG: pto.cv.prepared = "1.0"
+// PREPARED-DAG: pto.cv.prepared_digest
+// PREPARED-DAG: "pto.alloc_tile"() {{.*}}pto.costmodel.buffer_id
+// PREPARED-DAG: callee = @late_binding__cv_vf_0
+// PREPARED-DAG: sym_name = "late_binding__cv_vf_0"
+// PREPARED-DAG: no_inline
+// PREPARED-DAG: "pto.vlds"
+// PREPARED-DAG: "pto.vsts"
+// FINAL: pto.cv.memory_planner_invoked = true
+// FINAL: func.func private @late_binding__cv_vf_0
+// FEEDBACK: "memory_basis": "compiler_layout"
+// FEEDBACK: "native_plan_memory_invoked": true
+// FEEDBACK: "product_sha256"
+// DISABLED: PTOPlanMemory failed to assign an address
+// STALE: prepared VF program, target or CANN identity does not match

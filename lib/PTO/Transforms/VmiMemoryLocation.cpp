@@ -76,7 +76,9 @@ static std::optional<int64_t> getScalarElementBytes(Type element) {
 
 static std::optional<int64_t> getElementBytes(Type type) {
   Type element;
-  if (auto memref = dyn_cast<MemRefType>(type)) {
+  if (auto tile = dyn_cast<pto::TileBufType>(type)) {
+    element = tile.getElementType();
+  } else if (auto memref = dyn_cast<MemRefType>(type)) {
     element = memref.getElementType();
   } else if (auto unranked = dyn_cast<UnrankedMemRefType>(type)) {
     element = unranked.getElementType();
@@ -341,6 +343,17 @@ resolveMemRefSubviewRoot(memref::SubViewOp subview) {
 std::optional<mlir::pto::VmiStorageRoot>
 mlir::pto::resolveVmiStorageRoot(Value base) {
   while (base) {
+    if (auto address = base.getDefiningOp<pto::TileBufAddrOp>()) {
+      auto alloc = address.getSrc().getDefiningOp<pto::AllocTileOp>();
+      if (alloc && alloc->hasAttr("pto.cv.borrowed")) {
+        auto cast = alloc.getAddr().getDefiningOp<pto::CastPtrOp>();
+        auto arg = cast ? dyn_cast<BlockArgument>(cast.getInput()) : BlockArgument{};
+        auto function = arg ? dyn_cast_or_null<func::FuncOp>(arg.getOwner()->getParentOp()) : func::FuncOp{};
+        if (function && function->hasAttr("pto.cv.distinct_buffers"))
+          return pto::VmiStorageRoot{0, getTileFootprintBytes(alloc.getResult().getType()),
+                                    alloc.getResult().getType(), arg};
+      }
+    }
     if (auto cast = base.getDefiningOp<pto::CastPtrOp>()) {
       if (auto root = resolveConstAddrCastPtrRoot(cast)) {
         return root;
@@ -362,6 +375,10 @@ mlir::pto::resolveVmiStorageRoot(Value base) {
 
 bool mlir::pto::mayAliasVmiStorageRoot(const VmiStorageRoot &lhs,
                                        const VmiStorageRoot &rhs) {
+  if (lhs.logicalRoot || rhs.logicalRoot) {
+    if (!lhs.logicalRoot || !rhs.logicalRoot) return true;
+    if (lhs.logicalRoot != rhs.logicalRoot) return false;
+  }
   if (lhs.address == rhs.address) {
     return true;
   }

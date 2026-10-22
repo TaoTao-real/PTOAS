@@ -121,6 +121,8 @@ private:
 struct PTOASCompileResult {
   void reset() {
     textOutput.clear();
+    cvFeedbackText.clear();
+    cvFeedbackPath.clear();
     vptoStubSource.clear();
     vptoBridgeWrappers.clear();
     vptoPrintMode = PrintDTDataMode::None;
@@ -131,6 +133,9 @@ struct PTOASCompileResult {
 
   PTOASCompileResultKind kind = PTOASCompileResultKind::Text;
   std::string textOutput;
+  // Captured from the same native invocation as the final emitted product.
+  std::string cvFeedbackText;
+  std::string cvFeedbackPath;
   std::string vptoStubSource;
   // Bridge wrapper translation units to compile and link into the device
   // modules; empty whenever no bridge instance was routed.
@@ -145,6 +150,7 @@ int compilePTOASModule(OwningOpRef<ModuleOp> &module,
                        PTOASCompileResult &result,
                        bool emitVPTOHostStub = true);
 void registerPTOASDialects(DialectRegistry &registry);
+bool isCVCostModelIROutputRequested();
 void registerPTOASPassesAndCLOptions();
 void loadPTOASDialects(MLIRContext &context);
 

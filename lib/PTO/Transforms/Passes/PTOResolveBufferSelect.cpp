@@ -27,6 +27,7 @@
 #include "PTO/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
@@ -436,6 +437,16 @@ static LogicalResult resolveTileNativeMultiGets(ModuleOp module,
         alloc.getValidRow() ? alloc.getValidRow() : Value(),
         alloc.getValidCol() ? alloc.getValidCol() : Value(),
         pto::ConvTileConfigAttr());
+    if (auto identity = alloc->getAttr("pto.costmodel.buffer_id"))
+      slotHandle->setAttr("pto.costmodel.buffer_id", identity);
+    if (auto slot = getConstantIntValue(op.getSlot())) {
+      slotHandle->setAttr("pto.cv.slot", rewriter.getI64IntegerAttr(*slot));
+      slotHandle->setAttr("pto.costmodel.slot", rewriter.getI64IntegerAttr(*slot));
+    }
+    if (auto iteration = op->getAttr("pto.cv.iteration"))
+      slotHandle->setAttr("pto.cv.iteration", iteration);
+    if (auto version = op->getAttr("pto.cv.version"))
+      slotHandle->setAttr("pto.cv.version", version);
     rewriter.replaceOp(op, slotHandle.getResult());
   }
 

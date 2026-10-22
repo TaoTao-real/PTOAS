@@ -25,9 +25,13 @@ struct VmiStorageRoot {
   int64_t address = 0;
   std::optional<int64_t> storageBytes;
   Type viewType;
+  // Present only for a compiler-verified, distinct prepared-VF buffer argument.
+  // Its address is a relative offset; it is never an invented physical address.
+  Value logicalRoot = {};
 
   bool operator==(const VmiStorageRoot &other) const {
-    return address == other.address && viewType == other.viewType;
+    return logicalRoot == other.logicalRoot && address == other.address &&
+           viewType == other.viewType;
   }
 };
 

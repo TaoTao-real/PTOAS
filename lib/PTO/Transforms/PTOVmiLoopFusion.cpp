@@ -215,8 +215,9 @@ struct UBId {
   int64_t address = 0;  // numeric address, independent of SSA identity
   Type memrefType;      // the pointer_cast view type (shape+dtype)
   std::optional<int64_t> storageBytes;
+  Value logicalRoot = {};
   bool operator==(const UBId &o) const {
-    return address == o.address && memrefType == o.memrefType;
+    return logicalRoot == o.logicalRoot && address == o.address && memrefType == o.memrefType;
   }
 };
 
@@ -225,13 +226,13 @@ static std::optional<UBId> resolvePtrUB(Value base) {
   if (!root) {
     return std::nullopt;
   }
-  return UBId{root->address, root->viewType, root->storageBytes};
+  return UBId{root->address, root->viewType, root->storageBytes, root->logicalRoot};
 }
 
 static bool mayAlias(const UBId &lhs, const UBId &rhs) {
   return pto::mayAliasVmiStorageRoot(
-      pto::VmiStorageRoot{lhs.address, lhs.storageBytes, lhs.memrefType},
-      pto::VmiStorageRoot{rhs.address, rhs.storageBytes, rhs.memrefType});
+      pto::VmiStorageRoot{lhs.address, lhs.storageBytes, lhs.memrefType, lhs.logicalRoot},
+      pto::VmiStorageRoot{rhs.address, rhs.storageBytes, rhs.memrefType, rhs.logicalRoot});
 }
 
 static std::optional<UBId> getVLoadUB(pto::VMIvLoadOp op) {
@@ -273,6 +274,7 @@ struct UBAccess {
 };
 
 static std::optional<int64_t> getElementBytes(Type type) {
+  if (auto tile = dyn_cast<pto::TileBufType>(type)) type = tile.getElementType();
   if (auto memref = dyn_cast<MemRefType>(type)) {
     type = memref.getElementType();
   }
@@ -627,7 +629,7 @@ static bool isCrossIterationTransfer(const UBAccess &w, const UBAccess &r,
   if (!accessRangesMayOverlap(w, r)) {
     return false;
   }
-  if (w.ub.address != r.ub.address || w.ub.memrefType != r.ub.memrefType) {
+  if (w.ub.logicalRoot != r.ub.logicalRoot || w.ub.address != r.ub.address || w.ub.memrefType != r.ub.memrefType) {
     return true;
   }
   bool wIV = offsetDependsOnIV(w.offset, runIVs);

@@ -1,0 +1,2 @@
+// This test needs the supported PTODSL Python runtime (3.10 or later).
+// RUN: %ptoas_python %S/Inputs/cv_vf_exchange_test.py ptoas -v

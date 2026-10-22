@@ -10,6 +10,12 @@ set(LLVM_LINK_COMPONENTS
   Support
 )
 
+add_llvm_executable(pto-memory-range-test pto-memory-range-test.cpp PARTIAL_SOURCES_INTENDED)
+target_link_libraries(pto-memory-range-test PRIVATE LLVMSupport)
+if(BUILD_TESTING)
+  add_test(NAME pto-memory-range-reservations COMMAND pto-memory-range-test)
+endif()
+
 add_llvm_executable(pto-test-opt
   pto-test-opt.cpp
   PARTIAL_SOURCES_INTENDED

@@ -66,7 +66,7 @@ struct PTOInsertSyncPass : public mlir::pto::impl::PTOInsertSyncBase<PTOInsertSy
     // in the outer child module to model cross-child calls. Those declaration
     // funcs have a function type but no entry block arguments, so the
     // translator's argument walk must not run on them.
-    if (func.isDeclaration()) {
+    if (func.isDeclaration() || func->hasAttr("pto.cv.prepared_vf")) {
       return;
     }
 

@@ -13,6 +13,7 @@
 // that run them on a compiled function.
 //===----------------------------------------------------------------------===//
 
+#include "PTO/Transforms/CVVF.h"
 #include "PTO/Transforms/InsertSync/SyncOracleGates.h"
 #include "PTO/IR/PTO.h"
 #include "PTO/IR/PTOSyncUtils.h"
@@ -938,10 +939,27 @@ namespace {
 
 /// An op that needs ordering: carries a pipe and touches memory. This is the
 /// same test InjectBarrierAllSync uses to decide where a barrier is required.
+std::optional<pto::PIPE> verifiedAnchorPipe(Operation *op) {
+  if (auto call = dyn_cast<func::CallOp>(op)) {
+    auto function = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(call, call.getCalleeAttr());
+    if (function && function->hasAttr("pto.cv.prepared_vf") &&
+        succeeded(pto::getCVVFEffects(function))) return pto::PIPE::PIPE_V;
+  }
+  if (auto pipe = dyn_cast<pto::OpPipeInterface>(op)) return pipe.getPipe();
+  return std::nullopt;
+}
+
 bool isAnchor(Operation *op) {
   if (isa<pto::SetFlagOp, pto::WaitFlagOp, pto::GetBufOp, pto::RlsBufOp, pto::BarrierOp, pto::SetFlagDynOp,
           pto::WaitFlagDynOp>(op)) {
     return false;
+  }
+  if (auto call = dyn_cast<func::CallOp>(op)) {
+    if (verifiedAnchorPipe(op)) {
+      auto effects = pto::getCVVFEffects(call);
+      return succeeded(effects) && (llvm::is_contained(effects->reads, true) ||
+                                    llvm::is_contained(effects->writes, true));
+    }
   }
   auto memEffect = dyn_cast<MemoryEffectOpInterface>(op);
   if (!memEffect || !(memEffect.hasEffect<MemoryEffects::Read>() || memEffect.hasEffect<MemoryEffects::Write>())) {
@@ -1154,7 +1172,7 @@ private:
   }
 
   void recordAnchor(Operation *op, llvm::ArrayRef<Operation *> chain) {
-    pto::PIPE pipe = cast<pto::OpPipeInterface>(op).getPipe();
+    pto::PIPE pipe = *verifiedAnchorPipe(op);
     unsigned index = anchorPipes.size();
     anchorPipes.push_back(pipe);
     anchorOps.push_back(op);
@@ -1838,10 +1856,7 @@ namespace {
 /// The anchor pipe of a compound's op. Taken from `OpPipeInterface` -- the same
 /// source `computeCoverage` keys its edge filtering on.
 std::optional<pto::PIPE> anchorPipe(Operation *op) {
-  if (auto pipeOp = dyn_cast<pto::OpPipeInterface>(op)) {
-    return pipeOp.getPipe();
-  }
-  return std::nullopt;
+  return verifiedAnchorPipe(op);
 }
 
 std::string anchorPipeName(Operation *op) {

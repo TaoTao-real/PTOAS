@@ -26,6 +26,19 @@ add_mlir_python_sources_target(PTODSLPackageStage
 add_custom_target(PTODSLPackage ALL)
 add_dependencies(PTODSLPackage PTODSLPackageStage)
 
+declare_mlir_python_sources(PTOCostModelPythonSources
+  ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/pto_costmodel"
+  SOURCES_GLOB "*.py" "*.json"
+)
+add_mlir_python_sources_target(PTOCostModelPackageStage
+  OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/python/pto_costmodel"
+  SOURCES_TARGETS PTOCostModelPythonSources
+)
+add_dependencies(PTODSLPackage PTOCostModelPackageStage)
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/pto_costmodel"
+  DESTINATION "." COMPONENT PTOAS_CompilerArchive
+  PATTERN "__pycache__" EXCLUDE PATTERN "*.pyc" EXCLUDE)
+
 install(
   DIRECTORY "${PTODSL_PACKAGE_SRC_DIR}"
   DESTINATION "."

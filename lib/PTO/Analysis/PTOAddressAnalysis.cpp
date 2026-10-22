@@ -243,7 +243,27 @@ getKnownPointerRemainder(Value pointer, int64_t alignmentBytes,
   if (depth > kPointerTraceMaxDepth) {
     return std::nullopt;
   }
-  if (isa<BlockArgument>(pointer)) {
+  if (auto address = pointer.getDefiningOp<TileBufAddrOp>()) {
+    // Follow a typed view of an existing allocation, including CV borrowed
+    // views of ABI-aligned helper arguments. Do not invent alignment for an
+    // unplanned allocation or a subview with an unproven offset.
+    if (auto allocation = address.getSrc().getDefiningOp<AllocTileOp>()) {
+      Value base = allocation.getAddr();
+      if (!base) return std::nullopt;
+      if (auto cast = base.getDefiningOp<CastPtrOp>())
+        if (isa<PtrType>(cast.getInput().getType()))
+          return getKnownPointerRemainder(cast.getInput(), alignmentBytes, depth + 1);
+      return getKnownIndexRemainder(base, alignmentBytes);
+    }
+    return std::nullopt;
+  }
+  if (auto argument = dyn_cast<BlockArgument>(pointer)) {
+    Operation *owner = argument.getOwner()->getParentOp();
+    auto function = dyn_cast_or_null<func::FuncOp>(owner);
+    if (!function && owner) function = owner->getParentOfType<func::FuncOp>();
+    if (function && function->hasAttr("pto.cv.prepared_vf") &&
+        (owner != function.getOperation() || 32 % alignmentBytes != 0))
+      return std::nullopt;
     return 0;
   }
   if (auto cast = pointer.getDefiningOp<CastPtrOp>()) {

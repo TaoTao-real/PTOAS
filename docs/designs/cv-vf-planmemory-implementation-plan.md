@@ -1,7 +1,7 @@
 # 支持融合 VF 的 PTOAS × Cost Model 实施与测试计划
 
 日期：2026-10-22
-状态：计划已固化，正式功能尚未实现或验收
+状态：MR289 基线上的受限 native 实现与回归进行中；完整签收尚未完成
 设计：[adr-cv-vf-late-storage-binding.md](../adr/adr-cv-vf-late-storage-binding.md)
 
 ## 1. 交付目标
@@ -197,5 +197,15 @@ TileSim/VfSimulator 负责合法程序的成本覆盖、候选搜索、预测与
 6. 新推荐候选的收益与同批整链替换门槛通过；模型精度单独签收，不合格则不签发 G4。
 7. 冻结源码、模型、配置、输入、Plan、最终反馈、对象、launcher、原始数据与复现说明。
 
-阶段进度按上述门槛更新。当前只完成计划与 ADR，未把既有固定 FA 实验计入这些新门槛。
+阶段进度按上述门槛更新。2026-10-23 已实现参数化 VF、受限单轴 native 调度、
+候选最低槽数分析、实际 PlanMemory、同步分析的 VF 调用识别和同次编译反馈。
+已迁入旧 v1/2.0 SDK 和回归，新增独立的 prepared VF 实验扩展。
+使用说明见 [prepared interface](cv-vf-prepared-interface.md)。
+
+当前状态：P0/P1 已有自动与手写 VF 的编译证据；P2 仅支持独立单轴四阶段循环；
+P3 已执行实际规划，但完整异步完成与 C/V FIFO 联合证明尚缺，G2 保持 evidence_incomplete；
+P4 只有新交换与 schedule/产物绑定，尚无 TileSim/VfSimulator 的真实联合推荐；
+P5/P6 的新设备正确性与性能验收未运行。
+FA 投影/递推、旧地址重定位、VfSim ON 构建和 A3 新板测仍未完成。
+旧固定 FA 实验不计入这些新门槛。
 若只满足接口、G2/G3 与复现交付，可签收“编译器功能支持”，不能宣布上述完整性能验收完成。

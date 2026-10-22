@@ -15,6 +15,7 @@
 
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/SHA256.h"
+#include "llvm/Support/JSON.h"
 #include "PTO/Transforms/VPTOBridgeTokens.h"
 
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -22,6 +23,15 @@
 
 using namespace mlir;
 using namespace pto;
+
+static llvm::cl::opt<bool> emitCVCostModelIR(
+    "emit-cv-costmodel-ir", llvm::cl::desc("Emit the compatible serial CV exchange checkpoint"),
+    llvm::cl::init(false));
+static llvm::cl::opt<std::string> cvCostModelFinalIRFile(
+    "cv-costmodel-final-ir-file", llvm::cl::desc("Write pre-EmitC IR from this compilation"),
+    llvm::cl::init(""));
+
+bool mlir::pto::isCVCostModelIROutputRequested() { return emitCVCostModelIR; }
 
 namespace {
 // Opt-in diagnostic artifacts; these options do not enable CV optimization.
@@ -37,6 +47,19 @@ static Attribute cvCANNIdentity(MLIRContext *ctx, const pto::CANNVersion &versio
                                      version.patch, version.beta});
 }
 
+static llvm::cl::opt<bool> cvPrepareVF(
+    "cv-prepare-vf", llvm::cl::desc("Prepare address-parameterized VF before CV scheduling and memory planning"),
+    llvm::cl::init(false));
+static llvm::cl::opt<bool> cvApplyVF(
+    "cv-apply-vf", llvm::cl::desc("Apply a prepared CV candidate with native memory planning and synchronization"),
+    llvm::cl::init(false));
+static llvm::cl::opt<bool> cvAnalyzeSchedule(
+    "cv-analyze-schedule", llvm::cl::desc("Analyze candidate order and minimum slots without physical binding"),
+    llvm::cl::init(false));
+static llvm::cl::opt<std::string> cvFeedbackPath(
+    "cv-feedback", llvm::cl::desc("Write same-compilation CV memory and validation feedback"),
+    llvm::cl::init(""));
+
 // Debug locations are not printed. Origin is provenance, not executable content.
 static std::string cvVFContentDigest(ModuleOp module) {
   OwningOpRef<ModuleOp> copy = cast<ModuleOp>(module->clone());
@@ -46,6 +69,22 @@ static std::string cvVFContentDigest(ModuleOp module) {
   llvm::raw_string_ostream os(text);
   copy->print(os);
   os.flush();
+  return llvm::toHex(llvm::SHA256::hash(llvm::arrayRefFromStringRef(text)), true);
+}
+
+static std::string cvPreparedContentDigest(ModuleOp module) {
+  OwningOpRef<ModuleOp> copy = cast<ModuleOp>(module->clone());
+  (*copy)->removeAttr("pto.cv.prepared_digest");
+  copy->walk([](Operation *op) {
+    // Only optimization controls may change between prepare and apply. Buffer
+    // identities, types, VF bodies, loops and target information stay bound.
+    for (StringRef name : {"pto.cv_preload_count", "pto.pipeline.multi_buffer_count",
+                           "pto.costmodel.plan_id", "pto.costmodel.status"})
+      op->removeAttr(name);
+  });
+  std::string text;
+  llvm::raw_string_ostream os(text);
+  copy->print(os); os.flush();
   return llvm::toHex(llvm::SHA256::hash(llvm::arrayRefFromStringRef(text)), true);
 }
 
@@ -1085,11 +1124,57 @@ static int emitVPTOBackendResult(ModuleOp module, PTOASCompileResult &result,
   return 0;
 }
 
+/// CV keeps paired functions together through scheduling and memory planning.
+/// Partition only at the backend boundary, after cross-core reserved buffers
+/// have been resolved. Prepared helpers travel with their owning core.
+struct PartitionPreparedCVPass final
+    : PassWrapper<PartitionPreparedCVPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PartitionPreparedCVPass)
+  void runOnOperation() final {
+    ModuleOp module = getOperation();
+    if (module->hasAttr(FunctionKernelKindAttr::name)) return;
+    if (!module.getOps<ModuleOp>().empty()) {
+      module.emitError("UNSUPPORTED: prepared CV backend expects one flat paired module");
+      return signalPassFailure();
+    }
+    bool cube = false, vector = false;
+    for (auto function : module.getOps<func::FuncOp>()) {
+      if (function.isPrivate()) continue;
+      auto kind = function->getAttrOfType<FunctionKernelKindAttr>(FunctionKernelKindAttr::name);
+      if (!kind) {
+        function.emitError("prepared CV entry requires an explicit kernel kind");
+        return signalPassFailure();
+      }
+      cube |= kind.getKernelKind() == FunctionKernelKind::Cube;
+      vector |= kind.getKernelKind() == FunctionKernelKind::Vector;
+    }
+    if (!cube && !vector) {
+      module.emitError("prepared CV has no kernel entry"); return signalPassFailure();
+    }
+    OwningOpRef<ModuleOp> outer = ModuleOp::create(module.getLoc());
+    for (auto kind : {FunctionKernelKind::Vector, FunctionKernelKind::Cube}) {
+      if ((kind == FunctionKernelKind::Cube && !cube) ||
+          (kind == FunctionKernelKind::Vector && !vector)) continue;
+      auto child = cast<ModuleOp>(module->clone());
+      child->removeAttr(SymbolTable::getSymbolAttrName());
+      child->removeAttr(kBridgeWrapperSourceAttrName);
+      child->setAttr(FunctionKernelKindAttr::name, FunctionKernelKindAttr::get(module.getContext(), kind));
+      for (auto function : llvm::make_early_inc_range(child.getOps<func::FuncOp>())) {
+        auto owner = function->getAttrOfType<FunctionKernelKindAttr>(FunctionKernelKindAttr::name);
+        if (owner && owner.getKernelKind() != kind) function.erase();
+      }
+      outer->getBody()->push_back(child);
+    }
+    module.getBodyRegion().takeBody(outer->getBodyRegion());
+  }
+};
+
 static LogicalResult runVPTOBackendPipeline(
     OwningOpRef<ModuleOp> &module, bool hasTileOpsToExpand,
     bool useVMIFusionPipeline) {
   PassManager pm(module->getContext());
   pm.enableVerifier();
+  if (cvApplyVF) pm.addPass(std::make_unique<PartitionPreparedCVPass>());
   if (!hasTileOpsToExpand) {
     pm.addNestedPass<mlir::func::FuncOp>(pto::createPTOCanonicalizeIRPass());
   }
@@ -1228,6 +1313,196 @@ static void appendVMISemanticPipeline(OpPassManager &pm,
   appendVMIUnifiedToLegacyPipelinePasses(pm);
   appendVMILayoutAndVPTOLoweringPasses(pm);
 }
+
+/// Only VF bodies enter the low-level preparation pipeline. Cube TileOps and
+/// outer loops remain available to CV, the allocator and the sync analysis.
+struct PrepareCVVFPass final
+    : PassWrapper<PrepareCVVFPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PrepareCVVFPass)
+  StringRef getArgument() const final { return "pto-cv-prepare-vf"; }
+  static void populate(OpPassManager &pm) {
+    pm.addPass(pto::createExpandTileOpPass());
+    pm.addPass(pto::createPTOInlineLibCallPass());
+    pm.addNestedPass<func::FuncOp>(pto::createFoldTileBufIntrinsicsPass("shape-only"));
+    pm.addNestedPass<func::FuncOp>(pto::createPTOLowerGenericOpsPass());
+    appendVMISemanticPipeline(pm, true);
+    pm.addNestedPass<func::FuncOp>(pto::createFoldTileBufIntrinsicsPass("shape-only"));
+    pm.addPass(pto::createCVValidateVFPass());
+  }
+  void getDependentDialects(DialectRegistry &registry) const final {
+    OpPassManager pm(ModuleOp::getOperationName());
+    populate(pm);
+    pm.getDependentDialects(registry);
+  }
+  void runOnOperation() final {
+    ModuleOp source = getOperation();
+    SmallVector<func::FuncOp> helpers;
+    source.walk([&](func::FuncOp f) {
+      if (f->hasAttr("pto.cv.prepared_vf")) helpers.push_back(f);
+    });
+    if (helpers.empty()) {
+      source.emitError("no vector region available for CV VF preparation");
+      return signalPassFailure();
+    }
+    for (func::FuncOp helper : helpers) {
+      OwningOpRef<ModuleOp> isolated = ModuleOp::create(helper.getLoc());
+      Builder b(source.getContext());
+      (*isolated)->setAttr("pto.target_arch", b.getStringAttr("a5"));
+      (*isolated)->setAttr("pto.enable_vmi", b.getUnitAttr());
+      (*isolated)->setAttr("pto.backend", b.getStringAttr("vpto"));
+      isolated->getBody()->push_back(helper->clone());
+      source.getBody()->push_back(isolated->getOperation());
+      OpPassManager pm(ModuleOp::getOperationName());
+      populate(pm);
+      if (failed(runPipeline(pm, isolated->getOperation()))) return signalPassFailure();
+      auto prepared = isolated->lookupSymbol<func::FuncOp>(helper.getSymName());
+      if (!prepared) return signalPassFailure();
+      for (unsigned i = prepared.getNumArguments(); i > 0; --i) {
+        unsigned index = i - 1;
+        if (!prepared.getArgument(index).use_empty()) continue;
+        source.walk([&](func::CallOp call) {
+          auto callee = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(call, call.getCalleeAttr());
+          if (callee == helper) call->eraseOperand(index);
+        });
+        prepared.eraseArgument(index);
+      }
+      auto effects = pto::getCVVFEffects(prepared);
+      if (failed(effects)) return signalPassFailure();
+      SmallVector<Attribute> summary;
+      for (unsigned i = 0; i < effects->reads.size(); ++i)
+        summary.push_back(b.getStringAttr(effects->reads[i]
+            ? (effects->writes[i] ? "readwrite" : "read")
+            : (effects->writes[i] ? "write" : "none")));
+      prepared->setAttr("pto.tileop.effects", b.getArrayAttr(summary));
+      helper.getBody().takeBody(prepared.getBody());
+      helper->setAttrs(prepared->getAttrs());
+    }
+    // The helper pipelines already canonicalize their bodies. Erase only
+    // unused outer address handles; a module canonicalizer could fold N=1
+    // loops and erase the model's optimization interface.
+    bool changed;
+    do {
+      changed = false;
+      source.walk<WalkOrder::PostOrder>([&](Operation *op) {
+        if (op->getNumResults() && op->use_empty() &&
+            !isa<pto::AllocTileOp>(op) && isMemoryEffectFree(op)) {
+          op->erase(); changed = true;
+        }
+      });
+    } while (changed);
+    SmallVector<pto::AllocTileOp> dead;
+    SmallVector<Attribute> eliminated;
+    source.walk([&](pto::AllocTileOp alloc) {
+      if (!alloc->use_empty() || alloc->hasAttr("pto.cv.borrowed")) return;
+      dead.push_back(alloc);
+      if (auto identity = alloc->getAttr("pto.costmodel.buffer_id")) eliminated.push_back(identity);
+    });
+    for (pto::AllocTileOp alloc : dead) alloc.erase();
+    source->setAttr("pto.cv.eliminated_buffers", ArrayAttr::get(source.getContext(), eliminated));
+    source.walk([&](func::FuncOp function) {
+      unsigned ordinal = 0;
+      function.walk<WalkOrder::PreOrder>([&](Operation *op) {
+        op->setAttr("pto.costmodel.operation_id", StringAttr::get(source.getContext(),
+            (function.getSymName() + ":op" + Twine(ordinal++)).str()));
+      });
+    });
+    source->setAttr("pto.cv.prepared", StringAttr::get(source.getContext(), "1.0"));
+  }
+};
+
+struct CaptureCVFeedbackPass final
+    : PassWrapper<CaptureCVFeedbackPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(CaptureCVFeedbackPass)
+  std::string *output;
+  explicit CaptureCVFeedbackPass(std::string *output) : output(output) {}
+  static llvm::json::Value jsonAttribute(Attribute attribute) {
+    if (auto integer = dyn_cast<IntegerAttr>(attribute)) return integer.getInt();
+    if (auto string = dyn_cast<StringAttr>(attribute)) return string.getValue();
+    if (auto array = dyn_cast<ArrayAttr>(attribute)) {
+      llvm::json::Array result;
+      for (Attribute item : array) result.push_back(jsonAttribute(item));
+      return result;
+    }
+    if (auto dictionary = dyn_cast<DictionaryAttr>(attribute)) {
+      llvm::json::Object result;
+      for (NamedAttribute item : dictionary) result[item.getName().strref()] = jsonAttribute(item.getValue());
+      return result;
+    }
+    return nullptr;
+  }
+  void runOnOperation() final {
+    ModuleOp module = getOperation();
+    auto invoked = module->getAttrOfType<BoolAttr>("pto.cv.memory_planner_invoked");
+    if (!invoked || !invoked.getValue()) {
+      module.emitError("CV feedback requires an actual native PlanMemory invocation");
+      return signalPassFailure();
+    }
+    llvm::json::Array functions;
+    llvm::json::Array schedules;
+    module.walk([&](ModuleOp owner) {
+      if (auto array = owner->getAttrOfType<ArrayAttr>("pto.cv.schedules"))
+        for (Attribute schedule : array) schedules.push_back(jsonAttribute(schedule));
+    });
+    module.walk([&](func::FuncOp function) {
+      if (auto plan = function->getAttrOfType<ArrayAttr>("pto.cv.memory_plan")) {
+        llvm::json::Array allocations;
+        llvm::json::Object highWater, budgets;
+        for (Attribute attr : plan) {
+          auto entry = cast<DictionaryAttr>(attr);
+          llvm::json::Array addresses;
+          auto space = cast<StringAttr>(entry.get("space")).getValue();
+          int64_t slotBytes = cast<IntegerAttr>(entry.get("slot_bytes")).getInt();
+          for (int64_t address : cast<DenseI64ArrayAttr>(entry.get("addresses")).asArrayRef()) {
+            addresses.push_back(address);
+            int64_t old = highWater.getInteger(space).value_or(0);
+            highWater[space] = std::max(old, address + slotBytes);
+          }
+          budgets[space] = cast<IntegerAttr>(entry.get("compiler_budget_bytes")).getInt();
+          allocations.push_back(llvm::json::Object{
+              {"buffer_id", cast<StringAttr>(entry.get("buffer_id")).getValue()},
+              {"space", cast<StringAttr>(entry.get("space")).getValue()},
+              {"ownership", "local"}, {"addresses", std::move(addresses)},
+              {"slot_bytes", cast<IntegerAttr>(entry.get("slot_bytes")).getInt()},
+              {"alignment", cast<IntegerAttr>(entry.get("alignment")).getInt()}});
+        }
+        llvm::json::Array reservations;
+        if (auto reserves = function->getAttrOfType<ArrayAttr>("pto.cv.reservations")) {
+          for (Attribute attr : reserves) {
+            auto reserve = cast<DictionaryAttr>(attr);
+            auto space = cast<StringAttr>(reserve.get("space")).getValue();
+            int64_t address = cast<IntegerAttr>(reserve.get("address")).getInt();
+            int64_t size = cast<IntegerAttr>(reserve.get("allocated_bytes")).getInt();
+            highWater[space] = std::max(highWater.getInteger(space).value_or(0), address + size);
+            budgets[space] = cast<IntegerAttr>(reserve.get("compiler_budget_bytes")).getInt();
+            reservations.push_back(llvm::json::Object{
+                {"name", cast<StringAttr>(reserve.get("name")).getValue()},
+                {"ownership", "pipe_backing"}, {"space", space},
+                {"address", address}, {"allocated_bytes", size}});
+          }
+        }
+        auto kind = function->getAttrOfType<FunctionKernelKindAttr>("pto.kernel_kind");
+        functions.push_back(llvm::json::Object{{"function", function.getSymName()},
+            {"physical_replicas", kind && kind.getKernelKind() == FunctionKernelKind::Vector ? 2 : 1},
+            {"allocations", std::move(allocations)}, {"reservations", std::move(reservations)},
+            {"address_high_water_bytes", std::move(highWater)},
+            {"compiler_budget_bytes", std::move(budgets)}});
+      }
+    });
+    std::string ir;
+    llvm::raw_string_ostream stream(ir); module.print(stream); stream.flush();
+    llvm::json::Object feedback{{"schema", "pto.cv.compiler_feedback.v1"},
+        {"native_plan_memory_invoked", true}, {"memory_basis", "compiler_layout"},
+        {"schedule_semantics", "pto.cv.prefix_suffix.iteration_distance.v1"},
+        {"schedules", std::move(schedules)},
+        {"liveness_basis", "operation_order; asynchronous completion is checked separately"},
+        {"prediction_reusable_without_final_evaluation", false},
+        {"functions", std::move(functions)},
+        {"planned_ir_sha256", llvm::toHex(llvm::SHA256::hash(llvm::arrayRefFromStringRef(ir)), true)},
+        {"g2_status", "evidence_incomplete"},
+        {"unverified", llvm::json::Array{"final asynchronous completion coverage", "paired C/V FIFO progress"}}};
+    llvm::raw_string_ostream os(*output); os << llvm::formatv("{0:2}", llvm::json::Value(std::move(feedback)));
+  }
+};
 
 /// Reject statically invalid scf.for steps at the PTOAS input boundary.
 /// LLVM 19 intentionally does not follow SSA values from scf.for verifiers,
@@ -1488,7 +1763,10 @@ static LogicalResult validateAllocationConfiguration(ModuleOp module,
     });
   } else {
     module.walk([&invalidAddress](pto::AllocTileOp op) {
-      if (op.getAddr()) {
+      auto function = op->getParentOfType<func::FuncOp>();
+      bool borrowedVF = cvApplyVF && function && function->hasAttr("pto.cv.prepared_vf") &&
+                        op->hasAttr("pto.cv.borrowed");
+      if (op.getAddr() && !borrowedVF) {
         op.emitError("unexpected 'addr' operand: only supported when "
                      "--pto-level=level3");
         invalidAddress = true;
@@ -1515,7 +1793,8 @@ static LogicalResult validateCompileOptions(ModuleOp module,
              : success();
 }
 
-static LogicalResult runPreBackendNormalization(ModuleOp module) {
+static LogicalResult runPreBackendNormalization(ModuleOp module,
+                                                 bool normalizeScalars = true) {
   PassManager preBackendPM(module.getContext());
   preBackendPM.enableVerifier();
   preBackendPM.addPass(pto::createPTOMaterializeTileOpSectionsPass());
@@ -1523,11 +1802,13 @@ static LogicalResult runPreBackendNormalization(ModuleOp module) {
   preBackendPM.addPass(pto::createPTOValidatePhysicalSectionBoundariesPass());
   // Shared frontend analyses consume standard arith/index producer chains.
   // Lower execution-domain-independent PTO scalar ops before those analyses.
-  preBackendPM.addNestedPass<func::FuncOp>(
-      pto::createPTOLowerGenericOpsPass());
-  auto &preBackendChildModulePM = preBackendPM.nest<ModuleOp>();
-  preBackendChildModulePM.addNestedPass<func::FuncOp>(
-      pto::createPTOLowerGenericOpsPass());
+  if (normalizeScalars) {
+    preBackendPM.addNestedPass<func::FuncOp>(
+        pto::createPTOLowerGenericOpsPass());
+    auto &preBackendChildModulePM = preBackendPM.nest<ModuleOp>();
+    preBackendChildModulePM.addNestedPass<func::FuncOp>(
+        pto::createPTOLowerGenericOpsPass());
+  }
   if (failed(preBackendPM.run(module))) {
     llvm::errs() << "Error: failed to normalize uncovered PTO tile sections.\n";
     return failure();
@@ -1687,12 +1968,49 @@ static void appendVPTOBridgePasses(OpPassManager &pm) {
   pm.addPass(pto::createVPTOBridgeWrapperGenPass());
 }
 
+static LogicalResult appendLateStorageAndSyncPasses(
+    PassManager &pm, PTOBackend effectiveBackend,
+    const CompilePipelineState &state) {
+  if (failed(appendPlanMemoryPasses(pm, state.level, enablePlanMemory))) {
+    return failure();
+  }
+  pm.addPass(pto::createPTOResolveReservedBuffersPass());
+  pm.addNestedPass<mlir::func::FuncOp>(pto::createPTORemoveIdentityTMovPass());
+
+  appendAutoSyncPasses(pm, state.arch);
+
+  // Oracle gates. Read-only apart from diagnostics, and each fails the pipeline on
+  // a violation rather than reporting and continuing.
+  appendSyncOraclePasses(pm, state);
+
+  // Materialize each `pto.multi_tile_get` as an addressed `pto.alloc_tile`;
+  // dynamic selections use an `arith.select` chain over planned addresses.
+  pm.addPass(pto::createPTOResolveBufferSelectPass());
+  if (effectiveBackend == PTOBackend::VPTO) {
+    appendVPTOBridgePasses(pm);
+  }
+  if (effectiveBackend == PTOBackend::EmitC) {
+    pm.addPass(createNarrowUnusedMultiResultProvenancePass());
+  }
+  return success();
+}
+
 static LogicalResult populateMainLoweringPasses(PassManager &pm,
                                                 PTOBackend effectiveBackend,
                                                 const CompilePipelineState &state) {
   const bool isA2A3 = state.isA2A3;
   const bool hasTileOpsToExpand = state.hasTileOpsToExpand;
   const PTOBuildLevel effectiveLevel = state.level;
+
+  // Prepared IR is the model's input. Do not repeat frontend normalization,
+  // fusion or scratch materialization after its semantic digest was checked.
+  if (cvApplyVF) {
+    pm.addPass(pto::createCVValidateVFPass());
+    pm.addPass(pto::createCVApplySchedulePass(cvAnalyzeSchedule));
+    if (cvAnalyzeSchedule) return success();
+    pm.addNestedPass<func::FuncOp>(pto::createPTOVerifyTFreePass());
+    return appendLateStorageAndSyncPasses(pm, effectiveBackend, state);
+  }
 
   // Rank-2 → rank-5 view canonicalization is currently gated on the VPTO
   // backend to limit blast radius.  A3/A5 EmitC codegen already pads strides
@@ -1722,7 +2040,7 @@ static LogicalResult populateMainLoweringPasses(PassManager &pm,
     pm.addPass(pto::createInsertTemplateAttributesPass());
   }
 
-  if (failed(appendFusionFrontendPasses(pm, isA2A3,
+  if (!cvApplyVF && failed(appendFusionFrontendPasses(pm, isA2A3,
                                         state.enableA5EmitCFusionPath,
                                         state.enableA5VPTOFusionPath))) {
     return failure();
@@ -1734,28 +2052,14 @@ static LogicalResult populateMainLoweringPasses(PassManager &pm,
   pm.addNestedPass<mlir::func::FuncOp>(
       pto::createPTORematerializeFixpipeVectorQuantPass());
 
-  if (failed(appendPlanMemoryPasses(pm, effectiveLevel, enablePlanMemory))) {
-    return failure();
+  if (cvPrepareVF) {
+    pm.addPass(pto::createCVOutlineVFPass());
+    pm.addPass(std::make_unique<PrepareCVVFPass>());
+    // --emit-pto-ir stops here, with outer local allocations still symbolic.
+    return success();
   }
-  pm.addPass(pto::createPTOResolveReservedBuffersPass());
-  pm.addNestedPass<mlir::func::FuncOp>(pto::createPTORemoveIdentityTMovPass());
 
-  appendAutoSyncPasses(pm, state.arch);
-
-  // Oracle gates. Read-only apart from diagnostics, and each fails the pipeline on
-  // a violation rather than reporting and continuing.
-  appendSyncOraclePasses(pm, state);
-
-  // Materialize each `pto.multi_tile_get` as an addressed `pto.alloc_tile`;
-  // dynamic selections use an `arith.select` chain over planned addresses.
-  pm.addPass(pto::createPTOResolveBufferSelectPass());
-  if (effectiveBackend == PTOBackend::VPTO) {
-    appendVPTOBridgePasses(pm);
-  }
-  if (effectiveBackend == PTOBackend::EmitC) {
-    pm.addPass(createNarrowUnusedMultiResultProvenancePass());
-  }
-  return success();
+  return appendLateStorageAndSyncPasses(pm, effectiveBackend, state);
 }
 
 // Backend-agnostic cleanup after the shared lowering. --emit-pto-ir stops
@@ -1826,6 +2130,10 @@ static LogicalResult runMainLoweringPipeline(
   if (failed(populateMainLoweringPasses(pm, effectiveBackend, state))) {
     return failure();
   }
+  if (cvApplyVF && !cvFeedbackPath.empty()) {
+    result.cvFeedbackPath = cvFeedbackPath;
+    pm.addPass(std::make_unique<CaptureCVFeedbackPass>(&result.cvFeedbackText));
+  }
 
   // --emit-pto-ir dumps the module after the shared lowering segment only;
   // the backend tail (CSE / helper inlining) is intentionally not run.
@@ -1834,9 +2142,21 @@ static LogicalResult runMainLoweringPipeline(
       llvm::errs() << "Error: Pass execution failed.\n";
       return failure();
     }
+    if (cvAnalyzeSchedule)
+      (*module)->setAttr("pto.cv.analysis_only", UnitAttr::get(module->getContext()));
+    if (cvPrepareVF) {
+      (*module)->setAttr("pto.cv.prepared_cann", cvCANNIdentity(module->getContext(),
+          resolveEffectiveCANNVersion(context.getCANNVersionOrDefault())));
+      (*module)->setAttr("pto.cv.prepared_digest", StringAttr::get(module->getContext(),
+          cvPreparedContentDigest(*module)));
+    }
     result.kind = PTOASCompileResultKind::Text;
     llvm::raw_string_ostream os(result.textOutput);
-    module->print(os);
+    // Pipe flag bases are assigned later by PlanMemory. Generic assembly is
+    // required for a lossless checkpoint while these optional fields are absent.
+    if (cvPrepareVF || cvAnalyzeSchedule)
+      module->print(os, OpPrintingFlags().printGenericOpForm());
+    else module->print(os);
     os.flush();
     handled = true;
     exitCode = 0;
@@ -1937,6 +2257,7 @@ static void runCppPostRewrites(std::string &cppOutput) {
 static int runEmitCTextEmission(OwningOpRef<ModuleOp> &module,
                                 const CompilePipelineState &state,
                                 PTOASCompileResult &result) {
+  if (failed(emitSharedPreBackendSeamIR(*module, cvCostModelFinalIRFile))) return 1;
   if (ptoPrintSeamIR) {
     printSharedPreBackendSeamIR(*module);
   }
@@ -1993,6 +2314,47 @@ int mlir::pto::compilePTOASModule(
       failed(validateFusionConfiguration(state, effectiveBackend))) {
     return 1;
   }
+  if (cvPrepareVF || cvApplyVF) {
+    if (cvPrepareVF == cvApplyVF || cvFreezeVF || cvEmitFrozenVF || emitCVCostModelIR ||
+        state.arch != "a5" || effectiveBackend != PTOBackend::VPTO ||
+        state.level != PTOBuildLevel::Level2 || !enableVMI ||
+        !state.opFusionEnabled || (cvPrepareVF && !emitMlirIR) ||
+        (cvApplyVF && (!enableInsertSync || !enableVecScopeMemBar))) {
+      module->emitError("CV VF integration requires separate A5 level2 VMI VPTO phases; "
+                        "prepare requires emit-pto-ir; apply requires InsertSync and vecscope membar");
+      return 1;
+    }
+    if (cvPrepareVF && (*module)->hasAttr("pto.cv.prepared")) {
+      module->emitError("input VF is already prepared"); return 1;
+    }
+    if (cvApplyVF && (*module)->getAttrOfType<StringAttr>("pto.cv.prepared") !=
+                         StringAttr::get(module->getContext(), "1.0")) {
+      module->emitError("CV apply requires a prepared VF input"); return 1;
+    }
+    if (cvApplyVF) {
+      auto digest = (*module)->getAttrOfType<StringAttr>("pto.cv.prepared_digest");
+      if (!digest || digest.getValue() != cvPreparedContentDigest(*module) ||
+          (*module)->getAttr("pto.cv.prepared_cann") != cvCANNIdentity(module->getContext(),
+              resolveEffectiveCANNVersion(context.getCANNVersionOrDefault()))) {
+        module->emitError("prepared VF program, target or CANN identity does not match");
+        return 1;
+      }
+    }
+  } else if ((*module)->hasAttr("pto.cv.prepared")) {
+    module->emitError("prepared CV input requires --cv-apply-vf"); return 1;
+  }
+  if (cvAnalyzeSchedule && (!cvApplyVF || !emitMlirIR || !cvFeedbackPath.empty())) {
+    module->emitError("cv-analyze-schedule requires cv-apply-vf and emit-pto-ir without feedback");
+    return 1;
+  }
+  if (!cvFeedbackPath.empty() && !cvApplyVF) {
+    module->emitError("cv-feedback requires cv-apply-vf"); return 1;
+  }
+  if (!cvCostModelFinalIRFile.empty() &&
+      (effectiveBackend != PTOBackend::EmitC || state.arch != "a5" ||
+       emitCVCostModelIR || emitMlirIR || cvCostModelFinalIRFile == "-")) {
+    module->emitError("cv-costmodel-final-ir-file requires A5 EmitC code emission"); return 1;
+  }
   if (cvFreezeVF || cvEmitFrozenVF) {
     if (cvFreezeVF == cvEmitFrozenVF || state.arch != "a5" ||
         effectiveBackend != PTOBackend::VPTO || state.level != PTOBuildLevel::Level3 ||
@@ -2037,14 +2399,39 @@ int mlir::pto::compilePTOASModule(
   if (failed(validateCompileOptions(*module, state.level))) {
     return 1;
   }
-  if (failed(runPreBackendNormalization(*module))) {
+  if (emitCVCostModelIR) {
+    if (state.arch != "a5") {
+      module->emitError("emit-cv-costmodel-ir requires A5"); return 1;
+    }
+    PassManager pm(module->getContext());
+    pm.enableVerifier();
+    // Retain the v1/v2 checkpoint contract. The normal compilation path also
+    // folds generic scalar operations; applying that newer optimization here
+    // changes object identity and hides unsupported source operations.
+    pm.addPass(pto::createPTOMaterializeTileOpSectionsPass());
+    pm.addPass(pto::createPTONormalizeUncoveredTileSectionsPass());
+    pm.addPass(pto::createPTOValidatePhysicalSectionBoundariesPass());
+    pm.addPass(createSerialFrontendPipeLoweringPass());
+    pm.addPass(pto::createPTOInferValidatePipeInitPass());
+    pm.addNestedPass<func::FuncOp>(pto::createPTOVerifyTFreePass());
+    if (failed(pm.run(*module))) return 1;
+    Builder b(module->getContext());
+    (*module)->setAttr("pto.costmodel.checkpoint_version", b.getI64IntegerAttr(1));
+    (*module)->setAttr("pto.costmodel.compiler_version", b.getStringAttr(PTOAS_RELEASE_VERSION));
+    llvm::raw_string_ostream os(result.textOutput);
+    module->print(os, OpPrintingFlags().useLocalScope().printGenericOpForm());
+    os << "\n";
+    return 0;
+  }
+  if (!cvApplyVF && failed(runPreBackendNormalization(*module, !cvPrepareVF))) {
     return 1;
   }
   state.hasTileOpsToExpand = hasUnexpandedTileOps(*module);
 
   // The state is assembled and validated once above, so backend branches
   // cannot observe partially validated option combinations.
-  if (effectiveBackend == PTOBackend::VPTO && !state.hasTileOpsToExpand) {
+  if (effectiveBackend == PTOBackend::VPTO && !state.hasTileOpsToExpand &&
+      !cvPrepareVF && !cvApplyVF) {
     return runVPTOSkipMainlinePipeline(module, context, state, result,
                                        emitVPTOHostStub);
   }
