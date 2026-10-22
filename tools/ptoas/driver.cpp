@@ -1422,14 +1422,19 @@ parseDriverInvocation(const std::vector<std::string> &args,
   DriverInvocationOptions options;
   options.cliArchSpecified = hasCLIOption(args, "--pto-arch");
   options.cliBackendSpecified = hasCLIOption(args, "--pto-backend");
-  std::vector<const char *> argViews = toCommandLineViews(args);
-  llvm::cl::ParseCommandLineOptions(static_cast<int>(argViews.size()),
-                                    argViews.data(), "PTO Assembler (ptoas)\n");
   options.disableThreading = llvm::any_of(args, [](const std::string &arg) {
     return arg == "--mlir-disable-threading" ||
            arg == "--mlir-disable-threading=true" ||
            arg == "--mlir-disable-threading=1";
   });
+  // LLVM 19's global disable flag makes disableMultithreading() a no-op.
+  // Apply it to an already-created Python context before parsing that flag.
+  if (borrowedContext && options.disableThreading) {
+    borrowedContext->disableMultithreading();
+  }
+  std::vector<const char *> argViews = toCommandLineViews(args);
+  llvm::cl::ParseCommandLineOptions(static_cast<int>(argViews.size()),
+                                    argViews.data(), "PTO Assembler (ptoas)\n");
   bool newSchedulerOption = mlir::pto::bishengSchedulerMode.getNumOccurrences() != 0;
   bool oldSchedulerOption = mlir::pto::enableBishengVecMISched.getNumOccurrences() != 0;
   if (newSchedulerOption && oldSchedulerOption) {

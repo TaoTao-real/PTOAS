@@ -9,7 +9,7 @@ from ptoas.mlir import ir
 from ptoas.mlir.dialects import pto
 
 SOURCE_SHA='3c67b7a42b05b7fa1dd705e38892a335dc336bd6f14e7c025a05340e4fa00e9b'
-TILE_OPS={'pto.trowmax','pto.trowexpandsub','pto.alloc_tile','pto.tmov','pto.tmuls','pto.texp','pto.trowsum','pto.tcvt','pto.tmax','pto.tsub','pto.trowexpandmul','pto.tadd','pto.trowexpanddiv'}
+TILE_OPS={'pto.trowmax','pto.trowexpandsub','pto.alloc_tile','pto.tmov','pto.tmuls','pto.texp','pto.trowsum','pto.tcvt','pto.tmax','pto.tsub','pto.trowexpandmul','pto.tadd','pto.tmul','pto.trowexpanddiv'}
 def opof(op):return getattr(op,'operation',op)
 def walk(op):
  yield op
