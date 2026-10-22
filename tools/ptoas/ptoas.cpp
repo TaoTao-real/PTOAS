@@ -105,6 +105,7 @@ void mlir::pto::registerPTOASPassesAndCLOptions() {
   mlir::pto::registerPTOInlineLibCall();
   mlir::pto::registerFoldTileBufIntrinsics();
   mlir::pto::registerLowerPTOToUBufOps();
+  mlir::registerMLIRContextCLOptions();
   mlir::registerPassManagerCLOptions();
 }
 
