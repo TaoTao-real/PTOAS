@@ -1,12 +1,15 @@
 // RUN: ptoas %s --mlir-disable-threading --mlir-print-ir-after=pto-validate-vpto-emission-ir --mlir-print-ir-module-scope --pto-arch=a5 --pto-level=level3 --pto-backend=vpto --enable-vmi --enable-op-fusion --enable-insert-sync --enable-vecscope-mem-bar --cv-freeze-vf --emit-vpto -o %t.freeze 2>%t.dumps
 // RUN: ptoas %t.freeze --pto-arch=a5 --pto-level=level3 --pto-backend=vpto --enable-vmi --enable-op-fusion --cv-emit-frozen-vf --emit-vpto -o %t.resume
 // RUN: diff %t.freeze %t.resume
+// RUN: not ptoas %t.freeze --pto-arch=a5 --pto-level=level3 --pto-backend=emitc --enable-vmi --enable-op-fusion --cv-emit-frozen-vf --emit-vpto -o /dev/null 2>&1 | FileCheck %s --check-prefix=BACKEND
+// RUN: not ptoas %t.freeze --pto-arch=a5 --pto-level=level3 --pto-backend=vpto --cann-output-version=9.2.0 --enable-vmi --enable-op-fusion --cv-emit-frozen-vf --emit-vpto -o /dev/null 2>&1 | FileCheck %s --check-prefix=STALE
 // RUN: not ptoas %t.freeze --pto-arch=a5 --pto-level=level3 --pto-backend=vpto --enable-vmi --enable-op-fusion --emit-vpto -o /dev/null 2>&1 | FileCheck %s --check-prefix=NOFLAG
 // RUN: sed 's/physical-v2/physical-v1/' %t.freeze > %t.stale
 // RUN: not ptoas %t.stale --pto-arch=a5 --pto-level=level3 --pto-backend=vpto --enable-vmi --enable-op-fusion --cv-emit-frozen-vf --emit-vpto -o /dev/null 2>&1 | FileCheck %s --check-prefix=STALE
 // RUN: sed 's/checkpoint_kernel/changed_kernel/' %t.freeze > %t.modified
 // RUN: not ptoas %t.modified --pto-arch=a5 --pto-level=level3 --pto-backend=vpto --enable-vmi --enable-op-fusion --cv-emit-frozen-vf --emit-vpto -o /dev/null 2>&1 | FileCheck %s --check-prefix=STALE
 // NOFLAG: CV VF checkpoint input requires --cv-emit-frozen-vf
+// BACKEND: CV VF checkpoints require the VPTO backend
 // STALE: CV VF checkpoint identity, digest or prepared IR does not match
 
 module attributes {pto.backend = "vpto", pto.target_arch = "a5"} {

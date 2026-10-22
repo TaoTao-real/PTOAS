@@ -1245,6 +1245,21 @@ static LogicalResult resolveSingleBackend(
     mlir::pto::PTOBackend defaultBackend, ModuleOp module,
     std::optional<mlir::pto::PTOBackend> &singleBackend) {
   singleBackend = std::nullopt;
+  // A prepared VF checkpoint binds the complete C/V module. Splitting it into
+  // child compile jobs would invalidate that digest before verification. Keep
+  // it on the existing paired VPTO emission route; compilePTOASModule checks
+  // the explicit resume flag, target, CANN and content before emitting code.
+  if (module->hasAttr("pto.cv.vf_state")) {
+    if ((cliBackendSpecified &&
+         defaultBackend != mlir::pto::PTOBackend::VPTO) ||
+        (moduleBackend &&
+         *moduleBackend != mlir::pto::PTOBackend::VPTO)) {
+      module.emitError("CV VF checkpoints require the VPTO backend");
+      return failure();
+    }
+    singleBackend = mlir::pto::PTOBackend::VPTO;
+    return success();
+  }
   if (cliBackendSpecified) {
     SmallVector<ModuleOp, mlir::pto::kValue4> children(module.getOps<ModuleOp>());
     if (!isUserVisibleIROutputRequested() && children.size() > 1 &&
