@@ -1,5 +1,5 @@
 // RUN: pto-test-opt %s -pto-cv-apply-schedule | FileCheck %s
-// RUN: sed 's/ins(%p1, %p1/ins(%p0, %p0/; s/outs(%p1/outs(%p0/' %s > %t.bad
+// RUN: sed 's/ins(%%p1, %%p1/ins(%%p0, %%p0/; s/outs(%%p1/outs(%%p0/' %s > %t.bad
 // RUN: not pto-test-opt %t.bad -pto-cv-apply-schedule 2>&1 | FileCheck %s --check-prefix=BAD
 
 module attributes {pto.target_arch = "a5"} {

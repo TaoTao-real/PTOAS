@@ -187,6 +187,8 @@ def freeze(a):
     shutil.copyfile(a.request,destination/'frozen-request.json')
     paths=['artifacts.json']+[str(f.relative_to(root)) for f in destination.rglob('*') if f.is_file()]
     paths += [r['candidate_id']+'/validation_report.json' for r in artifact['rows']]
+    shutil.copyfile(__file__,root/'fa_model_ab.py');paths.append('fa_model_ab.py')
+    paths += [str(f.relative_to(root)) for f in (root/'model-inputs').rglob('*') if f.is_file()]
     write(root/'ab_manifest.json',dict(schema='pto.cv.fa_ab_manifest.v1',model_selection=selection,
         files={p:sha(root/p) for p in paths},hardware_soc='Ascend950DT_9592',timing_profile='950PR_9599 proxy, user authorized',
         full_target_accuracy_certification=False,device=0,rows=artifact['rows']))
@@ -223,12 +225,14 @@ def run(a):
     sequence=[]
     if a.mode=='g3':
         forward=[selected]+[p for p in variants if p!=selected]
+        sequence.append((selected,'pattern',12345,-1,'cold-first'))
         for repeat,order in enumerate((forward,list(reversed(forward)))):
             for mode,seed in cases:
                 for p in order:sequence.append((p,mode,seed,repeat,'g3'))
     else:
         accepted=read(a.g3_report)
         require(accepted['status']=='pass' and accepted['matrix_sha256']==sha(root/'ab_manifest.json') and accepted['device']==0,'matching G3 required')
+        reference={(r['candidate_id'],r['case'],r['seed']):r for r in accepted['rows']}
         sequence=[(p,'pattern',12345,-1,'warmup') for p in variants]
         orders=((0,1,2,3),(1,0,3,2),(2,3,0,1),(3,2,1,0))
         for block in range(20):
@@ -250,6 +254,9 @@ def run(a):
             saved=dict(candidate_id=p,case=mode,seed=seed,block=repeat,stage=stage,status='pass',runtime=str(runtime),
                 output_sha256=sha(runtime/'output/O.f32'),inputs={n:sha(runtime/'output'/n) for n in ('Q.f16','K.f16','V.f16')},
                 numpy_max_abs_error=error,wall_seconds=time.monotonic()-started,symbol=row['symbol'])
+            if a.mode=='performance':
+                previous=reference[(p,mode,seed)]
+                require(saved['output_sha256']==previous['output_sha256'] and saved['inputs']==previous['inputs'],'performance output/input differs from G3')
             if stage=='profile':saved.update(duration(runtime,row['symbol']+'_mix_aic',0))
             write(runtime/'result.json',saved);report['rows'].append(saved);write(output,report)
             print(stage,p,mode,seed,repeat,saved.get('duration_us','PASS'),flush=True)
