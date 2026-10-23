@@ -138,15 +138,9 @@ def import_fa(source, destination, symbol='fa_native_model_ab'):
                         # that physical tail private, instead of reading a
                         # neighbour allocation or an asynchronously filled FIFO.
                         row_padding = core == 'vector' and 'vec' in space and tuple(typ.shape) == (16,8)
-                        allocation_type = ir.Type.parse('!pto.tile_buf<vec, 32x8xf32>') if row_padding else old.results[0].type
+                        allocation_type = ir.Type.parse('!pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=8, v_row=16, v_col=1, blayout=row_major, slayout=none_box, fractal=512, pad=0>') if row_padding else old.results[0].type
                         alloc = ir.Operation.create('pto.alloc_tile', results=[allocation_type], attributes=aa)
                         logical = alloc.results[0]
-                        if row_padding:
-                            pointer_type = pto.PtrType.get(typ.element_type,ir.Attribute.parse('#pto.address_space<vec>'))
-                            pointer = ir.Operation.create('pto.tile_buf_addr',operands=[logical],results=[pointer_type]).results[0]
-                            address_value = ir.Operation.create('pto.castptr',operands=[pointer],results=[ir.IntegerType.get_signless(64)]).results[0]
-                            logical = ir.Operation.create('pto.alloc_tile',operands=[address_value],results=[old.results[0].type],attributes={
-                                'operandSegmentSizes':ir.DenseI32ArrayAttr.get([1,0,0]),'pto.cv.borrowed':ir.UnitAttr.get()}).results[0]
                         root.append(logical)
                         ledger.append(dict(id=ir.StringAttr(aa['pto.costmodel.buffer_id']).value,
                             core=core, source_range=[address, size], replica=replica,
