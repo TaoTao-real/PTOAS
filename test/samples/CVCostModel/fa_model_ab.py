@@ -263,6 +263,7 @@ def run(a):
         for block in range(20):
             for ix in orders[block%4]:sequence.append((variants[ix],'pattern',(12345,20260916,20261022)[block%3],block,'profile'))
     report=dict(status='running',matrix_sha256=sha(root/'ab_manifest.json'),device=0,soc='Ascend950DT_9592',mode=a.mode,
+        execution_harness_sha256=sha(__file__),profiler_symbol_policy='exact host launch symbol; one MIX_AIC task, 1 AIC + 2 AIV',
         environment='ACL_RUNTIME_AVAILABLE; npu-smi telemetry unavailable; task-submit exclusive queue',rows=[])
     output=experiment/'results'/('fa-'+a.mode+'.json');require(not output.exists(),'run report already exists')
     try:
@@ -282,7 +283,7 @@ def run(a):
             if a.mode=='performance':
                 previous=reference[(p,mode,seed)]
                 require(saved['output_sha256']==previous['output_sha256'] and saved['inputs']==previous['inputs'],'performance output/input differs from G3')
-            if stage=='profile':saved.update(duration(runtime,row['symbol']+'_mix_aic',0))
+            if stage=='profile':saved.update(duration(runtime,row['symbol'],0))
             write(runtime/'result.json',saved);report['rows'].append(saved);write(output,report)
             print(stage,p,mode,seed,repeat,saved.get('duration_us','PASS'),flush=True)
         # Same input and same output must be stable in both traversal orders.
