@@ -153,6 +153,8 @@ def freeze(a):
         if common_layout is None:common_layout=layout
         require(layout==common_layout,'physical layouts differ; cannot isolate CV reordering')
         timeline=read(a.result.parent/(row['candidate_id']+'-timeline.json'));access=read(a.result.parent/(row['candidate_id']+'-accesses.json'))
+        from fa_semantic_audit import check_execution_witness
+        witness=check_execution_witness(read(folder/'program.json'),timeline,access)
         ancestors={}
         for event in sorted(timeline,key=lambda e:e['end_us']):
             # Zero-duration control events can have equal end times: use a
@@ -203,6 +205,7 @@ def freeze(a):
                     hazard_pairs+=1
         certificate=dict(schema='pto.cv.exact_fa_g2.v1',G2='pass',scope='SHA-bound fixed M32 FA; no address reuse',
             compiler=compiler,physical_accesses=len(access),ordered_hazard_pairs=hazard_pairs,events=len(timeline),
+            execution_witness=witness,
             completion='compiler drains and absolute sync coverage; time predictions are NOT a safety proof',
             binding=dict(program=row['program_sha256'],feedback=row['feedback_sha256'],object=sha(folder/'candidate.o'),plan=row['plan']))
         write(folder/'validation_report.json',certificate)
