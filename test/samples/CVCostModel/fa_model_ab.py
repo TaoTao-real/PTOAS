@@ -39,27 +39,38 @@ def prepare(a):
     from ptoas import cv_vf as cv
     from fa_native_ab import import_fa,SOURCE_SHA
     from native_ablation import validate_memory
-    root=a.root.resolve();root.mkdir(parents=True,exist_ok=False)
-    shutil.copyfile(a.source,root/'original.pto')
+    root=a.root.resolve();root.mkdir(parents=True,exist_ok=a.resume)
+    require(not (root/'artifacts.json').exists(),'completed build is immutable')
+    if not (root/'original.pto').exists():shutil.copyfile(a.source,root/'original.pto')
     require(sha(root/'original.pto')==SOURCE_SHA,'unexpected FA source')
     rows=[]
     for p in range(4):
-        folder=root/('p'+str(p));folder.mkdir();symbol='fa_'+hashlib.sha256((str(root)+str(p)).encode()).hexdigest()[:16]
-        import_fa(root/'original.pto',folder/'source.pto',symbol)
+        folder=root/('p'+str(p));folder.mkdir(exist_ok=a.resume);symbol='fa_'+hashlib.sha256((str(root)+str(p)).encode()).hexdigest()[:16]
+        if not (folder/'source.pto').exists():import_fa(root/'original.pto',folder/'source.pto',symbol)
+        imported=read(folder/'source.import.json')
+        require(imported['source_sha256']==SOURCE_SHA and imported['output_sha256']==sha(folder/'source.pto'),'partial import changed')
         binding=dict(shape=[128,1024,128],tile=[32,128,128],launch=dict(aic=1,aiv=2),
             alias_constraints=[dict(kind='pairwise_disjoint',arguments=['Q','K','V','O'])],
             parameter_bindings={symbol+core:['Q','K','V','O',128,1024] for core in ('_mix_aic','_mix_aiv')})
         target=dict(arch='a5',cann_version='9.2.0',soc='Ascend950DT_9592')
-        cv.export_bundle(folder/'source.pto',binding,target,folder/'package',compiler=a.compiler)
+        if not (folder/'package').exists():cv.export_bundle(folder/'source.pto',binding,target,folder/'package',compiler=a.compiler)
         manifest,program=cv.load_bundle(folder/'package')
+        require(manifest['source_sha256']==sha(folder/'source.pto') and manifest['producer']==cv.compiler_identity(a.compiler),'partial build/compiler changed')
+        require(read(folder/'package/bindings.json')==binding and read(folder/'package/target.json')==target,'partial configuration changed')
         loops={l['id']:p for l in program['loops'] if not l['prepared_vf_internal']}
-        analysis=cv.analyze_schedule(folder/'package',loops,folder/'analysis',compiler=a.compiler)
+        analysis=read(folder/'analysis/schedule.json') if (folder/'analysis/schedule.json').exists() else cv.analyze_schedule(folder/'package',loops,folder/'analysis',compiler=a.compiler)
+        require(analysis['input_fingerprint']==manifest['input_fingerprint'],'partial schedule input changed')
         plan=analysis['minimum_slot_plan'];plan['candidate_id']='p'+str(p)
         cv.annotate_plan(folder/'package',plan,folder/'annotated.pto')
         product=folder/'candidate.o';feedback=folder/'compiler_feedback.json'
         flags=cv._flags(target)+['--cv-apply-vf','--enable-insert-sync','--enable-vecscope-mem-bar',
             '--check-sync-ids','--check-sync-interference','--check-sync-self-coverage']
-        cv._invoke(a.compiler,[folder/'annotated.pto',*flags,'--cv-feedback='+str(feedback),'-o',product],folder/'compile.log')
+        command=[folder/'annotated.pto',*flags,'--cv-feedback='+str(feedback),'-o',product]
+        if feedback.exists() and product.exists():
+            import sys
+            expected=[sys.executable,str(Path(a.compiler).resolve()),*map(str,command)]
+            require(json.loads((folder/'compile.log').read_text().splitlines()[0])==expected,'partial compile command changed')
+        else:cv._invoke(a.compiler,command,folder/'compile.log')
         fb=read(feedback)
         require(fb['product_sha256']==sha(product),'object/feedback mismatch')
         require(cv.fingerprint(fb['schedules'])==plan['schedule_fingerprint'],'schedule changed')
@@ -284,7 +295,7 @@ def run(a):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);sub=p.add_subparsers(dest='action',required=True)
-    prepare_parser=sub.add_parser('prepare');prepare_parser.add_argument('source',type=Path);prepare_parser.add_argument('root',type=Path);prepare_parser.add_argument('--compiler',required=True)
+    prepare_parser=sub.add_parser('prepare');prepare_parser.add_argument('source',type=Path);prepare_parser.add_argument('root',type=Path);prepare_parser.add_argument('--compiler',required=True);prepare_parser.add_argument('--resume',action='store_true')
     f=sub.add_parser('freeze');f.add_argument('root',type=Path);f.add_argument('request',type=Path);f.add_argument('result',type=Path)
     r=sub.add_parser('run');r.add_argument('root',type=Path);r.add_argument('experiment',type=Path);r.add_argument('--mode',choices=['g3','performance'],required=True);r.add_argument('--g3-report',type=Path)
     a=p.parse_args();globals()[a.action](a)
