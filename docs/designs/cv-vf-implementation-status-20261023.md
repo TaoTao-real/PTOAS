@@ -1,6 +1,8 @@
 # VF × CV × PlanMemory 实现状态（2026-10-23）
 
-当前结论：**受限 micro 已完成 G2、G3 和 A/P0/M/B 上板消融，机制收益通过；完整 FA 与真实模型闭环尚未签收。**
+当前结论：**固定 M32 FA 已完成真实代理模型推荐、原生 VF＋PlanMemory、受限 G2、G3 和同板 A/B，配对平均降时 33.04%。通用 FA 支持与目标匹配 G4 仍未完成。**
+
+新增验收见 [固定 FA 代理模型与实测报告](cv-vf-fa-model-acceptance-20261023.md)。本轮 49 次 G3、80 个正式 profiler 样本全部正确。模型推荐 P=1（本图旧 depth=2），候选绝对时延误差 3.36%，基线误差 13.31%，收益预测少 7.75 个百分点。PR 参数仅作 DT 代理，不签 G4。
 
 新增验收见 [固定 micro 上板报告](cv-vf-native-micro-acceptance-20261023.md)。实验代码冻结于 `f8c9cbcd0`，B/A 配对平均时延下降 15.46%，B/P0 下降 14.81%；正式 G3 24 次、profiler 80 次全部正确。
 
@@ -74,15 +76,15 @@
 
 | 阶段 | 状态与缺口 |
 | --- | --- |
-| G1 | 新输入包/Plan/原生编译往返已通过；真实 TileSim adapter 尚未消费新的 prepared VF 扩展 |
-| G2 | 固定 micro 通过外部受限证书；新增释放前完成屏障、实际布局和联合 FIFO 检查。通用反馈仍为 `evidence_incomplete`，不承诺任意程序证明 |
-| G3 | crossing N=8 的正式 24 次通过，精确 golden、guard、重复及反向顺序均通过；FA 未验收 |
-| 性能 | 固定候选消融通过，B/A 15.46%、B/P0 14.81%；真实模型推荐 A/B 和 G4 仍未完成 |
-| FA | Q×KV 投影、m/l/O 递推、旧物理地址的受控重定位仍未实现 |
-| 模型反馈 | 最终布局/等待的模型消费与重新评估未接通，不能签发 G4 或自动启用 |
+| G1 | 固定 FA 的真实 TileSim/VfSimulator 返回 Plan 已回填；annotation 与已编译候选逐字节相同 |
+| G2 | 固定 micro 与固定 M32 FA 均通过各自受限证书；FA 增加独立物理尾部、事件/访存完整性、flag 与不重叠布局检查。通用反馈仍为 `evidence_incomplete` |
+| G3 | micro 24 次与 FA 49 次分别通过；FA 使用 C++/NumPy FP64 golden，常量、随机、反向顺序及 guard 检查均通过 |
+| 性能 | micro 固定候选 B/A 15.46%、B/P0 14.81%；FA 真实推荐 A/B 降时 33.04%，95% 区间 32.52%–33.55%。G4 不认证 |
+| FA | SHA 限定的 M32 原件已完成 32-token 投影、m/l/O 版本和旧地址相对视图导入；不是任意 FA 的正式通用入口 |
+| 模型反馈 | 固定候选同次编译的最终 VPTO/布局/同步已由真实模型消费；通用反馈迭代、DT 参数认证与自动启用未完成 |
 | 环境 | VfSim ON、CANN9.1/950PR 和 A3 新板测尚未验收 |
 
-此分支已验证固定 micro 的原生编译、正确性和机制收益。受限 G2 的外部证明补齐了该用例的完成条件；不能把这一结论扩展到仍为 unknown 的其他输入或称为 TileSim 推荐验收。
+固定 micro 是手工候选的机制验收；本轮固定 FA 是真实代理模型推荐验收。两类证据分别保留，不能互相替代，也不能扩展到其他输入或目标。
 
 使用方式与约束见 [prepared interface](cv-vf-prepared-interface.md)；
 后续门槛仍按 [实施计划](cv-vf-planmemory-implementation-plan.md) 执行。

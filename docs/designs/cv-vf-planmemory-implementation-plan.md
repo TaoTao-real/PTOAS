@@ -202,7 +202,7 @@ TileSim/VfSimulator 负责合法程序的成本覆盖、候选搜索、预测与
 已迁入旧 v1/2.0 SDK 和回归，新增独立的 prepared VF 实验扩展。
 使用说明见 [prepared interface](cv-vf-prepared-interface.md)。
 
-当前状态：P0/P1 已有自动与手写 VF 的编译证据；P2 仅支持独立单轴四阶段循环；
+上一轮编译阶段状态（后续进度见下方验收补充）：P0/P1 已有自动与手写 VF 的编译证据；P2 仅支持独立单轴四阶段循环；
 P3 已执行实际规划，但完整异步完成与 C/V FIFO 联合证明尚缺，G2 保持 evidence_incomplete；
 P4 只有新交换与 schedule/产物绑定，尚无 TileSim/VfSimulator 的真实联合推荐；
 P5/P6 的新设备正确性与性能验收未运行。
@@ -220,3 +220,14 @@ FA 投影/递推、旧地址重定位、VfSim ON 构建和 A3 新板测仍未完
 - P6：20 个四组交替 block、80 个 profiler 样本完成，机制收益通过；B/A 15.46%，B/P0 14.81%，M/P0 0.73%。独立离线复核通过。
 - P4：新 prepared-VF 接口的真实 TileSim 推荐及编译后模型重评仍未完成；本轮候选为预固定配置，G4 未认证。
 - FA、完整 M01–M12、通用地址复用、其他 shape/target 和自动启用继续保持未完成。
+
+## 2026-10-23：固定 FA 真实代理模型闭环
+
+结果见 [固定 FA 验收报告](cv-vf-fa-model-acceptance-20261023.md)。本补充更新上一轮“FA/真实推荐未完成”的状态，不扩大通用支持范围。
+
+- P2：新增原生静态 stage graph 与共享存储绑定。SHA 限定的 M32 FA importer 保留 32 个 token 的 Q/KV 投影、m/l/O 递推和相对行视图；不是任意 FA 识别器。
+- P3：同次对象编译导出最终 VPTO；真实 PlanMemory；私有 row 读取尾部、不复用布局、完整事件与访存见证、flag/完成条件及预算检查通过。通用复用证明仍未完成。
+- P4：真实 TileSim EventEvaluator＋VfSimulator 消费最终程序，在首次 FA 上板前冻结 P=1 推荐；模型 Plan 回填与编译产物一致。DT 参数缺失，用户授权 PR_9599 代理评估 DT_9592。
+- P5：新 FA G3 49/49，通过两套 FP64 golden、全 1、三个种子、候选先运行及反向顺序。
+- P6：新正式批次 20 block、80 profiler 样本全部正确；配对平均降时 33.04%，95% 区间 32.52%–33.55%，收益通过。候选时延误差 3.36%、基线误差 13.31%，收益预测少 7.75 个百分点。
+- 本轮固定槽位，只搜索 preload；模型数据和原始证据冻结。G4、DT 参数、逐 Buffer 搜索、通用地址复用、任意 FA 正式入口和同批交付包整链替换继续未完成。
