@@ -4,6 +4,11 @@
 新接口的实验扩展名为 `pto.cv.prepared_exchange.v1`。TileSim adapter 必须显式支持
 该扩展后，才可消费这里的 VF 和 schedule；原 v2 adapter 不能假装已支持它。
 
+2026-10-23 补充：下文的通用入口限制仍有效。另已完成一个按原始输入 SHA 严格限定的
+FA 兼容入口与独立受限 G2/G3、模型推荐 A/B；它不是通用 FA 识别能力。
+见 [接口评审指南](cv-vf-costmodel-review-guide.md) 和
+[固定 FA 验收报告](cv-vf-fa-model-acceptance-20261023.md)。
+
 ## 执行顺序
 
 ```text
@@ -99,8 +104,9 @@ pipe backing、两 AIV 的私有存储实例、最终 schedule、降低后 IR �
 要求模型核对最终编译约束，不能继续沿用初评时延。
 
 已有同步 oracle 已补充 prepared VF 调用的效果和 pipe 识别；这不单独构成完整 G2。
-真实 TileSim/VfSimulator 推荐、最终反馈消费、FA 支持和新设备 G3/A/B 仍是后续验收项。
-旧实验数据不能替代这一分支的验收。
+通用 FA 支持及任意程序的完整 G2 仍是后续验收项。上述固定 FA 已消费最终反馈并完成
+真实 TileSim/VfSimulator 推荐与新 G3/A/B，其独立证书不改变本通用接口的 G2 状态。
+旧实验数据不能替代特定输入、候选和编译版本的验收。
 
 ## 回归入口
 

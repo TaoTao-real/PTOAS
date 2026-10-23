@@ -4,6 +4,11 @@
 状态：proposed；受限实验实现已开始，完整验收未通过
 实现及验收计划：[cv-vf-planmemory-implementation-plan.md](../designs/cv-vf-planmemory-implementation-plan.md)
 
+2026-10-23 评审补充：受限 micro 及按 SHA 限定的固定 FA 已分别完成原生链路验证；
+固定 FA 的冻结模型推荐取得 33.04% 配对降时。此结果不改变通用接口的未完成状态。
+当前实现边界、代理模型误差及合入前置项见
+[cost model 评审指南](../designs/cv-vf-costmodel-review-guide.md)。
+
 ## 目标
 
 支持 cost model 评估 PTOAS 实际融合后的 VF，推荐 CV preload 和逐 Buffer
