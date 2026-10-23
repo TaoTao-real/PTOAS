@@ -156,9 +156,8 @@ def freeze(a):
         from fa_semantic_audit import check_execution_witness
         witness=check_execution_witness(read(folder/'program.json'),timeline,access)
         ancestors={}
-        for event in sorted(timeline,key=lambda e:e['end_us']):
-            # Zero-duration control events can have equal end times: use a
-            # separate topological fixed-point instead of relying on time.
+        for event in timeline:
+            # Build the closure from compiler dependencies, never model time.
             ancestors[event['id']]=None
         pending={e['id']:e for e in timeline}
         while pending:
