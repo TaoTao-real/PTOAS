@@ -83,7 +83,9 @@ def prepare(a):
             nested={i for o in f['operations'] for reg in o['regions'] for b in reg for i in b['operations']}
             ops=[o for o in f['operations'] if o['id'] not in nested]
             meaningful=[o for o in ops if not o['name'].startswith('arith.') and o['name'] not in ('pto.castptr','pto.addptr','pto.alloc_tile','pto.tile_buf_addr')]
-            def barrier(o):return o['name']=='pto.barrier' and o['attributes'].get('pipe',{}).get('value')=='PIPE_ALL'
+            # Structured PipeAttr uses the compiler's numeric enum. In this
+            # pinned PTO semantic version PIPE_ALL is 6 (not a string token).
+            def barrier(o):return o['name']=='pto.barrier' and o['attributes'].get('pipe',{})==dict(enum='PipeAttr',value=6)
             for i,o in enumerate(meaningful):
                 if o['name']=='func.call':
                     require(i+1<len(meaningful) and barrier(meaningful[i+1]),'VF completion not proved');drains+=1
