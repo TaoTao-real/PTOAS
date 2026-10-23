@@ -23,16 +23,44 @@ def paired(a,b):
         benefit_pass=mean>=.02-1e-12 and lo>0 and worst<=.02+1e-12)
 
 
-def summarize(root,g3_path,perf_path):
+def runtime_path(row,rebase):
+    original=Path(row['runtime'])
+    if rebase is None:return original
+    parts=original.parts
+    require('work' in parts,'unknown runtime path')
+    suffix=parts[parts.index('work'):]
+    require(len(suffix)==4 and suffix[:2]==('work','fa') and suffix[2]==row['candidate_id']
+            and all(p not in ('.','..') for p in suffix),'invalid portable runtime path')
+    return Path(rebase).joinpath(*suffix)
+
+
+def summarize(root,g3_path,perf_path,*,runtime_root=None,g3_runtime_root=None):
     frozen=check_frozen(root);g3=read(g3_path);perf=read(perf_path)
     for report in (g3,perf):require(report['status']=='pass' and report['matrix_sha256']==sha(root/'ab_manifest.json') and report['device']==0,'invalid run report')
     require(len(g3['rows'])==49 and len(perf['rows'])==84,'incomplete G3/performance matrix')
+    variants=[r['candidate_id'] for r in frozen['rows']]
+    require([r['candidate_id'] for r in perf['rows'][:4]]==variants and
+            all(r['stage']=='warmup' for r in perf['rows'][:4]),'warmup matrix mismatch')
+    orders=((0,1,2,3),(1,0,3,2),(2,3,0,1),(3,2,1,0))
+    for block in range(20):
+        group=perf['rows'][4+4*block:8+4*block]
+        require([r['candidate_id'] for r in group]==[variants[i] for i in orders[block%4]]
+                and all(r['stage']=='profile' and r['block']==block and r['case']=='pattern'
+                    and r['seed']==(12345,20260916,20261022)[block%3] for r in group),'paired order/seed mismatch')
+    symbols={r['candidate_id']:r['symbol'] for r in frozen['rows']}
+    for report,rebase in ((g3,g3_runtime_root),(perf,runtime_root)):
+        for row in report['rows']:
+            runtime=runtime_path(row,rebase)
+            require(read(runtime/'result.json')==row and row['status']=='pass','runtime evidence changed')
+            require(row['symbol']==symbols[row['candidate_id']],'runtime symbol binding changed')
+            require(sha(runtime/'output/O.f32')==row['output_sha256'],'output changed')
+            for n,digest in row['inputs'].items():require(sha(runtime/'output'/n)==digest,'input changed')
     by_candidate={r['candidate_id']:{} for r in frozen['rows']}
     for row in perf['rows']:
-        runtime=Path(row['runtime']);require(read(runtime/'result.json')==row,'runtime evidence changed')
-        require(sha(runtime/'output/O.f32')==row['output_sha256'],'output changed')
-        for n,digest in row['inputs'].items():require(sha(runtime/'output'/n)==digest,'input changed')
+        runtime=runtime_path(row,runtime_root)
         if row['stage']!='profile':continue
+        from summarize_runtime import duration
+        for key,value in duration(runtime,row['symbol'],0).items():require(row[key]==value,'profiler evidence changed')
         p=row['candidate_id'];require(row['block'] not in by_candidate[p],'duplicate pair')
         by_candidate[p][row['block']]=row
     ordered={p:[samples[i]['duration_us'] for i in range(20)] for p,samples in by_candidate.items()}
@@ -69,7 +97,9 @@ def summarize(root,g3_path,perf_path):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     for name in ('matrix','g3','performance','output'):p.add_argument(name,type=Path)
-    a=p.parse_args();write(a.output,summarize(a.matrix,a.g3,a.performance))
+    p.add_argument('--runtime-root',type=Path,help='Optional portable performance experiment root')
+    p.add_argument('--g3-runtime-root',type=Path,help='Optional portable correctness experiment root')
+    a=p.parse_args();write(a.output,summarize(a.matrix,a.g3,a.performance,runtime_root=a.runtime_root,g3_runtime_root=a.g3_runtime_root))
 
 
 if __name__=='__main__':main()

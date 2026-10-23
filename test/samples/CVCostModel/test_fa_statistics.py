@@ -1,7 +1,8 @@
 # Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # Licensed under the CANN Open Software License Agreement Version 2.0.
 import unittest
-from summarize_fa_ab import paired
+from summarize_fa_ab import paired,runtime_path
+from pathlib import Path
 
 
 class PairedFAStatisticsTest(unittest.TestCase):
@@ -17,6 +18,12 @@ class PairedFAStatisticsTest(unittest.TestCase):
         self.assertEqual(paired(baseline,candidate),paired(baseline,candidate))
     def test_reject_missing_pair(self):
         with self.assertRaises(ValueError):paired([100]*19,[80]*20)
+    def test_portable_runtime_preserves_original_json(self):
+        row=dict(candidate_id='p1',runtime='/remote/experiment/work/fa/p1/run01')
+        self.assertEqual(runtime_path(row,Path('/local/evidence')),Path('/local/evidence/work/fa/p1/run01'))
+        self.assertEqual(row['runtime'],'/remote/experiment/work/fa/p1/run01')
+        row['runtime']='/remote/experiment/work/fa/../p1/run01'
+        with self.assertRaises(ValueError):runtime_path(row,Path('/local/evidence'))
 
 
 if __name__=='__main__':unittest.main()
