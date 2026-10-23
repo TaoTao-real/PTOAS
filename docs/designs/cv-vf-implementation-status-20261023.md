@@ -1,6 +1,10 @@
 # VF × CV × PlanMemory 实现状态（2026-10-23）
 
-当前结论：**编译器侧的受限链路已落地；完整需求尚未签收。**
+当前结论：**受限 micro 已完成 G2、G3 和 A/P0/M/B 上板消融，机制收益通过；完整 FA 与真实模型闭环尚未签收。**
+
+新增验收见 [固定 micro 上板报告](cv-vf-native-micro-acceptance-20261023.md)。实验代码冻结于 `f8c9cbcd0`，B/A 配对平均时延下降 15.46%，B/P0 下降 14.81%；正式 G3 24 次、profiler 80 次全部正确。
+
+以下编译记录来自先前 `4e3a50728`，不将旧回归改记为本轮执行。
 实现基于 `f4df5091f`（主线 `37f5f25e3`＋MR289 `73c820689`＋兼容修复），
 分支为 `codex/cv-vf-planmemory-integration`。
 
@@ -64,22 +68,21 @@
 
 远端编译证据目录：
 `~/private-ptoas-lab/experiments/20261022-cv-vf-late-memory-build`（`ptoas-a5-39`）。
-本轮是编译验证，没有执行设备 kernel，不报告设备健康、数值通过或性能收益。
+上述旧记录仅为编译验证，没有执行设备 kernel；本轮新增的板端证据与结论见本页开头的验收报告。
 
-## 未完成的验收条件
+## 验收状态与剩余条件
 
 | 阶段 | 状态与缺口 |
 | --- | --- |
 | G1 | 新输入包/Plan/原生编译往返已通过；真实 TileSim adapter 尚未消费新的 prepared VF 扩展 |
-| G2 | `evidence_incomplete`；仍缺完整异步访问完成、释放、FIFO 联合进展、写覆盖及 GM 范围/别名证明 |
-| G3 | 未运行；需要 G2 支持范围内的新 golden、guard、重复和反向顺序验证 |
-| 性能 | 未运行；需要模型预冻结推荐后的同批 A/B/消融，不沿用旧固定地址 FA 的收益 |
+| G2 | 固定 micro 通过外部受限证书；新增释放前完成屏障、实际布局和联合 FIFO 检查。通用反馈仍为 `evidence_incomplete`，不承诺任意程序证明 |
+| G3 | crossing N=8 的正式 24 次通过，精确 golden、guard、重复及反向顺序均通过；FA 未验收 |
+| 性能 | 固定候选消融通过，B/A 15.46%、B/P0 14.81%；真实模型推荐 A/B 和 G4 仍未完成 |
 | FA | Q×KV 投影、m/l/O 递推、旧物理地址的受控重定位仍未实现 |
 | 模型反馈 | 最终布局/等待的模型消费与重新评估未接通，不能签发 G4 或自动启用 |
 | 环境 | VfSim ON、CANN9.1/950PR 和 A3 新板测尚未验收 |
 
-因此，此提交可用于联调编译器接口与静态候选，不能作为完整优化版本的最终验收。
-按 `ptoas-costmodel-validation` 的验证规则，unknown 不能进入性能签收，所以本轮没有采集 A/B 时间。
+此分支已验证固定 micro 的原生编译、正确性和机制收益。受限 G2 的外部证明补齐了该用例的完成条件；不能把这一结论扩展到仍为 unknown 的其他输入或称为 TileSim 推荐验收。
 
 使用方式与约束见 [prepared interface](cv-vf-prepared-interface.md)；
 后续门槛仍按 [实施计划](cv-vf-planmemory-implementation-plan.md) 执行。

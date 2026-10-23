@@ -279,3 +279,8 @@ requires `--g3 <correctness.json>` from the same binaries/device. Execute device
 modes through the private experiment helpers and the exclusive device queue.
 `--mode summarize` verifies the raw evidence and reports 20 paired blocks,
 10,000 bootstrap resamples and the independent mechanism benefit gate.
+
+The accepted 2026-10-23 matrix and attribution are recorded in
+`docs/designs/cv-vf-native-micro-acceptance-20261023.md`. Downloaded evidence can
+be independently checked with `replay_native_statistics.py EXPERIMENT --output NEW_DIR`;
+this replay uses only the Python standard library and validates relocated paths.
