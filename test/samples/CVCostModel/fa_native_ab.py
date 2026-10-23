@@ -132,11 +132,26 @@ def import_fa(source, destination, symbol='fa_native_model_ab'):
                             aa['pto.cv.shared_storage'] = ir.StringAttr.get(shared)
                             aa['pto.cv.shared_bytes'] = ir.IntegerAttr.get(ir.IntegerType.get_signless(64), size*(3 if shared == 'p' else 1))
                             aa['pto.cv.shared_owner'] = ir.StringAttr.get(symbol+('_mix_aic' if shared == 'p' else '_mix_aiv'))
-                        alloc = ir.Operation.create('pto.alloc_tile', results=[old.results[0].type], attributes=aa)
-                        root.append(alloc.results[0])
+                        # Row broadcasts use full 256-byte VLDS, then select
+                        # lane zero. At the final 32-byte row this reads 224
+                        # bytes beyond the logical 512-byte row tile. Keep
+                        # that physical tail private, instead of reading a
+                        # neighbour allocation or an asynchronously filled FIFO.
+                        row_padding = core == 'vector' and 'vec' in space and tuple(typ.shape) == (16,8)
+                        allocation_type = ir.Type.parse('!pto.tile_buf<vec, 32x8xf32>') if row_padding else old.results[0].type
+                        alloc = ir.Operation.create('pto.alloc_tile', results=[allocation_type], attributes=aa)
+                        logical = alloc.results[0]
+                        if row_padding:
+                            pointer_type = pto.PtrType.get(typ.element_type,ir.Attribute.parse('#pto.address_space<vec>'))
+                            pointer = ir.Operation.create('pto.tile_buf_addr',operands=[logical],results=[pointer_type]).results[0]
+                            address_value = ir.Operation.create('pto.castptr',operands=[pointer],results=[ir.IntegerType.get_signless(64)]).results[0]
+                            logical = ir.Operation.create('pto.alloc_tile',operands=[address_value],results=[old.results[0].type],attributes={
+                                'operandSegmentSizes':ir.DenseI32ArrayAttr.get([1,0,0]),'pto.cv.borrowed':ir.UnitAttr.get()}).results[0]
+                        root.append(logical)
                         ledger.append(dict(id=ir.StringAttr(aa['pto.costmodel.buffer_id']).value,
                             core=core, source_range=[address, size], replica=replica,
-                            ownership='pipe_backing' if shared else 'local', shared=shared))
+                            ownership='pipe_backing' if shared else 'local', shared=shared,
+                            physical_bytes=1024 if row_padding else size,read_tail_padding=row_padding))
                     roots[old.results[0]] = dict(values=root, address=address, size=size, space=space)
 
                 class Clone:

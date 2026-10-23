@@ -39,12 +39,14 @@ def prepare(a):
     from ptoas import cv_vf as cv
     from fa_native_ab import import_fa,SOURCE_SHA
     from native_ablation import validate_memory
-    root=a.root.resolve();root.mkdir(parents=True,exist_ok=a.resume)
+    root=a.root.resolve();root.mkdir(parents=True,exist_ok=a.resume or a.preload is not None)
     require(not (root/'artifacts.json').exists(),'completed build is immutable')
-    if not (root/'original.pto').exists():shutil.copyfile(a.source,root/'original.pto')
+    if not (root/'original.pto').exists():
+        require(a.preload is None,'single-candidate workers require preinitialized original.pto')
+        shutil.copyfile(a.source,root/'original.pto')
     require(sha(root/'original.pto')==SOURCE_SHA,'unexpected FA source')
     rows=[]
-    for p in range(4):
+    for p in (range(4) if a.preload is None else (a.preload,)):
         folder=root/('p'+str(p));folder.mkdir(exist_ok=a.resume);symbol='fa_'+hashlib.sha256((str(root)+str(p)).encode()).hexdigest()[:16]
         if not (folder/'source.pto').exists():import_fa(root/'original.pto',folder/'source.pto',symbol)
         imported=read(folder/'source.import.json')
@@ -118,6 +120,8 @@ def prepare(a):
             feedback='p'+str(p)+'/compiler_feedback.json',feedback_sha256=sha(feedback),
             final_vpto_ir_sha256=fb['final_vpto_ir_sha256'],plan=plan))
         print('COMPILED',p,symbol,flush=True)
+    if a.preload is not None:
+        write(root/('p'+str(a.preload))/'candidate.json',rows[0]);return
     write(root/'candidates.json',rows)
     files={str(f.relative_to(root)):sha(f) for f in root.rglob('*') if f.is_file()}
     write(root/'artifacts.json',dict(schema='pto.cv.fa_native_artifacts.v1',files=files,compiler=cv.compiler_identity(a.compiler),
@@ -295,7 +299,7 @@ def run(a):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);sub=p.add_subparsers(dest='action',required=True)
-    prepare_parser=sub.add_parser('prepare');prepare_parser.add_argument('source',type=Path);prepare_parser.add_argument('root',type=Path);prepare_parser.add_argument('--compiler',required=True);prepare_parser.add_argument('--resume',action='store_true')
+    prepare_parser=sub.add_parser('prepare');prepare_parser.add_argument('source',type=Path);prepare_parser.add_argument('root',type=Path);prepare_parser.add_argument('--compiler',required=True);prepare_parser.add_argument('--resume',action='store_true');prepare_parser.add_argument('--preload',type=int,choices=range(4))
     f=sub.add_parser('freeze');f.add_argument('root',type=Path);f.add_argument('request',type=Path);f.add_argument('result',type=Path)
     r=sub.add_parser('run');r.add_argument('root',type=Path);r.add_argument('experiment',type=Path);r.add_argument('--mode',choices=['g3','performance'],required=True);r.add_argument('--g3-report',type=Path)
     a=p.parse_args();globals()[a.action](a)
