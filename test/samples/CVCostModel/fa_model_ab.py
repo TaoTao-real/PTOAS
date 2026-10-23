@@ -125,10 +125,18 @@ def freeze(a):
     require(result['request_sha256']==sha(a.request),'recommendation request changed')
     predictions={r['candidate_id']:r for r in result['predictions']}
     selection=result['extensions']['tilesim.selection.v1']
+    common_layout=None
     for row in artifact['rows']:
         pred=predictions[row['candidate_id']]
         require(pred['plan']==row['plan'] and pred['program_sha256']==row['program_sha256'] and pred['feedback_sha256']==row['feedback_sha256'],'recommendation identity changed')
         folder=root/row['candidate_id'];fb=read(folder/'compiler_feedback.json');compiler=read(folder/'compiler_validation.json')
+        layout=[]
+        for f in fb['functions']:
+            layout.append(dict(core='aic' if f['physical_replicas']==1 else 'aiv',
+                allocations=sorted((b['buffer_id'].split(':source:',1)[-1],b['space'],b['addresses'],b['slot_bytes'],b['alignment']) for b in f['allocations']),
+                reservations=f['reservations']))
+        if common_layout is None:common_layout=layout
+        require(layout==common_layout,'physical layouts differ; cannot isolate CV reordering')
         timeline=read(a.result.parent/(row['candidate_id']+'-timeline.json'));access=read(a.result.parent/(row['candidate_id']+'-accesses.json'))
         ancestors={}
         for event in sorted(timeline,key=lambda e:e['end_us']):
