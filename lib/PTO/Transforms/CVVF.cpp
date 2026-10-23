@@ -217,6 +217,23 @@ struct CVOutlineVFPass : PassWrapper<CVOutlineVFPass, OperationPass<ModuleOp>> {
     });
     unsigned ordinal = 0;
     for (Operation *region : regions) {
+      if (region->getParentOfType<func::FuncOp>()->hasAttr("pto.cv.static_stage_graph")) {
+        Attribute token, phase;
+        bool mixed = false;
+        region->walk([&](Operation *op) {
+          if (auto t = op->getAttr("pto.cv.token")) {
+            auto p = op->getAttr("pto.cv.phase");
+            mixed |= (token && token != t) || (phase && phase != p);
+            token = t; phase = p;
+          }
+        });
+        if (mixed || !token || !phase) {
+          region->emitError("CV VF fusion crosses a static stage boundary or loses provenance");
+          return signalPassFailure();
+        }
+        region->setAttr("pto.cv.token", token);
+        region->setAttr("pto.cv.phase", phase);
+      }
       if (region->getNumRegions() != 1 ||
           !region->getRegion(0).hasOneBlock()) {
         region->emitError("CV VF requires a single-block resultless vector region");
@@ -245,6 +262,9 @@ struct CVOutlineVFPass : PassWrapper<CVOutlineVFPass, OperationPass<ModuleOp>> {
       }
       region->walk([&](AllocTileOp allocation) { allocations.push_back(allocation); });
       for (AllocTileOp allocation : allocations) {
+        // A legacy-address import may contain a row view whose offset depends
+        // on the VF loop induction variable. It is a view, not VF scratch.
+        if (allocation->hasAttr("pto.cv.borrowed")) continue;
         if (!hoist(allocation.getResult())) {
           allocation.emitError("VF scratch cannot be bound outside its computation");
           return signalPassFailure();
@@ -387,12 +407,80 @@ struct CVOutlineVFPass : PassWrapper<CVOutlineVFPass, OperationPass<ModuleOp>> {
       b.setInsertionPoint(region);
       SmallVector<Value> operands;
       for (auto [value, type] : llvm::zip(arguments, types)) {
-        if (isa<TileBufType>(value.getType()))
-          operands.push_back(b.create<TileBufAddrOp>(region->getLoc(), type, value));
-        else operands.push_back(value);
+        if (isa<TileBufType>(value.getType())) {
+          auto address = b.create<TileBufAddrOp>(region->getLoc(), type, value);
+          for (StringRef key : {"pto.cv.token", "pto.cv.phase"})
+            if (auto attr = region->getAttr(key)) address->setAttr(key, attr);
+          operands.push_back(address);
+        } else operands.push_back(value);
       }
-      b.create<func::CallOp>(region->getLoc(), name, TypeRange{}, operands);
+      auto call = b.create<func::CallOp>(region->getLoc(), name, TypeRange{}, operands);
+      for (StringRef key : {"pto.cv.token", "pto.cv.phase"})
+        if (auto attr = region->getAttr(key)) call->setAttr(key, attr);
       region->erase();
+    }
+  }
+};
+
+/// Bind explicitly identified cross-core storage through the existing native
+/// reserve/import protocol. No model supplies an address. Planning still runs
+/// after CV ordering, and views in the peer use the owner's actual allocation.
+struct CVBindSharedStoragePass
+    : PassWrapper<CVBindSharedStoragePass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(CVBindSharedStoragePass)
+  void runOnOperation() final {
+    ModuleOp module = getOperation();
+    llvm::StringMap<SmallVector<AllocTileOp>> groups;
+    module.walk([&](AllocTileOp alloc) {
+      if (auto id = alloc->getAttrOfType<StringAttr>("pto.cv.shared_storage"))
+        groups[id.getValue()].push_back(alloc);
+    });
+    for (auto &item : groups) {
+      auto &allocs = item.second;
+      if (allocs.size() != 2) {
+        module.emitError("CV shared storage requires exactly one owner and one peer");
+        return signalPassFailure();
+      }
+      auto a = allocs[0], c = allocs[1];
+      auto bytes = a->getAttrOfType<IntegerAttr>("pto.cv.shared_bytes");
+      auto ownerName = a->getAttrOfType<StringAttr>("pto.cv.shared_owner");
+      if (!bytes || bytes.getInt() <= 0 || bytes.getInt() > INT32_MAX ||
+          !ownerName || c->getAttr("pto.cv.shared_bytes") != bytes ||
+          c->getAttr("pto.cv.shared_owner") != ownerName ||
+          a.getType() != c.getType() || a.getAddr() || c.getAddr()) {
+        a.emitError("inconsistent or pre-addressed CV shared storage contract");
+        return signalPassFailure();
+      }
+      auto owner = module.lookupSymbol<func::FuncOp>(ownerName.getValue());
+      auto ownerAlloc = a->getParentOfType<func::FuncOp>() == owner ? a : c;
+      auto peerAlloc = ownerAlloc == a ? c : a;
+      if (!owner || ownerAlloc->getParentOfType<func::FuncOp>() != owner ||
+          peerAlloc->getParentOfType<func::FuncOp>() == owner) {
+        a.emitError("CV shared storage owner does not match its defining function");
+        return signalPassFailure();
+      }
+      OpBuilder b(ownerAlloc);
+      auto tile = cast<TileBufType>(ownerAlloc.getType());
+      OperationState state(ownerAlloc.getLoc(), ReserveBufferOp::getOperationName());
+      state.addTypes(b.getI32Type());
+      state.addAttribute("name", b.getStringAttr(item.first()));
+      state.addAttribute("size", b.getI32IntegerAttr(bytes.getInt()));
+      state.addAttribute("location", tile.getMemorySpace());
+      state.addAttribute("autoAlloc", b.getBoolAttr(true));
+      Value base = b.create(state)->getResult(0);
+      auto bind = [&](AllocTileOp alloc, Value value) {
+        b.setInsertionPoint(alloc);
+        Value address = b.create<arith::ExtSIOp>(alloc.getLoc(), b.getI64Type(), value);
+        alloc.getAddrMutable().assign(address);
+        alloc->setAttr("pto.cv.borrowed", b.getUnitAttr());
+      };
+      bind(ownerAlloc, base);
+      b.setInsertionPoint(peerAlloc);
+      OperationState imported(peerAlloc.getLoc(), ImportReservedBufferOp::getOperationName());
+      imported.addTypes(b.getI32Type());
+      imported.addAttribute("name", b.getStringAttr(item.first()));
+      imported.addAttribute("peer_func", FlatSymbolRefAttr::get(owner));
+      bind(peerAlloc, b.create(imported)->getResult(0));
     }
   }
 };
@@ -437,4 +525,7 @@ std::unique_ptr<Pass> mlir::pto::createCVOutlineVFPass() {
 }
 std::unique_ptr<Pass> mlir::pto::createCVValidateVFPass() {
   return std::make_unique<CVValidateVFPass>();
+}
+std::unique_ptr<Pass> mlir::pto::createCVBindSharedStoragePass() {
+  return std::make_unique<CVBindSharedStoragePass>();
 }

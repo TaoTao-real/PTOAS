@@ -9,6 +9,7 @@
 #include "mlir/IR/Matchers.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include <functional>
 
 using namespace mlir;
@@ -18,6 +19,8 @@ namespace {
 struct Access { Value root; bool read = false, write = false; };
 static FailureOr<SmallVector<Access>> accesses(Operation *op) {
   SmallVector<Access> result;
+  if (isa<BarrierOp, SetFlagOp, WaitFlagOp, SetIntraBlockOp, WaitIntraBlockOp>(op))
+    return result;
   auto add = [&](Value value, bool read, bool write) {
     if (!read && !write) return;
     Value root = getCVStorageRoot(value);
@@ -61,6 +64,150 @@ struct CVApplySchedulePass
   bool inferMinimumSlots = false;
   explicit CVApplySchedulePass(bool infer = false) : inferMinimumSlots(infer) {}
   StringRef getArgument() const final { return "pto-cv-apply-schedule"; }
+  LogicalResult applyGraph(func::FuncOp function) {
+    auto nAttr = function->getAttrOfType<IntegerAttr>("pto.cv.static_stage_graph");
+    auto pAttr = function->getAttrOfType<IntegerAttr>("pto.cv_preload_count");
+    if (!nAttr || !pAttr || nAttr.getInt() < 1 || nAttr.getInt() > 256 || pAttr.getInt() < 0)
+      return function.emitError("invalid static CV stage graph or preload");
+    unsigned n = nAttr.getInt(), distance = std::min<int64_t>(pAttr.getInt(), n);
+    // View canonicalization introduces pure address producers and may hoist a
+    // tagged constant. Put all storage declarations and pure handle arithmetic
+    // in one prelude. Never hoist a data read, an unknown effect or a value
+    // produced by an execution event.
+    SmallVector<Operation *> prelude;
+    llvm::SmallPtrSet<Operation *, 32> pure;
+    Operation *anchor = nullptr;
+    for (Operation &op : function.getBody().front()) {
+      if ((op.getNumResults() && isMemoryEffectFree(&op)) || isa<AllocTileOp>(&op)) {
+        for (Value value : op.getOperands())
+          if (Operation *def = value.getDefiningOp())
+            if (def->getBlock() == op.getBlock() && !pure.contains(def))
+              return op.emitError("UNSUPPORTED: CV address depends on an execution event");
+        prelude.push_back(&op); pure.insert(&op);
+      } else if (!anchor) anchor = &op;
+    }
+    if (!anchor) return function.emitError("empty static CV execution graph");
+    for (Operation *op : prelude) {
+      op->removeAttr("pto.cv.token"); op->removeAttr("pto.cv.phase");
+      op->moveBefore(anchor);
+    }
+    SmallVector<Operation *> serial;
+    SmallVector<SmallVector<Operation *>> prefix(n), suffix(n);
+    bool started = false, ended = false;
+    for (Operation &op : function.getBody().front()) {
+      auto token = op.getAttrOfType<IntegerAttr>("pto.cv.token");
+      auto phase = op.getAttrOfType<StringAttr>("pto.cv.phase");
+      if (!token && !phase) { if (started) ended = true; continue; }
+      if (ended || !token || !phase || token.getInt() < 0 || token.getInt() >= n ||
+          (phase.getValue() != "prefix" && phase.getValue() != "suffix"))
+        return op.emitError("static CV stage operations must form one closed, contiguous graph");
+      started = true;
+      serial.push_back(&op);
+      (phase.getValue() == "prefix" ? prefix : suffix)[token.getInt()].push_back(&op);
+    }
+    if (serial.size() > 65536) return function.emitError("CV graph exceeds the operation budget");
+    SmallVector<Operation *> sequence;
+    SmallVector<Attribute> stages, events;
+    OpBuilder b(function);
+    for (unsigned t = 0; t < n + distance; ++t) {
+      auto append = [&](unsigned token, StringRef phase, auto &group) -> LogicalResult {
+        if (group.empty()) return function.emitError("static CV graph has a missing stage instance");
+        stages.push_back(b.getDictionaryAttr({
+          b.getNamedAttr("phase", b.getStringAttr(phase)),
+          b.getNamedAttr("iteration", b.getI64IntegerAttr(token))}));
+        for (Operation *op : group) sequence.push_back(op);
+        return success();
+      };
+      if (t < n && failed(append(t, "prefix", prefix[t]))) return failure();
+      if (t >= distance && failed(append(t-distance, "suffix", suffix[t-distance]))) return failure();
+    }
+    DenseMap<Operation *, unsigned> positions;
+    for (auto [i, op] : llvm::enumerate(sequence)) positions[op] = i;
+    // Scalar SSA and memory dependencies are compiler facts. Model times are
+    // never used to establish legality. Every conflict on a local object must
+    // retain its serial order; explicit version objects make independent
+    // writes distinguishable. Shared objects require a separate flag audit.
+    struct Previous { Operation *writer = nullptr; SmallVector<Operation *> readers; };
+    DenseMap<Value, Previous> history;
+    auto ordered = [&](Operation *a, Operation *c) { return !a || positions[a] < positions[c]; };
+    for (Operation *op : serial) {
+      for (Value operand : op->getOperands()) {
+        Operation *definition = operand.getDefiningOp();
+        if (positions.count(definition) && !ordered(definition, op))
+          return op->emitError("CV_GRAPH_SSA_DEPENDENCY: candidate reverses a scalar dependency");
+      }
+      auto effect = accesses(op);
+      if (failed(effect)) return op->emitError("UNSUPPORTED: unknown static CV graph effects");
+      DenseMap<Value, std::pair<bool, bool>> combined;
+      for (const Access &a : *effect) {
+        if (a.root.getDefiningOp()->hasAttr("pto.cv.shared_storage")) continue;
+        combined[a.root].first |= a.read;
+        combined[a.root].second |= a.write;
+      }
+      for (auto &entry : combined) {
+        auto &previous = history[entry.first];
+        auto [read, write] = entry.second;
+        if ((read || write) && !ordered(previous.writer, op))
+          return op->emitError("CV_GRAPH_MEMORY_DEPENDENCY: candidate reverses RAW/WAW");
+        if (write) {
+          for (Operation *reader : previous.readers)
+            if (!ordered(reader, op))
+              return op->emitError("INSUFFICIENT_SLOTS: candidate reverses a live-version WAR dependency");
+          previous.readers.clear(); previous.writer = op;
+        }
+        if (read) previous.readers.push_back(op);
+      }
+    }
+    if (function->hasAttr("pto.cv.drain_stage_events")) {
+      SmallVector<Operation *> completed;
+      for (Operation *op : sequence) {
+        auto drain = [&]() {
+          b.setInsertionPoint(op);
+          auto barrier = b.create<BarrierOp>(op->getLoc(), PipeAttr::get(b.getContext(), PIPE::PIPE_ALL));
+          for (StringRef key : {"pto.cv.token", "pto.cv.phase"})
+            barrier->setAttr(key, op->getAttr(key));
+          auto id = op->getAttrOfType<StringAttr>("pto.costmodel.operation_id");
+          barrier->setAttr("pto.costmodel.operation_id", b.getStringAttr(
+              ((id ? id.getValue() : StringRef("event")) + ":completion").str()));
+          barrier->setAttr("pto.cv.completion_drain", b.getUnitAttr());
+          completed.push_back(barrier);
+        };
+        if (isa<SetIntraBlockOp>(op)) drain();
+        completed.push_back(op);
+        if (isa<func::CallOp>(op)) drain();
+      }
+      sequence = std::move(completed);
+      b.setInsertionPoint(function.getBody().front().getTerminator());
+      b.create<BarrierOp>(function.getLoc(), PipeAttr::get(b.getContext(), PIPE::PIPE_ALL));
+    }
+    for (auto [position, op] : llvm::enumerate(sequence)) {
+      auto source = op->getAttrOfType<StringAttr>("pto.costmodel.operation_id");
+      events.push_back(b.getDictionaryAttr({
+        b.getNamedAttr("position", b.getI64IntegerAttr(position)),
+        b.getNamedAttr("iteration", op->getAttr("pto.cv.token")),
+        b.getNamedAttr("phase", op->getAttr("pto.cv.phase")),
+        b.getNamedAttr("source_operation", source ? source : b.getStringAttr("unidentified"))}));
+    }
+    Operation *end = serial.back()->getNextNode();
+    for (Operation *op : sequence) op->moveBefore(end);
+    auto module = function->getParentOfType<ModuleOp>();
+    SmallVector<Attribute> schedules;
+    if (auto old = module->getAttrOfType<ArrayAttr>("pto.cv.schedules"))
+      schedules.append(old.begin(), old.end());
+    schedules.push_back(b.getDictionaryAttr({
+      b.getNamedAttr("loop_id", function->getAttr("pto.costmodel.loop_id")),
+      b.getNamedAttr("trip_count", nAttr),
+      b.getNamedAttr("requested_preload", pAttr),
+      b.getNamedAttr("effective_preload", b.getI64IntegerAttr(distance)),
+      b.getNamedAttr("stages", b.getArrayAttr(stages)),
+      b.getNamedAttr("events", b.getArrayAttr(events)),
+      b.getNamedAttr("storage_versions", b.getArrayAttr({}))}));
+    module->setAttr("pto.cv.schedules", b.getArrayAttr(schedules));
+    function.walk([&](AllocTileOp alloc) {
+      alloc->setAttr("pto.cv.required_slots", b.getI64IntegerAttr(1));
+    });
+    return success();
+  }
   LogicalResult apply(scf::ForOp loop) {
     auto pAttr = loop->getAttrOfType<IntegerAttr>("pto.cv_preload_count");
     if (!pAttr || pAttr.getInt() < 0 || !loop.getInitArgs().empty())
@@ -314,6 +461,23 @@ struct CVApplySchedulePass
     return success();
   }
   void runOnOperation() final {
+    SmallVector<func::FuncOp> graphs;
+    getOperation().walk([&](func::FuncOp f) {
+      if (f->hasAttr("pto.cv.static_stage_graph")) graphs.push_back(f);
+    });
+    if (!graphs.empty()) {
+      auto kind = [](func::FuncOp f) {
+        return f->getAttrOfType<FunctionKernelKindAttr>("pto.kernel_kind");
+      };
+      if (graphs.size() != 2 || graphs[0]->getAttr("pto.cv.static_stage_graph") !=
+          graphs[1]->getAttr("pto.cv.static_stage_graph") ||
+          graphs[0]->getAttr("pto.cv_preload_count") != graphs[1]->getAttr("pto.cv_preload_count") ||
+          !kind(graphs[0]) || !kind(graphs[1]) || kind(graphs[0]) == kind(graphs[1])) {
+        getOperation().emitError("CV stage graphs require a paired domain and preload");
+        return signalPassFailure();
+      }
+      for (auto f : graphs) if (failed(applyGraph(f))) return signalPassFailure();
+    }
     SmallVector<scf::ForOp> loops;
     getOperation().walk([&](scf::ForOp loop) {
       if (loop->hasAttr("pto.cv_preload_count")) loops.push_back(loop);

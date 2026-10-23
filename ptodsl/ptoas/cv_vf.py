@@ -20,6 +20,7 @@ SCHEMA = "pto.cv.prepared_exchange.v1"
 PLAN = "pto.cv.prepared_plan.v1"
 SCHEDULE = "pto.cv.prefix_suffix.iteration_distance.v1"
 FEATURES = ["prepared_vf.effects.v1", "native_memory_feedback.v1", SCHEDULE]
+SUPPORTED_FEATURES = FEATURES + ["static_stage_graph.v1", "explicit_shared_storage.v1"]
 
 
 def _pairs(pairs):
@@ -111,6 +112,11 @@ def _attr(attr):
     if ir.TypeAttr.isinstance(attr): return _type(ir.TypeAttr(attr).value)
     known_enums = {"#pto.kernel_kind<cube>": "cube", "#pto.kernel_kind<vector>": "vector"}
     if str(attr) in known_enums: return {"enum": "kernel_kind", "value": known_enums[str(attr)]}
+    membars = ('VV_ALL','VST_VLD','VLD_VST','VST_VST','VS_ALL','VST_LD','VLD_ST','VST_ST',
+               'SV_ALL','ST_VLD','LD_VST','ST_VST','SS_ALL','ST_LD','LD_ST','ST_ST')
+    for kind in membars:
+        if str(attr) == '#pto.membar<'+kind+'>': return {'enum':'MemBarAttr','value':kind}
+    if str(attr) == '#pto<div_precision default>': return {'enum':'div_precision','value':'default'}
     from ptoas.mlir.dialects import pto
     for name in ("AddressSpaceAttr", "PipeAttr", "RoundModeAttr", "BLayoutAttr", "SLayoutAttr", "LayoutAttr"):
         cls = getattr(pto, name, None)
@@ -162,6 +168,11 @@ def describe(module):
         if function.name != "func.func" or not len(function.regions[0].blocks): continue
         name = _text(function, "sym_name")
         prepared = "pto.cv.prepared_vf" in function.attributes
+        if "pto.cv.static_stage_graph" in function.attributes:
+            count = _attr(function.attributes["pto.cv.static_stage_graph"])
+            loops.append(dict(id=_text(function, "pto.costmodel.loop_id"), function=name,
+                lower=0, upper=count, step=1, trip_count=count, prepared_vf_internal=False,
+                representation="static_stage_graph.v1"))
         kind = _attr(function.attributes["pto.kernel_kind"]) if "pto.kernel_kind" in function.attributes else None
         physical_instances = (["AIV0", "AIV1"] if kind == {"enum": "kernel_kind", "value": "vector"}
                               else ["AIC0"] if kind == {"enum": "kernel_kind", "value": "cube"} else None)
@@ -188,6 +199,11 @@ def describe(module):
                                 for block in region.blocks] for region in op.regions]
             operations.append(row)
             if op.name == "pto.alloc_tile" and not prepared:
+                if "pto.cv.borrowed" in op.attributes:
+                    borrowed_entries.append(dict(id=row['id'],function=name,
+                        value=value_id(op.results[0]),ownership='borrowed_view',
+                        type=_type(op.results[0].type),multi_buffer_eligible=False))
+                    continue
                 identity = _text(op, "pto.costmodel.buffer_id")
                 if identity in seen: raise ValueError("duplicate buffer identity")
                 seen.add(identity)
@@ -197,13 +213,20 @@ def describe(module):
                           "ui32": 4, "i8": 1, "si8": 1, "ui8": 1}
                 shape = list(tile.shape)
                 known = dtype in widths and all(d > 0 for d in shape) and tile.compact_mode == 0
-                buffers.append(dict(id=identity, function=name, value=value_id(op.results[0]),
+                record = dict(id=identity, function=name, value=value_id(op.results[0]),
                     ownership="local", physical_instances=physical_instances,
                     vf_scratch="pto.cv.vf_scratch" in op.attributes,
                     shape=shape, valid_shape=list(tile.valid_shape), dtype=dtype,
                     memory_space=_attr(tile.memory_space),
                     bytes=math.prod(shape) * widths[dtype] if known else None,
-                    multi_buffer_eligible=known))
+                    multi_buffer_eligible=known)
+                if 'pto.cv.shared_storage' in op.attributes:
+                    record.update(ownership='pipe_backing', multi_buffer_eligible=False,
+                        storage_id='shared:'+_text(op,'pto.cv.shared_storage'),
+                        storage_owner_function=_text(op,'pto.cv.shared_owner'),
+                        bytes=_attr(op.attributes['pto.cv.shared_bytes']),
+                        memory_accounting='per_storage_owner')
+                buffers.append(record)
             if op.name == "pto.declare_tile":
                 borrowed_entries.append(dict(id=row["id"], function=name,
                     value=value_id(op.results[0]), ownership="borrowed_entry",
@@ -227,9 +250,12 @@ def describe(module):
                               effects=_attr(function.attributes["pto.tileop.effects"])
                                       if "pto.tileop.effects" in function.attributes else None,
                               operations=operations))
+    required = FEATURES + (["static_stage_graph.v1"] if any(
+        l.get("representation") == "static_stage_graph.v1" for l in loops) else [])
+    if any(b.get('storage_id') for b in buffers): required.append('explicit_shared_storage.v1')
     return dict(schema=SCHEMA, functions=functions, buffers=buffers, loops=loops,
                 borrowed_entries=borrowed_entries,
-                required_features=FEATURES, schedule_semantics=SCHEDULE,
+                required_features=required, schedule_semantics=SCHEDULE,
                 coverage={"costs": "unknown", "physical_layout": "not_assigned"})
 
 
@@ -262,7 +288,7 @@ def export_bundle(source, bindings, target, directory, *, compiler):
     _write(directory / "program.json", program)
     _write(directory / "bindings.json", bindings)
     _write(directory / "target.json", target)
-    manifest = dict(schema=SCHEMA, required_features=FEATURES, source_sha256=sha(source),
+    manifest = dict(schema=SCHEMA, required_features=program['required_features'], source_sha256=sha(source),
                     producer=compiler_identity(compiler),
                     preparation_fingerprint=preparation,
                     files={name: sha(directory / name) for name in
@@ -283,7 +309,7 @@ def _load_wire(directory):
         raise ValueError("invalid package file set")
     for name, digest in manifest["files"].items():
         if sha(directory / name) != digest: raise ValueError("package digest mismatch: " + name)
-    if set(manifest.get("required_features", [])) - set(FEATURES):
+    if set(manifest.get("required_features", [])) - set(SUPPORTED_FEATURES):
         raise ValueError("unsupported required feature")
     return manifest, read_json(directory / "program.json")
 
@@ -343,7 +369,7 @@ def annotate_plan(directory, plan, destination):
     buffers = {v["buffer_id"]: v["count"] for v in plan["buffers"]}
     with context:
         for op in _walk(module.operation):
-            if op.name == "scf.for" and "pto.costmodel.loop_id" in op.attributes:
+            if (op.name == "scf.for" or "pto.cv.static_stage_graph" in op.attributes) and "pto.costmodel.loop_id" in op.attributes:
                 identity = _text(op, "pto.costmodel.loop_id")
                 if identity in loops: op.attributes["pto.cv_preload_count"] = ir.IntegerAttr.get(ir.IntegerType.get_signless(64), loops[identity])
             if op.name == "pto.alloc_tile" and "pto.costmodel.buffer_id" in op.attributes:

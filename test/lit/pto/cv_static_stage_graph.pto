@@ -1,0 +1,34 @@
+// RUN: pto-test-opt %s -pto-cv-apply-schedule | FileCheck %s
+// RUN: sed 's/ins(%p1, %p1/ins(%p0, %p0/; s/outs(%p1/outs(%p0/' %s > %t.bad
+// RUN: not pto-test-opt %t.bad -pto-cv-apply-schedule 2>&1 | FileCheck %s --check-prefix=BAD
+
+module attributes {pto.target_arch = "a5"} {
+  func.func @cube() attributes {pto.kernel_kind = #pto.kernel_kind<cube>, pto.cv.static_stage_graph = 2 : i64, pto.costmodel.loop_id = "cube:graph", pto.cv_preload_count = 1 : i64} {
+    pto.barrier #pto.pipe<PIPE_ALL> {pto.cv.token = 0 : i64, pto.cv.phase = "prefix"}
+    pto.barrier #pto.pipe<PIPE_ALL> {pto.cv.token = 0 : i64, pto.cv.phase = "suffix"}
+    pto.barrier #pto.pipe<PIPE_ALL> {pto.cv.token = 1 : i64, pto.cv.phase = "prefix"}
+    pto.barrier #pto.pipe<PIPE_ALL> {pto.cv.token = 1 : i64, pto.cv.phase = "suffix"}
+    return
+  }
+  func.func @vector() attributes {pto.kernel_kind = #pto.kernel_kind<vector>, pto.cv.static_stage_graph = 2 : i64, pto.costmodel.loop_id = "vector:graph", pto.cv_preload_count = 1 : i64} {
+    %input = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
+    %p0 = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
+    %p1 = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
+    %output = pto.alloc_tile : !pto.tile_buf<vec, 32x32xf32>
+    pto.tneg ins(%input : !pto.tile_buf<vec, 32x32xf32>) outs(%p0 : !pto.tile_buf<vec, 32x32xf32>) {pto.cv.token = 0 : i64, pto.cv.phase = "prefix"}
+    pto.tadd ins(%p0, %p0 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%output : !pto.tile_buf<vec, 32x32xf32>) {pto.cv.token = 0 : i64, pto.cv.phase = "suffix"}
+    pto.tneg ins(%input : !pto.tile_buf<vec, 32x32xf32>) outs(%p1 : !pto.tile_buf<vec, 32x32xf32>) {pto.cv.token = 1 : i64, pto.cv.phase = "prefix"}
+    pto.tadd ins(%p1, %p1 : !pto.tile_buf<vec, 32x32xf32>, !pto.tile_buf<vec, 32x32xf32>) outs(%output : !pto.tile_buf<vec, 32x32xf32>) {pto.cv.token = 1 : i64, pto.cv.phase = "suffix"}
+    return
+  }
+}
+// CHECK-LABEL: func.func @vector
+// CHECK: pto.tneg
+// CHECK-SAME: pto.cv.token = 0
+// CHECK: pto.tneg
+// CHECK-SAME: pto.cv.token = 1
+// CHECK: pto.tadd
+// CHECK-SAME: pto.cv.token = 0
+// CHECK: pto.tadd
+// CHECK-SAME: pto.cv.token = 1
+// BAD: INSUFFICIENT_SLOTS

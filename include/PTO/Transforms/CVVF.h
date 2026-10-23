@@ -20,5 +20,6 @@ Value getCVStorageRoot(Value value);
 std::unique_ptr<Pass> createCVOutlineVFPass();
 std::unique_ptr<Pass> createCVValidateVFPass();
 std::unique_ptr<Pass> createCVApplySchedulePass(bool inferMinimumSlots = false);
+std::unique_ptr<Pass> createCVBindSharedStoragePass();
 } // namespace mlir::pto
 #endif

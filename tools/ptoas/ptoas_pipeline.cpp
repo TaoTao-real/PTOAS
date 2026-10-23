@@ -1486,6 +1486,8 @@ struct CaptureCVFeedbackPass final
         auto kind = function->getAttrOfType<FunctionKernelKindAttr>("pto.kernel_kind");
         functions.push_back(llvm::json::Object{{"function", function.getSymName()},
             {"physical_replicas", kind && kind.getKernelKind() == FunctionKernelKind::Vector ? 2 : 1},
+            {"disjoint_allocation_policy", function->hasAttr("pto.cv.no_address_reuse")},
+            {"stage_completion_policy", function->hasAttr("pto.cv.drain_stage_events") ? "drain_vf_and_before_crosscore_signal.v1" : "inferred_sync"},
             {"allocations", std::move(allocations)}, {"reservations", std::move(reservations)},
             {"address_high_water_bytes", std::move(highWater)},
             {"compiler_budget_bytes", std::move(budgets)}});
@@ -1792,8 +1794,10 @@ static LogicalResult validateAllocationConfiguration(ModuleOp module,
   } else {
     module.walk([&invalidAddress](pto::AllocTileOp op) {
       auto function = op->getParentOfType<func::FuncOp>();
-      bool borrowedVF = cvApplyVF && function && function->hasAttr("pto.cv.prepared_vf") &&
-                        op->hasAttr("pto.cv.borrowed");
+      bool borrowedVF = (cvApplyVF || cvPrepareVF) && function &&
+                        op->hasAttr("pto.cv.borrowed") &&
+                        (function->hasAttr("pto.cv.prepared_vf") ||
+                         isa_and_nonnull<pto::AllocTileOp>(pto::getCVStorageRoot(op.getResult()).getDefiningOp()));
       if (op.getAddr() && !borrowedVF) {
         op.emitError("unexpected 'addr' operand: only supported when "
                      "--pto-level=level3");
@@ -1999,6 +2003,7 @@ static void appendVPTOBridgePasses(OpPassManager &pm) {
 static LogicalResult appendLateStorageAndSyncPasses(
     PassManager &pm, PTOBackend effectiveBackend,
     const CompilePipelineState &state) {
+  if (cvApplyVF) pm.addPass(pto::createCVBindSharedStoragePass());
   if (failed(appendPlanMemoryPasses(pm, state.level, enablePlanMemory))) {
     return failure();
   }
@@ -2132,6 +2137,21 @@ static LogicalResult finishVPTOMainPipeline(
   if (failed(runVPTOBackendPipeline(module, hasTileOpsToExpand,
                                     useVMIFusionPipeline))) {
     return failure();
+  }
+  // Preserve the final physical instruction program from this compilation.
+  // Models must not substitute a second compilation's VF/synchronization.
+  if (!result.cvFeedbackText.empty()) {
+    auto feedback = llvm::json::parse(result.cvFeedbackText);
+    if (!feedback || !feedback->getAsObject()) return failure();
+    std::string text;
+    llvm::raw_string_ostream out(text);
+    module->print(out, OpPrintingFlags().printGenericOpForm()); out.flush();
+    (*feedback->getAsObject())["final_vpto_ir"] = text;
+    (*feedback->getAsObject())["final_vpto_ir_sha256"] = llvm::toHex(
+        llvm::SHA256::hash(llvm::arrayRefFromStringRef(text)), true);
+    result.cvFeedbackText.clear();
+    llvm::raw_string_ostream encoded(result.cvFeedbackText);
+    encoded << llvm::formatv("{0:2}", *feedback); encoded.flush();
   }
   handled = true;
   exitCode = emitVPTOBackendResult(

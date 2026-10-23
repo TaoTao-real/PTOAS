@@ -1893,6 +1893,17 @@ static LogicalResult runModernPlanMemory(func::FuncOp func,
     return failure();
   }
 
+  // Restricted CV acceptance can require a common disjoint layout. Address
+  // assignment remains automatic; only lifetime-based reuse is disabled.
+  // This keeps address reuse outside a certificate that does not prove its
+  // asynchronous completion conditions.
+  if (func->hasAttr("pto.cv.no_address_reuse")) {
+    for (auto &a : analysis.roots)
+      for (auto &b : analysis.roots)
+        if (a.stableOrder < b.stableOrder && a.space == b.space)
+          analysis.addForbidAlias(a.root, b.root);
+  }
+
   DenseMap<Value, SmallVector<uint64_t>> buffer2Offsets;
   llvm::MapVector<AddressSpace, SmallVector<RootInfo *>> rootsBySpace;
   for (RootInfo &info : analysis.roots) {
