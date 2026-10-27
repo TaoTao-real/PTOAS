@@ -76,6 +76,41 @@ class ResourceAndPathTest(unittest.TestCase):
             self.assertEqual(list(pto.TileBufType(multi.slot_type).shape), [16, 32])
 
 
+class ModelResultTest(unittest.TestCase):
+    def setUp(self):
+        self.rows = [dict(candidate_id='p'+str(i), preload_count=i, plan=dict(id=i), events_sha256=str(i)) for i in (0,1)]
+        self.input = dict(input_fingerprint='input', candidates=self.rows)
+        self.result = dict(schema='pto.cv.logical_model_result.v1', input_fingerprint='input', request_sha256='request',
+            predictions=[dict(r, latency_us=t) for r,t in zip(self.rows,(100,70))],
+            extensions={'tilesim.selection.v1': dict(action='optimize', candidate_id='p1', plan=self.rows[1]['plan'],
+                ranked_candidates=['p1','p0'], predicted_gain=.3)})
+
+    def validate(self):
+        self.result.pop('fingerprint', None)
+        self.result['fingerprint'] = search.cv.fingerprint(self.result)
+        return search.validate_model_result(self.input, self.result, 'request')
+
+    def test_valid_result(self): self.assertEqual(self.validate()['candidate_id'], 'p1')
+
+    def test_unknown_or_duplicate_rank_is_rejected(self):
+        for rank in (['p1','unknown'], ['p1','p1']):
+            self.result['extensions']['tilesim.selection.v1']['ranked_candidates'] = rank
+            with self.assertRaisesRegex(ValueError, 'ranked'): self.validate()
+
+    def test_wrong_action_is_rejected(self):
+        for action in ('baseline','unknown'):
+            self.result['extensions']['tilesim.selection.v1']['action'] = action
+            with self.assertRaisesRegex(ValueError, 'action'): self.validate()
+
+    def test_stale_result_is_rejected(self):
+        self.result['input_fingerprint'] = 'old'
+        with self.assertRaisesRegex(ValueError, 'input/request'): self.validate()
+
+    def test_claimed_gain_must_match_costs(self):
+        self.result['extensions']['tilesim.selection.v1']['predicted_gain'] = .9
+        with self.assertRaisesRegex(ValueError, 'costs'): self.validate()
+
+
 class ModelFirstOrderingTest(unittest.TestCase):
     def run_flow(self, failure=None, baseline=False):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)

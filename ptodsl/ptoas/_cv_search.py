@@ -120,6 +120,32 @@ def validate_search(root):
     return search
 
 
+def validate_model_result(search, result, request_sha256):
+    require(result['schema'] == 'pto.cv.logical_model_result.v1' and
+        result['input_fingerprint'] == search['input_fingerprint'] and
+        result['request_sha256'] == request_sha256, 'model result input/request mismatch')
+    copy = dict(result); expected = copy.pop('fingerprint')
+    require(cv.fingerprint(copy) == expected, 'model result fingerprint mismatch')
+    predictions = result['predictions']; candidates = {r['candidate_id']: r for r in search['candidates']}
+    require(len(predictions) == len(candidates) and {p['candidate_id'] for p in predictions} == set(candidates), 'missing/duplicate model candidate')
+    for p in predictions:
+        r = candidates[p['candidate_id']]
+        require(p['plan'] == r['plan'] and p['events_sha256'] == r['events_sha256'], 'model changed Plan or schedule')
+        require(type(p['latency_us']) in (int, float) and 0 < p['latency_us'] < float('inf'), 'unknown/nonfinite model cost')
+    selected = result['extensions']['tilesim.selection.v1']
+    require(selected['candidate_id'] in candidates and selected['plan'] == candidates[selected['candidate_id']]['plan'], 'invalid selected Plan')
+    rank = selected['ranked_candidates']
+    require(len(rank) == len(candidates) and set(rank) == set(candidates), 'missing/duplicate/unknown ranked candidate')
+    is_baseline = candidates[selected['candidate_id']]['preload_count'] == 0
+    require(selected['action'] == ('baseline' if is_baseline else 'optimize'), 'selection action does not match candidate')
+    by_id = {p['candidate_id']: p for p in predictions}
+    baseline = next(p for p in predictions if candidates[p['candidate_id']]['preload_count'] == 0)
+    gain = selected['predicted_gain']
+    require(type(gain) in (int, float) and abs(gain - (1 - by_id[selected['candidate_id']]['latency_us'] / baseline['latency_us'])) <= 1e-12,
+        'selected prediction does not match candidate costs')
+    return selected
+
+
 def run_model(search_root, config, command, destination):
     root, destination = Path(search_root), Path(destination)
     search = validate_search(root)
@@ -133,15 +159,7 @@ def run_model(search_root, config, command, destination):
         subprocess.run([*command, str(request_path), str(destination)], check=True,
             stdout=log, stderr=subprocess.STDOUT)
     result = cv.read_json(destination / 'result.json')
-    require(result['request_sha256'] == cv.sha(request_path), 'model result request mismatch')
-    predictions = result['predictions']; candidates = {r['candidate_id']: r for r in search['candidates']}
-    require(len(predictions) == len(candidates) and {p['candidate_id'] for p in predictions} == set(candidates), 'missing/duplicate model candidate')
-    for p in predictions:
-        r = candidates[p['candidate_id']]
-        require(p['plan'] == r['plan'] and p['events_sha256'] == r['events_sha256'], 'model changed Plan or schedule')
-        require(type(p['latency_us']) in (int, float) and 0 < p['latency_us'] < float('inf'), 'unknown/nonfinite model cost')
-    selected = result['extensions']['tilesim.selection.v1']
-    require(selected['candidate_id'] in candidates and selected['plan'] == candidates[selected['candidate_id']]['plan'], 'invalid selected Plan')
+    selected = validate_model_result(search, result, cv.sha(request_path))
     freeze = dict(schema='pto.cv.model_first_selection.v1', input_fingerprint=search['input_fingerprint'],
         search_sha256=cv.sha(root / 'search.json'), request_sha256=cv.sha(request_path),
         model_result_sha256=cv.sha(destination / 'result.json'), selection=selected,
