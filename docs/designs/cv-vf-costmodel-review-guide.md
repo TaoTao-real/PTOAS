@@ -4,6 +4,10 @@ This is an experimental integration for joint interface review. It combines
 the MR289 VF implementation with native CV scheduling and late physical storage
 binding. It is not a proposal to enable this pipeline by default.
 
+2026-10-27 follow-up: the [model-first implementation plan](cv-vf-model-first-implementation-plan.md)
+replaces full compilation of every candidate as the target search flow. The
+results below retain their frozen scope. The new flow has not been implemented.
+
 ## Scope and dependencies
 
 The frozen compiler baseline is upstream `37f5f25e3`, with the VF implementation

@@ -4,6 +4,11 @@
 状态：MR289 基线上的受限 native 实现与回归进行中；完整签收尚未完成
 设计：[adr-cv-vf-late-storage-binding.md](../adr/adr-cv-vf-late-storage-binding.md)
 
+2026-10-27 顺序修正：下一轮以
+[先 TileSim 选 preload、后最终编译的计划](cv-vf-model-first-implementation-plan.md) 为准。
+2026-10-23 FA 的“全部候选完整编译后评估”只保留为已验证诊断路径，
+不能作为“先选后编译”或“VF 准备一次、多次搜索”已完成的证据。
+
 ## 1. 交付目标
 
 同一份无 local 物理地址的 PTO，通过一次可重放流程完成：

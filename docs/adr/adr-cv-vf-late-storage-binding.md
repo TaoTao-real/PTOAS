@@ -9,6 +9,10 @@
 当前实现边界、代理模型误差及合入前置项见
 [cost model 评审指南](../designs/cv-vf-costmodel-review-guide.md)。
 
+2026-10-27 搜索顺序补充：正式路径必须先由模型选择，再最终编译选中候选。
+轻量候选、VF 成本复用和编译后核对见
+[model-first ADR](adr-cv-model-first-selection.md)，实施状态为 planned。
+
 ## 目标
 
 支持 cost model 评估 PTOAS 实际融合后的 VF，推荐 CV preload 和逐 Buffer
