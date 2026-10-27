@@ -68,3 +68,9 @@ python test/samples/CVCostModel/fa_model_first.py deploy matrix deployment --dev
 Deployment retains all artifact digests and the source manifest digest. Run a new
 complete G3 and performance experiment against that deployment. A G3 report from
 a different device/deployment is rejected. Do not combine device measurements.
+
+Finalized evidence files can be read-only and have no executable bits. `deploy`
+restores write access to the copied manifest and execute access to its
+hash-bound copied launchers. It never changes the source evidence. This path
+was checked with the actual finalized FA package; rerunning directly inside a
+finalized evidence directory is unsupported.

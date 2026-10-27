@@ -169,6 +169,16 @@ def deploy(a):
     require(a.device >= 0, 'invalid device')
     source_digest = sha(source / 'ab_manifest.json')
     shutil.copytree(source, output)
+    # Finalized evidence intentionally has no write/execute bits. Restore only
+    # the new deployment's metadata and bound launchers, never the source.
+    (output / 'ab_manifest.json').chmod(0o600)
+    for row in manifest['rows']:
+        folder = Path(row['folder'])
+        require(not folder.is_absolute() and '..' not in folder.parts, 'unsafe launcher folder')
+        runner = (output / folder / 'runner').resolve()
+        require(runner.is_relative_to(output) and
+            sha(runner) == manifest['files'][runner.relative_to(output).as_posix()], 'unbound deployment launcher')
+        runner.chmod(0o500)
     manifest['device'] = a.device
     manifest['deployment'] = dict(source_manifest_sha256=source_digest,
         immutable_artifacts_reused=True, new_g3_required=True)
