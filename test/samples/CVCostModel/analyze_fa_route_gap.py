@@ -32,7 +32,7 @@ def analyze(root):
             text=path.read_text();core='vector' if 'official.vector' in text else 'cube'
             opcodes=Counter()
             for line in text.splitlines():
-                m=re.match(r'^\s+([A-Z][A-Z0-9_.]*)\s',line)
+                m=re.match(r'^\s+([A-Z][A-Z0-9_.]*)(?:\s|$)',line)
                 if m:opcodes[m[1]]+=1
             assembly[core]=dict(opcodes=dict(opcodes),instructions=sum(opcodes.values()),bytes=path.stat().st_size,
                 stack_annotations=len(re.findall('Reg -> Stack|Stack -> Reg',text)))
