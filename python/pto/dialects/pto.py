@@ -64,6 +64,7 @@ TensorViewType = _pto_mod.TensorViewType
 PartitionTensorViewType = _pto_mod.PartitionTensorViewType
 TileType = _pto_mod.TileType
 TileBufType = _pto_mod.TileBufType
+MultiTileBufType = _export_optional_cext_symbol("MultiTileBufType")
 ConvTileBufType = _pto_mod.ConvTileBufType
 AddressSpace = _pto_mod.AddressSpace
 AddressSpaceAttr = _pto_mod.AddressSpaceAttr
@@ -261,6 +262,7 @@ __all__ = [
     "PartitionTensorViewType",
     "TileType",
     "TileBufType",
+    "MultiTileBufType",
     "AddressSpace",
     "AddressSpaceAttr",
     "FenceScope",

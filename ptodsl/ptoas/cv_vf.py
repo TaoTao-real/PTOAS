@@ -117,6 +117,17 @@ def _attr(attr):
     for kind in membars:
         if str(attr) == '#pto.membar<'+kind+'>': return {'enum':'MemBarAttr','value':kind}
     if str(attr) == '#pto<div_precision default>': return {'enum':'div_precision','value':'default'}
+    search_enums = {
+        '#pto<relu_pre_mode no_relu>': ('relu_pre_mode', 'none'),
+        '#pto<acc_phase unspecified>': ('acc_phase', 'unspecified'),
+        '#pto<st_phase unspecified>': ('st_phase', 'unspecified'),
+        '#pto<atomic_type atomic_none>': ('atomic_type', 'none'),
+        '#pto<acc_store_mode nz2nd>': ('acc_store_mode', 'nz2nd'),
+        '#pto<acc_store_ub_dst_mode split_m>': ('acc_store_ub_dst_mode', 'split_m'),
+    }
+    if str(attr) in search_enums:
+        enum, value = search_enums[str(attr)]
+        return dict(enum=enum, value=value)
     from ptoas.mlir.dialects import pto
     for name in ("AddressSpaceAttr", "PipeAttr", "RoundModeAttr", "BLayoutAttr", "SLayoutAttr", "LayoutAttr"):
         cls = getattr(pto, name, None)
@@ -152,6 +163,9 @@ def _type(type_):
                     valid_shape=list(tile.valid_shape), memory_space=_attr(tile.memory_space),
                     blayout=tile.blayout_value, slayout=tile.slayout_value,
                     compact_mode=tile.compact_mode, fractal_bytes=tile.s_fractal_size)
+    if getattr(pto, 'MultiTileBufType', None) is not None and pto.MultiTileBufType.isinstance(type_):
+        multi = pto.MultiTileBufType(type_)
+        return dict(kind='multi_tile', count=multi.count, slot_type=_type(multi.slot_type))
     if pto.VRegType.isinstance(type_):
         reg = pto.VRegType(type_)
         return dict(kind="vector_register", lanes=reg.element_count, element=_type(reg.element_type))
@@ -198,7 +212,7 @@ def describe(module):
                                      operations=[operation_ids[child.operation] for child in block.operations])
                                 for block in region.blocks] for region in op.regions]
             operations.append(row)
-            if op.name == "pto.alloc_tile" and not prepared:
+            if op.name in ("pto.alloc_tile", "pto.alloc_multi_tile") and not prepared:
                 if "pto.cv.borrowed" in op.attributes:
                     borrowed_entries.append(dict(id=row['id'],function=name,
                         value=value_id(op.results[0]),ownership='borrowed_view',
@@ -207,7 +221,9 @@ def describe(module):
                 identity = _text(op, "pto.costmodel.buffer_id")
                 if identity in seen: raise ValueError("duplicate buffer identity")
                 seen.add(identity)
-                tile = pto.TileBufType(op.results[0].type)
+                tile_type = op.results[0].type
+                if op.name == 'pto.alloc_multi_tile': tile_type = pto.MultiTileBufType(tile_type).slot_type
+                tile = pto.TileBufType(tile_type)
                 dtype = str(tile.element_type)
                 widths = {"f16": 2, "bf16": 2, "f32": 4, "i32": 4, "si32": 4,
                           "ui32": 4, "i8": 1, "si8": 1, "ui8": 1}
@@ -424,7 +440,7 @@ def analyze_schedule(directory, preload, output_directory, *, compiler):
     return result
 
 
-def compile_plan(directory, plan, output_directory, *, compiler, emit="vpto"):
+def compile_plan(directory, plan, output_directory, *, compiler, emit="vpto", verify_sync=False):
     output_directory = Path(output_directory)
     output_directory.mkdir(parents=True, exist_ok=False)
     manifest, program = load_bundle(directory)
@@ -442,6 +458,8 @@ def compile_plan(directory, plan, output_directory, *, compiler, emit="vpto"):
     feedback = output_directory / "compiler_feedback.json"
     args = [annotated, *_flags(target), "--cv-apply-vf", "--enable-insert-sync",
             "--enable-vecscope-mem-bar", "--cv-feedback=" + str(feedback), "-o", product]
+    if verify_sync:
+        args += ["--check-sync-ids", "--check-sync-interference", "--check-sync-self-coverage"]
     if emit != "object": args.append("--emit-vpto" if emit == "vpto" else "--emit-vpto-llvm-ir")
     _invoke(compiler, args, output_directory / "compile.log")
     report = read_json(feedback)
@@ -469,6 +487,16 @@ def main(argv=None):
     analyze = sub.add_parser("analyze")
     for name in ("directory", "preload", "output"): analyze.add_argument(name)
     analyze.add_argument("--compiler", required=True)
+    search = sub.add_parser("search")
+    for name in ("directory", "preloads", "output"): search.add_argument(name)
+    search.add_argument("--compiler", required=True)
+    optimize = sub.add_parser("optimize")
+    for name in ("source", "bindings", "target", "model", "output"): optimize.add_argument(name)
+    optimize.add_argument("--compiler", required=True)
+    optimize.add_argument("--model-command", required=True, help="JSON file containing the model argv")
+    optimize.add_argument("--final-command", required=True, help="JSON file containing the selected-candidate evaluator argv")
+    optimize.add_argument("--preloads", type=int, nargs='+', default=[0, 1, 2, 3])
+    optimize.add_argument("--emit", choices=("vpto", "llvm", "object"), default="object")
     for action in ("annotate", "compile"):
         command = sub.add_parser(action)
         for name in ("directory", "plan", "output"): command.add_argument(name)
@@ -478,7 +506,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.action == "capabilities":
         print(json.dumps(dict(schema=SCHEMA, required_features=FEATURES,
-            operations=["export", "analyze", "annotate", "compile"],
+            operations=["export", "analyze", "annotate", "compile", "search", "optimize"],
+            search_schema="pto.cv.prepared_search.v1", search_required_features=["logical_events.v1", "vf_relative_bindings.v1", "completion_contract.v1", "logical_channels.v1"],
             target="a5", storage_mode="level2", static_single_axis=True,
             recurrence=False, annotation_default=True, native_plan_memory=True,
             G2="evidence_incomplete", automatic_enablement=False), indent=2))
@@ -488,6 +517,19 @@ def main(argv=None):
         return 0
     if args.action == "export": result = export_bundle(args.source, read_json(args.bindings), read_json(args.target), args.directory, compiler=args.compiler)
     elif args.action == "analyze": result = analyze_schedule(args.directory, read_json(args.preload), args.output, compiler=args.compiler)
+    elif args.action == "search":
+        from ._cv_search import export_candidates
+        result = export_candidates(args.directory, read_json(args.preloads), args.output, compiler=args.compiler)
+    elif args.action == "optimize":
+        from ._cv_search import optimize as run_optimization
+        model = read_json(args.model)
+        hardware = Path(model['hardware'])
+        if not hardware.is_absolute(): hardware = Path(args.model).resolve().parent / hardware
+        model['hardware'] = str(hardware.resolve())
+        if 'hardware_sha256' not in model: model['hardware_sha256'] = sha(hardware)
+        result = run_optimization(args.source, read_json(args.bindings), read_json(args.target), model, args.output,
+            compiler=args.compiler, model_command=read_json(args.model_command), final_command=read_json(args.final_command),
+            preloads=args.preloads, emit=args.emit)
     elif args.action == "annotate": result = annotate_plan(args.directory, read_json(args.plan), args.output)
     else: result = compile_plan(args.directory, read_json(args.plan), args.output, compiler=args.compiler, emit=args.emit)
     print(json.dumps(result, indent=2))

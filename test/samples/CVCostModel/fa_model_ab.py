@@ -135,6 +135,68 @@ def verify_artifacts(root):
     return artifact
 
 
+def audit_candidate(folder,row,model_directory):
+    """Check one final compiled candidate independently of predicted times."""
+    fb=read(folder/'compiler_feedback.json');compiler=read(folder/'compiler_validation.json')
+    timeline=read(model_directory/(row['candidate_id']+'-timeline.json'));access=read(model_directory/(row['candidate_id']+'-accesses.json'))
+    from fa_semantic_audit import check_execution_witness
+    witness=check_execution_witness(read(folder/'program.json'),timeline,access)
+    ancestors={}
+    for event in timeline:
+        # Build the closure from compiler dependencies, never model time.
+        ancestors[event['id']]=None
+    pending={e['id']:e for e in timeline}
+    while pending:
+        ready=[e for e in pending.values() if all(ancestors[p] is not None for p in e['predecessors'])]
+        require(ready,'event DAG has a cycle')
+        for e in ready:
+            value=0
+            for pred in e['predecessors']:value|=(1<<pred)|ancestors[pred]
+            ancestors[e['id']]=value;del pending[e['id']]
+    def before(x,y):return bool(ancestors[y]&(1<<x))
+    flags=defaultdict(lambda:defaultdict(list))
+    for event in timeline:
+        if event['flag'] is not None:
+            flags[event['flag']]['set' if event['op']=='pto.set_intra_block' else 'wait'].append(event['id'])
+    for flag,pairs in flags.items():
+        require(len(pairs['set'])==len(pairs['wait']),'unbalanced flag generations')
+        for old,next_set in zip(pairs['wait'],pairs['set'][1:]):require(before(old,next_set),'one-bit event overwritten: '+str(flag))
+    domains={}
+    for f in fb['functions']:
+        core='aic' if f['physical_replicas']==1 else 'aiv'
+        for lane in range(f['physical_replicas']):
+            for b in f['allocations']:
+                for addr in b['addresses']:domains.setdefault((core if core=='aic' else core+str(lane),b['space']),[]).append((addr,addr+b['slot_bytes']))
+            for b in f['reservations']:domains.setdefault((core if core=='aic' else core+str(lane),b['space']),[]).append((b['address'],b['address']+b['allocated_bytes']))
+    spaces={'UB':'vec','L1':'mat','L0A':'left','L0B':'right','L0C':'acc'}
+    grouped=defaultdict(list)
+    for entry in access:
+        obj=entry['object'];lo,hi=entry['begin'],entry['end']
+        require(0<=lo<hi,'invalid memory footprint')
+        if obj in ('Q','K','V','O'):
+            extent={'Q':128*128*2,'K':1024*128*2,'V':1024*128*2,'O':128*128*4}[obj]
+            require(hi<=extent,'GM footprint exceeds bound: '+obj)
+            require(entry['access']=='read' or obj=='O','input written')
+        else:
+            core,space=obj.split(':')
+            require(any(a<=lo and hi<=b for a,b in domains[(core,spaces[space])]),'unbound physical range '+str(entry))
+        grouped[obj].append(entry)
+    hazard_pairs=0
+    for entries in grouped.values():
+        for i,lhs in enumerate(entries):
+            for rhs in entries[i+1:]:
+                if lhs['event']==rhs['event'] or (lhs['access']==rhs['access']=='read') or max(lhs['begin'],rhs['begin'])>=min(lhs['end'],rhs['end']):continue
+                require(before(lhs['event'],rhs['event']) or before(rhs['event'],lhs['event']),'unordered physical RAW/WAR/WAW: '+str((lhs,rhs)))
+                hazard_pairs+=1
+    certificate=dict(schema='pto.cv.exact_fa_g2.v1',G2='pass',scope='SHA-bound fixed M32 FA; no address reuse',
+        compiler=compiler,physical_accesses=len(access),ordered_hazard_pairs=hazard_pairs,events=len(timeline),
+        execution_witness=witness,
+        completion='compiler drains and absolute sync coverage; time predictions are NOT a safety proof',
+        binding=dict(program=row['program_sha256'],feedback=row['feedback_sha256'],object=sha(folder/'candidate.o'),plan=row['plan']))
+    write(folder/'validation_report.json',certificate)
+    return certificate
+
+
 def freeze(a):
     root=a.root.resolve();artifact=verify_artifacts(root);result=read(a.result)
     require(result['request_sha256']==sha(a.request),'recommendation request changed')
@@ -152,62 +214,7 @@ def freeze(a):
                 reservations=f['reservations']))
         if common_layout is None:common_layout=layout
         require(layout==common_layout,'physical layouts differ; cannot isolate CV reordering')
-        timeline=read(a.result.parent/(row['candidate_id']+'-timeline.json'));access=read(a.result.parent/(row['candidate_id']+'-accesses.json'))
-        from fa_semantic_audit import check_execution_witness
-        witness=check_execution_witness(read(folder/'program.json'),timeline,access)
-        ancestors={}
-        for event in timeline:
-            # Build the closure from compiler dependencies, never model time.
-            ancestors[event['id']]=None
-        pending={e['id']:e for e in timeline}
-        while pending:
-            ready=[e for e in pending.values() if all(ancestors[p] is not None for p in e['predecessors'])]
-            require(ready,'event DAG has a cycle')
-            for e in ready:
-                value=0
-                for pred in e['predecessors']:value|=(1<<pred)|ancestors[pred]
-                ancestors[e['id']]=value;del pending[e['id']]
-        def before(x,y):return bool(ancestors[y]&(1<<x))
-        flags=defaultdict(lambda:defaultdict(list))
-        for event in timeline:
-            if event['flag'] is not None:
-                flags[event['flag']]['set' if event['op']=='pto.set_intra_block' else 'wait'].append(event['id'])
-        for flag,pairs in flags.items():
-            require(len(pairs['set'])==len(pairs['wait']),'unbalanced flag generations')
-            for old,next_set in zip(pairs['wait'],pairs['set'][1:]):require(before(old,next_set),'one-bit event overwritten: '+str(flag))
-        domains={}
-        for f in fb['functions']:
-            core='aic' if f['physical_replicas']==1 else 'aiv'
-            for lane in range(f['physical_replicas']):
-                for b in f['allocations']:
-                    for addr in b['addresses']:domains.setdefault((core if core=='aic' else core+str(lane),b['space']),[]).append((addr,addr+b['slot_bytes']))
-                for b in f['reservations']:domains.setdefault((core if core=='aic' else core+str(lane),b['space']),[]).append((b['address'],b['address']+b['allocated_bytes']))
-        spaces={'UB':'vec','L1':'mat','L0A':'left','L0B':'right','L0C':'acc'}
-        grouped=defaultdict(list)
-        for entry in access:
-            obj=entry['object'];lo,hi=entry['begin'],entry['end']
-            require(0<=lo<hi,'invalid memory footprint')
-            if obj in ('Q','K','V','O'):
-                extent={'Q':128*128*2,'K':1024*128*2,'V':1024*128*2,'O':128*128*4}[obj]
-                require(hi<=extent,'GM footprint exceeds bound: '+obj)
-                require(entry['access']=='read' or obj=='O','input written')
-            else:
-                core,space=obj.split(':')
-                require(any(a<=lo and hi<=b for a,b in domains[(core,spaces[space])]),'unbound physical range '+str(entry))
-            grouped[obj].append(entry)
-        hazard_pairs=0
-        for entries in grouped.values():
-            for i,lhs in enumerate(entries):
-                for rhs in entries[i+1:]:
-                    if lhs['event']==rhs['event'] or (lhs['access']==rhs['access']=='read') or max(lhs['begin'],rhs['begin'])>=min(lhs['end'],rhs['end']):continue
-                    require(before(lhs['event'],rhs['event']) or before(rhs['event'],lhs['event']),'unordered physical RAW/WAR/WAW: '+str((lhs,rhs)))
-                    hazard_pairs+=1
-        certificate=dict(schema='pto.cv.exact_fa_g2.v1',G2='pass',scope='SHA-bound fixed M32 FA; no address reuse',
-            compiler=compiler,physical_accesses=len(access),ordered_hazard_pairs=hazard_pairs,events=len(timeline),
-            execution_witness=witness,
-            completion='compiler drains and absolute sync coverage; time predictions are NOT a safety proof',
-            binding=dict(program=row['program_sha256'],feedback=row['feedback_sha256'],object=sha(folder/'candidate.o'),plan=row['plan']))
-        write(folder/'validation_report.json',certificate)
+        audit_candidate(folder,row,a.result.parent)
     # Freeze external evidence in a portable copy. This directory did not exist
     # during model evaluation and is never used to tune the recommendation.
     destination=root/'model';shutil.copytree(a.result.parent,destination)

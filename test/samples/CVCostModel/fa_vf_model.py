@@ -152,6 +152,31 @@ class Bridge:
             pattern=attrs['pattern'];counts={'PAT_ALL':64,'PAT_VL1':1,'PAT_VL2':2,'PAT_VL4':4,'PAT_VL8':8,'PAT_VL16':16,'PAT_VL32':32}
             if pattern not in counts:raise ValueError('unknown PSET pattern '+str(pattern))
             dst=self.reg(r[0]);self.emit('PSET_B32',[],[dst],form='b32');self.env[r[0]]=Mask(counts[pattern],dst)
+        elif name=='pto.vneg':
+            mask=next((v for v in x if isinstance(v,Mask)),None)
+            if mask is None:raise ValueError('missing VNEG predicate')
+            dst=self.reg(r[0]);form='fp'+str(self.types[r[0]]['element']['bits'])
+            # Explicit arithmetic-family timing proxy, not a kernel rewrite.
+            self.emit('VMULS',[x[0],self.scalar(-1,form),mask.value],[dst],form=form)
+            self.approximations.add('VNEG timing: VMULS arithmetic-family sign-change proxy; primitive calibration pending')
+            self.env[r[0]]=dst
+        elif name=='pto.vsstb':
+            source,p,block_stride,repeat_stride,mask=x
+            bs,rs=number(block_stride),number(repeat_stride)
+            if not isinstance(p,Pointer) or not isinstance(mask,Mask) or p.bits not in (16,32) or bs<1 or rs<0:
+                raise ValueError('unsupported VSSTB contract')
+            unit=p.bits//8;per_block=32//unit;blocks=(mask.count+per_block-1)//per_block
+            for i in range(blocks):
+                low,high=self.bounds(aff(p.byte)+i*bs*32)
+                size=min(per_block,mask.count-i*per_block)*unit
+                self.footprints.append(dict(access='write',begin=low,end=high+size))
+            # VSSTB uses the catalog's raw b16 form. Keep its source register
+            # dtype; an FP32 value must not become a numeric BF16 conversion.
+            span=((blocks-1)*bs*32+min(per_block,mask.count-(blocks-1)*per_block)*unit)//2
+            mem=self.value('UB','bf16',(span,));access=self.Access(mem,'write',aff(p.byte).divide(2).text(),span,'VSSTB_CONFIG')
+            self.emit('VSSTB',[source,mask.value],[mem],form='b16',accesses=[access],attributes={'config':(bs<<16)|rs})
+            self.approximations.add('VSSTB: catalog b16 timing and contiguous LSU envelope; exact scattered footprints exported')
+            if r:self.env[r[0]]=Pointer(p.byte+rs*32,p.bits)
         elif name in ('pto.vlds','pto.vsts','pto.vsldb'):
             load=name!='pto.vsts';pi=0 if load else 1;p=x[pi]
             if not isinstance(p,Pointer):raise ValueError('unknown VF memory base')

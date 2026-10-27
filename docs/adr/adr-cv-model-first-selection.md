@@ -1,7 +1,7 @@
 # ADR: 先模型选择，再完成 CV 候选编译
 
 日期：2026-10-27
-状态：proposed；本文件定义下一轮实现，不表示能力已经交付
+状态：proposed；固定 FA 实现与诊断已完成，正式 G3/A/B 及合入门禁分别记录，通用能力未完成
 计划：[实施与验收计划](../designs/cv-vf-model-first-implementation-plan.md)
 上层设计：[VF 与延迟存储绑定](adr-cv-vf-late-storage-binding.md)
 

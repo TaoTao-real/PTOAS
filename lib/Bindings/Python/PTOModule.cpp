@@ -1670,6 +1670,14 @@ static void registerTileBufType(py::module_ &m) {
   addTileBufTypeGetMethod(tileBuf);
   addTileBufTypeAccessors1(tileBuf, m);
   addTileBufTypeAccessors2(tileBuf, m);
+  mlir_type_subclass multiTileBuf(m, "MultiTileBufType",
+      [](MlirType t) -> bool { return mlirPTOTypeIsAMultiTileBufType(t); });
+  multiTileBuf.def_property_readonly("slot_type", [](MlirType t) -> MlirType {
+    return mlirPTOMultiTileBufTypeGetSlotType(t);
+  });
+  multiTileBuf.def_property_readonly("count", [](MlirType t) -> uint32_t {
+    return mlirPTOMultiTileBufTypeGetCount(t);
+  });
 }
 
 static void registerConvTileEnums(pybind11::module_ &m) {

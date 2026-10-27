@@ -1,0 +1,2 @@
+// RUN: %ptoas_python %S/../../../ptodsl/tests/test_cv_search.py -v
+// Model-first ordering, bounded failure handling and symbolic VF cache keys.

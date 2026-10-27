@@ -164,6 +164,10 @@ MLIR_CAPI_EXPORTED int32_t        mlirPTOTileBufTypeGetSFractalSize(MlirType typ
 
 // ---- TileBufType ----
 MLIR_CAPI_EXPORTED bool mlirPTOTypeIsATileBufType(MlirType type);
+// Read-only structured access for compiler-produced multi-buffer candidates.
+MLIR_CAPI_EXPORTED bool mlirPTOTypeIsAMultiTileBufType(MlirType type);
+MLIR_CAPI_EXPORTED MlirType mlirPTOMultiTileBufTypeGetSlotType(MlirType type);
+MLIR_CAPI_EXPORTED uint32_t mlirPTOMultiTileBufTypeGetCount(MlirType type);
 
 MLIR_CAPI_EXPORTED MlirType mlirPTOTileBufTypeGet(
     MlirContext ctx, intptr_t rank, const int64_t *shape,

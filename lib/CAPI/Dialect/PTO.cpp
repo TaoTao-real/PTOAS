@@ -501,6 +501,18 @@ bool mlirPTOTypeIsATileBufType(MlirType type) {
   return mlir::isa<mlir::pto::TileBufType>(unwrap(type));
 }
 
+bool mlirPTOTypeIsAMultiTileBufType(MlirType type) {
+  return llvm::isa<mlir::pto::MultiTileBufType>(unwrap(type));
+}
+
+MlirType mlirPTOMultiTileBufTypeGetSlotType(MlirType type) {
+  return wrap(llvm::cast<mlir::pto::MultiTileBufType>(unwrap(type)).getSlotType());
+}
+
+uint32_t mlirPTOMultiTileBufTypeGetCount(MlirType type) {
+  return llvm::cast<mlir::pto::MultiTileBufType>(unwrap(type)).getCount();
+}
+
 MlirType mlirPTOTileBufTypeGet(MlirContext ctx, intptr_t rank,
                                const int64_t *shape, MlirType elementType,
                                MlirAttribute memorySpace) {
