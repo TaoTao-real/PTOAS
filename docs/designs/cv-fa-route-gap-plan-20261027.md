@@ -1,6 +1,6 @@
 # FA native versus delivery route: controlled gap investigation
 
-Status: planned; no new performance result yet. The previous 12.81% figure is a five-sample diagnostic comparison of complete routes, not an attribution.
+Status: implementation, clean build, 14 relevant lit entries, 12 independent proof/statistics tests and fresh nine-way G3 are complete. G3 passed 117/117 runs with independent local replay. The original performance queue task `task_20261027_153855_2255477` started collection; SSH disconnected before the complete result could be retrieved. Recover that task before deciding whether any new run is needed. No final performance verdict yet. The previous 12.81% figure is a five-sample diagnostic comparison of complete routes, not an attribution. See [the acceptance record](cv-fa-route-gap-acceptance-20261027.md).
 
 ## Frozen workload and controls
 
