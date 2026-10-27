@@ -62,7 +62,9 @@ struct CVApplySchedulePass
     : PassWrapper<CVApplySchedulePass, OperationPass<ModuleOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(CVApplySchedulePass)
   bool inferMinimumSlots = false;
-  explicit CVApplySchedulePass(bool infer = false) : inferMinimumSlots(infer) {}
+  bool drainVFCalls = true;
+  explicit CVApplySchedulePass(bool infer = false, bool drain = true)
+      : inferMinimumSlots(infer), drainVFCalls(drain) {}
   StringRef getArgument() const final { return "pto-cv-apply-schedule"; }
   LogicalResult applyGraph(func::FuncOp function) {
     auto nAttr = function->getAttrOfType<IntegerAttr>("pto.cv.static_stage_graph");
@@ -174,7 +176,10 @@ struct CVApplySchedulePass
         };
         if (isa<SetIntraBlockOp>(op)) drain();
         completed.push_back(op);
-        if (isa<func::CallOp>(op)) drain();
+        // A5 orders vector commands on PIPE_V. Cross-pipe hazards still go
+        // through InsertSync; notifications and return retain full drains.
+        // The opt-in path needs an independent final asynchronous-access audit.
+        if (drainVFCalls && isa<func::CallOp>(op)) drain();
       }
       sequence = std::move(completed);
       b.setInsertionPoint(function.getBody().front().getTerminator());
@@ -522,6 +527,7 @@ struct CVApplySchedulePass
   }
 };
 } // namespace
-std::unique_ptr<Pass> mlir::pto::createCVApplySchedulePass(bool inferMinimumSlots) {
-  return std::make_unique<CVApplySchedulePass>(inferMinimumSlots);
+std::unique_ptr<Pass> mlir::pto::createCVApplySchedulePass(bool inferMinimumSlots,
+                                                       bool drainVFCalls) {
+  return std::make_unique<CVApplySchedulePass>(inferMinimumSlots, drainVFCalls);
 }

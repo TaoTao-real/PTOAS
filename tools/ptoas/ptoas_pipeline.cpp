@@ -62,6 +62,11 @@ static llvm::cl::opt<std::string> cvFeedbackPath(
 static llvm::cl::opt<bool> cvDrainBeforeFree(
     "cv-drain-before-free", llvm::cl::desc("Drain outer core pipes before borrowed-entry release and return (bounded CV validation)"),
     llvm::cl::init(false));
+static llvm::cl::opt<bool> cvDrainVFCalls(
+    "cv-drain-vf-calls",
+    llvm::cl::desc("Retain conservative PIPE_ALL drains after each prepared VF call; "
+                   "false is an opt-in static-CV experiment requiring final access validation"),
+    llvm::cl::init(true));
 
 // Debug locations are not printed. Origin is provenance, not executable content.
 static std::string cvVFContentDigest(ModuleOp module) {
@@ -1487,7 +1492,10 @@ struct CaptureCVFeedbackPass final
         functions.push_back(llvm::json::Object{{"function", function.getSymName()},
             {"physical_replicas", kind && kind.getKernelKind() == FunctionKernelKind::Vector ? 2 : 1},
             {"disjoint_allocation_policy", function->hasAttr("pto.cv.no_address_reuse")},
-            {"stage_completion_policy", function->hasAttr("pto.cv.drain_stage_events") ? "drain_vf_and_before_crosscore_signal.v1" : "inferred_sync"},
+            {"stage_completion_policy", function->hasAttr("pto.cv.drain_stage_events")
+                ? (cvDrainVFCalls ? "drain_vf_and_before_crosscore_signal.v1"
+                                  : "drain_before_crosscore_signal_and_return.v1")
+                : "inferred_sync"},
             {"allocations", std::move(allocations)}, {"reservations", std::move(reservations)},
             {"address_high_water_bytes", std::move(highWater)},
             {"compiler_budget_bytes", std::move(budgets)}});
@@ -2039,7 +2047,7 @@ static LogicalResult populateMainLoweringPasses(PassManager &pm,
   // fusion or scratch materialization after its semantic digest was checked.
   if (cvApplyVF) {
     pm.addPass(pto::createCVValidateVFPass());
-    pm.addPass(pto::createCVApplySchedulePass(cvAnalyzeSchedule));
+    pm.addPass(pto::createCVApplySchedulePass(cvAnalyzeSchedule, cvDrainVFCalls));
     if (cvAnalyzeSchedule) return success();
     if (cvDrainBeforeFree) pm.addPass(std::make_unique<CVDrainBeforeFreePass>());
     pm.addNestedPass<func::FuncOp>(pto::createPTOVerifyTFreePass());
@@ -2391,6 +2399,9 @@ int mlir::pto::compilePTOASModule(
     }
   } else if ((*module)->hasAttr("pto.cv.prepared")) {
     module->emitError("prepared CV input requires --cv-apply-vf"); return 1;
+  }
+  if (!cvDrainVFCalls && !cvApplyVF) {
+    module->emitError("cv-drain-vf-calls=false requires --cv-apply-vf"); return 1;
   }
   if (cvAnalyzeSchedule && (!cvApplyVF || !emitMlirIR || !cvFeedbackPath.empty())) {
     module->emitError("cv-analyze-schedule requires cv-apply-vf and emit-pto-ir without feedback");
