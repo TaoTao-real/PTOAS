@@ -43,7 +43,14 @@ def summarize(report):
         ci=[percentile(.025),percentile(.975)];mean=statistics.mean(gains);worst=max(-g for g in gains)
         comparisons[new+'/'+base]=dict(mean_gain=mean,ci95=ci,worst_regression=worst,pairs=pairs,
             benefit_pass=mean>=.02 and ci[0]>0 and worst<=.02)
-    return dict(status='pass',scope='fixed M32 FA same-device factor ablation; no G4 certification',variants=summaries,comparisons=comparisons)
+    gap=statistics.mean(a-b for a,b in zip(values['R'],values['T']))
+    saved=statistics.mean(a-b for a,b in zip(values['R'],values['S']))
+    residual=statistics.mean(a-b for a,b in zip(values['S'],values['T']))
+    attribution=dict(unit='us',native_minus_delivery_mean=gap,native_minus_sync_variant_mean=saved,
+        sync_variant_minus_delivery_mean=residual,recovered_share_of_observed_gap=saved/gap if gap>0 else None,
+        interpretation='paired absolute-time arithmetic identity; not additive gain percentages or a decomposition of untested pass interactions')
+    return dict(status='pass',scope='fixed M32 FA same-device factor ablation; no G4 certification',variants=summaries,comparisons=comparisons,
+        time_gap_attribution=attribution,bootstrap=dict(method='Python Random.choices with replacement; linear percentile',resamples=10000,seed=20260916,confidence_level=.95))
 
 def replay(root,g3_path,perf_path,*,g3_runtime_root=None,runtime_root=None):
     root=Path(root);manifest=read(root/'acceptance_manifest.json');g3=read(g3_path);perf=read(perf_path)

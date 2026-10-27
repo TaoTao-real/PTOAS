@@ -35,6 +35,16 @@ class GapStatisticsTest(unittest.TestCase):
         self.assertIn('R/VB',result['comparisons'])
         with self.assertRaisesRegex(ValueError,'active matrix'):summarize(fixture(variants[:-1]))
 
+    def test_time_gap_is_not_added_gain_percentages(self):
+        data=fixture()
+        for row in data['rows']:
+            if row['candidate_id']=='T':row['duration_us']=95
+        result=summarize(data)['time_gap_attribution']
+        self.assertEqual(result['native_minus_delivery_mean'],5)
+        self.assertEqual(result['native_minus_sync_variant_mean'],10)
+        self.assertEqual(result['sync_variant_minus_delivery_mean'],-5)
+        self.assertEqual(result['recovered_share_of_observed_gap'],2)
+
     def test_worst_pair_overrides_mean(self):
         a=fixture();next(r for r in a['rows'] if r['candidate_id']=='S')['duration_us']=103
         self.assertFalse(summarize(a)['comparisons']['S/R']['benefit_pass'])
