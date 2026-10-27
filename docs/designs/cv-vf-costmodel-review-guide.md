@@ -1,5 +1,10 @@
 # Native VF / CV / PlanMemory: cost model review guide
 
+2026-10-27 更新：固定 FA 已实现“先 TileSim 初选、后编译选中候选”。
+[新验收](cv-model-first-acceptance-20261027.md) 记录新 G3 与 20 对 A/B；
+本页后文的 2026-10-23 全编译后评估数据保留为历史证据，不能替代新流程。
+
+
 This is an experimental integration for joint interface review. It combines
 the MR289 VF implementation with native CV scheduling and late physical storage
 binding. It is not a proposal to enable this pipeline by default.

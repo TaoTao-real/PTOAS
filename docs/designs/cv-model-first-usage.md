@@ -57,3 +57,14 @@ the initial footprint check. VNEG has a declared VMULS timing-family proxy and
 VSSTB uses catalog timing with an LSU envelope approximation; neither is an
 accuracy certification. Target-matched DT timing, generic final validation,
 physical feedback consumption by other models and broad G4 remain follow-ups.
+
+For a different available device with the same supported SoC, bind a new copy of
+the immutable acceptance matrix before running:
+
+```text
+python test/samples/CVCostModel/fa_model_first.py deploy matrix deployment --device 1
+```
+
+Deployment retains all artifact digests and the source manifest digest. Run a new
+complete G3 and performance experiment against that deployment. A G3 report from
+a different device/deployment is rejected. Do not combine device measurements.

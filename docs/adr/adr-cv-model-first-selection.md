@@ -1,7 +1,7 @@
 # ADR: 先模型选择，再完成 CV 候选编译
 
 日期：2026-10-27
-状态：proposed；固定 FA 实现与诊断已完成，正式 G3/A/B 及合入门禁分别记录，通用能力未完成
+状态：proposed；受限固定 FA 实现、G2/G3 和新 A/B 已验证，合入评审与通用能力仍未完成
 计划：[实施与验收计划](../designs/cv-vf-model-first-implementation-plan.md)
 上层设计：[VF 与延迟存储绑定](adr-cv-vf-late-storage-binding.md)
 
@@ -69,3 +69,7 @@ CV 分析与实际应用共享调度构造逻辑，禁止在 adapter 中再实�
 编译后反馈是必需校验，不是要求先完整编译所有候选的理由。
 基线和排序诊断候选可在推荐冻结后为实验单独编译，明确标为 evaluation-only。
 历史 33.04% 收益和 3.36% 单点误差保留其原验收范围，不为新流程自动背书。
+
+2026-10-27 实施证据：[固定 FA 新流程验收](../designs/cv-model-first-acceptance-20261027.md)。
+正常路径一次 prepare、初选前零设备编译、选中后一次编译；device 1 的 20 对 A/B 降时 33.9128%。
+此结果不扩展为通用 G4、multi-buffer 搜索或通用最终反馈支持。
