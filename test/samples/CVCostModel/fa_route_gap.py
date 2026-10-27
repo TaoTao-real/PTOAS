@@ -22,6 +22,8 @@ VARIANTS = [
     dict(id='P3',preload=3,flags=[],prepare_flags=[]),
     dict(id='VB',preload=1,flags=[],prepare_flags=['--enable-vmi-loop-fusion=false','--enable-vmi-load-store-elision=false']),
     dict(id='VC',preload=1,flags=[],prepare_flags=['--enable-vmi-load-store-elision=false']),
+    dict(id='K',preload=1,flags=['--vpto-scheduler=on'],prepare_flags=[]),
+    dict(id='SK',preload=1,flags=['--cv-drain-vf-calls=false','--vpto-scheduler=on'],prepare_flags=[]),
 ]
 
 
@@ -30,14 +32,15 @@ def prepare(a):
     from ptoas.mlir import ir
     root=a.root.resolve();root.mkdir(exist_ok=a.resume)
     require(sha(a.source)==SOURCE_SHA,'unexpected FA')
-    design=dict(schema='pto.cv.fa_gap_design.v1',source_sha256=SOURCE_SHA,variants=VARIANTS,
+    variants=[v for v in VARIANTS if not a.variant or v['id'] in a.variant]
+    design=dict(schema='pto.cv.fa_gap_design.v1',source_sha256=SOURCE_SHA,variants=variants,
         purpose='diagnose existing frozen recommendation; not a new TileSim recommendation',device=1,
         baseline_source_commit='ae2fc88c78aebd5e45bb23e5ea7f69aa8b7d8c42',compiler=cv.compiler_identity(a.compiler))
     require(not (root/'matrix.json').exists(),'completed matrix is immutable')
     if (root/'frozen-design.json').exists(): require(read(root/'frozen-design.json')==design,'resumed design/compiler changed')
     else: write(root/'frozen-design.json',design)
     target=dict(arch='a5',cann_version='9.2.0');rows=[]
-    for variant in VARIANTS:
+    for variant in variants:
         folder=root/variant['id'];folder.mkdir(exist_ok=a.resume);symbol='fa_gap_'+hashlib.sha256(str(folder).encode()).hexdigest()[:14]
         if (folder/'source.pto').exists():
             require(a.resume and read(folder/'source.import.json')['output_sha256']==sha(folder/'source.pto'),'invalid resumed import')
@@ -54,7 +57,8 @@ def prepare(a):
                     op.attributes['pto.cv_preload_count']=ir.IntegerAttr.get(ir.IntegerType.get_signless(64),variant['preload'])
             module.operation.verify();(folder/'annotated.pto').write_text(module.operation.get_asm(print_generic_op_form=True)+'\n')
         capture=folder/'codegen';capture.mkdir(exist_ok=a.resume);os.environ['PTO_GAP_CAPTURE']=str(capture)
-        if not (folder/'candidate.o').exists(): cv._invoke(a.compiler,[folder/'annotated.pto',*flags,'--cv-apply-vf','--enable-insert-sync','--enable-vecscope-mem-bar',
+        apply_flags=[f for f in flags if not (f.startswith('--vpto-scheduler=') and '--vpto-scheduler=on' in variant['flags'])]
+        if not (folder/'candidate.o').exists(): cv._invoke(a.compiler,[folder/'annotated.pto',*apply_flags,'--cv-apply-vf','--enable-insert-sync','--enable-vecscope-mem-bar',
             '--check-sync-ids','--check-sync-interference','--check-sync-self-coverage',*variant['flags'],
             '--cv-feedback='+str(folder/'compiler_feedback.json'),'-o',folder/'candidate.o'],folder/'compile.log')
         del os.environ['PTO_GAP_CAPTURE']
@@ -66,13 +70,8 @@ def prepare(a):
             coverage=[l for l in (folder/'compile.log').read_text().splitlines() if '[sync-gate:g1-self]' in l and 'func='+function['function']+' ' in l]
             require(len(coverage)==1 and 'uncovered=0 ' in coverage[0] and 'unmappable=0' in coverage[0],'native sync coverage missing')
         require(len(list(capture.glob('*.ll')))==2,'missing same-compilation LLVM inputs')
-        for path in sorted(capture.glob('*.argv0')):
-            argv=path.read_bytes().decode().rstrip('\0').split('\0');derive=argv.copy()
-            derive[derive.index('-c')]='-S';derive[derive.index('-')]=str(path.with_suffix('.ll'))
-            derive[derive.index('-o')+1]=str(path.with_suffix('.s'))
-            process=subprocess.run(derive,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
-            path.with_suffix('.assembly.log').write_text(process.stdout)
-            write(path.with_suffix('.command.json'),dict(object_argv=argv,assembly_argv=derive,assembly_returncode=process.returncode,llvm_sha256=sha(path.with_suffix('.ll'))))
+        from emit_gap_assembly import emit
+        emit(capture)
         launcher(folder,symbol)
         rows.append(dict(candidate_id=variant['id'],symbol=symbol,folder=variant['id'],configuration=variant,
             schedule_fingerprint=cv.fingerprint(fb['schedules']),object_sha256=sha(folder/'candidate.o'),
@@ -91,4 +90,4 @@ def prepare(a):
     print('MATRIX_BUILD_COMPLETE',flush=True)
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('source',type=Path);p.add_argument('root',type=Path);p.add_argument('--compiler',required=True);p.add_argument('--delivery',required=True,type=Path);p.add_argument('--resume',action='store_true');prepare(p.parse_args())
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('source',type=Path);p.add_argument('root',type=Path);p.add_argument('--compiler',required=True);p.add_argument('--delivery',required=True,type=Path);p.add_argument('--resume',action='store_true');p.add_argument('--variant',action='append',choices=[v['id'] for v in VARIANTS]);prepare(p.parse_args())
