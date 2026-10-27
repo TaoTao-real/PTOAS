@@ -17,6 +17,8 @@ Predeclare these native variants before new device measurements:
 | P3 | R with P=3 | Was the model's P=1/P=2/P=3 timing tie misleading? |
 | VB | Same VMI candidates/regions as R; loop fusion and load/store elision disabled | Candidate versus fused body |
 | VC | Same as VB, loop fusion enabled, elision disabled | Loop-fusion contribution |
+| K | R with Bisheng vector instruction scheduler on; VF auto-sync remains off | Backend instruction scheduling |
+| SK | S plus K | Completion/backend-scheduler interaction |
 | T | Frozen delivery depth=4 binary, same inputs and launch boundary | Absolute reference |
 
 R is the D configuration in the B/C/D VF experiment. This is not a general ordinary/VMI candidate certification. Inspect pass dumps to confirm identical candidates for VB/VC/R; report no-op switches explicitly. Native variants use PTOAS InsertSync and vecscope barriers only. Do not add Bisheng auto-sync. T retains its original, separately labelled Bisheng fused policy.
@@ -35,8 +37,10 @@ Run all variants twice over zero, one_v, one_qkv and three fixed pattern seeds, 
 
 After G3, use a new performance experiment: one warmup each, then 20 balanced rotated/reversed blocks, identical seed per block, one profile per variant, exactly one MIX_AIC task (1 AIC+2 AIV). Freeze binaries and matrix before timing. Restore and validate inputs/outputs each run. Report paired mean gains, fixed bootstrap 95% intervals (10,000 resamples, seed 20260916), medians and ranges. Do not tune variants from this timing batch. An optimized native candidate must improve R by >=2%, interval lower bound >0, and no pair regression >2% to claim benefit.
 
-Compare R/S, R/L, S/SL and R/P3 separately. Compare VB/VC/R only with structural evidence. Compute the residual to T in this same batch; do not add independent percentages or attribute route interactions to a single pass. Model timing accuracy and target-proxy limits remain separate from measured optimization benefit.
+Compare R/S, R/L, S/SL, R/P3, R/K and S/SK separately. Compare VB/VC/R only with structural evidence. Compute the residual to T in this same batch; do not add independent percentages or attribute route interactions to a single pass. Model timing accuracy and target-proxy limits remain separate from measured optimization benefit.
 
 ## Delivery
 
 Provide per-variant G2/G3 and latency tables, structural/assembly evidence, causal limits, optimization follow-up priorities and raw evidence hashes. Update the existing draft PR after validation. Broad VF key-subgraph regressions and target-matched G4 remain distinct merge/certification gates.
+
+Pre-device amendment: the frozen delivery log selects Bisheng scheduler ON; the native model-first flags select OFF. K/SK were added from this command-line evidence before any new device measurements. They do not enable Bisheng VF fusion or VF auto-sync. The final matrix has ten variants and 200 timing profiles.

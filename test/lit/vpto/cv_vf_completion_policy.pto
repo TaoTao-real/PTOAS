@@ -1,0 +1,31 @@
+// RUN: ptoas %s --pto-arch=a5 --pto-level=level2 --pto-backend=vpto --enable-vmi --enable-op-fusion --cann-output-version=9.2.0 --cv-prepare-vf --emit-pto-ir -o %t.prepared
+// RUN: ptoas %t.prepared --pto-arch=a5 --pto-level=level2 --pto-backend=vpto --enable-vmi --enable-op-fusion --cann-output-version=9.2.0 --cv-apply-vf --enable-insert-sync --enable-vecscope-mem-bar --cv-feedback=%t.default.json --emit-vpto -o %t.default
+// RUN: FileCheck %s --check-prefix=DEFAULT < %t.default.json
+// RUN: ptoas %t.prepared --pto-arch=a5 --pto-level=level2 --pto-backend=vpto --enable-vmi --enable-op-fusion --cann-output-version=9.2.0 --cv-apply-vf --cv-drain-vf-calls=false --enable-insert-sync --enable-vecscope-mem-bar --cv-feedback=%t.signals.json --emit-vpto -o %t.signals
+// RUN: FileCheck %s --check-prefix=SIGNALS < %t.signals.json
+// RUN: not ptoas %s --pto-arch=a5 --pto-level=level2 --pto-backend=vpto --enable-vmi --enable-op-fusion --cv-drain-vf-calls=false --emit-vpto -o /dev/null 2>&1 | FileCheck %s --check-prefix=INVALID
+
+module attributes {pto.target_arch = "a5", pto.backend = "vpto"} {
+  func.func @completion_cube() attributes {pto.entry, pto.kernel_kind = #pto.kernel_kind<cube>, pto.cv.static_stage_graph = 1 : i64, pto.cv_preload_count = 0 : i64, pto.costmodel.loop_id = "cube:graph"} {
+    pto.barrier #pto.pipe<PIPE_ALL> {pto.cv.token = 0 : i64, pto.cv.phase = "prefix"}
+    pto.barrier #pto.pipe<PIPE_ALL> {pto.cv.token = 0 : i64, pto.cv.phase = "suffix"}
+    return
+  }
+  func.func @completion() attributes {pto.entry, pto.kernel_kind = #pto.kernel_kind<vector>, pto.cv.static_stage_graph = 1 : i64, pto.cv_preload_count = 0 : i64, pto.costmodel.loop_id = "completion:graph", pto.cv.drain_stage_events, pto.cv.no_address_reuse} {
+    %c0 = arith.constant 0 : index
+    %src = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    %dst = pto.alloc_tile : !pto.tile_buf<vec, 1x64xf32>
+    %a = pto.tile_buf_addr %src : !pto.tile_buf<vec, 1x64xf32> -> !pto.ptr<f32, ub>
+    %b = pto.tile_buf_addr %dst : !pto.tile_buf<vec, 1x64xf32> -> !pto.ptr<f32, ub>
+    pto.vecscope {
+      %v = pto.vmi.vload %a[%c0] : !pto.ptr<f32, ub> -> !pto.vmi.vreg<64xf32>
+      %w = pto.vmi.vmul %v, %v : !pto.vmi.vreg<64xf32>, !pto.vmi.vreg<64xf32> -> !pto.vmi.vreg<64xf32>
+      pto.vmi.vstore %w, %b[%c0] : !pto.vmi.vreg<64xf32>, !pto.ptr<f32, ub>
+    } {pto.cv.token = 0 : i64, pto.cv.phase = "prefix"}
+    pto.set_intra_block <PIPE_V>, 0 {pto.cv.token = 0 : i64, pto.cv.phase = "suffix"}
+    return
+  }
+}
+// DEFAULT: "stage_completion_policy": "drain_vf_and_before_crosscore_signal.v1"
+// SIGNALS: "stage_completion_policy": "drain_before_crosscore_signal_and_return.v1"
+// INVALID: cv-drain-vf-calls=false requires --cv-apply-vf

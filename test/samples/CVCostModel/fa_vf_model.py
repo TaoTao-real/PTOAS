@@ -243,7 +243,9 @@ class Bridge:
 
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('input');p.add_argument('output');p.add_argument('--vfsim-root',required=True);a=p.parse_args()
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('input');p.add_argument('output');p.add_argument('--vfsim-root',required=True)
+    p.add_argument('--footprints-only', action='store_true', help='Derive checked physical footprints without running the timing model')
+    a=p.parse_args()
     sys.path.insert(0,str(Path(a.vfsim_root).resolve()))
     from api.simulator_costmodel import CoreVfCostModel
     from api.frontend.serialization import canonical_vf_info_to_dict
@@ -253,9 +255,9 @@ def main():
         folder=out/str(i);folder.mkdir()
         bridge=Bridge(item['function'],item['arguments']);canonical=bridge.run()
         (folder/'canonical.json').write_text(json.dumps(canonical_vf_info_to_dict(canonical)))
-        result=CoreVfCostModel(base_dir=a.vfsim_root,out_dir=folder).run_vf_info(canonical)
-        results.append(dict(key=item['key'],cycles=result['vf_end_cycle'],approximations=sorted(bridge.approximations),operations=bridge.counts,memory_footprints=bridge.footprints))
-        print(i,item['key'],result['vf_end_cycle'],flush=True)
+        cycles = None if a.footprints_only else CoreVfCostModel(base_dir=a.vfsim_root,out_dir=folder).run_vf_info(canonical)['vf_end_cycle']
+        results.append(dict(key=item['key'],cycles=cycles,approximations=sorted(bridge.approximations),operations=bridge.counts,memory_footprints=bridge.footprints))
+        print(i,item['key'],cycles,flush=True)
     (out/'results.json').write_text(json.dumps(dict(vfs=results),indent=2)+'\n')
 
 
