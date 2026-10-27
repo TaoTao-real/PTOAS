@@ -24,16 +24,19 @@ def check(root):
 def run(a):
     root=a.root.resolve();experiment=a.experiment.resolve();manifest=check(root)
     rows={r['candidate_id']:r for r in manifest['rows']};variants=list(rows);device=manifest['device']
-    require(variants==['R','S','L','SL','P3','VB','VC','K','SK','T'] and device==1,'unexpected matrix/device')
+    full=['R','S','L','SL','P3','VB','VC','K','SK','T']
+    exclusions=manifest.get('exclusions',{})
+    require(set(exclusions) in (set(),{'VC'}) and variants==[v for v in full if v not in exclusions] and device==1,'unexpected matrix/device/exclusion')
+    if exclusions: require(exclusions['VC']['reason']=='G3_NUMERICAL_FAIL' and 'exclusion-evidence.json' in manifest['files'],'unbound correctness exclusion')
     sequence=[];reference=None
     if a.mode=='g3':
-        sequence=[(p,'pattern',12345,-1,'cold-first') for p in ('S','SL','L','P3','VB','VC','K','SK','R','T')]
+        sequence=[(p,'pattern',12345,-1,'cold-first') for p in ('S','SL','L','P3','VB','VC','K','SK','R','T') if p in rows]
         for repeat,order in enumerate((list(reversed(variants)),variants)):
             for mode,seed in CASES:
                 sequence.extend((p,mode,seed,repeat,'g3') for p in order)
     else:
         g3=read(a.g3_report)
-        require(g3['status']=='pass' and len(g3['rows'])==130 and g3['matrix_sha256']==sha(root/'acceptance_manifest.json') and g3['device']==device,'matching complete G3 required')
+        require(g3['status']=='pass' and len(g3['rows'])==len(variants)*13 and g3['matrix_sha256']==sha(root/'acceptance_manifest.json') and g3['device']==device,'matching complete G3 required')
         reference={(r['candidate_id'],r['case'],r['seed']):r for r in g3['rows']}
         sequence=[(p,'pattern',12345,-1,'warmup') for p in variants]
         for block in range(20):
@@ -42,7 +45,7 @@ def run(a):
             sequence.extend((p,'pattern',(12345,20260916,20261022)[block%3],block,'profile') for p in order)
     output=experiment/'results'/('gap-'+a.mode+'.json');require(not output.exists(),'single-use experiment already has a report')
     report=dict(status='running',schema='pto.cv.fa_gap_runtime.v1',matrix_sha256=sha(root/'acceptance_manifest.json'),device=device,
-        mode=a.mode,rows=[],harness_sha256=sha(__file__),environment='ACL_RUNTIME_AVAILABLE; no npu-smi health/ECC/temperature or non-cooperating occupancy telemetry; task-submit device lock')
+        mode=a.mode,variants=variants,rows=[],harness_sha256=sha(__file__),environment='ACL_RUNTIME_AVAILABLE; no npu-smi health/ECC/temperature or non-cooperating occupancy telemetry; task-submit device lock')
     try:
         for variant,case,seed,block,stage in sequence:
             row=rows[variant];folder=root/row['folder']
