@@ -162,11 +162,27 @@ def check_frozen(root):
     return manifest
 
 
+def deploy(a):
+    """Bind immutable compiled artifacts to one device before any new run."""
+    source, output = a.root.resolve(), a.output.resolve()
+    manifest = check_frozen(source)
+    require(a.device >= 0, 'invalid device')
+    source_digest = sha(source / 'ab_manifest.json')
+    shutil.copytree(source, output)
+    manifest['device'] = a.device
+    manifest['deployment'] = dict(source_manifest_sha256=source_digest,
+        immutable_artifacts_reused=True, new_g3_required=True)
+    write(output / 'ab_manifest.json', manifest)
+    check_frozen(output)
+    require(sha(source / 'ab_manifest.json') == source_digest, 'source deployment changed')
+
+
 def run(a):
     from run_ab import execute
     from summarize_runtime import duration
     root, experiment = a.root.resolve(), a.experiment.resolve(); manifest = check_frozen(root)
     selected = manifest['selected']; rows = {r['candidate_id']: r for r in manifest['rows']}
+    device = manifest['device']; require(type(device) is int and device >= 0, 'invalid deployment device')
     variants = ['p0', selected]; cases = [('zero', 12345), ('one_v', 12345), ('one_qkv', 12345)] + [('pattern', s) for s in (12345, 20260916, 20261022)]
     if a.mode == 'g3':
         sequence = [(selected, 'pattern', 12345, -1, 'cold-first')]
@@ -176,13 +192,13 @@ def run(a):
         reference = None
     else:
         g3 = read(a.g3_report)
-        require(g3['status'] == 'pass' and len(g3['rows']) == 25 and g3['matrix_sha256'] == sha(root / 'ab_manifest.json'), 'matching G3 required')
+        require(g3['status'] == 'pass' and len(g3['rows']) == 25 and g3['device'] == device and g3['matrix_sha256'] == sha(root / 'ab_manifest.json'), 'matching G3 required')
         reference = {(r['candidate_id'], r['case'], r['seed']): r for r in g3['rows']}
         sequence = [(p, 'pattern', 12345, -1, 'warmup') for p in variants]
         for block in range(20):
             for p in (variants if block % 2 == 0 else list(reversed(variants))):
                 sequence.append((p, 'pattern', (12345, 20260916, 20261022)[block % 3], block, 'profile'))
-    report = dict(status='running', mode=a.mode, matrix_sha256=sha(root / 'ab_manifest.json'), device=0, rows=[],
+    report = dict(status='running', mode=a.mode, matrix_sha256=sha(root / 'ab_manifest.json'), device=device, rows=[],
         environment='ACL_RUNTIME_AVAILABLE; no npu-smi health telemetry; exclusive task-submit queue')
     output = experiment / 'results' / ('model-first-' + a.mode + '.json'); require(not output.exists(), 'experiment output exists')
     try:
@@ -190,7 +206,7 @@ def run(a):
             check_frozen(root); row = rows[p]
             runtime = Path(subprocess.check_output([str(experiment.parents[1] / 'bin/new_run_dir.sh'), str(experiment), 'fa', p,
                 f'{stage}-{mode}-{seed}-{block}'], text=True).strip())
-            command = [str(root / row['folder'] / 'runner'), '0', mode, str(seed), str(runtime / 'output')]
+            command = [str(root / row['folder'] / 'runner'), str(device), mode, str(seed), str(runtime / 'output')]
             if stage == 'profile': command = ['msprof', '--application=' + shlex.join(command), '--output=' + str(runtime / 'profile'), '--aic-mode=task-based', '--aic-metrics=PipeUtilization']
             write(runtime / 'command.json', command); started = time.monotonic(); status = execute(command, runtime)
             log = (runtime / 'runtime.log').read_text()
@@ -202,7 +218,7 @@ def run(a):
             if reference is not None:
                 old = reference[(p, mode, seed)]
                 require(old['inputs'] == saved['inputs'] and old['output_sha256'] == saved['output_sha256'], 'input/output differs from G3')
-            if stage == 'profile': saved.update(duration(runtime, row['symbol'], 0))
+            if stage == 'profile': saved.update(duration(runtime, row['symbol'], device))
             write(runtime / 'result.json', saved); report['rows'].append(saved); write(output, report)
             print(stage, p, mode, seed, block, saved.get('duration_us', 'PASS'), flush=True)
         outputs, inputs = defaultdict(set), defaultdict(set)
@@ -222,6 +238,8 @@ def main():
     for key in ('compiler', 'model', 'model-command', 'final-command'): q.add_argument('--' + key, type=Path, required=True)
     q = sub.add_parser('run'); q.add_argument('root', type=Path); q.add_argument('experiment', type=Path)
     q.add_argument('--mode', choices=['g3', 'performance'], required=True); q.add_argument('--g3-report', type=Path)
+    q = sub.add_parser('deploy'); q.add_argument('root', type=Path); q.add_argument('output', type=Path)
+    q.add_argument('--device', type=int, required=True)
     a = p.parse_args(); globals()[a.action](a)
 
 

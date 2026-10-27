@@ -14,7 +14,7 @@ def summarize(root, g3_path, perf_path, *, g3_runtime_root=None, runtime_root=No
     root = Path(root); manifest = check_frozen(root)
     g3, perf = read(g3_path), read(perf_path); selected = manifest['selected']; ids = ['p0', selected]
     for report in (g3, perf):
-        require(report['status'] == 'pass' and report['device'] == 0 and
+        require(report['status'] == 'pass' and report['device'] == manifest['device'] and
             report['matrix_sha256'] == sha(root / 'ab_manifest.json'), 'mismatched run evidence')
     require(len(g3['rows']) == 25 and len(perf['rows']) == 42, 'incomplete G3/performance matrix')
     require(g3['rows'][0]['stage'] == 'cold-first' and g3['rows'][0]['candidate_id'] == selected, 'selected candidate was not cold-first')
@@ -40,7 +40,7 @@ def summarize(root, g3_path, perf_path, *, g3_runtime_root=None, runtime_root=No
             require(sha(folder / 'output/O.f32') == row['output_sha256'], 'runtime output changed')
             for name, expected in row['inputs'].items(): require(sha(folder / 'output' / name) == expected, 'runtime input changed')
             if row['stage'] == 'profile':
-                for key, value in duration(folder, row['symbol'], 0).items(): require(row[key] == value, 'raw profiler changed')
+                for key, value in duration(folder, row['symbol'], manifest['device']).items(): require(row[key] == value, 'raw profiler changed')
     initial = read(root / 'optimization/search/model/result.json')
     initial = {r['candidate_id']: r['latency_us'] for r in initial['predictions']}
     attempt = next(r for r in manifest['optimization']['attempts'] if r['status'] == 'compiled')
@@ -59,7 +59,7 @@ def summarize(root, g3_path, perf_path, *, g3_runtime_root=None, runtime_root=No
     return dict(schema='pto.cv.fa_model_first_acceptance.v1',
         benefit_status='AB_BENEFIT_PASS' if comparison['benefit_pass'] else 'AB_BENEFIT_FAIL',
         G4='G4_NOT_CERTIFIED', G4_reason='PR timing proxy for DT; no target-matched certification',
-        selected=selected, G2='restricted exact-FA certificate', G3_runs=25, performance_samples=40,
+        selected=selected, device=manifest['device'], G2='restricted exact-FA certificate', G3_runs=25, performance_samples=40,
         comparison=comparison, rows=rows, initial_predicted_gain=prediction_gain,
         gain_prediction_minus_measured=prediction_gain - comparison['mean_gain'],
         process_order=manifest['process_order'], optimization_elapsed_seconds=manifest['optimization']['elapsed_seconds'],
