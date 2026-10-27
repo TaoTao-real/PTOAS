@@ -22,8 +22,8 @@ VARIANTS = [
     dict(id='P3',preload=3,flags=[],prepare_flags=[]),
     dict(id='VB',preload=1,flags=[],prepare_flags=['--enable-vmi-loop-fusion=false','--enable-vmi-load-store-elision=false']),
     dict(id='VC',preload=1,flags=[],prepare_flags=['--enable-vmi-load-store-elision=false']),
-    dict(id='K',preload=1,flags=['--vpto-scheduler=on'],prepare_flags=[]),
-    dict(id='SK',preload=1,flags=['--cv-drain-vf-calls=false','--vpto-scheduler=on'],prepare_flags=[]),
+    dict(id='K',preload=1,flags=['--bisheng-vec-misched=auto'],prepare_flags=[]),
+    dict(id='SK',preload=1,flags=['--cv-drain-vf-calls=false','--bisheng-vec-misched=auto'],prepare_flags=[]),
 ]
 
 
@@ -57,8 +57,7 @@ def prepare(a):
                     op.attributes['pto.cv_preload_count']=ir.IntegerAttr.get(ir.IntegerType.get_signless(64),variant['preload'])
             module.operation.verify();(folder/'annotated.pto').write_text(module.operation.get_asm(print_generic_op_form=True)+'\n')
         capture=folder/'codegen';capture.mkdir(exist_ok=a.resume);os.environ['PTO_GAP_CAPTURE']=str(capture)
-        apply_flags=[f for f in flags if not (f.startswith('--vpto-scheduler=') and '--vpto-scheduler=on' in variant['flags'])]
-        if not (folder/'candidate.o').exists(): cv._invoke(a.compiler,[folder/'annotated.pto',*apply_flags,'--cv-apply-vf','--enable-insert-sync','--enable-vecscope-mem-bar',
+        if not (folder/'candidate.o').exists(): cv._invoke(a.compiler,[folder/'annotated.pto',*flags,'--cv-apply-vf','--enable-insert-sync','--enable-vecscope-mem-bar',
             '--check-sync-ids','--check-sync-interference','--check-sync-self-coverage',*variant['flags'],
             '--cv-feedback='+str(folder/'compiler_feedback.json'),'-o',folder/'candidate.o'],folder/'compile.log')
         del os.environ['PTO_GAP_CAPTURE']

@@ -44,3 +44,5 @@ Compare R/S, R/L, S/SL, R/P3, R/K and S/SK separately. Compare VB/VC/R only with
 Provide per-variant G2/G3 and latency tables, structural/assembly evidence, causal limits, optimization follow-up priorities and raw evidence hashes. Update the existing draft PR after validation. Broad VF key-subgraph regressions and target-matched G4 remain distinct merge/certification gates.
 
 Pre-device amendment: the frozen delivery log selects Bisheng scheduler ON; the native model-first flags select OFF. K/SK were added from this command-line evidence before any new device measurements. They do not enable Bisheng VF fusion or VF auto-sync. The final matrix has ten variants and 200 timing profiles.
+
+Pre-device isolation correction: `--vpto-scheduler=on` changes the compiler MI body and is not the Bisheng switch. The structural equality gate rejected that attempted K/SK construction before any board run. Preserve it as excluded IR-scheduler diagnostic evidence. Formal K/SK use explicit `--bisheng-vec-misched=auto`, matching delivery vector ON/cube OFF only if its captured command confirms that choice, while VPTO scheduling stays OFF.
