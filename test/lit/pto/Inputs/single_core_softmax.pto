@@ -1,0 +1,32 @@
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+  func.func @softmax(%src: !pto.ptr<f32, gm>, %dst: !pto.ptr<f32, gm>) attributes {pto.entry} {
+    %zero = arith.constant 0 : index
+    %one = arith.constant 1 : index
+    %n = arith.constant 4 : index
+    %rows = arith.constant 32 : index
+    %tm = arith.constant 8 : index
+    %cols = arith.constant 128 : index
+    %sv = pto.make_tensor_view %src, shape = [%rows, %cols], strides = [%cols, %one] : !pto.tensor_view<?x?xf32>
+    %dv = pto.make_tensor_view %dst, shape = [%rows, %cols], strides = [%cols, %one] : !pto.tensor_view<?x?xf32>
+    %x = pto.alloc_tile : !pto.tile_buf<vec, 8x128xf32>
+    %mx = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=1, v_row=8, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>
+    %shift = pto.alloc_tile : !pto.tile_buf<vec, 8x128xf32>
+    %exp = pto.alloc_tile : !pto.tile_buf<vec, 8x128xf32>
+    %sum = pto.alloc_tile : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=1, v_row=8, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>
+    %y = pto.alloc_tile : !pto.tile_buf<vec, 8x128xf32>
+    %scratch = pto.alloc_tile : !pto.tile_buf<vec, 8x128xf32>
+    scf.for %i = %zero to %n step %one {
+      %offset = arith.muli %i, %tm : index
+      %si = pto.partition_view %sv, offsets = [%offset, %zero], sizes = [%tm, %cols] : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<8x128xf32>
+      %di = pto.partition_view %dv, offsets = [%offset, %zero], sizes = [%tm, %cols] : !pto.tensor_view<?x?xf32> -> !pto.partition_tensor_view<8x128xf32>
+      pto.tload ins(%si : !pto.partition_tensor_view<8x128xf32>) outs(%x : !pto.tile_buf<vec, 8x128xf32>)
+      pto.trowmax ins(%x, %scratch : !pto.tile_buf<vec, 8x128xf32>, !pto.tile_buf<vec, 8x128xf32>) outs(%mx : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=1, v_row=8, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>)
+      pto.trowexpandsub ins(%x, %mx : !pto.tile_buf<vec, 8x128xf32>, !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=1, v_row=8, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>) outs(%shift : !pto.tile_buf<vec, 8x128xf32>)
+      pto.texp ins(%shift : !pto.tile_buf<vec, 8x128xf32>) outs(%exp : !pto.tile_buf<vec, 8x128xf32>)
+      pto.trowsum ins(%exp, %scratch : !pto.tile_buf<vec, 8x128xf32>, !pto.tile_buf<vec, 8x128xf32>) outs(%sum : !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=1, v_row=8, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>)
+      pto.trowexpanddiv ins(%exp, %sum : !pto.tile_buf<vec, 8x128xf32>, !pto.tile_buf<loc=vec, dtype=f32, rows=8, cols=1, v_row=8, v_col=1, blayout=col_major, slayout=none_box, fractal=512, pad=0>) outs(%y : !pto.tile_buf<vec, 8x128xf32>)
+      pto.tstore ins(%y : !pto.tile_buf<vec, 8x128xf32>) outs(%di : !pto.partition_tensor_view<8x128xf32>)
+    }
+    return
+  }
+}

@@ -47,6 +47,11 @@ static Attribute cvCANNIdentity(MLIRContext *ctx, const pto::CANNVersion &versio
                                      version.patch, version.beta});
 }
 
+static llvm::cl::opt<bool> applySingleCorePipeline(
+    "apply-single-core-pipeline",
+    llvm::cl::desc("Materialize a bounded pure Cube/Vector multibuffer plan"),
+    llvm::cl::init(false));
+
 static llvm::cl::opt<bool> cvPrepareVF(
     "cv-prepare-vf", llvm::cl::desc("Prepare address-parameterized VF before CV scheduling and memory planning"),
     llvm::cl::init(false));
@@ -2042,6 +2047,14 @@ static LogicalResult populateMainLoweringPasses(PassManager &pm,
   const bool isA2A3 = state.isA2A3;
   const bool hasTileOpsToExpand = state.hasTileOpsToExpand;
   const PTOBuildLevel effectiveLevel = state.level;
+
+  if (applySingleCorePipeline) {
+    if (cvApplyVF || cvPrepareVF || cvAnalyzeSchedule || !enableInsertSync) {
+      llvm::errs() << "single-core pipeline requires insert-sync and cannot use CV preparation/application\n";
+      return failure();
+    }
+    pm.addPass(pto::createCVApplySchedulePass(false, false));
+  }
 
   // Prepared IR is the model's input. Do not repeat frontend normalization,
   // fusion or scratch materialization after its semantic digest was checked.
