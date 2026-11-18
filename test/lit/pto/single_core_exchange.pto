@@ -1,0 +1,1 @@
+// RUN: %ptoas_python %S/Inputs/single_core_exchange_test.py pto-test-opt

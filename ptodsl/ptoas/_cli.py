@@ -49,6 +49,9 @@ def _resolve_tileops_dir(native_module) -> Path:
 
 
 def launch(user_args: Sequence[str], *, wrapper: Path | None = None) -> int:
+    if user_args and user_args[0] == "single-core":
+        from ptoas.single_core import main as single_core_main
+        return single_core_main(list(user_args[1:]))
     if user_args and user_args[0] == "costmodel":
         from ptoas.costmodel import main as costmodel_main
         return costmodel_main(list(user_args[1:]))

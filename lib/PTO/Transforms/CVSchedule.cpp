@@ -214,7 +214,13 @@ struct CVApplySchedulePass
     return success();
   }
   LogicalResult apply(scf::ForOp loop) {
+    bool singleCore = loop->hasAttr("pto.pipeline.single_core");
     auto pAttr = loop->getAttrOfType<IntegerAttr>("pto.cv_preload_count");
+    if (singleCore) {
+      if (pAttr || inferMinimumSlots)
+        return loop.emitError("single-core plans cannot use CV preload or slot inference");
+      pAttr = Builder(loop.getContext()).getI64IntegerAttr(0);
+    }
     if (!pAttr || pAttr.getInt() < 0 || !loop.getInitArgs().empty())
       return loop.emitError("UNSUPPORTED: CV requires nonnegative preload and no loop-carried SSA values");
     auto lb = constant(loop.getLowerBound()), ub = constant(loop.getUpperBound()),
@@ -240,6 +246,11 @@ struct CVApplySchedulePass
     unsigned sends = 0, receives = 0;
     auto function = loop->getParentOfType<func::FuncOp>();
     auto kind = function->getAttrOfType<FunctionKernelKindAttr>("pto.kernel_kind");
+    if (singleCore && !kind)
+      kind = loop->getParentOfType<ModuleOp>()->getAttrOfType<FunctionKernelKindAttr>("pto.kernel_kind");
+    if (singleCore && (!kind || (kind.getKernelKind() != FunctionKernelKind::Cube &&
+                                kind.getKernelKind() != FunctionKernelKind::Vector)))
+      return loop.emitError("single-core plan requires a pure Cube/Vector function");
     bool cube = kind && kind.getKernelKind() == FunctionKernelKind::Cube;
     bool vector = kind && kind.getKernelKind() == FunctionKernelKind::Vector;
     for (auto [i, op] : llvm::enumerate(operations)) {
@@ -248,7 +259,8 @@ struct CVApplySchedulePass
       if (auto stage = op->getAttrOfType<StringAttr>("pto.cv.stage"))
         if (stage.getValue() == "suffix") split = std::min<unsigned>(split, i);
     }
-    if (split == 0 || split == operations.size())
+    if (singleCore) split = operations.size();
+    if (!singleCore && (split == 0 || split == operations.size()))
       return loop.emitError("UNSUPPORTED: missing prefix/suffix transaction boundary");
     DenseMap<Value, bool> written;
     llvm::SetVector<Value> roots;
@@ -288,6 +300,7 @@ struct CVApplySchedulePass
       Value root;
       int64_t first = -1, last = -1;
       unsigned slot = 0;
+      unsigned iteration = 0;
     };
     SmallVector<Version> versions;
     SmallVector<DenseMap<Value, unsigned>> eventVersions(count * operations.size());
@@ -306,6 +319,7 @@ struct CVApplySchedulePass
           if (!current.count(root) || (effect.second && !effect.first)) {
             unsigned id = versions.size();
             versions.push_back(Version{root});
+            versions.back().iteration = i;
             rootVersions[root].push_back(id);
             current[root] = id;
           }
@@ -335,6 +349,8 @@ struct CVApplySchedulePass
     DenseMap<Value, Value> multi;
     for (Value root : roots) {
       auto alloc = root.getDefiningOp<AllocTileOp>();
+      if (singleCore && loop->isProperAncestor(alloc))
+        return alloc.emitError("single-core allocation must be outside the candidate loop");
       auto countAttr = alloc->getAttrOfType<IntegerAttr>("pto.pipeline.multi_buffer_count");
       unsigned slots = countAttr ? countAttr.getInt() : 1;
       if ((countAttr && countAttr.getInt() < 1) || slots > kPtoMultiBufferMaxNum)
@@ -361,6 +377,21 @@ struct CVApplySchedulePass
       }
       if (needed > slots)
         return alloc.emitError("INSUFFICIENT_SLOTS: candidate needs ") << needed << " live-version slots";
+      if (singleCore) {
+        auto choices = alloc->getAttrOfType<ArrayAttr>("pto.pipeline.iteration_slots");
+        if (!choices || choices.size() != static_cast<size_t>(count))
+          return alloc.emitError("single-core plan needs one slot per iteration");
+        for (Attribute attr : choices) {
+          auto slot = dyn_cast<IntegerAttr>(attr);
+          if (!slot || slot.getInt() < 0 || slot.getInt() >= slots)
+            return alloc.emitError("invalid single-core iteration slot");
+        }
+        for (unsigned id : ids)
+          versions[id].slot = cast<IntegerAttr>(choices[versions[id].iteration]).getInt();
+        // These slots describe asynchronous lifetimes, not positions in the
+        // scalar issue stream. Reuse hazards are handled by native InsertSync.
+        needed = slots;
+      }
       alloc->setAttr("pto.cv.required_slots", b.getI64IntegerAttr(needed));
       if (slots == 1) continue;
       if (!hasWriter || alloc.getAddr())
@@ -485,8 +516,15 @@ struct CVApplySchedulePass
     }
     SmallVector<scf::ForOp> loops;
     getOperation().walk([&](scf::ForOp loop) {
-      if (loop->hasAttr("pto.cv_preload_count")) loops.push_back(loop);
+      if (loop->hasAttr("pto.cv_preload_count") || loop->hasAttr("pto.pipeline.single_core"))
+        loops.push_back(loop);
     });
+    if (llvm::any_of(loops, [](scf::ForOp loop) {
+          return loop->hasAttr("pto.pipeline.single_core");
+        }) && (loops.size() != 1 || !graphs.empty())) {
+      getOperation().emitError("single-core plan requires one loop without CV stage graphs");
+      return signalPassFailure();
+    }
     SmallVector<scf::ForOp> cubeLoops, vectorLoops;
     for (scf::ForOp loop : loops) {
       auto function = loop->getParentOfType<func::FuncOp>();
