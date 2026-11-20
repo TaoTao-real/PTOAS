@@ -30,7 +30,17 @@ Value traceCVStorageRoot(Value value, bool followCarried) {
     else if (auto view = dyn_cast<SubViewOp>(op)) value = view.getSource();
     else if (auto cast = dyn_cast<BitcastOp>(op)) value = cast.getSrc();
     else if (auto cast = dyn_cast<CastPtrOp>(op)) value = cast.getInput();
-    else if (auto alloc = dyn_cast<AllocTileOp>(op)) {
+    else if (auto fusion = dyn_cast<FusionRegionOp>(op)) {
+      // An earlier fusion group can yield an alias used by the row loop.
+      auto yield = fusion.getBody().empty()
+                       ? pto::YieldOp()
+                       : dyn_cast_or_null<pto::YieldOp>(
+                             fusion.getBody().front().getTerminator());
+      unsigned index = mlir::cast<OpResult>(value).getResultNumber();
+      if (!yield || index >= yield.getNumOperands())
+        return {};
+      value = yield.getOperand(index);
+    } else if (auto alloc = dyn_cast<AllocTileOp>(op)) {
       // A helper's alloc_tile is a view of a pointer argument, not storage.
       if (alloc->hasAttr("pto.cv.borrowed")) value = alloc.getAddr();
       else return value;
@@ -135,6 +145,51 @@ FailureOr<CVVFEffects> mlir::pto::getCVVFEffects(func::CallOp call) {
 }
 
 namespace {
+// A row view computed inside this loop cannot be passed to a singleton VF
+// as a separate aligned, non-aliasing buffer. Keep the address computation
+// with its use and let the VF capture the owning tiles instead.
+static bool isCVRowViewLoop(scf::ForOp loop) {
+  if (!loop || loop.getNumResults() ||
+      !matchPattern(loop.getLowerBound(), m_Constant()) ||
+      !matchPattern(loop.getUpperBound(), m_Constant()) ||
+      !matchPattern(loop.getStep(), m_Constant()))
+    return false;
+  auto function = dyn_cast<func::FuncOp>(loop->getParentOp());
+  if (!function || !function->hasAttr("pto.cv.static_stage_graph"))
+    return false;
+  Attribute token = loop->getAttr("pto.cv.token");
+  Attribute phase = loop->getAttr("pto.cv.phase");
+  if (!token || !phase)
+    return false;
+
+  bool hasRowSubtract = false;
+  bool hasBorrowedView = false;
+  for (Operation &op : loop.getBody()->without_terminator()) {
+    if ((op.hasAttr("pto.cv.token") && op.getAttr("pto.cv.token") != token) ||
+        (op.hasAttr("pto.cv.phase") && op.getAttr("pto.cv.phase") != phase))
+      return false;
+    if (auto alloc = dyn_cast<AllocTileOp>(op)) {
+      if (!alloc->hasAttr("pto.cv.borrowed") || !alloc.getAddr())
+        return false;
+      Value root = getCVStorageRoot(alloc.getResult());
+      if (!root || !root.getDefiningOp<AllocTileOp>() ||
+          loop->isProperAncestor(root.getDefiningOp()))
+        return false;
+      hasBorrowedView = true;
+      continue;
+    }
+    if (isa<TRowExpandSubOp>(op) && op.hasAttr("candidates")) {
+      hasRowSubtract = true;
+      continue;
+    }
+    if (!isa<arith::ConstantOp, arith::IndexCastOp, arith::AddIOp,
+             arith::SubIOp, arith::MulIOp, arith::DivSIOp, TileBufAddrOp,
+             AddPtrOp, CastPtrOp>(op))
+      return false;
+  }
+  return hasRowSubtract && hasBorrowedView;
+}
+
 /// Keep the vector computation separate from the outer C/V schedule. All
 /// absolute address decisions remain in the caller. The first implementation
 /// accepts resultless vector regions with explicit storage effects.
@@ -196,10 +251,19 @@ struct CVOutlineVFPass : PassWrapper<CVOutlineVFPass, OperationPass<ModuleOp>> {
     // needs the same parameterized VF boundary when adjacent pipe operations
     // prevent forming a larger fusion group.
     for (Operation *op : singletons) {
-      OpBuilder b(op);
-      auto region = b.create<FusionRegionOp>(op->getLoc(), TypeRange{});
+      // Another singleton from this loop may have outlined it already.
+      if (op->getParentOfType<FusionRegionOp>())
+        continue;
+      Operation *body = op;
+      if (isa<TRowExpandSubOp>(op)) {
+        auto loop = dyn_cast<scf::ForOp>(op->getParentOp());
+        if (isCVRowViewLoop(loop))
+          body = loop;
+      }
+      OpBuilder b(body);
+      auto region = b.create<FusionRegionOp>(body->getLoc(), TypeRange{});
       if (region.getBody().empty()) region.getBody().push_back(new Block());
-      op->moveBefore(&region.getBody().front(), region.getBody().front().end());
+      body->moveBefore(&region.getBody().front(), region.getBody().front().end());
       b.setInsertionPointToEnd(&region.getBody().front());
       b.create<pto::YieldOp>(region.getLoc(), ValueRange{});
     }

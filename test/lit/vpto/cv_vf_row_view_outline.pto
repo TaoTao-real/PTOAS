@@ -1,0 +1,51 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// Licensed under the CANN Open Software License Agreement Version 2.0.
+// RUN: pto-test-opt %s '--pass-pipeline=builtin.module(pto-cv-outline-vf,func.func(pto-flatten-fusion-region),pto-cv-validate-vf)' | FileCheck %s
+// RUN: sed 's/\/\/ OUTER-SYNC: //' %s > %t.pto
+// RUN: not pto-test-opt %t.pto --pto-cv-outline-vf 2>&1 | FileCheck %s --check-prefix=SYNC
+
+module attributes {pto.target_arch = "a5"} {
+  func.func @row_views() attributes {pto.cv.static_stage_graph = 1 : i64, pto.kernel_kind = #pto.kernel_kind<vector>} {
+    %c0 = arith.constant 0 : index
+    %c16 = arith.constant 16 : index
+    %c1 = arith.constant 1 : index
+    %c128 = arith.constant 128 : index
+    %c8 = arith.constant 8 : index
+    %src = pto.alloc_tile : !pto.tile_buf<vec, 16x128xf32>
+    %max = pto.alloc_tile : !pto.tile_buf<vec, 32x8xf32, valid=16x1>
+    %dst = pto.alloc_tile : !pto.tile_buf<vec, 16x128xf32>
+    scf.for %row = %c0 to %c16 step %c1 {
+      %row_offset = arith.muli %row, %c128 : index
+      %max_offset = arith.muli %row, %c8 : index
+      %src_base = pto.tile_buf_addr %src : !pto.tile_buf<vec, 16x128xf32> -> !pto.ptr<f32, ub>
+      %max_base = pto.tile_buf_addr %max : !pto.tile_buf<vec, 32x8xf32, valid=16x1> -> !pto.ptr<f32, ub>
+      %dst_base = pto.tile_buf_addr %dst : !pto.tile_buf<vec, 16x128xf32> -> !pto.ptr<f32, ub>
+      %src_ptr = pto.addptr %src_base, %row_offset : <f32, ub> -> <f32, ub>
+      %max_ptr = pto.addptr %max_base, %max_offset : <f32, ub> -> <f32, ub>
+      %dst_ptr = pto.addptr %dst_base, %row_offset : <f32, ub> -> <f32, ub>
+      %src_addr = pto.castptr %src_ptr : !pto.ptr<f32, ub> -> i64
+      %max_addr = pto.castptr %max_ptr : !pto.ptr<f32, ub> -> i64
+      %dst_addr = pto.castptr %dst_ptr : !pto.ptr<f32, ub> -> i64
+      %src_row = pto.alloc_tile addr = %src_addr {pto.cv.borrowed} : !pto.tile_buf<vec, 1x128xf32>
+      %max_row = pto.alloc_tile addr = %max_addr {pto.cv.borrowed} : !pto.tile_buf<vec, 8x1xf32, valid=1x1, blayout=col_major>
+      %dst_row = pto.alloc_tile addr = %dst_addr {pto.cv.borrowed} : !pto.tile_buf<vec, 1x128xf32>
+      // OUTER-SYNC: pto.barrier <PIPE_ALL>
+      pto.trowexpandsub ins(%src_row, %max_row : !pto.tile_buf<vec, 1x128xf32>, !pto.tile_buf<vec, 8x1xf32, valid=1x1, blayout=col_major>) outs(%dst_row : !pto.tile_buf<vec, 1x128xf32>) {candidates = [], pto.cv.phase = "prefix", pto.cv.token = 0 : i64}
+    } {pto.cv.phase = "prefix", pto.cv.token = 0 : i64}
+    return
+  }
+}
+
+// CHECK-LABEL: func.func @row_views()
+// CHECK: %[[SRC:.*]] = pto.tile_buf_addr {{.*}} : !pto.tile_buf<vec, 16x128xf32>
+// CHECK: %[[MAX:.*]] = pto.tile_buf_addr {{.*}} : !pto.tile_buf<vec, 32x8xf32, valid=16x1>
+// CHECK: %[[DST:.*]] = pto.tile_buf_addr {{.*}} : !pto.tile_buf<vec, 16x128xf32>
+// CHECK-NEXT: call @row_views__cv_vf_0(%[[SRC]], %[[MAX]], %[[DST]]) {{.*}}pto.cv.token = 0
+// CHECK-NEXT: return
+// CHECK-LABEL: func.func private @row_views__cv_vf_0(
+// CHECK-SAME: pto.tileop.effects = ["read", "read", "write"]
+// CHECK: scf.for
+// CHECK: pto.addptr
+// CHECK: pto.alloc_tile addr
+// CHECK: pto.trowexpandsub
+// SYNC: CV VF local binding must preserve 32-byte alignment
