@@ -352,9 +352,14 @@ struct CVApplySchedulePass
       if (singleCore && loop->isProperAncestor(alloc))
         return alloc.emitError("single-core allocation must be outside the candidate loop");
       auto countAttr = alloc->getAttrOfType<IntegerAttr>("pto.pipeline.multi_buffer_count");
-      unsigned slots = countAttr ? countAttr.getInt() : 1;
-      if ((countAttr && countAttr.getInt() < 1) || slots > kPtoMultiBufferMaxNum)
-        return alloc.emitError("invalid CV multi_buffer_count");
+      unsigned slots = 1;
+      if (countAttr) {
+        const llvm::APInt countValue = countAttr.getValue();
+        if (countValue.isNegative() || countValue.isZero() ||
+            countValue.getLimitedValue() > kPtoMultiBufferMaxNum)
+          return alloc.emitError("invalid CV multi_buffer_count");
+        slots = countValue.getLimitedValue();
+      }
       bool hasWriter = written[root];
       auto ids = rootVersions[root];
       llvm::stable_sort(ids, [&](unsigned a, unsigned b) {
@@ -383,11 +388,15 @@ struct CVApplySchedulePass
           return alloc.emitError("single-core plan needs one slot per iteration");
         for (Attribute attr : choices) {
           auto slot = dyn_cast<IntegerAttr>(attr);
-          if (!slot || slot.getInt() < 0 || slot.getInt() >= slots)
+          if (!slot || slot.getValue().isNegative() ||
+              slot.getValue().getLimitedValue() >= slots)
             return alloc.emitError("invalid single-core iteration slot");
         }
         for (unsigned id : ids)
-          versions[id].slot = cast<IntegerAttr>(choices[versions[id].iteration]).getInt();
+          versions[id].slot =
+              cast<IntegerAttr>(choices[versions[id].iteration])
+                  .getValue()
+                  .getLimitedValue();
         // These slots describe asynchronous lifetimes, not positions in the
         // scalar issue stream. Reuse hazards are handled by native InsertSync.
         needed = slots;
