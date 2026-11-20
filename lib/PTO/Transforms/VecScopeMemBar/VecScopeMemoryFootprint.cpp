@@ -318,8 +318,7 @@ static MemoryRootKind resolveRoot(
     Value ptr, AffineByteExpr& byteOffset, Value& rootOut, std::optional<uint64_t>& absoluteBase, ArrayRef<Value> ivs,
     bool allowIterArgInit = false);
 
-// pto.cast_ptr from an integer/index value: an absolute address when the
-// integer is constant, else an unknown root.
+// Resolve pointer casts, constant addresses, and exact A5 UB round trips.
 static std::optional<MemoryRootKind> tryResolveCastPtr(
     Value ptr, AffineByteExpr& byteOffset, Value& rootOut, std::optional<uint64_t>& absoluteBase, ArrayRef<Value> ivs,
     bool allowIterArgInit)
@@ -330,6 +329,17 @@ static std::optional<MemoryRootKind> tryResolveCastPtr(
     }
     Value input = castOp.getInput();
     if (isa<IntegerType>(input.getType()) || input.getType().isIndex()) {
+        // Prepared A5 VFs bind borrowed tiles through an i64 address. A
+        // direct UB pointer round trip preserves the symbolic storage root.
+        // Do not infer a root through integer arithmetic or a narrower cast.
+        auto sourceCast = input.getDefiningOp<pto::CastPtrOp>();
+        auto pointerType = dyn_cast<pto::PtrType>(ptr.getType());
+        if (sourceCast && input.getType().isSignlessInteger(64) &&
+            pointerType && pointerType.getMemorySpace().getAddressSpace() == AddressSpace::VEC &&
+            sourceCast.getInput().getType() == pointerType &&
+            getTargetArch(castOp) == PTOArch::A5) {
+            return resolveRoot(sourceCast.getInput(), byteOffset, rootOut, absoluteBase, ivs, allowIterArgInit);
+        }
         APInt v;
         if (matchPattern(input, m_ConstantInt(&v))) {
             absoluteBase = uint64_t(v.getZExtValue());

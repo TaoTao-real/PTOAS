@@ -1,0 +1,30 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// Licensed under the CANN Open Software License Agreement Version 2.0.
+// RUN: pto-test-opt %s --pto-insert-vecscope-membar | FileCheck %s
+
+module attributes {pto.target_arch = "a5", pto.kernel_kind = #pto.kernel_kind<vector>} {
+  func.func @same_ub_root(%src: !pto.ptr<f32, ub>, %dst: !pto.ptr<f32, ub>,
+                         %addr: i64) {
+    %c0 = arith.constant 0 : index
+    %c0_f32 = arith.constant 0.0 : f32
+    %bits = pto.castptr %src : !pto.ptr<f32, ub> -> i64
+    %roundtrip = pto.castptr %bits : i64 -> !pto.ptr<f32, ub>
+    %unknown = pto.castptr %addr : i64 -> !pto.ptr<f32, ub>
+    pto.vecscope {
+      %mask = pto.pset_b32 "PAT_ALL" : !pto.mask<b32>
+      %v = pto.vbr %c0_f32 : f32 -> !pto.vreg<64xf32>
+      pto.vsts %v, %src[%c0], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
+      %w = pto.vlds %roundtrip[%c0] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
+      %u = pto.vlds %unknown[%c0] : !pto.ptr<f32, ub> -> !pto.vreg<64xf32>
+      pto.vsts %w, %dst[%c0], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
+      pto.vsts %u, %unknown[%c0], %mask : !pto.vreg<64xf32>, !pto.ptr<f32, ub>, !pto.mask<b32>
+    }
+    return
+  }
+}
+
+// CHECK-LABEL: func.func @same_ub_root
+// CHECK: pto.vsts
+// CHECK-NEXT: pto.mem_bar "VST_VLD"
+// CHECK-NEXT: {{.*}}pto.vlds
+// CHECK-NEXT: {{.*}}pto.vlds
