@@ -179,6 +179,15 @@ static Value traceMemRefAlias(Operation *def) {
 }
 
 static Value tracePTOAlias(Operation *def) {
+  // A reduction epilogue can store through addptr(tile_buf_addr(%tile), row)
+  // while the next stage loads from tile_buf_addr(%tile) with a row index.
+  // They share storage even when the two address expressions differ.
+  if (auto add = dyn_cast<pto::AddPtrOp>(def)) {
+    return add.getPtr();
+  }
+  if (auto addr = dyn_cast<pto::TileBufAddrOp>(def)) {
+    return addr.getSrc();
+  }
   if (auto subview = dyn_cast<pto::SubViewOp>(def)) {
     return subview.getSource();
   }
