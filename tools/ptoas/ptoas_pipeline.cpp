@@ -56,6 +56,10 @@ static llvm::cl::opt<bool> cvApplyVF(
 static llvm::cl::opt<bool> cvAnalyzeSchedule(
     "cv-analyze-schedule", llvm::cl::desc("Analyze candidate order and minimum slots without physical binding"),
     llvm::cl::init(false));
+static llvm::cl::opt<bool> cvTestWithoutVecScopeMemBar(
+    "cv-test-without-vecscope-mem-bar", llvm::cl::Hidden,
+    llvm::cl::desc("Allow a CV apply experiment without automatic intra-VF memory barriers"),
+    llvm::cl::init(false));
 static llvm::cl::opt<std::string> cvFeedbackPath(
     "cv-feedback", llvm::cl::desc("Write same-compilation CV memory and validation feedback"),
     llvm::cl::init(""));
@@ -2371,12 +2375,19 @@ int mlir::pto::compilePTOASModule(
       failed(validateFusionConfiguration(state, effectiveBackend))) {
     return 1;
   }
+  if (cvTestWithoutVecScopeMemBar &&
+      (!cvApplyVF || cvAnalyzeSchedule || enableVecScopeMemBar ||
+       enableVecScopeMemBarAll)) {
+    module->emitError("CV membar experiment requires CV apply with both vecscope membar insertion passes disabled");
+    return 1;
+  }
   if (cvPrepareVF || cvApplyVF) {
     if (cvPrepareVF == cvApplyVF || cvFreezeVF || cvEmitFrozenVF || emitCVCostModelIR ||
         state.arch != "a5" || effectiveBackend != PTOBackend::VPTO ||
         state.level != PTOBuildLevel::Level2 || !enableVMI ||
         !state.opFusionEnabled || (cvPrepareVF && !emitMlirIR) ||
-        (cvApplyVF && (!enableInsertSync || !enableVecScopeMemBar))) {
+        (cvApplyVF && (!enableInsertSync ||
+                       (!enableVecScopeMemBar && !cvTestWithoutVecScopeMemBar)))) {
       module->emitError("CV VF integration requires separate A5 level2 VMI VPTO phases; "
                         "prepare requires emit-pto-ir; apply requires InsertSync and vecscope membar");
       return 1;
